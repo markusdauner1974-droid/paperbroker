@@ -15,8 +15,6 @@ setup(name='paperbroker',
                 ],
         install_requires=[
             'arrow',
-            'flask',
-            'jsonpickle',
             'requests'
         ]
      )

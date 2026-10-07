@@ -1,5 +1,2 @@
-arrow==0.10.0
-Flask==0.12.2
-jsonpickle==0.9.4
-ujson
+arrow>=0.10.0
 requests

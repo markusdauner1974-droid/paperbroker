@@ -1,39 +1,26 @@
 """
+    PaperBroker (slimmed)
 
-    PaperBroker
+    Historical note: this class was the facade of a full simulated
+    brokerage (accounts, orders, fills, margin). The project now uses it
+    as a read-only market-data facade: quotes, option chains and
+    expiration dates via a pluggable QuoteAdapter (CBOE adapter in
+    Phase 3). All order/account/market logic was removed in Phase 2 -
+    see git history for the original implementation.
 
-    Instantiate this with:
+    Instantiate with an explicit adapter:
         from paperbroker import PaperBroker
-        broker = PaperBroker()
-
-    There is minimal logic here
-
+        broker = PaperBroker(quote_adapter=MyQuoteAdapter())
 """
 from .adapters.quotes import QuoteAdapter
+from .assets import Asset
 
-from .adapters.accounts import AccountAdapter
-from .adapters.accounts import LocalFileSystemAccountAdapter
-
-from .adapters.markets import MarketAdapter
-from .adapters.markets.PaperMarketAdapter import PaperMarketAdapter
-
-from .accounts import Account
-from .orders import Order
-from .estimators import Estimator
-from .assets import Asset, asset_factory
-
-from .logic.validate_account import validate_account
 
 class PaperBroker():
 
-    def __init__(self, quote_adapter:QuoteAdapter=None, account_adapter:AccountAdapter=None, market_adapter:MarketAdapter=None):
-        # No default live quote adapter: always pass one explicitly, e.g.
-        #   broker = PaperBroker(quote_adapter=TestDataQuoteAdapter())
-        # Passing only an account_adapter (no quote_adapter) is fine when the
-        # caller only manages accounts and never prices assets.
-        self.quote_adapter = quote_adapter if quote_adapter is not None else None
-        self.account_adapter = account_adapter if account_adapter is not None else LocalFileSystemAccountAdapter()
-        self.market_adapter = market_adapter if market_adapter is not None else PaperMarketAdapter(self.quote_adapter)
+    def __init__(self, quote_adapter: QuoteAdapter = None):
+        # No default live quote adapter: always pass one explicitly.
+        self.quote_adapter = quote_adapter
 
     def get_price(self, asset):
         quote = self.get_quote(asset)
@@ -44,81 +31,9 @@ class PaperBroker():
 
     def get_options(self, underlying_asset=None, expiration_date=None):
         return self.quote_adapter.get_options(underlying_asset, expiration_date)
+
     def get_option_quotes(self, underlying_asset=None, expiration_date=None):
         return self.get_options(underlying_asset=underlying_asset, expiration_date=expiration_date)
 
     def get_expiration_dates(self, underlying_asset=None):
         return self.quote_adapter.get_expiration_dates(underlying_asset)
-
-    def open_account(self):
-        account = Account()
-        self.account_adapter.put_account(account)
-        return account
-
-    def get_account(self, account_id:str=None):
-        return self.account_adapter.get_account(account_id=account_id)
-
-    def buy_to_open(self, account: Account=None, asset:Asset=None, quantity = 1, simulate=False):
-        o = Order()
-        o.add_leg(asset=asset_factory(asset), quantity=abs(quantity), order_type='bto')
-        return self.enter_order(account, o, simulate=simulate)
-
-    def sell_to_open(self, account: Account=None, asset:Asset=None, quantity = 1, simulate=False):
-        o = Order()
-        o.add_leg(asset=asset_factory(asset), quantity=abs(quantity)*-1, order_type='sto')
-        return self.enter_order(account, o, simulate=simulate)
-
-    def buy_to_close(self, account: Account=None, asset:Asset=None, quantity = 1, simulate=False):
-        o = Order()
-        o.add_leg(asset=asset_factory(asset), quantity=abs(quantity), order_type='btc')
-        return self.enter_order(account, o, simulate=simulate)
-
-    def sell_to_close(self, account: Account=None, asset:Asset=None, quantity = 1, simulate=False):
-        o = Order()
-        o.add_leg(asset=asset_factory(asset), quantity=abs(quantity)*-1, order_type='stc')
-        return self.enter_order(account, o, simulate=simulate)
-
-    def enter_order(self, account: Account, order: Order, estimator:Estimator=None, simulate=False):
-
-        if simulate:
-            return self.market_adapter.simulate_order(account=account, order=order, estimator=estimator)
-
-        # enter order always simulates first but only executes on simulate=False
-        self.market_adapter.simulate_order(account=account, order=order, estimator=estimator)
-        self.market_adapter.enter_order(account=account, order=order, estimator=estimator)
-        self.account_adapter.put_account(account)
-        return account
-
-    def simulate_order(self, account: Account, order: Order, estimator:Estimator=None):
-        account_after = self.market_adapter.simulate_order(account=account, order=order, estimator=estimator)
-        validate_account(account_after)
-        account_after.account_id = account_after.account_id + "_simulated_order"
-        return account_after
-
-    def close_position(self, account:Account, position=None, simulate=False):
-        return self.close_positions(account, [position], simulate=simulate)
-
-    def close_positions(self, account:Account, positions=None, simulate=False):
-        if positions is None:
-            positions = []
-
-        btc = {}
-        stc = {}
-        assets_by_symbol = {}
-        for p in positions:
-            assets_by_symbol[p.asset.symbol] = p.asset
-            if p.quantity > 0:
-                stc[p.asset.symbol] = stc.get(p.asset.symbol, 0) + p.quantity
-            else:
-                btc[p.asset.symbol] = btc.get(p.asset.symbol, 0) + p.quantity
-
-        o = Order()
-        for s in stc.keys():
-            o.add_leg(order_type = 'stc', asset=assets_by_symbol[s], quantity=-1*stc[s])
-        for b in btc.keys():
-            o.add_leg(order_type = 'btc', asset=assets_by_symbol[b], quantity=abs(btc[b]))
-
-        return self.enter_order(account=account, order=o, simulate=simulate)
-
-
-
