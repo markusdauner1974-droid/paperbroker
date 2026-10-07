@@ -14,7 +14,6 @@ setup(name='paperbroker',
                 'paperbroker.logic',
                 ],
         install_requires=[
-            'ivolat3',
             'arrow',
             'googlefinance',
             'flask',

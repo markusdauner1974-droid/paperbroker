@@ -4,7 +4,9 @@
 #
 ###############################
 
-import ivolat3
+import math
+
+from . import bs_model
 
 def get_option_greeks(option_type, strike, underlying_price, days_to_expiration, price, dividend = 0.0):
 
@@ -50,7 +52,7 @@ def get_option_greeks(option_type, strike, underlying_price, days_to_expiration,
     # sigma = 0.2
 
     # call opition implied volatility
-    sigma = ivolat3.ivolat_call(s, k, r, q, t, p) if option_type == 'call' else ivolat3.ivolat_put(s, k, r, q, t, p)
+    sigma = bs_model.ivolat_call(s, k, r, q, t, p) if option_type == 'call' else bs_model.ivolat_put(s, k, r, q, t, p)
 
     if sigma != sigma:
         # means sigma is not a number
@@ -61,29 +63,29 @@ def get_option_greeks(option_type, strike, underlying_price, days_to_expiration,
 
     out['iv'] = sigma
 
-    out['delta'] = ivolat3.delta_call(s, k, r, q, t, sigma) if \
-        option_type == 'call' else ivolat3.delta_put(s, k, r, q, t, sigma)
+    out['delta'] = bs_model.delta_call(s, k, r, q, t, sigma) if \
+        option_type == 'call' else bs_model.delta_put(s, k, r, q, t, sigma)
 
-    out['vega'] = ivolat3.vega(s, k, r, q, t, sigma)
+    out['vega'] = bs_model.vega(s, k, r, q, t, sigma)
 
-    out['theta'] = (ivolat3.theta_call(s, k, r, q, t, sigma) if
-                    option_type == 'call' else ivolat3.theta_put(s, k, r, q, t, sigma)) / 365
+    out['theta'] = (bs_model.theta_call(s, k, r, q, t, sigma) if
+                    option_type == 'call' else bs_model.theta_put(s, k, r, q, t, sigma)) / 365
 
-    out['rho'] = ivolat3.rho_call(s, k, r, q, t, sigma) if \
-        option_type == 'call' else ivolat3.rho_put(s, k, r, q, t, sigma)
+    out['rho'] = bs_model.rho_call(s, k, r, q, t, sigma) if \
+        option_type == 'call' else bs_model.rho_put(s, k, r, q, t, sigma)
 
-    out['gamma'] = ivolat3.gamma(s, k, r, q, t, sigma)
-    out['vanna'] = ivolat3.vanna(s, k, r, q, t, sigma)
-    out['charm'] = (ivolat3.charm_call(s, k, r, q, t, sigma) if \
-        option_type == 'call' else ivolat3.charm_put(s, k, r, q, t, sigma)) / 365
-    out['speed'] = ivolat3.speed(s, k, r, q, t, sigma) / 365
-    out['zomma'] = ivolat3.zomma(s, k, r, q, t, sigma) / 365
-    out['color'] = ivolat3.color(s, k, r, q, t, sigma) / (365)
-    out['veta'] = ivolat3.DvegaDtime(s, k, r, q, t, sigma) / (100 * 365)
-    out['vomma'] = ivolat3.vomma(s, k, r, q, t, sigma)
-    out['ultima'] = ivolat3.ultima(s, k, r, q, t, sigma) / 365
+    out['gamma'] = bs_model.gamma(s, k, r, q, t, sigma)
+    out['vanna'] = bs_model.vanna(s, k, r, q, t, sigma)
+    out['charm'] = (bs_model.charm_call(s, k, r, q, t, sigma) if \
+        option_type == 'call' else bs_model.charm_put(s, k, r, q, t, sigma)) / 365
+    out['speed'] = bs_model.speed(s, k, r, q, t, sigma) / 365
+    out['zomma'] = bs_model.zomma(s, k, r, q, t, sigma) / 365
+    out['color'] = bs_model.color(s, k, r, q, t, sigma) / (365)
+    out['veta'] = bs_model.DvegaDtime(s, k, r, q, t, sigma) / (100 * 365)
+    out['vomma'] = bs_model.vomma(s, k, r, q, t, sigma)
+    out['ultima'] = bs_model.ultima(s, k, r, q, t, sigma) / 365
 
-    out['dual_delta'] = ivolat3.dualdelta_call(s, k, r, q, t, sigma) if option_type == 'call' else ivolat3.dualdelta_put(
+    out['dual_delta'] = bs_model.dualdelta_call(s, k, r, q, t, sigma) if option_type == 'call' else bs_model.dualdelta_put(
         s, k, r, q, t, sigma)
 
     return out
