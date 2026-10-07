@@ -41,17 +41,26 @@ class Quote(object):
 
 
 class OptionQuote(Quote):
-    def __init__(self, quote_date, asset, price=None, bid=0.0, ask=0.0, bid_size=0, ask_size=0, delta=None, iv=None, gamma=None, vega=None, theta=None, rho=None, underlying_price=None):
+    def __init__(self, quote_date, asset, price=None, bid=0.0, ask=0.0, bid_size=0, ask_size=0, delta=None, iv=None, gamma=None, vega=None, theta=None, rho=None, underlying_price=None, open_interest=None, volume=None, greeks_source='model'):
         super(OptionQuote, self).__init__(quote_date=quote_date, asset=asset, price=price, bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size)
         if not isinstance(self.asset, Option):
             raise Exception("OptionQuote(Quote): Must pass an option to create an option quote");
         self.quote_type = 'option'
         self.days_to_expiration = self.asset.get_days_to_expiration(quote_date)
         self.underlying_price = underlying_price
+        self.open_interest = int(open_interest) if open_interest is not None else None
+        self.volume = int(volume) if volume is not None else None
+        self.greeks_source = greeks_source
 
         self.delta = None
 
-        if self.is_priceable() and self.underlying_price is not None:
+        if greeks_source == 'adapter':
+            # Adapter-supplied greeks are authoritative (e.g. CBOE feed):
+            # use them as-is (percent/x100 convention), no model recompute.
+            for name in ('delta', 'iv', 'gamma', 'vega', 'theta', 'rho'):
+                val = locals()[name]
+                setattr(self, name, None if val is None or (isinstance(val, float) and math.isnan(val)) else float(val))
+        elif self.is_priceable() and self.underlying_price is not None:
             greeks = get_option_greeks(self.asset.option_type, self.asset.strike, self.underlying_price, self.days_to_expiration, self.price, dividend=0.0)
 
             self.delta = (greeks['delta'] * 100) if greeks['delta'] is not None and not math.isnan(greeks['delta']) else delta
