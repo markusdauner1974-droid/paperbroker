@@ -1,30 +1,29 @@
 # Portainer/Arcane stack for the paperbroker options screener.
 #
-# Networking decisions:
-# - QNAP TS-473A is amd64 -> image: ghcr.io/...paperbroker-screener
-#   (multi-arch, built by CI on every master push)
-# - LAN-only access: the container port is bound to the QNAP's LAN IP
-#   (192.168.178.10). The router's firewall blocks this port from the
-#   internet (no port forwarding), so the app is only reachable inside
-#   the home network.
-# - Healthcheck hits /healthz (no external CBOE/xang calls).
-# - Named volume keeps the CBOE chain cache across restarts (with
-#   quote_timestamp preserved so the freshness lamp survives reboots).
+# All environment-specific values are env variables (Arcane asks for
+# them at deploy time / environment tab - no editing inside this file).
+# Defaults via ${VAR:-default} so a bare deploy still works.
 #
-# Arcane (manual stack import): paste this file as the stack definition.
+# Variables:
+#   LAN_IP         QNAP LAN address, default 192.168.178.10
+#   HOST_PORT      port reachable in the home network, default 8090
+#   IMAGE          built by CI on master push (multi-arch amd64/arm64)
+#   APP_PORT       port INSIDE the container (do not change; Dockerfile
+#                  EXPOSE + healthcheck expect it)
+#   FLASK_DEBUG    keep 0 (1 would expose the Werkzeug debugger - unsafe)
 
 services:
   paperbroker-screener:
-    image: ghcr.io/markusdauner1974-droid/paperbroker-screener:latest
-    container_name: paperbroker-screener
+    image: ${IMAGE:-ghcr.io/markusdauner1974-droid/paperbroker-screener:latest}
+    container_name: ${CONTAINER_NAME:-paperbroker-screener}
     restart: unless-stopped
     ports:
       # LAN-only binding (no port forward on the router)
-      - "192.168.178.10:8090:8089"
+      - "${LAN_IP:-192.168.178.10}:${HOST_PORT:-8090}:${APP_PORT:-8089}"
     volumes:
       - cboe_cache:/app/.cache
     environment:
-      - FLASK_DEBUG=0
+      - FLASK_DEBUG=${FLASK_DEBUG:-0}
       # Trend provider comes later (xang1234). Absent config = the app
       # runs without trend input (TrendProvider=None is a valid contract).
 
