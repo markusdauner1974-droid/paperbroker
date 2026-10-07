@@ -1,0 +1,18 @@
+[tool.ruff]
+line-length = 140
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+# F401: re-exports in __init__ files are intentional
+# N999: CamelCase module names are the existing project convention
+#       (PaperBroker.py, CBOEQuoteAdapter.py, TestDataQuoteAdapter.py)
+# RUF013/TRY002/TRY004/PLW0602/PLR0124/RUF059/PLR1711/UP004/C414/C403/RUF015:
+#       style preferences or intentional legacy patterns; the codebase is
+#       ported as-is - mass-refactor would inflate diffs
+# BLE001: broad except at the adapter boundary is deliberate (malformed-input
+#       defense, re-raised as CboeRequestError)
+# E701/E702: single-line if/semicolon style appears in legacy test fixtures
+ignore = ["F401", "N999", "RUF013", "TRY002", "TRY004", "PLW0602",
+          "PLR0124", "RUF059", "PLR1711", "UP004", "C414", "C403",
+          "RUF015", "BLE001", "E701", "E702"]

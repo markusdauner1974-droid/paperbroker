@@ -3,9 +3,9 @@
     Objects representing quotes. Simple right now.
 
 """
-import arrow
 import math
-from .assets import asset_factory, Option
+
+from .assets import Option, asset_factory
 from .logic.ivolat3_option_greeks import get_option_greeks
 
 
@@ -41,10 +41,12 @@ class Quote(object):
 
 
 class OptionQuote(Quote):
-    def __init__(self, quote_date, asset, price=None, bid=0.0, ask=0.0, bid_size=0, ask_size=0, delta=None, iv=None, gamma=None, vega=None, theta=None, rho=None, underlying_price=None, open_interest=None, volume=None, greeks_source='model'):
-        super(OptionQuote, self).__init__(quote_date=quote_date, asset=asset, price=price, bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size)
+    def __init__(self, quote_date, asset, price=None, bid=0.0, ask=0.0, bid_size=0, ask_size=0,
+                 delta=None, iv=None, gamma=None, vega=None, theta=None, rho=None,
+                 underlying_price=None, open_interest=None, volume=None, greeks_source='model'):
+        super().__init__(quote_date=quote_date, asset=asset, price=price, bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size)
         if not isinstance(self.asset, Option):
-            raise Exception("OptionQuote(Quote): Must pass an option to create an option quote");
+            raise Exception("OptionQuote(Quote): Must pass an option to create an option quote")
         self.quote_type = 'option'
         self.days_to_expiration = self.asset.get_days_to_expiration(quote_date)
         self.underlying_price = underlying_price
@@ -61,7 +63,9 @@ class OptionQuote(Quote):
                 val = locals()[name]
                 setattr(self, name, None if val is None or (isinstance(val, float) and math.isnan(val)) else float(val))
         elif self.is_priceable() and self.underlying_price is not None:
-            greeks = get_option_greeks(self.asset.option_type, self.asset.strike, self.underlying_price, self.days_to_expiration, self.price, dividend=0.0)
+            greeks = get_option_greeks(
+                self.asset.option_type, self.asset.strike, self.underlying_price,
+                self.days_to_expiration, self.price, dividend=0.0)
 
             self.delta = (greeks['delta'] * 100) if greeks['delta'] is not None and not math.isnan(greeks['delta']) else delta
             self.iv = (greeks['iv'] * 100) if greeks['iv'] is not None and not math.isnan(greeks['iv']) else iv

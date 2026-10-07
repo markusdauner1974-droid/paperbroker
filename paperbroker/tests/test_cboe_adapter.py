@@ -9,10 +9,12 @@
     403 for unknown symbols, cache hit < 0.05 s).
 """
 import unittest
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 from ..adapters.quotes.CBOEQuoteAdapter import (
-    CBOEQuoteAdapter, CboeNotFoundError, CboeRequestError,
+    CboeNotFoundError,
+    CBOEQuoteAdapter,
+    CboeRequestError,
 )
 from ..quotes import OptionQuote
 
@@ -29,7 +31,7 @@ def _chain_payload(occ_syms, current_price=100.0, timestamp='2026-10-07 06:49:35
     options = []
     for occ in occ_syms:
         # deterministic pseudo data derived from the symbol
-        strike = int(occ[-8:]) / 1000.0
+        int(occ[-8:]) / 1000.0
         cp = occ[-9]
         options.append({
             "option": occ,

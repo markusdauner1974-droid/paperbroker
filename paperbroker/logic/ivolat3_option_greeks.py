@@ -4,9 +4,9 @@
 #
 ###############################
 
-import math
 
 from . import bs_model
+
 
 def get_option_greeks(option_type, strike, underlying_price, days_to_expiration, price, dividend = 0.0):
 
