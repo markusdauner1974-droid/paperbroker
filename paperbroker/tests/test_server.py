@@ -63,7 +63,9 @@ class TestServerDisplay(unittest.TestCase):
             self.assertEqual(res.status_code, 400, bad)
 
     def test_api_screen_rejects_bad_expiration(self):
-        for bad in ("2026-10-99", "not-a-date", "2026/10/16", ""):
+        # '' is now the legal picker stage (form-first flow) - real
+        # malformed dates still 400
+        for bad in ("2026-10-99", "not-a-date", "2026/10/16"):
             res = self.client.get("/api/screen",
                                   query_string={"ticker": "SPY",
                                                 "expiration": bad})
@@ -76,6 +78,55 @@ class TestServerDisplay(unittest.TestCase):
                               query_string={"ticker": "SPY",
                                             "expiration": "2019-01-01"})
         self.assertEqual(res.status_code, 400)
+
+    def test_api_error_is_json_not_html(self):
+        # CodeRabbit finding: JSON clients must get JSON errors
+        res = self.client.get("/api/screen",
+                              query_string={"ticker": "../etc",
+                                            "expiration": "2026-10-16"})
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.content_type, "application/json")
+        self.assertIn("error", res.get_json())
+
+    def test_api_picker_lists_dates_without_expiration(self):
+        # form-first flow: valid ticker, no date yet -> list real dates
+        res = self.client.get("/api/screen", query_string={"ticker": "SPY"})
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["listed_dates"], ["2026-10-09", "2026-10-16"])
+        self.assertEqual(data["results"], [])
+
+    def test_lamp_reports_stale_chain_despite_empty_results(self):
+        # CodeRabbit finding: the stale-quote guard can wipe all
+        # candidates - the lamp must still report the chain staleness
+        from paperbroker.screener import OptionScreener, ScreenerCriteria
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = "2026-10-07 10:00:00"  # hours old
+        app2 = create_app(
+            quote_adapter=_MockAdapter(qs),
+            screener=OptionScreener(ScreenerCriteria()))
+        app2.config["TESTING"] = True
+        c2 = app2.test_client()
+        res = c2.get("/api/screen",
+                     query_string={"ticker": "SPY",
+                                   "expiration": "2026-10-16"})
+        data = res.get_json()
+        # default criteria drops the whole stale chain...
+        self.assertEqual(data["candidates"], 0)
+        # ...but the lamp still tells the truth (red = >= 2 h old)
+        self.assertEqual(data["freshness"], "red")
+
+    def test_delta_none_renders_placeholder(self):
+        qs = make()
+        qs[0].delta = None
+        app2 = create_app(quote_adapter=_MockAdapter(qs), screener=None)
+        app2.config["TESTING"] = True
+        c2 = app2.test_client()
+        res = c2.get("/", query_string={"ticker": "SPY",
+                                        "expiration": "2026-10-16"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("–", res.get_data(as_text=True))
 
     def test_index_renders_form(self):
         res = self.client.get("/")
@@ -105,7 +156,7 @@ class TestServerDisplay(unittest.TestCase):
         res = self.client.get("/", query_string={"ticker": "../etc",
                                                  "expiration": "2026-10-16"})
         self.assertEqual(res.status_code, 200)
-        self.assertIn("Ungueltige Eingabe", res.get_data(as_text=True))
+        self.assertIn("Ungueltiger Ticker", res.get_data(as_text=True))
 
 
 if __name__ == "__main__":

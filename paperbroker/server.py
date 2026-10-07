@@ -41,6 +41,14 @@ def create_app(quote_adapter=None, screener=None):
         screener = OptionScreener(ScreenerCriteria())
     broker = PaperBroker(quote_adapter=quote_adapter)
 
+    # JSON error contract for the API (CodeRabbit finding): abort() would
+    # send Flask's HTML error page, which a JSON client cannot parse
+    @app.errorhandler(400)
+    def _bad_request(err):
+        if request.path.startswith("/api/"):
+            return jsonify(error=getattr(err, "description", "bad request")), 400
+        return err
+
     @app.get("/healthz")
     def healthz():
         # liveness only: no CBOE, no xang - must stay green in LAN tests
@@ -49,21 +57,33 @@ def create_app(quote_adapter=None, screener=None):
 
     def _parse_args():
         ticker = request.args.get("ticker", "").upper().strip()
-        if not _TICKER_RE.match(ticker):
+        # form-first flow (CodeRabbit finding): load the expiration list
+        # as soon as the ticker is valid so the selector appears without
+        # requiring a pre-known date; empty expiration = picker only
+        if ticker and not _TICKER_RE.match(ticker):
             abort(400, description="invalid ticker (1-6 letters A-Z expected)")
         expiration = request.args.get("expiration", "").strip()
-        if not _DATE_RE.match(expiration):
-            abort(400, description="invalid expiration (YYYY-MM-DD expected)")
-        # expiration must be one of the chain's real dates - prevents
-        # probing arbitrary CBOE URLs with made-up dates
-        dates = broker.get_expiration_dates(ticker)
-        if not dates or expiration not in dates:
-            abort(400, description="expiration is not a listed date for this ticker")
+        dates = None
+        if ticker:
+            dates = broker.get_expiration_dates(ticker)
+        if expiration:
+            if not _DATE_RE.match(expiration):
+                abort(400, description="invalid expiration (YYYY-MM-DD expected)")
+            # expiration must be one of the chain's real dates - prevents
+            # probing arbitrary CBOE URLs with made-up dates
+            if not dates or expiration not in dates:
+                abort(400, description="expiration is not a listed date for this ticker")
+        elif not ticker:
+            abort(400, description="ticker and expiration required")
         return ticker, expiration, dates
 
     @app.get("/api/screen")
     def api_screen():
         ticker, expiration, dates = _parse_args()
+        if not expiration:
+            # picker stage: list real dates, no chain scan yet
+            return jsonify(ticker=ticker, expiration=None,
+                           listed_dates=dates, results=[], freshness=None)
         quotes = broker.get_options(ticker, expiration)
         results, dropped = screener.screen(quotes, now_fn=arrow.get)
         return jsonify(
@@ -72,7 +92,7 @@ def create_app(quote_adapter=None, screener=None):
             chain_size=len(quotes),
             candidates=len(results),
             dropped=len(dropped),
-            freshness=_freshness_lamp(results),
+            freshness=_freshness_lamp(quotes),
             results=[
                 {
                     "symbol": r.quote.asset.symbol,
@@ -95,25 +115,33 @@ def create_app(quote_adapter=None, screener=None):
         ticker = request.args.get("ticker", "").upper().strip()
         expiration = request.args.get("expiration", "").strip()
         error = None
-        results = dropped = dates = None
-        if ticker or expiration:
-            if not (_TICKER_RE.match(ticker) and _DATE_RE.match(expiration)):
-                error = "Ungueltige Eingabe - Ticker 1-6 Buchstaben, Verfall JJJJ-MM-TT."
-            else:
-                try:
+        results = dropped = dates = quotes = None
+        try:
+            if ticker:
+                if not _TICKER_RE.match(ticker):
+                    error = "Ungueltiger Ticker - 1-6 Buchstaben A-Z."
+                else:
                     dates = broker.get_expiration_dates(ticker)
-                    if not dates or expiration not in dates:
-                        error = "Verfallsdatum ist fuer diesen Ticker nicht gelistet."
-                    else:
-                        quotes = broker.get_options(ticker, expiration)
-                        results, dropped = screener.screen(
-                            quotes, trend=_load_trend(ticker), now_fn=arrow.get)
-                except Exception as err:
-                    error = f"Marktdaten-Fehler: {err}"
+                    if expiration:
+                        if not _DATE_RE.match(expiration):
+                            error = "Ungueltiges Verfallsdatum - JJJJ-MM-TT."
+                        elif not dates or expiration not in dates:
+                            error = "Verfallsdatum ist fuer diesen Ticker nicht gelistet."
+                        else:
+                            quotes = broker.get_options(ticker, expiration)
+                            results, dropped = screener.screen(
+                                quotes, trend=_load_trend(ticker), now_fn=arrow.get)
+        except Exception:
+            # no exception text in the page (CodeRabbit finding CWE-209:
+            # CboeRequestError carries raw requests messages) - log it,
+            # show a generic box; the server log holds the details
+            app.logger.exception("screen failed for %s %s", ticker, expiration)
+            error = "Marktdaten-Fehler - Details im Server-Log."
+        lamp_source = quotes if quotes is not None else results
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
             dates=dates, results=results, dropped_count=len(dropped) if dropped else 0,
-            error=error, freshness=_freshness_lamp(results),
+            error=error, freshness=_freshness_lamp(lamp_source),
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
 
@@ -164,18 +192,24 @@ def _trend_label(direction):
         direction, direction)
 
 
-def _freshness_lamp(results):
-    """Green/yellow/red from the youngest quote in the result set.
+def _freshness_lamp(quotes):
+    """Green/yellow/red from the youngest quote in the FETCHED chain.
 
-    None (no rows) -> None: the template shows 'keine Daten' instead of
-    inventing a traffic light without input.
+    (CodeRabbit finding: pass the raw chain, not the screened results -
+    the stale-quote guard can remove every candidate and hide the very
+    staleness the lamp is supposed to report.)
+
+    Accepts OptionQuote objects or ScreenResults (duck-typed). None/no
+    rows -> None: the template shows 'keine Daten' instead of inventing
+    a traffic light without input.
     """
-    if not results:
+    if not quotes:
         return None
     now = arrow.get()
     newest = None
-    for r in results:
-        ts = getattr(r.quote, "quote_timestamp", None)
+    for item in quotes:
+        q = getattr(item, "quote", item)  # ScreenResult or OptionQuote
+        ts = getattr(q, "quote_timestamp", None)
         if ts is None:
             continue
         try:

@@ -14,6 +14,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY paperbroker ./paperbroker
 COPY setup.py ./
 
+# non-root (CWE-250): app user owns /app/.cache so the named volume
+# mounted there inherits usable ownership
+RUN useradd --system --create-home --uid 10001 screener \
+    && mkdir -p /app/.cache \
+    && chown -R screener:screener /app
+USER screener
+
 # app binds on all interfaces INSIDE the container namespace - exposure is
 # controlled solely by the published port mapping (127.0.0.1:8090:8089 in
 # the stack file), never by a wide-open 0.0.0.0 host binding

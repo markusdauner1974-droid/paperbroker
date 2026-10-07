@@ -76,7 +76,7 @@
             <td>{{ '%.1f'|format(r.spread_pct) }}</td>
             <td>{{ '%.0f'|format(r.quote.iv) }}</td>
             <td>{{ r.quote.open_interest }}</td><td>{{ r.quote.volume }}</td>
-            <td>{{ '%.0f'|format(r.quote.delta) }}</td>
+            <td>{% if r.quote.delta is none %}–{% else %}{{ '%.0f'|format(r.quote.delta) }}{% endif %}</td>
             <td class="score">{{ '%.2f'|format(r.score) }}</td>
           </tr>
         {% endfor %}
