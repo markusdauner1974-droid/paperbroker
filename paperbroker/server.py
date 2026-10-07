@@ -32,8 +32,16 @@ _FRESH_GREEN_MIN = 30
 _FRESH_YELLOW_MIN = 120
 
 
-def create_app(quote_adapter=None, screener=None):
+def create_app(quote_adapter=None, screener=None, now_fn=None):
+    """now_fn: injectable clock for tests (default: real arrow.get).
+
+    The screener's 30-min-stale guard compares quote_timestamp against
+    now() - a hardcoded fixture timestamp goes stale in real time, so
+    tests MUST pin the clock instead of freezing the fixtures.
+    """
     app = Flask(__name__, template_folder="templates")
+    if now_fn is None:
+        now_fn = arrow.get
 
     if quote_adapter is None:
         quote_adapter = CBOEQuoteAdapter()
@@ -85,7 +93,7 @@ def create_app(quote_adapter=None, screener=None):
             return jsonify(ticker=ticker, expiration=None,
                            listed_dates=dates, results=[], freshness=None)
         quotes = broker.get_options(ticker, expiration)
-        results, dropped = screener.screen(quotes, now_fn=arrow.get)
+        results, dropped = screener.screen(quotes, now_fn=now_fn)
         return jsonify(
             ticker=ticker,
             expiration=expiration,
@@ -130,7 +138,7 @@ def create_app(quote_adapter=None, screener=None):
                         else:
                             quotes = broker.get_options(ticker, expiration)
                             results, dropped = screener.screen(
-                                quotes, trend=_load_trend(ticker), now_fn=arrow.get)
+                                quotes, trend=_load_trend(ticker), now_fn=now_fn)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,

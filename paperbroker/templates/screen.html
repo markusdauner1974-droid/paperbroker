@@ -15,9 +15,12 @@
     form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
     input,button{font-size:1rem;padding:9px 12px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit}
     button{background:#2c6bed;border-color:#2c6bed;font-weight:600}
-    select{font-size:1rem;padding:9px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit;max-width:200px}
+    button:disabled{opacity:.55}
+    select{font-size:1rem;padding:9px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit;max-width:220px}
+    select:disabled{opacity:.5}
     .note{font-size:.85rem;color:#9aa3b5;margin:8px 0}
     .err{background:#3a1f1f;border:1px solid #7c3a33;padding:10px 12px;border-radius:8px;margin-bottom:12px}
+    .spin{font-size:.85rem;color:#9aa3b5;display:none}
     table{width:100%;border-collapse:collapse;font-size:.85rem}
     th,td{text-align:right;padding:6px 8px;border-bottom:1px solid #232b3b}
     th:first-child,td:first-child{text-align:left}
@@ -33,7 +36,7 @@
   {% if freshness %}
     <span class="badge">Datenalter:
       <span class="lamp {{ freshness }}"></span>
-      {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}altest{% else %}alt{% endif %}
+      {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}aelter{% else %}alt{% endif %}
     </span>
   {% endif %}
   {% if trend %}
@@ -46,14 +49,15 @@
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
 
   <form method="get" action="/">
-    <input name="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required>
-    {% if dates %}
-      <select name="expiration">
+    <input name="ticker" id="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required autocomplete="off">
+    <select name="expiration" id="expiration" {% if not dates %}disabled{% endif %}>
+      {% if dates %}
         {% for d in dates %}<option value="{{ d }}" {% if d == expiration %}selected{% endif %}>{{ d }}</option>{% endfor %}
-      </select>
-    {% else %}
-      <input name="expiration" value="{{ expiration }}" placeholder="JJJJ-MM-TT">
-    {% endif %}
+      {% else %}
+        <option value="">Verfaelle werden geladen ...</option>
+      {% endif %}
+    </select>
+    <span class="spin" id="spin">Verfaelle laden ...</span>
     <button type="submit">Scan</button>
   </form>
 
@@ -88,8 +92,64 @@
   {% elif not error and ticker %}
     <p class="note">Scan laufen ... (falls dies steht, war die Ergebnisliste leer)</p>
   {% else %}
-    <p class="note">Ticker eingeben (z.&nbsp;B. SPY oder AAPL) und Verfallsdatum waehlen.</p>
+    <p class="note">Ticker eingeben - Verfallsdaten laden automatisch. Danach Verfall waehlen und "Scan" druecken.</p>
   {% endif %}
 </main>
+
+<script>
+// Auto-load the real expiration list as soon as the ticker is fully
+// typed (server-side validated against the chain's real dates).
+(function () {
+  var input = document.getElementById('ticker');
+  var exp = document.getElementById('expiration');
+  var spin = document.getElementById('spin');
+  var debounce = null;
+  var last = {{ ticker|tojson if ticker else '""' }};
+
+  function esc(s) { return encodeURIComponent(s); }
+
+  function loadDates(t) {
+    spin.style.display = 'inline';
+    exp.disabled = true;
+    fetch('/api/screen?ticker=' + esc(t))
+      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
+      .then(function (d) {
+        last = t;
+        exp.innerHTML = '';
+        (d.listed_dates || []).forEach(function (date) {
+          var o = document.createElement('option');
+          o.value = date;
+          o.textContent = date;
+          exp.appendChild(o);
+        });
+        if (!exp.options.length) {
+          var n = document.createElement('option');
+          n.value = '';
+          n.textContent = 'keine Verfaelle gefunden';
+          exp.appendChild(n);
+        }
+        exp.disabled = false;
+      })
+      .catch(function () {
+        exp.innerHTML = '';
+        var e = document.createElement('option');
+        e.value = '';
+        e.textContent = 'Verfaelle konnten nicht geladen werden';
+        exp.appendChild(e);
+        exp.disabled = true;
+      })
+      .finally(function () { spin.style.display = 'none'; });
+  }
+
+  input.addEventListener('input', function () {
+    var v = input.value.trim().toUpperCase();
+    if (!/^[A-Z]{1,6}$/.test(v)) return;      // same guard as the API
+    clearTimeout(debounce);
+    debounce = setTimeout(function () {
+      if (v !== last) loadDates(v);           // skip refetch on same ticker
+    }, 350);                                  // debounce keystrokes
+  });
+})();
+</script>
 </body>
 </html>

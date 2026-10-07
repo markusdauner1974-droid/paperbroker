@@ -1,0 +1,32 @@
+# LOCALE ARCANE-VARIANTE (individuell, NICHT auf GitHub!)
+# GitHub-Version bleibt die generische. Diese Datei nur lokal für Markus.
+#
+# Keine Defaults im YML: alle Werte kommen aus dem ENV-Block
+# (Arcane Stack -> Environment-Tab oder .env-Datei daneben).
+#
+# Aenderungen gegenueber GitHub-Version:
+# - Bind-Mount /share/Docker/paperbroker-screener statt named volume
+# - Container im externen Netzwerk md-netzwerk
+# - Variablen WERTE stehen im ENV-Block, im YML nur ${VAR}-Platzhalter
+
+services:
+  paperbroker-screener:
+    image: ${IMAGE}
+    container_name: ${CONTAINER_NAME}
+    restart: unless-stopped
+    ports:
+      # LAN-only binding (no port forward on the router)
+      - "${LAN_IP}:${HOST_PORT}:${APP_PORT}"
+    volumes:
+      # Daten (CBOE chain cache) unter dem individuellen QNAP-Pfad
+      - "/share/Docker/paperbroker-screener:/app/.cache"
+    environment:
+      - FLASK_DEBUG=${FLASK_DEBUG}
+      # Trend provider comes later (xang1234). Absent config = the app
+      # runs without trend input (TrendProvider=None is a valid contract).
+    networks:
+      - md-netzwerk
+
+networks:
+  md-netzwerk:
+    external: true
