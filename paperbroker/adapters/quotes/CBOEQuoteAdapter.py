@@ -113,11 +113,12 @@ class CBOEQuoteAdapter(QuoteAdapter):
             options = data["options"]
             current_price = data["current_price"]
             timestamp = payload.get("timestamp")
-        except (ValueError, KeyError) as e:
+        except (ValueError, KeyError, TypeError) as e:
+            # TypeError catches {"data": null} (None is not subscriptable)
             raise CboeRequestError(f"CBOE feed malformed response for {key}: {e}") from e
 
-        if not isinstance(options, list):
-            raise CboeRequestError(f"CBOE feed 'options' not a list for {key}")
+        if not isinstance(data, dict) or not isinstance(options, list):
+            raise CboeRequestError(f"CBOE feed 'data'/'options' malformed for {key}")
 
         try:
             current_price = float(current_price) if current_price is not None else None
