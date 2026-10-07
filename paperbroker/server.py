@@ -100,7 +100,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             chain_size=len(quotes),
             candidates=len(results),
             dropped=len(dropped),
-            freshness=_freshness_lamp(quotes),
+            freshness=_freshness_lamp(quotes, now_fn=now_fn),
             results=[
                 {
                     "symbol": r.quote.asset.symbol,
@@ -149,7 +149,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
             dates=dates, results=results, dropped_count=len(dropped) if dropped else 0,
-            error=error, freshness=_freshness_lamp(lamp_source),
+            error=error, freshness=_freshness_lamp(lamp_source, now_fn=now_fn),
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
 
@@ -200,7 +200,7 @@ def _trend_label(direction):
         direction, direction)
 
 
-def _freshness_lamp(quotes):
+def _freshness_lamp(quotes, now_fn=None):
     """Green/yellow/red from the youngest quote in the FETCHED chain.
 
     (CodeRabbit finding: pass the raw chain, not the screened results -
@@ -213,7 +213,7 @@ def _freshness_lamp(quotes):
     """
     if not quotes:
         return None
-    now = arrow.get()
+    now = now_fn() if now_fn is not None else arrow.get()
     newest = None
     for item in quotes:
         q = getattr(item, "quote", item)  # ScreenResult or OptionQuote

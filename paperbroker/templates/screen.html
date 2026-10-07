@@ -99,21 +99,40 @@
 <script>
 // Auto-load the real expiration list as soon as the ticker is fully
 // typed (server-side validated against the chain's real dates).
+// Race-safety (CodeRabbit): each fetch remembers ITS ticker and only
+// a response for the CURRENTLY-typed ticker may update the selector;
+// a failure clears `last` so returning to the previous ticker re-fetches.
 (function () {
   var input = document.getElementById('ticker');
   var exp = document.getElementById('expiration');
   var spin = document.getElementById('spin');
   var debounce = null;
-  var last = {{ ticker|tojson if ticker else '""' }};
+  var last = {{ (ticker or '')|tojson }};
 
   function esc(s) { return encodeURIComponent(s); }
 
+  function placeholder(text) {
+    exp.innerHTML = '';
+    var o = document.createElement('option');
+    o.value = '';
+    o.textContent = text;
+    exp.appendChild(o);
+  }
+
+  function invalidateSelector(text) {
+    // clear stale/failing state immediately (finding 3): the selector
+    // must never survive showing dates for a no-longer-typed ticker
+    placeholder(text);
+    exp.disabled = true;
+  }
+
   function loadDates(t) {
     spin.style.display = 'inline';
-    exp.disabled = true;
+    invalidateSelector('Verfaelle laden ...');
     fetch('/api/screen?ticker=' + esc(t))
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function (d) {
+        if (input.value.trim().toUpperCase() !== t) return;  // stale response
         last = t;
         exp.innerHTML = '';
         (d.listed_dates || []).forEach(function (date) {
@@ -123,19 +142,16 @@
           exp.appendChild(o);
         });
         if (!exp.options.length) {
-          var n = document.createElement('option');
-          n.value = '';
-          n.textContent = 'keine Verfaelle gefunden';
-          exp.appendChild(n);
+          placeholder('keine Verfaelle gefunden');
+          exp.disabled = true;
+        } else {
+          exp.disabled = false;
         }
-        exp.disabled = false;
       })
       .catch(function () {
-        exp.innerHTML = '';
-        var e = document.createElement('option');
-        e.value = '';
-        e.textContent = 'Verfaelle konnten nicht geladen werden';
-        exp.appendChild(e);
+        if (input.value.trim().toUpperCase() !== t) return;  // stale failure
+        last = '';               // finding 2: A->B fail->A must refetch A
+        placeholder('Verfaelle konnten nicht geladen werden');
         exp.disabled = true;
       })
       .finally(function () { spin.style.display = 'none'; });
@@ -143,7 +159,13 @@
 
   input.addEventListener('input', function () {
     var v = input.value.trim().toUpperCase();
-    if (!/^[A-Z]{1,6}$/.test(v)) return;      // same guard as the API
+    if (!/^[A-Z]{1,6}$/.test(v)) {
+      // invalid/no ticker: drop stale dates at once (finding 3)
+      clearTimeout(debounce);
+      last = '';
+      invalidateSelector('Verfaelle werden geladen ...');
+      return;
+    }
     clearTimeout(debounce);
     debounce = setTimeout(function () {
       if (v !== last) loadDates(v);           // skip refetch on same ticker

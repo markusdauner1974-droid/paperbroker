@@ -172,6 +172,24 @@ class TestServerDisplay(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.get_json()["error"], "invalid ticker (1-6 letters A-Z expected)")
 
+    def test_lamp_uses_injected_clock(self):
+        # CodeRabbit finding: the lamp must take create_app's clock, not
+        # real now() - with the pinned clock (fixture ts 14:30) the lamp
+        # must be GREEN here, not red-by-real-time
+        res = self.client.get("/",
+                              query_string={"ticker": "SPY",
+                                            "expiration": "2026-10-16"})
+        html = res.get_data(as_text=True)
+        self.assertIn('lamp green', html)
+
+    def test_last_init_is_rendered_json(self):
+        # regression guard: the Jinja default must render a VALID JS
+        # literal in both branches (was broken twice during round 1)
+        res = self.client.get("/")
+        self.assertIn('var last = "";', res.get_data(as_text=True))
+        res = self.client.get("/", query_string={"ticker": "SPY"})
+        self.assertIn('var last = "SPY";', res.get_data(as_text=True))
+
     def test_index_renders_result_table(self):
         res = self.client.get("/", query_string={"ticker": "SPY",
                                                  "expiration": "2026-10-16"})
