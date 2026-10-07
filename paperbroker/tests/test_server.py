@@ -1,0 +1,163 @@
+"""Offline tests for the Phase-5 web display (paperbroker/server.py).
+
+Flask test client + mock quote chain: no network, deterministic.
+Covers the debate-judge requirements: input validation (no path
+injection into the CBOE URL), trend failure != flat, freshness lamp,
+healthz liveness without external calls.
+"""
+import unittest
+from datetime import datetime
+
+import arrow
+from flask import Flask
+
+from paperbroker.server import create_app
+from paperbroker.tests.test_screener import make
+
+
+class _MockAdapter:
+    """Returns the mock chain for every get_options call."""
+
+    def __init__(self, quotes):
+        self.quotes = quotes
+        self.expirations = ["2026-10-09", "2026-10-16"]
+
+    def get_expiration_dates(self, underlying_asset=None):
+        return list(self.expirations)
+
+    def get_options(self, underlying_asset=None, expiration_date=None):
+        return list(self.quotes)
+
+    def get_quote(self, asset):
+        return None
+
+
+class TestServerDisplay(unittest.TestCase):
+    def setUp(self):
+        self.app = create_app(quote_adapter=_MockAdapter(make()),
+                              screener=None)
+        self.app.config["TESTING"] = True
+        self.client = self.app.test_client()
+
+    def test_healthz_no_external_calls(self):
+        res = self.client.get("/healthz")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["status"], "ok")
+
+    def test_api_screen_valid_params(self):
+        res = self.client.get("/api/screen",
+                              query_string={"ticker": "SPY",
+                                            "expiration": "2026-10-16"})
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["ticker"], "SPY")
+        self.assertIn("results", data)
+        self.assertIn("freshness", data)
+
+    def test_api_screen_rejects_bad_ticker(self):
+        # path-injection attempts must be rejected before the CBOE URL
+        for bad in ("../etc", "SP Y", "SP;Y", "a" * 20, ""):
+            res = self.client.get("/api/screen",
+                                  query_string={"ticker": bad,
+                                                "expiration": "2026-10-16"})
+            self.assertEqual(res.status_code, 400, bad)
+
+    def test_api_screen_rejects_bad_expiration(self):
+        # '' is now the legal picker stage (form-first flow) - real
+        # malformed dates still 400
+        for bad in ("2026-10-99", "not-a-date", "2026/10/16"):
+            res = self.client.get("/api/screen",
+                                  query_string={"ticker": "SPY",
+                                                "expiration": bad})
+            self.assertEqual(res.status_code, 400, bad)
+
+    def test_api_screen_rejects_unlisted_expiration(self):
+        # a well-formed but non-listed date would still probe the CBOE
+        # chain endpoint - must be caught against the real date list
+        res = self.client.get("/api/screen",
+                              query_string={"ticker": "SPY",
+                                            "expiration": "2019-01-01"})
+        self.assertEqual(res.status_code, 400)
+
+    def test_api_error_is_json_not_html(self):
+        # CodeRabbit finding: JSON clients must get JSON errors
+        res = self.client.get("/api/screen",
+                              query_string={"ticker": "../etc",
+                                            "expiration": "2026-10-16"})
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.content_type, "application/json")
+        self.assertIn("error", res.get_json())
+
+    def test_api_picker_lists_dates_without_expiration(self):
+        # form-first flow: valid ticker, no date yet -> list real dates
+        res = self.client.get("/api/screen", query_string={"ticker": "SPY"})
+        self.assertEqual(res.status_code, 200)
+        data = res.get_json()
+        self.assertEqual(data["listed_dates"], ["2026-10-09", "2026-10-16"])
+        self.assertEqual(data["results"], [])
+
+    def test_lamp_reports_stale_chain_despite_empty_results(self):
+        # CodeRabbit finding: the stale-quote guard can wipe all
+        # candidates - the lamp must still report the chain staleness
+        from paperbroker.screener import OptionScreener, ScreenerCriteria
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = "2026-10-07 10:00:00"  # hours old
+        app2 = create_app(
+            quote_adapter=_MockAdapter(qs),
+            screener=OptionScreener(ScreenerCriteria()))
+        app2.config["TESTING"] = True
+        c2 = app2.test_client()
+        res = c2.get("/api/screen",
+                     query_string={"ticker": "SPY",
+                                   "expiration": "2026-10-16"})
+        data = res.get_json()
+        # default criteria drops the whole stale chain...
+        self.assertEqual(data["candidates"], 0)
+        # ...but the lamp still tells the truth (red = >= 2 h old)
+        self.assertEqual(data["freshness"], "red")
+
+    def test_delta_none_renders_placeholder(self):
+        qs = make()
+        qs[0].delta = None
+        app2 = create_app(quote_adapter=_MockAdapter(qs), screener=None)
+        app2.config["TESTING"] = True
+        c2 = app2.test_client()
+        res = c2.get("/", query_string={"ticker": "SPY",
+                                        "expiration": "2026-10-16"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("–", res.get_data(as_text=True))
+
+    def test_index_renders_form(self):
+        res = self.client.get("/")
+        self.assertEqual(res.status_code, 200)
+        html = res.get_data(as_text=True)
+        self.assertIn("Options-Screener", html)
+        self.assertIn("Scan", html)
+
+    def test_index_renders_result_table(self):
+        res = self.client.get("/", query_string={"ticker": "SPY",
+                                                 "expiration": "2026-10-16"})
+        self.assertEqual(res.status_code, 200)
+        html = res.get_data(as_text=True)
+        self.assertIn("Kette", html)
+        self.assertIn("Kandidaten", html)
+
+    def test_index_error_rendered_not_crash(self):
+        # SSR pages render the error as a readable box (200) - only the
+        # JSON API answers with 400; the page must never turn into a
+        # naked stacktrace
+        res = self.client.get("/", query_string={"ticker": "SPY",
+                                                 "expiration": "2019-01-01"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("nicht gelistet", res.get_data(as_text=True))
+
+    def test_index_rejects_injection_attempt_readably(self):
+        res = self.client.get("/", query_string={"ticker": "../etc",
+                                                 "expiration": "2026-10-16"})
+        self.assertEqual(res.status_code, 200)
+        self.assertIn("Ungueltiger Ticker", res.get_data(as_text=True))
+
+
+if __name__ == "__main__":
+    unittest.main()

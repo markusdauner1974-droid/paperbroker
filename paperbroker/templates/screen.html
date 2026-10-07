@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Options-Screener</title>
+  <style>
+    body{font-family:-apple-system,system-ui,sans-serif;margin:0;background:#0f1420;color:#e6e9ef}
+    header{padding:14px 18px;border-bottom:1px solid #232b3b;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
+    h1{font-size:1.05rem;margin:0}
+    .badge{padding:2px 10px;border-radius:999px;font-size:.8rem;border:1px solid #2c3650}
+    .lamp{width:14px;height:14px;border-radius:50%;display:inline-block;vertical-align:middle}
+    .green{background:#2fbf71}.yellow{background:#e6b93c}.red{background:#e0503c}.none{background:#5a6479}
+    main{padding:16px;max-width:760px;margin:0 auto}
+    form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+    input,button{font-size:1rem;padding:9px 12px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit}
+    button{background:#2c6bed;border-color:#2c6bed;font-weight:600}
+    select{font-size:1rem;padding:9px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit;max-width:200px}
+    .note{font-size:.85rem;color:#9aa3b5;margin:8px 0}
+    .err{background:#3a1f1f;border:1px solid #7c3a33;padding:10px 12px;border-radius:8px;margin-bottom:12px}
+    table{width:100%;border-collapse:collapse;font-size:.85rem}
+    th,td{text-align:right;padding:6px 8px;border-bottom:1px solid #232b3b}
+    th:first-child,td:first-child{text-align:left}
+    th{color:#9aa3b5;font-weight:600}
+    .score{font-weight:700;color:#2fbf71}
+    .mismatch{color:#e6b93c}
+    .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:.9rem;color:#9aa3b5;margin-bottom:10px}
+  </style>
+</head>
+<body>
+<header>
+  <h1>Options-Screener</h1>
+  {% if freshness %}
+    <span class="badge">Datenalter:
+      <span class="lamp {{ freshness }}"></span>
+      {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}altest{% else %}alt{% endif %}
+    </span>
+  {% endif %}
+  {% if trend %}
+    <span class="badge">Trend: {{ trend.label }}</span>
+  {% endif %}
+</header>
+<main>
+  {% if feed_note %}<p class="note">{{ feed_note }}.</p>{% endif %}
+
+  {% if error %}<div class="err">{{ error }}</div>{% endif %}
+
+  <form method="get" action="/">
+    <input name="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required>
+    {% if dates %}
+      <select name="expiration">
+        {% for d in dates %}<option value="{{ d }}" {% if d == expiration %}selected{% endif %}>{{ d }}</option>{% endfor %}
+      </select>
+    {% else %}
+      <input name="expiration" value="{{ expiration }}" placeholder="JJJJ-MM-TT">
+    {% endif %}
+    <button type="submit">Scan</button>
+  </form>
+
+  {% if results is not none %}
+    <div class="stats">
+      <span>Kette: {{ results|length + dropped_count }}</span>
+      <span>Kandidaten: <b>{{ results|length }}</b></span>
+      <span>Gefiltert: {{ dropped_count }}</span>
+    </div>
+    {% if results %}
+      <table>
+        <thead><tr>
+          <th>Kontrakt</th><th>Bid</th><th>Ask</th><th>Spread %</th><th>IV %</th><th>OI</th><th>Vol</th><th>Δ</th><th>Score</th>
+        </tr></thead>
+        <tbody>
+        {% for r in results|sort(attribute='score')|reverse %}
+          <tr>
+            <td>{{ r.quote.asset.symbol }}</td>
+            <td>{{ r.quote.bid }}</td><td>{{ r.quote.ask }}</td>
+            <td>{{ '%.1f'|format(r.spread_pct) }}</td>
+            <td>{{ '%.0f'|format(r.quote.iv) }}</td>
+            <td>{{ r.quote.open_interest }}</td><td>{{ r.quote.volume }}</td>
+            <td>{% if r.quote.delta is none %}–{% else %}{{ '%.0f'|format(r.quote.delta) }}{% endif %}</td>
+            <td class="score">{{ '%.2f'|format(r.score) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="note">Keine Kontrakte haben die Kriterien bestanden.</p>
+    {% endif %}
+  {% elif not error and ticker %}
+    <p class="note">Scan laufen ... (falls dies steht, war die Ergebnisliste leer)</p>
+  {% else %}
+    <p class="note">Ticker eingeben (z.&nbsp;B. SPY oder AAPL) und Verfallsdatum waehlen.</p>
+  {% endif %}
+</main>
+</body>
+</html>
