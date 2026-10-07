@@ -27,8 +27,10 @@ from .logic.validate_account import validate_account
 class PaperBroker():
 
     def __init__(self, quote_adapter:QuoteAdapter=None, account_adapter:AccountAdapter=None, market_adapter:MarketAdapter=None):
-        # No default live quote adapter: project uses explicit adapters
-        # (TestDataQuoteAdapter in tests; CBOE adapter once Phase 3 lands).
+        # No default live quote adapter: always pass one explicitly, e.g.
+        #   broker = PaperBroker(quote_adapter=TestDataQuoteAdapter())
+        # Passing only an account_adapter (no quote_adapter) is fine when the
+        # caller only manages accounts and never prices assets.
         self.quote_adapter = quote_adapter if quote_adapter is not None else None
         self.account_adapter = account_adapter if account_adapter is not None else LocalFileSystemAccountAdapter()
         self.market_adapter = market_adapter if market_adapter is not None else PaperMarketAdapter(self.quote_adapter)
