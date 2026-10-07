@@ -1,0 +1,29 @@
+# Portainer stack / docker-compose for the paperbroker options screener.
+#
+# Judge decisions baked in:
+# - Host port 8090 (NOT 8089 - xang1234 already occupies 8089 on the QNAP).
+# - Published ONLY on 127.0.0.1: the QNAP reverse proxy is the single LAN
+#   entry point; no wide-open port, no direct 0.0.0.0 exposure.
+# - Named volume keeps the CBOE chain cache across restarts (with
+#   quote_timestamp preserved so the freshness lamp survives reboots).
+# - restart: unless-stopped; healthcheck hits /healthz (no CBOE/xang calls).
+services:
+  paperbroker-screener:
+    image: markusdauner1974/paperbroker-screener:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: paperbroker-screener
+    restart: unless-stopped
+    ports:
+      # QNAP loopback only - reach it via QNAP reverse proxy (or SSH tunnel)
+      - "127.0.0.1:8090:8089"
+    volumes:
+      - cboe_cache:/app/.cache
+    environment:
+      - FLASK_DEBUG=0
+      # Trend provider comes later (xang1234). Absent config = the app
+      # runs without trend input (TrendProvider=None is a valid contract).
+
+volumes:
+  cboe_cache:

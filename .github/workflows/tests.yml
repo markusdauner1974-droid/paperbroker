@@ -54,3 +54,31 @@ jobs:
 
       - name: Run test suite
         run: python -m pytest paperbroker/tests -q --tb=short
+
+  docker-build:
+    name: Docker image build
+    needs: [test]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      # build only - no push, no registry login (Phase 5 judge decision:
+      # the QNAP pulls/builds its own image; image publication is out of
+      # scope until Phase 6). Pin the action like the ruff one.
+      - name: Build image (no push)
+        run: docker build -t paperbroker-screener:ci .
+
+      - name: Smoke - container starts and /healthz answers
+        run: |
+          docker run -d --name smoke -p 8089:8089 paperbroker-screener:ci
+          for i in $(seq 1 20); do
+            if docker exec smoke python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8089/healthz', timeout=3)" 2>/dev/null; then
+              echo "healthz OK"; docker rm -f smoke; exit 0
+            fi
+            sleep 2
+          done
+          docker logs smoke; docker rm -f smoke; exit 1
