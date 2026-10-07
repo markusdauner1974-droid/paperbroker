@@ -163,6 +163,10 @@
       });
   }
 
+  // prefilled ticker but no server-rendered dates (e.g. bad URL date):
+  // kick off one load right away so the selector becomes usable
+  if (input.value.trim().toUpperCase() && exp.disabled) loadDates(last);
+
   input.addEventListener('input', function () {
     var v = input.value.trim().toUpperCase();
     if (!/^[A-Z]{1,6}$/.test(v)) {
