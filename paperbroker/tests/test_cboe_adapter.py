@@ -81,6 +81,12 @@ class TestCboeParsing(unittest.TestCase):
         self.assertIsNone(CBOEQuoteAdapter._parse_occ("AAPL000000C00245000"))
 
 
+    def test_parse_occ_impossible_dates_rejected(self):
+        # 21st month, 30 February - must be None, not a fake date
+        self.assertIsNone(CBOEQuoteAdapter._parse_occ("FAKE262118C00100000"))
+        self.assertIsNone(CBOEQuoteAdapter._parse_occ("FAKE260230C00100000"))
+
+
 class TestCboeAdapter(unittest.TestCase):
 
     def _adapter_with(self, payload, status=200):
@@ -148,6 +154,28 @@ class TestCboeAdapter(unittest.TestCase):
         stock = ad.get_quote("FAKE")
         self.assertEqual(stock.asset.symbol, "FAKE")
         self.assertEqual(stock.price, 100.0)
+
+    def test_quote_timestamp_on_both_get_quote_paths(self):
+        payload = _chain_payload(["FAKE261016C00100000"])
+        ad = self._adapter_with(payload)
+        q = ad.get_quote("FAKE261016C00100000")
+        self.assertEqual(q.quote_timestamp, '2026-10-07 06:49:35')
+        stock = ad.get_quote("FAKE")
+        self.assertEqual(stock.quote_timestamp, '2026-10-07 06:49:35')
+
+    def test_malformed_response_raises_request_error(self):
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        bad = MagicMock()
+        bad.status_code = 200
+        bad.json.return_value = {"data": {"current_price": "not-a-number", "options": "nope"}}
+        ad._session.get.return_value = bad
+        with self.assertRaises(CboeRequestError):
+            ad.get_expiration_dates("FAKE")
+
+    def test_as_date_six_digit(self):
+        self.assertEqual(CBOEQuoteAdapter._as_date("261016"), "2026-10-16")
+        self.assertIsNone(CBOEQuoteAdapter._as_date("000000"))
 
     def test_cache_hit_no_second_http(self):
         payload = _chain_payload(["FAKE261016C00100000"])

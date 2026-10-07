@@ -41,6 +41,8 @@ _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
 
 _OCC = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
 
+_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]  # leap-day-safe upper bound
+
 
 def _num(value, scale=1.0):
     """CBOE value -> float (scaled); missing/null -> None. 0 stays 0."""
@@ -114,9 +116,17 @@ class CBOEQuoteAdapter(QuoteAdapter):
         except (ValueError, KeyError) as e:
             raise CboeRequestError(f"CBOE feed malformed response for {key}: {e}") from e
 
+        if not isinstance(options, list):
+            raise CboeRequestError(f"CBOE feed 'options' not a list for {key}")
+
+        try:
+            current_price = float(current_price) if current_price is not None else None
+        except (TypeError, ValueError) as e:
+            raise CboeRequestError(f"CBOE feed invalid current_price for {key}: {e!r}") from e
+
         entry = {
             "timestamp": timestamp,
-            "current_price": float(current_price) if current_price is not None else None,
+            "current_price": current_price,
             "options": options,
             "fetched_at": now,
         }
@@ -134,11 +144,12 @@ class CBOEQuoteAdapter(QuoteAdapter):
             # adjusted/mini contracts and other non-standard symbols: skip
             return None
         underlying, yymmdd, cp, strike8 = m.groups()
-        # fast string decode of YYMMDD - no arrow in the hot path
-        yy, mm, dd = yymmdd[0:2], yymmdd[2:4], yymmdd[4:6]
-        if not (1 <= int(mm) <= 12 and 1 <= int(dd) <= 31):
-            return None
-        expiration = f"20{yy}-{mm}-{dd}"
+        # fast string decode of YYMMDD - real-calendar month/day table
+        # (no arrow in the hot path: this runs per contract)
+        mm, dd = int(yymmdd[2:4]), int(yymmdd[4:6])
+        if not (1 <= mm <= 12) or not (1 <= dd <= _DAYS_IN_MONTH[mm - 1]):
+            return None  # impossible dates like 21-18 or 30 February
+        expiration = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
         return underlying, expiration, "call" if cp == "C" else "put", int(strike8) / 1000.0
 
     def _quote_from_contract(self, contract, quote_date, underlying_price):
@@ -198,17 +209,28 @@ class CBOEQuoteAdapter(QuoteAdapter):
 
     @staticmethod
     def _as_date(value):
-        """Accept 'YYYY-MM-DD' / date / 'YYMMDD' -> 'YYYY-MM-DD' (or None)."""
+        """Accept 'YYYY-MM-DD' / date-like / 'YYMMDD' / 'YYYYMMDD' -> 'YYYY-MM-DD' (or None).
+
+        NOTE: string decoding is table-based, not arrow-based - old arrow
+        versions silently return the raw string for unknown formats.
+        """
         if value is None:
             return None
-        if hasattr(value, "format"):  # arrow/ date-like
+        # NOTE: str has .format too - '261016'.format("YYYY-MM-DD") returns
+        # the raw string (no braces -> args ignored). Type-check FIRST.
+        if not isinstance(value, str) and hasattr(value, "format"):  # arrow/ date-like
             return value.format("YYYY-MM-DD")
         s = str(value)
+        if re.match(r"^\d{6}$", s):
+            mm, dd = int(s[2:4]), int(s[4:6])
+            if 1 <= mm <= 12 and 1 <= dd <= _DAYS_IN_MONTH[mm - 1]:
+                return f"20{s[0:2]}-{s[2:4]}-{s[4:6]}"
+            return None
         if re.match(r"^\d{8}$", s):
-            try:
-                return arrow.get(s, "YYMMDD").format("YYYY-MM-DD")
-            except Exception:
-                return None
+            yy, mm, dd = int(s[0:4]), int(s[4:6]), int(s[6:8])
+            if 2020 <= yy <= 2040 and 1 <= mm <= 12 and 1 <= dd <= _DAYS_IN_MONTH[mm - 1]:
+                return f"{s[0:4]}-{s[4:6]}-{s[6:8]}"
+            return None
         if re.match(r"^\d{4}-\d{2}-\d{2}$", s):
             return s
         return None
@@ -232,16 +254,20 @@ class CBOEQuoteAdapter(QuoteAdapter):
             quote_date = chain["timestamp"] or arrow.get(self._now_fn()).format("YYYY-MM-DD HH:mm:ss")
             for contract in chain["options"]:
                 if contract.get("option") == a.symbol:
-                    return self._quote_from_contract(contract, quote_date, chain["current_price"])
+                    q = self._quote_from_contract(contract, quote_date, chain["current_price"])
+                    q.quote_timestamp = chain["timestamp"]
+                    return q
             raise CboeNotFoundError(f"Option {a.symbol} not in {underlying} chain")
 
         # stock quote: from the underlying block
         chain = self._fetch(a.symbol)
-        return Quote(
+        q = Quote(
             quote_date=chain["timestamp"] or arrow.get(self._now_fn()).format("YYYY-MM-DD HH:mm:ss"),
             asset=a,
             price=chain["current_price"],
         )
+        q.quote_timestamp = chain["timestamp"]
+        return q
 
     def get_options(self, underlying_asset=None, expiration_date=None):
         """All OptionQuotes for an underlying, optionally filtered by expiration."""
