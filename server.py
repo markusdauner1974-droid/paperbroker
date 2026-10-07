@@ -4,7 +4,16 @@ from paperbroker.orders import Order
 import ujson
 
 # initialize a PaperBroker with defaults
+# NOTE: No default quote adapter exists anymore (the Google Finance adapter
+# was removed - its endpoint is dead). This 2018 demo server is slated for
+# replacement in Phase 2; until the CBOE adapter lands (Phase 3) it fails
+# fast instead of crashing deep inside a request.
 broker = PaperBroker()
+if broker.quote_adapter is None:
+    raise SystemExit(
+        "server.py: no quote_adapter available (GoogleFinance adapter removed). "
+        "Run the PaperBroker API with an explicit adapter, or wait for the "
+        "CBOE adapter (Phase 3) before starting this server.")
 
 # set the project root directory as the static folder, you can set others.
 app = Flask(__name__, static_url_path='')

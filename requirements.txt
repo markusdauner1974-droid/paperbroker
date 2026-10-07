@@ -1,6 +1,5 @@
 arrow==0.10.0
 Flask==0.12.2
-googlefinance==0.7
 jsonpickle==0.9.4
 ujson
 requests
