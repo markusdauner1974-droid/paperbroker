@@ -108,6 +108,7 @@
   var spin = document.getElementById('spin');
   var debounce = null;
   var last = {{ (ticker or '')|tojson }};
+  var generation = 0;   // round-2 finding: only the newest load may act
 
   function esc(s) { return encodeURIComponent(s); }
 
@@ -127,11 +128,13 @@
   }
 
   function loadDates(t) {
+    var gen = ++generation;
     spin.style.display = 'inline';
     invalidateSelector('Verfaelle laden ...');
     fetch('/api/screen?ticker=' + esc(t))
       .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
       .then(function (d) {
+        if (gen !== generation) return;                      // older request
         if (input.value.trim().toUpperCase() !== t) return;  // stale response
         last = t;
         exp.innerHTML = '';
@@ -149,12 +152,15 @@
         }
       })
       .catch(function () {
+        if (gen !== generation) return;                      // older request
         if (input.value.trim().toUpperCase() !== t) return;  // stale failure
         last = '';               // finding 2: A->B fail->A must refetch A
         placeholder('Verfaelle konnten nicht geladen werden');
         exp.disabled = true;
       })
-      .finally(function () { spin.style.display = 'none'; });
+      .finally(function () {
+        if (gen === generation) spin.style.display = 'none';
+      });
   }
 
   input.addEventListener('input', function () {
