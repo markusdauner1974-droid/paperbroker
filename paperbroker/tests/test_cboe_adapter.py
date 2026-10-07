@@ -173,6 +173,31 @@ class TestCboeAdapter(unittest.TestCase):
         with self.assertRaises(CboeRequestError):
             ad.get_expiration_dates("FAKE")
 
+    def test_malformed_option_entries_rejected_before_cache(self):
+        # {"data": null} -> TypeError must map to CboeRequestError
+        ad = CBOEQuoteAdapter(); ad._session = MagicMock()
+        r1 = MagicMock(); r1.status_code = 200
+        r1.json.return_value = {"data": None}
+        ad._session.get.return_value = r1
+        with self.assertRaises(CboeRequestError):
+            ad.get_expiration_dates("FAKE")
+        # [null] entry -> rejected before caching
+        ad2 = CBOEQuoteAdapter(); ad2._session = MagicMock()
+        r2 = MagicMock(); r2.status_code = 200
+        r2.json.return_value = _chain_payload(["FAKE261016C00100000"])
+        r2.json.return_value["data"]["options"] = [None, {"option": "ok-but-not-a-real-occ"}]
+        ad2._session.get.return_value = r2
+        with self.assertRaises(CboeRequestError):
+            ad2.get_expiration_dates("FAKE")
+        # non-string 'option' value -> rejected
+        ad3 = CBOEQuoteAdapter(); ad3._session = MagicMock()
+        r3 = MagicMock(); r3.status_code = 200
+        r3.json.return_value = _chain_payload(["FAKE261016C00100000"])
+        r3.json.return_value["data"]["options"] = [{"option": 12345}]
+        ad3._session.get.return_value = r3
+        with self.assertRaises(CboeRequestError):
+            ad3.get_expiration_dates("FAKE")
+
     def test_as_date_six_digit(self):
         self.assertEqual(CBOEQuoteAdapter._as_date("261016"), "2026-10-16")
         self.assertIsNone(CBOEQuoteAdapter._as_date("000000"))

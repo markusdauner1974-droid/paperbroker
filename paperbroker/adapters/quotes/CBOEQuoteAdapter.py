@@ -120,6 +120,13 @@ class CBOEQuoteAdapter(QuoteAdapter):
         if not isinstance(data, dict) or not isinstance(options, list):
             raise CboeRequestError(f"CBOE feed 'data'/'options' malformed for {key}")
 
+        for entry_ in options:
+            # each contract must be a dict; 'option' must be a string when present
+            if not isinstance(entry_, dict) or (
+                "option" in entry_ and not isinstance(entry_["option"], str)
+            ):
+                raise CboeRequestError(f"CBOE feed malformed option entry for {key}")
+
         try:
             current_price = float(current_price) if current_price is not None else None
         except (TypeError, ValueError) as e:
