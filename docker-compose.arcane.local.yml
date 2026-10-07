@@ -15,11 +15,12 @@ services:
     container_name: ${CONTAINER_NAME:?CONTAINER_NAME must be set}
     restart: unless-stopped
     ports:
-      # LAN-only binding (no port forward on the router) - LAN_IP is
-      # REQUIRED: an unset value would substitute empty and bind on
-      # ALL host interfaces (CodeRabbit major, PR #7). Container port
-      # FIXED 8089 (deployment contract: Dockerfile + flask --port) -
-      # variable dropped per CodeRabbit minor (wrong APP_PORT = dead map)
+      # LAN-only binding (no port forward on the router). LAN_IP is
+      # REQUIRED: ${VAR:?msg} makes compose FAIL AT STARTUP with the
+      # message when the variable is unset/empty (CodeRabbit major,
+      # PR #7). Container port FIXED 8089 (deployment contract:
+      # Dockerfile + flask --port) - variable dropped per CodeRabbit
+      # minor (wrong APP_PORT = dead map)
       - "${LAN_IP:?LAN_IP must be set to the QNAP LAN address}:${HOST_PORT:?HOST_PORT must be set}:8089"
     volumes:
       # Daten (CBOE chain cache) unter dem individuellen QNAP-Pfad
