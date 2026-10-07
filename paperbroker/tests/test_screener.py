@@ -225,19 +225,22 @@ class TestScreenOrchestrator(unittest.TestCase):
             ScreenerCriteria(iv_pref=good).validate()
 
     def test_iv_pref_ranking_only(self):
-        # two otherwise equal survivors; iv_pref must flip their order
+        # ranking only - with this fixture 'high' must put IV 52 first
+        # and 'low' must put IV 26 first (a neutral score with both
+        # calls would rank by tie-break instead and pass this test)
         qs, _ = filter_spread(make(), ScreenerCriteria(
             max_spread_pct=None, max_spread_abs=None, min_oi=None,
             dte_min=None, dte_max=None, max_quote_age_min=None))
-        base = ScreenerCriteria(max_spread_pct=None, max_spread_abs=None,
-                                min_oi=None, dte_min=None, dte_max=None,
-                                max_quote_age_min=None,
-                                iv_min=20, iv_max=60,
-                                weight_spread=None, weight_oi=None,
-                                weight_iv=1.0)
-        high, _ = screen(qs, ScreenerCriteria(**{**base.__dict__, 'iv_pref': 'high'}))
-        low, _ = screen(qs, ScreenerCriteria(**{**base.__dict__, 'iv_pref': 'low'}))
-        self.assertEqual(high[0].quote.iv >= low[0].quote.iv, True)
+        base = dict(max_spread_pct=None, max_spread_abs=None,
+                    min_oi=None, dte_min=None, dte_max=None,
+                    max_quote_age_min=None,
+                    iv_min=20, iv_max=60,
+                    weight_spread=None, weight_oi=None,
+                    weight_iv=1.0)
+        high, _ = screen(qs, ScreenerCriteria(**{**base, 'iv_pref': 'high'}))
+        low, _ = screen(qs, ScreenerCriteria(**{**base, 'iv_pref': 'low'}))
+        self.assertEqual(high[0].quote.iv, 52.0)
+        self.assertEqual(low[0].quote.iv, 26.0)
 
     def test_screener_facade(self):
         s = OptionScreener(ScreenerCriteria())
