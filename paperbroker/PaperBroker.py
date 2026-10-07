@@ -10,7 +10,6 @@
 
 """
 from .adapters.quotes import QuoteAdapter
-from .adapters.quotes import GoogleFinanceQuoteAdapter
 
 from .adapters.accounts import AccountAdapter
 from .adapters.accounts import LocalFileSystemAccountAdapter
@@ -28,7 +27,9 @@ from .logic.validate_account import validate_account
 class PaperBroker():
 
     def __init__(self, quote_adapter:QuoteAdapter=None, account_adapter:AccountAdapter=None, market_adapter:MarketAdapter=None):
-        self.quote_adapter = quote_adapter if quote_adapter is not None else GoogleFinanceQuoteAdapter()
+        # No default live quote adapter: project uses explicit adapters
+        # (TestDataQuoteAdapter in tests; CBOE adapter once Phase 3 lands).
+        self.quote_adapter = quote_adapter if quote_adapter is not None else None
         self.account_adapter = account_adapter if account_adapter is not None else LocalFileSystemAccountAdapter()
         self.market_adapter = market_adapter if market_adapter is not None else PaperMarketAdapter(self.quote_adapter)
 
