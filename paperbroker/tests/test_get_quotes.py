@@ -1,7 +1,7 @@
 import unittest
 
-from .TestDataQuoteAdapter import TestDataQuoteAdapter
 from ..PaperBroker import PaperBroker
+from .TestDataQuoteAdapter import TestDataQuoteAdapter
 
 """
     A selection of data is included below for easy reference to prevent needing to
@@ -44,7 +44,6 @@ class TestGetQuotes(unittest.TestCase):
 
     def setUp(self):
         self.quote_adapter = TestDataQuoteAdapter()
-        pass
 
     def test_get_underlying_quote(self):
         self.quote_adapter.current_date = '2017-01-27'

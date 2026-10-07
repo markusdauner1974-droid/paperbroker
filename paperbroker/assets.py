@@ -38,7 +38,7 @@ def asset_factory(symbol=None):
 """
 Asset: Assets are always identified by a symbol which uniquely identifies the asset and a type.
 """
-class Asset():
+class Asset:
 
     def __init__(self, symbol: str=None, asset_type: str=None):
         self.symbol = symbol.upper()
@@ -98,8 +98,8 @@ class Option(Asset):
             # parse the date real quick to check on it
             try:
                 expiration_date = arrow.get(expiration_date).format('YYMMDD')
-            except Exception as e:
-                raise Exception('Option(Asset): expiration_date is invalid')
+            except Exception as err:
+                raise Exception('Option(Asset): expiration_date is invalid') from err
 
             # build the symbol
             symbol = (underlying.symbol + expiration_date + option_type[0] + str(int(round(strike, 2) * 1000)).zfill(8)).upper()
@@ -109,7 +109,7 @@ class Option(Asset):
             self.strike = float(strike)
             self.expiration_date = arrow.get(expiration_date, 'YYMMDD').format('YYYY-MM-DD')
 
-        super(Option, self).__init__(symbol, self.option_type)
+        super().__init__(symbol, self.option_type)
 
     def get_extrinsic_value(self, underlying_price=None, price=None):
         return (abs(price) - self.get_intrinsic_value(underlying_price=underlying_price)) if price is not None else None
@@ -136,10 +136,10 @@ class Option(Asset):
 class Put(Option):
     def __init__(self, symbol: str = None, underlying = None,
                  underlying_symbol: str = None, strike: float = None, expiration_date=None):
-        super(Put, self).__init__(symbol=symbol, option_type='put', underlying = underlying, strike=strike, expiration_date=expiration_date)
+        super().__init__(symbol=symbol, option_type='put', underlying = underlying, strike=strike, expiration_date=expiration_date)
 
 class Call(Option):
     def __init__(self, symbol: str = None, underlying = None,
                  underlying_symbol: str = None, strike: float = None, expiration_date=None):
-        super(Call, self).__init__(symbol=symbol, option_type='call', underlying = underlying, strike=strike, expiration_date=expiration_date)
+        super().__init__(symbol=symbol, option_type='call', underlying = underlying, strike=strike, expiration_date=expiration_date)
 

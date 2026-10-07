@@ -13,10 +13,9 @@
         broker = PaperBroker(quote_adapter=MyQuoteAdapter())
 """
 from .adapters.quotes import QuoteAdapter
-from .assets import Asset
 
 
-class PaperBroker():
+class PaperBroker:
 
     def __init__(self, quote_adapter: QuoteAdapter = None):
         # No default live quote adapter: always pass one explicitly.

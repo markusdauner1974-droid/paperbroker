@@ -6,8 +6,34 @@ on:
   pull_request:
     branches: [master]
 
+# Read-only by default.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same branch (xang1234/stock-screener pattern).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  lint:
+    name: Lint ruff
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Run ruff from pyproject.toml
+        uses: astral-sh/ruff-action@v3
+        with:
+          version: '0.16.10'
+
   test:
+    name: Test suite pytest 3.13
+    needs: [lint]
     runs-on: ubuntu-latest
     permissions:
       contents: read

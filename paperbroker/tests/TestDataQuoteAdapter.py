@@ -1,11 +1,13 @@
-import arrow
-from ..assets import asset_factory, Option
-from ..quotes import Quote, OptionQuote
-from ..adapters.quotes.QuoteAdapter import QuoteAdapter
+import csv
 import gzip
 import os
-import csv
+
+import arrow
+
+from ..adapters.quotes.QuoteAdapter import QuoteAdapter
+from ..assets import Option, asset_factory
 from ..logic.ivolat3_option_greeks import get_option_greeks
+from ..quotes import OptionQuote, Quote
 
 """
     An adapter that uses the included test dataset at /tests/test_data/data.csv.gz
@@ -74,7 +76,8 @@ class TestDataQuoteAdapter(QuoteAdapter):
                         if oq.price:
                             underlying = oq.asset.underlying
                             greeks = get_option_greeks(option_type=oq.asset.option_type,
-                                                       underlying_price=testdata_keyvalue_cache.get(underlying.symbol + arrow.get(oq.quote_date).format('YYYY-MM-DD')).price,
+                                                       underlying_price=testdata_keyvalue_cache.get(
+                                                           underlying.symbol + arrow.get(oq.quote_date).format('YYYY-MM-DD')).price,
                                                        days_to_expiration=oq.days_to_expiration,
                                                        strike=oq.asset.strike,
                                                        price=oq.price,

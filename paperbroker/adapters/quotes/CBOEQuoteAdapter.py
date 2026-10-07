@@ -14,25 +14,24 @@
     get_options. TTL refreshes when the CBOE timestamp changes (the feed
     updates roughly every 15 minutes); a bounded LRU keeps memory in check.
 """
-from collections import OrderedDict
-import re
 import math
+import re
+from collections import OrderedDict
+
 import arrow
 import requests
 
+from ...assets import Asset, Call, Option, Put, asset_factory
+from ...quotes import OptionQuote, Quote
 from .QuoteAdapter import QuoteAdapter
-from ...quotes import Quote, OptionQuote
-from ...assets import asset_factory, Option, Asset, Call, Put
 
 
 class CboeNotFoundError(Exception):
     """Unknown symbol or empty chain in the CBOE feed."""
-    pass
 
 
 class CboeRequestError(Exception):
     """The CBOE feed rejected the request (blocked / throttled / down)."""
-    pass
 
 
 _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -167,11 +166,10 @@ class CBOEQuoteAdapter(QuoteAdapter):
         underlying, expiration, option_type, strike = parsed
 
         oc_symbol = contract["option"]
-        asset_symbol = None
         try:
             asset = asset_factory(oc_symbol)
             if isinstance(asset, Option):
-                asset_symbol = asset
+                pass
         except Exception:
             asset = None
         if asset is None:
@@ -251,9 +249,9 @@ class CBOEQuoteAdapter(QuoteAdapter):
         """Latest quote for a stock or an option (OCC symbol or Option)."""
         try:
             a = asset_factory(asset) if not isinstance(asset, Option) else asset
-        except ValueError:
+        except ValueError as err:
             # asset_factory throws when an 9+ char symbol is not valid OCC
-            raise CboeNotFoundError(f"No asset for {asset!r}")
+            raise CboeNotFoundError(f"No asset for {asset!r}") from err
         if a is None:
             raise CboeNotFoundError(f"No asset for {asset!r}")
         if isinstance(a, Option):
