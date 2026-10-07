@@ -150,7 +150,9 @@ class TestPure(unittest.TestCase):
 class TestScreenOrchestrator(unittest.TestCase):
     def test_full_pipeline_sorted_by_score(self):
         c = ScreenerCriteria()
-        results, dropped = screen(make(), c)
+        # clock pinned - fixture ts are hardcoded '2026-10-07 14:30'
+        now_fn = lambda: arrow.get("2026-10-07T14:35:00")  # noqa: E731
+        results, dropped = screen(make(), c, now_fn=now_fn)
         self.assertTrue(results)
         scores = [r.score for r in results]
         self.assertEqual(scores, sorted(scores, reverse=True))
@@ -173,7 +175,10 @@ class TestScreenOrchestrator(unittest.TestCase):
 
     def test_trend_annotation_call(self):
         trend = TrendSignal(symbol="AAPL", direction="up", as_of=FRESH)
-        results, _ = screen(make(), ScreenerCriteria(), trend=trend)
+        # clock pinned: fixture ts are hardcoded '2026-10-07 14:30' -
+        # a real now() goes stale (>30 min) and wipes the results
+        now_fn = lambda: arrow.get("2026-10-07T14:35:00")  # noqa: E731
+        results, _ = screen(make(), ScreenerCriteria(), trend=trend, now_fn=now_fn)
         with_trend = [r for r in results if any("trend up match" in x for x in r.reasons)]
         self.assertTrue(with_trend)
 
@@ -244,7 +249,9 @@ class TestScreenOrchestrator(unittest.TestCase):
 
     def test_screener_facade(self):
         s = OptionScreener(ScreenerCriteria())
-        results, _ = s.screen(make())
+        # clock pinned - fixture ts are hardcoded '2026-10-07 14:30'
+        now_fn = lambda: arrow.get("2026-10-07T14:35:00")  # noqa: E731
+        results, _ = s.screen(make(), now_fn=now_fn)
         self.assertTrue(results)
 
 

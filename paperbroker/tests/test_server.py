@@ -32,10 +32,17 @@ class _MockAdapter:
         return None
 
 
+def _clock():
+    """Pinned test clock: fixture ts are hardcoded '2026-10-07 14:30' -
+    a real now() goes stale (>30 min) and wipes every result."""
+    return lambda: arrow.get("2026-10-07T14:35:00")
+
+
 class TestServerDisplay(unittest.TestCase):
     def setUp(self):
         self.app = create_app(quote_adapter=_MockAdapter(make()),
-                              screener=None)
+                              screener=None,
+                              now_fn=_clock())
         self.app.config["TESTING"] = True
         self.client = self.app.test_client()
 
@@ -105,7 +112,8 @@ class TestServerDisplay(unittest.TestCase):
             q.quote_timestamp = "2026-10-07 10:00:00"  # hours old
         app2 = create_app(
             quote_adapter=_MockAdapter(qs),
-            screener=OptionScreener(ScreenerCriteria()))
+            screener=OptionScreener(ScreenerCriteria()),
+            now_fn=_clock())
         app2.config["TESTING"] = True
         c2 = app2.test_client()
         res = c2.get("/api/screen",
@@ -120,7 +128,8 @@ class TestServerDisplay(unittest.TestCase):
     def test_delta_none_renders_placeholder(self):
         qs = make()
         qs[0].delta = None
-        app2 = create_app(quote_adapter=_MockAdapter(qs), screener=None)
+        app2 = create_app(quote_adapter=_MockAdapter(qs), screener=None,
+                          now_fn=_clock())
         app2.config["TESTING"] = True
         c2 = app2.test_client()
         res = c2.get("/", query_string={"ticker": "SPY",
@@ -134,6 +143,52 @@ class TestServerDisplay(unittest.TestCase):
         html = res.get_data(as_text=True)
         self.assertIn("Options-Screener", html)
         self.assertIn("Scan", html)
+
+    def test_index_arms_auto_loader(self):
+        # the empty page must ship the auto-loader JS that fetches
+        # /api/screen (picker stage) on ticker input
+        res = self.client.get("/")
+        html = res.get_data(as_text=True)
+        self.assertIn("loadDates", html)
+        self.assertIn("/api/screen?ticker=", html)
+        # spinner placeholder in the untouched select
+        self.assertIn("Verfaelle werden geladen", html)
+
+    def test_picker_api_contract_for_auto_loader(self):
+        # the exact response shape the JS loader consumes: listed_dates
+        # as 'YYYY-MM-DD' strings, results empty, freshness null
+        res = self.client.get("/api/screen", query_string={"ticker": "SPY"})
+        self.assertEqual(res.status_code, 200)
+        d = res.get_json()
+        self.assertEqual(d["listed_dates"], ["2026-10-09", "2026-10-16"])
+        self.assertEqual(d["results"], [])
+        self.assertIsNone(d["freshness"])
+        self.assertIsNone(d["expiration"])
+
+    def test_picker_api_rejects_bad_ticker(self):
+        # the loader only fires on the client for ^[A-Z]{1,6}$ - but an
+        # attacker can hit the endpoint directly; server must guard too
+        res = self.client.get("/api/screen", query_string={"ticker": "../etc"})
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.get_json()["error"], "invalid ticker (1-6 letters A-Z expected)")
+
+    def test_lamp_uses_injected_clock(self):
+        # CodeRabbit finding: the lamp must take create_app's clock, not
+        # real now() - with the pinned clock (fixture ts 14:30) the lamp
+        # must be GREEN here, not red-by-real-time
+        res = self.client.get("/",
+                              query_string={"ticker": "SPY",
+                                            "expiration": "2026-10-16"})
+        html = res.get_data(as_text=True)
+        self.assertIn('lamp green', html)
+
+    def test_last_init_is_rendered_json(self):
+        # regression guard: the Jinja default must render a VALID JS
+        # literal in both branches (was broken twice during round 1)
+        res = self.client.get("/")
+        self.assertIn('var last = "";', res.get_data(as_text=True))
+        res = self.client.get("/", query_string={"ticker": "SPY"})
+        self.assertIn('var last = "SPY";', res.get_data(as_text=True))
 
     def test_index_renders_result_table(self):
         res = self.client.get("/", query_string={"ticker": "SPY",

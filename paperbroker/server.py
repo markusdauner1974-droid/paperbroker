@@ -32,8 +32,16 @@ _FRESH_GREEN_MIN = 30
 _FRESH_YELLOW_MIN = 120
 
 
-def create_app(quote_adapter=None, screener=None):
+def create_app(quote_adapter=None, screener=None, now_fn=None):
+    """now_fn: injectable clock for tests (default: real arrow.get).
+
+    The screener's 30-min-stale guard compares quote_timestamp against
+    now() - a hardcoded fixture timestamp goes stale in real time, so
+    tests MUST pin the clock instead of freezing the fixtures.
+    """
     app = Flask(__name__, template_folder="templates")
+    if now_fn is None:
+        now_fn = arrow.get
 
     if quote_adapter is None:
         quote_adapter = CBOEQuoteAdapter()
@@ -85,14 +93,14 @@ def create_app(quote_adapter=None, screener=None):
             return jsonify(ticker=ticker, expiration=None,
                            listed_dates=dates, results=[], freshness=None)
         quotes = broker.get_options(ticker, expiration)
-        results, dropped = screener.screen(quotes, now_fn=arrow.get)
+        results, dropped = screener.screen(quotes, now_fn=now_fn)
         return jsonify(
             ticker=ticker,
             expiration=expiration,
             chain_size=len(quotes),
             candidates=len(results),
             dropped=len(dropped),
-            freshness=_freshness_lamp(quotes),
+            freshness=_freshness_lamp(quotes, now_fn=now_fn),
             results=[
                 {
                     "symbol": r.quote.asset.symbol,
@@ -130,7 +138,7 @@ def create_app(quote_adapter=None, screener=None):
                         else:
                             quotes = broker.get_options(ticker, expiration)
                             results, dropped = screener.screen(
-                                quotes, trend=_load_trend(ticker), now_fn=arrow.get)
+                                quotes, trend=_load_trend(ticker), now_fn=now_fn)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,
@@ -141,7 +149,7 @@ def create_app(quote_adapter=None, screener=None):
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
             dates=dates, results=results, dropped_count=len(dropped) if dropped else 0,
-            error=error, freshness=_freshness_lamp(lamp_source),
+            error=error, freshness=_freshness_lamp(lamp_source, now_fn=now_fn),
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
 
@@ -192,7 +200,7 @@ def _trend_label(direction):
         direction, direction)
 
 
-def _freshness_lamp(quotes):
+def _freshness_lamp(quotes, now_fn=None):
     """Green/yellow/red from the youngest quote in the FETCHED chain.
 
     (CodeRabbit finding: pass the raw chain, not the screened results -
@@ -205,7 +213,7 @@ def _freshness_lamp(quotes):
     """
     if not quotes:
         return None
-    now = arrow.get()
+    now = now_fn() if now_fn is not None else arrow.get()
     newest = None
     for item in quotes:
         q = getattr(item, "quote", item)  # ScreenResult or OptionQuote

@@ -1,0 +1,37 @@
+# LOCALE ARCANE-VARIANTE (individuell, NICHT auf GitHub!)
+# GitHub-Version bleibt die generische. Diese Datei nur lokal für Markus.
+#
+# Keine Defaults im YML: alle Werte kommen aus dem ENV-Block
+# (Arcane Stack -> Environment-Tab oder .env-Datei daneben).
+#
+# Aenderungen gegenueber GitHub-Version:
+# - Bind-Mount /share/Docker/paperbroker-screener statt named volume
+# - Container im externen Netzwerk md-netzwerk
+# - Variablen WERTE stehen im ENV-Block, im YML nur ${VAR}-Platzhalter
+
+services:
+  paperbroker-screener:
+    image: ${IMAGE:?IMAGE must be set (ghcr.io/markusdauner1974-droid/paperbroker-screener:latest)}
+    container_name: ${CONTAINER_NAME:?CONTAINER_NAME must be set}
+    restart: unless-stopped
+    ports:
+      # LAN-only binding (no port forward on the router). LAN_IP is
+      # REQUIRED: ${VAR:?msg} makes compose FAIL AT STARTUP with the
+      # message when the variable is unset/empty (CodeRabbit major,
+      # PR #7). Container port FIXED 8089 (deployment contract:
+      # Dockerfile + flask --port) - variable dropped per CodeRabbit
+      # minor (wrong APP_PORT = dead map)
+      - "${LAN_IP:?LAN_IP must be set to the QNAP LAN address}:${HOST_PORT:?HOST_PORT must be set}:8089"
+    volumes:
+      # Daten (CBOE chain cache) unter dem individuellen QNAP-Pfad
+      - "/share/Docker/paperbroker-screener:/app/.cache"
+    environment:
+      - FLASK_DEBUG=${FLASK_DEBUG:?FLASK_DEBUG must be set (keep 0)}
+      # Trend provider comes later (xang1234). Absent config = the app
+      # runs without trend input (TrendProvider=None is a valid contract).
+    networks:
+      - md-netzwerk
+
+networks:
+  md-netzwerk:
+    external: true
