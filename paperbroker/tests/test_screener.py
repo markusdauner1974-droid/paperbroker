@@ -8,10 +8,18 @@ from datetime import datetime
 
 from paperbroker.assets import asset_factory
 from paperbroker.quotes import OptionQuote
-from paperbroker.screener import (ScreenerCriteria, ScreenResult, TrendSignal,
-                                  OptionScreener, screen,
-                                  filter_data_complete, filter_spread,
-                                  filter_oi, filter_iv, filter_dte)
+from paperbroker.screener import (
+    OptionScreener,
+    ScreenerCriteria,
+    ScreenResult,
+    TrendSignal,
+    filter_data_complete,
+    filter_dte,
+    filter_iv,
+    filter_oi,
+    filter_spread,
+    screen,
+)
 
 
 def option(symbol="AAPL260116C00245000", option_type="call", strike=245.0,

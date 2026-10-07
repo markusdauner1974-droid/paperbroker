@@ -35,38 +35,38 @@ class ScreenerCriteria:
     """
 
     # liquidity / trading cost
-    max_spread_pct: Optional[float] = 15.0        # (ask-bid)/mid*100 upper bound
-    max_spread_abs: Optional[float] = 0.10        # ask-bid upper bound in dollars
-    min_oi: Optional[int] = 500                   # open interest floor
-    min_volume: Optional[int] = 0                 # volume floor (0 = only require > 0)
-    min_bid_size: Optional[float] = None          # disabled by default (data verified present)
-    min_ask_size: Optional[float] = None          # but configurable on demand
+    max_spread_pct: float | None = 15.0        # (ask-bid)/mid*100 upper bound
+    max_spread_abs: float | None = 0.10        # ask-bid upper bound in dollars
+    min_oi: int | None = 500                   # open interest floor
+    min_volume: int | None = 0                 # volume floor (0 = only require > 0)
+    min_bid_size: float | None = None          # disabled by default (data verified present)
+    min_ask_size: float | None = None          # but configurable on demand
 
     # valuation band on stored IV (percentage scale: 25 == 25 %)
-    iv_min: Optional[float] = None                # e.g. 20 -> IV >= 20
-    iv_max: Optional[float] = None                # e.g. 60 -> IV <= 60
+    iv_min: float | None = None                # e.g. 20 -> IV >= 20
+    iv_max: float | None = None                # e.g. 60 -> IV <= 60
 
     # calendar window
-    dte_min: Optional[int] = 7                    # exclude 0-DTE (gamma/pin risk)
-    dte_max: Optional[int] = 45
+    dte_min: int | None = 7                    # exclude 0-DTE (gamma/pin risk)
+    dte_max: int | None = 45
 
     # staleness guard on quote_timestamp (minutes); None = no check
-    max_quote_age_min: Optional[int] = 30
+    max_quote_age_min: int | None = 30
 
     # tri-state handling
     require_oi: bool = True                       # missing OI -> exclude
     require_volume: bool = False                  # missing volume -> skip filter
 
     # composite score weights (all None -> sort by spread_pct only)
-    weight_spread: Optional[float] = 0.5
-    weight_oi: Optional[float] = 0.3
-    weight_iv: Optional[float] = 0.2
+    weight_spread: float | None = 0.5
+    weight_oi: float | None = 0.3
+    weight_iv: float | None = 0.2
 
     def validate(self):
         bad = []
         for f in fields(self):
-            v = getattr(self, f.name)
-            lo_name, hi_name = f"{f.name[:-4]}_min", f"{f.name[:-4]}_max"
+            getattr(self, f.name)
+            _lo_name, _hi_name = f"{f.name[:-4]}_min", f"{f.name[:-4]}_max"
         if self.max_spread_pct is not None and self.max_spread_pct < 0:
             bad.append("max_spread_pct >= 0")
         if self.max_spread_abs is not None and self.max_spread_abs < 0:
@@ -98,7 +98,7 @@ class TrendProvider(Protocol):
 class TrendSignal:
     symbol: str
     direction: str                 # 'up' | 'down' | 'flat'
-    as_of: Optional[str] = None    # signal timestamp (staleness visible)
+    as_of: str | None = None    # signal timestamp (staleness visible)
 
 
 @dataclass
