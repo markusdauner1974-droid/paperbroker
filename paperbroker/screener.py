@@ -35,8 +35,8 @@ class ScreenerCriteria:
     """
 
     # liquidity / trading cost
-    max_spread_pct: float | None = 15.0        # (ask-bid)/mid*100 upper bound
-    max_spread_abs: float | None = 0.10        # ask-bid upper bound in dollars
+    max_spread_pct: float | None = 10.0        # (ask-bid)/mid*100 upper bound
+    max_spread_abs: float | None = 0.10        # ask-bid bound in $ (penny zone only)
     min_oi: int | None = 500                   # open interest floor
     min_volume: int | None = 0                 # volume floor (0 = only require > 0)
     min_bid_size: float | None = None          # disabled by default (data verified present)
@@ -45,6 +45,9 @@ class ScreenerCriteria:
     # valuation band on stored IV (percentage scale: 25 == 25 %)
     iv_min: float | None = None                # e.g. 20 -> IV >= 20
     iv_max: float | None = None                # e.g. 60 -> IV <= 60
+    # strategy's IV preference, used ONLY for ranking (not filtering):
+    #   'high' = premium selling / 'low' = debit strategies / None = neutral
+    iv_pref: str | None = None
 
     # calendar window
     dte_min: int | None = 7                    # exclude 0-DTE (gamma/pin risk)
@@ -64,19 +67,24 @@ class ScreenerCriteria:
 
     def validate(self):
         bad = []
-        for f in fields(self):
-            getattr(self, f.name)
-            _lo_name, _hi_name = f"{f.name[:-4]}_min", f"{f.name[:-4]}_max"
         if self.max_spread_pct is not None and self.max_spread_pct < 0:
             bad.append("max_spread_pct >= 0")
         if self.max_spread_abs is not None and self.max_spread_abs < 0:
             bad.append("max_spread_abs >= 0")
         if self.min_oi is not None and self.min_oi < 0:
             bad.append("min_oi >= 0")
+        if self.min_volume is not None and self.min_volume < 0:
+            bad.append("min_volume >= 0")
+        if self.max_quote_age_min is not None and self.max_quote_age_min < 0:
+            bad.append("max_quote_age_min >= 0")
         if self.dte_min is not None and self.dte_max is not None and self.dte_min > self.dte_max:
             bad.append("dte_min <= dte_max")
         if self.iv_min is not None and self.iv_max is not None and self.iv_min > self.iv_max:
             bad.append("iv_min <= iv_max")
+        for wname in ("weight_spread", "weight_oi", "weight_iv"):
+            w = getattr(self, wname)
+            if w is not None and w < 0:
+                bad.append(f"{wname} >= 0")
         if bad:
             raise ValueError(f"ScreenerCriteria invalid: {'; '.join(bad)}")
 
@@ -118,6 +126,8 @@ def _spread_pct(q: OptionQuote):
     bid, ask = q.bid, q.ask
     if bid is None or ask is None or ask <= 0 or bid <= 0:
         return None
+    if bid > ask:
+        return None  # crossed market: nonsensical quote, not a candidate
     mid = (bid + ask) / 2
     if mid <= 0:
         return None
@@ -253,7 +263,12 @@ def filter_sizes(quotes, criteria: ScreenerCriteria):
 
 
 def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
-    """max_quote_age_min uses quote_timestamp if present."""
+    """max_quote_age_min uses quote_timestamp. Fail-closed: when the guard
+    is enabled, a quote whose age cannot be established (missing or
+    unparseable timestamp) is dropped with a distinct reason - unknown
+    freshness must not silently pass a 30-minute guard."""
+    from datetime import datetime
+
     import arrow
     if criteria.max_quote_age_min is None:
         return quotes, []
@@ -264,12 +279,22 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
     for q in quotes:
         ts = getattr(q, "quote_timestamp", None)
         if ts is None:
-            kept.append(q)
+            dropped.append((q, "freshness unknown (no quote_timestamp)"))
             continue
         try:
-            age_s = (now_fn() - arrow.get(ts.replace(' ', 'T'))).total_seconds()
+            # normalize both sides to naive UTC: arrow timestamps are
+            # timezone-aware (UTC), while callers may pass naive datetimes
+            # or aware arrows as now_fn - mixing raises TypeError and the
+            # guard would drop everything instead of measuring age
+            ts_naive = arrow.get(str(ts).replace(' ', 'T')).naive
+            now_v = now_fn()
+            if getattr(now_v, 'tzinfo', None) is not None or isinstance(now_v, arrow.Arrow):
+                now_naive = arrow.get(now_v).naive
+            else:
+                now_naive = now_v
+            age_s = (now_naive - ts_naive).total_seconds()
         except Exception:
-            kept.append(q)
+            dropped.append((q, "freshness unknown (unparseable timestamp)"))
             continue
         if age_s > max_age_s:
             dropped.append((q, f"stale {age_s/60:.0f} min"))
@@ -312,10 +337,19 @@ def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
         if criteria.min_oi:
             oi_score = min(1.0, oi / (criteria.min_oi * 4)) if oi > 0 else 0.0
         iv = q.iv
+        # IV stays NEUTRAL in the score: a band (iv_min/iv_max) passed as
+        # filter says nothing about preference. High-IV-vs-low-IV ranking
+        # is a strategy decision; inject strategy via iv_pref:
+        #   'high' -> higher IV scores better (premium selling)
+        #   'low'  -> lower IV scores better (debit strategies)
+        # None (default) -> IV does not influence ranking.
         iv_score = 0.5
-        if criteria.iv_min is not None and criteria.iv_max is not None and criteria.iv_max > criteria.iv_min:
-            iv_score = (iv - criteria.iv_min) / (criteria.iv_max - criteria.iv_min)
-            iv_score = min(1.0, max(0.0, iv_score))
+        if criteria.iv_pref in ("high", "low") and iv is not None:
+            if criteria.iv_min is not None and criteria.iv_max is not None and criteria.iv_max > criteria.iv_min:
+                iv_score = (iv - criteria.iv_min) / (criteria.iv_max - criteria.iv_min)
+                iv_score = min(1.0, max(0.0, iv_score))
+                if criteria.iv_pref == "low":
+                    iv_score = 1.0 - iv_score
         w_sp = criteria.weight_spread if criteria.weight_spread is not None else 0
         w_oi = criteria.weight_oi if criteria.weight_oi is not None else 0
         w_iv = criteria.weight_iv if criteria.weight_iv is not None else 0
@@ -329,10 +363,19 @@ def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
             reasons.append(f"OI {oi}")
         if iv is not None:
             reasons.append(f"IV {iv:.0f}")
-        if trend is not None and q.asset.option_type == ('call' if trend.direction == 'up' else 'put'):
-            reasons.append(f"trend {trend.direction} match")
-        elif trend is not None:
-            reasons.append(f"trend {trend.direction} mismatch (marked)")
+        if trend is not None:
+            # side matching only for the trend's underlying symbol and
+            # a real direction; 'flat'/unknown = neutral annotation
+            if trend.symbol and q.asset.underlying.symbol != trend.symbol:
+                reasons.append(f"trend symbol mismatch ({trend.symbol})")
+            elif trend.direction == 'up' and q.asset.option_type == 'call':
+                reasons.append("trend up match (call)")
+            elif trend.direction == 'down' and q.asset.option_type == 'put':
+                reasons.append("trend down match (put)")
+            elif trend.direction == 'flat' or trend.direction not in ('up', 'down'):
+                reasons.append(f"trend neutral ({trend.direction})")
+            else:
+                reasons.append(f"trend {trend.direction} vs {q.asset.option_type} mismatch")
 
         results.append(ScreenResult(quote=q, score=round(score, 4),
                                     spread_pct=round(spread_p, 2), reasons=reasons))

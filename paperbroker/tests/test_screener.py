@@ -18,6 +18,7 @@ from paperbroker.screener import (
     filter_iv,
     filter_oi,
     filter_spread,
+    filter_stale,
     screen,
 )
 
@@ -42,6 +43,9 @@ def quote(occ, bid=2.40, ask=2.50, iv=30.0, oi=1500, volume=300,
     if dte is not None:
         # dte is derived from asset/quote_date in real flow; mock override
         q.days_to_expiration = dte
+    # adapter-flow attribute: set fresh by default so the staleness guard
+    # (enabled by default) does not fail-closed-drop the whole chain
+    q.quote_timestamp = kw.get("quote_timestamp", FRESH)
     return q
 
 
@@ -177,13 +181,25 @@ class TestScreenOrchestrator(unittest.TestCase):
         with self.assertRaises(ValueError):
             ScreenerCriteria(iv_min=60, iv_max=20).validate()
 
-    def test_freshness_guard(self):
+    def test_freshness_guard_drops_when_unknowable(self):
         c = ScreenerCriteria(max_quote_age_min=10)
-        # quote_timestamp fixed at 14:30 in quote(); now mocked to 15:00 -> stale
+        # every fixture ts = 14:30; clock at 15:00 -> 30 min age > 10 limit
+        # -> the WHOLE chain must be dropped (fail-closed, not passed)
         now_fn = lambda: datetime(2026, 10, 7, 15, 0)  # noqa: E731
-        _ = make()
         qs, dropped = filter_stale_mock(c, now_fn)
-        self.assertTrue(qs)
+        self.assertEqual(len(qs), 0)
+        self.assertEqual(len(dropped), 7)
+        self.assertIn("stale", dropped[0][1])
+
+    def test_freshness_guard_drops_on_missing_timestamp(self):
+        c = ScreenerCriteria(max_quote_age_min=10)
+        now_fn = lambda: datetime(2026, 10, 7, 15, 0)  # noqa: E731
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = None   # adapter could not determine it
+        kept, dropped = filter_stale(qs, c, now_fn=now_fn)
+        self.assertEqual(len(kept), 0)
+        self.assertTrue(all("freshness unknown" in r for _, r in dropped))
 
     def test_screener_facade(self):
         s = OptionScreener(ScreenerCriteria())

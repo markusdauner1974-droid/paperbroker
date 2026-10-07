@@ -132,10 +132,11 @@ class Option(Asset):
     def get_days_to_expiration(self, as_of_date):
         # calendar-day difference (date-only): expiration day minus as-of day.
         # Time-of-day must not leak into this: with a timestamped as_of
-        # ('2026-10-07 10:45'), raw .days returned -1 ON expiration day and
-        # 0 the day before - DTE must count calendar days (0 on expiry day).
-        as_of = arrow.get(str(as_of_date).split(' ')[0])
-        return (arrow.get(self.expiration_date) - as_of).days
+        # ('2026-10-07 10:45' OR '2026-10-07T10:45:00') raw .days returned
+        # -1 ON expiration day and 0 the day before. Parse first, compare
+        # .date() so both space- and T-separated inputs behave identically.
+        as_of = arrow.get(str(as_of_date)).date()
+        return (arrow.get(self.expiration_date).date() - as_of).days
 
 
 class Put(Option):
