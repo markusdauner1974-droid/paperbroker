@@ -7,16 +7,12 @@ setup(name='paperbroker',
       author_email='philip@postral.com',
       url='https://github.com/philipodonnell/paperbroker',
       packages=['paperbroker',
-                'paperbroker.adapters',
-                'paperbroker.adapters.accounts',
-                'paperbroker.adapters.quotes',
-                'paperbroker.adapters.markets',
-                'paperbroker.logic',
-                ],
+               'paperbroker.adapters',
+               'paperbroker.adapters.quotes',
+               'paperbroker.logic',
+               ],
         install_requires=[
             'arrow',
-            'flask',
-            'jsonpickle',
             'requests'
         ]
      )
