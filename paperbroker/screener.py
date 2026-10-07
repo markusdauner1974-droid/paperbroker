@@ -67,6 +67,8 @@ class ScreenerCriteria:
 
     def validate(self):
         bad = []
+        if self.iv_pref is not None and self.iv_pref not in ("high", "low"):
+            bad.append('iv_pref in ("high", "low", None)')
         if self.max_spread_pct is not None and self.max_spread_pct < 0:
             bad.append("max_spread_pct >= 0")
         if self.max_spread_abs is not None and self.max_spread_abs < 0:
@@ -282,14 +284,15 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
             dropped.append((q, "freshness unknown (no quote_timestamp)"))
             continue
         try:
-            # normalize both sides to naive UTC: arrow timestamps are
-            # timezone-aware (UTC), while callers may pass naive datetimes
-            # or aware arrows as now_fn - mixing raises TypeError and the
-            # guard would drop everything instead of measuring age
-            ts_naive = arrow.get(str(ts).replace(' ', 'T')).naive
+            # normalize both sides to UTC, THEN strip the offset: arrow
+            # timestamps carry UTC, callers may pass aware arrows in any
+            # timezone, .naive alone drops the offset WITHOUT conversion
+            # (a 14:35-04:00 clock read against a 14:30 UTC stamp would
+            # look 5 min old instead of 5 h 5 min) - so to('UTC') first
+            ts_naive = arrow.get(str(ts).replace(' ', 'T')).to('UTC').naive
             now_v = now_fn()
             if getattr(now_v, 'tzinfo', None) is not None or isinstance(now_v, arrow.Arrow):
-                now_naive = arrow.get(now_v).naive
+                now_naive = arrow.get(now_v).to('UTC').naive
             else:
                 now_naive = now_v
             age_s = (now_naive - ts_naive).total_seconds()

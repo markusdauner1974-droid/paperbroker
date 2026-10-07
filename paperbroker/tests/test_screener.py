@@ -6,6 +6,8 @@
 import unittest
 from datetime import datetime
 
+import arrow
+
 from paperbroker.assets import asset_factory
 from paperbroker.quotes import OptionQuote
 from paperbroker.screener import (
@@ -200,6 +202,42 @@ class TestScreenOrchestrator(unittest.TestCase):
         kept, dropped = filter_stale(qs, c, now_fn=now_fn)
         self.assertEqual(len(kept), 0)
         self.assertTrue(all("freshness unknown" in r for _, r in dropped))
+
+    def test_freshness_non_utc_now_converted(self):
+        # 14:35-04:00 == 18:35 UTC; ts 14:30 UTC -> age 245 min > 30 limit
+        # -> the offset MUST be converted (naive-stripping would hide it
+        # and keep every quote). Fail-closed chain drop expected.
+        c = ScreenerCriteria(max_quote_age_min=30)
+        now_fn = lambda: arrow.get("2026-10-07T14:35:00-04:00")  # noqa: E731
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = "2026-10-07 14:30:00"  # UTC wall time
+        kept, dropped = filter_stale(qs, c, now_fn=now_fn)
+        self.assertEqual(len(kept), 0)
+        self.assertEqual(len(dropped), 7)
+        self.assertIn("stale 245 min", dropped[0][1])
+
+    def test_iv_pref_validated(self):
+        for bad in ("High", "sell", 1):
+            with self.assertRaises(ValueError):
+                ScreenerCriteria(iv_pref=bad).validate()
+        for good in (None, "high", "low"):
+            ScreenerCriteria(iv_pref=good).validate()
+
+    def test_iv_pref_ranking_only(self):
+        # two otherwise equal survivors; iv_pref must flip their order
+        qs, _ = filter_spread(make(), ScreenerCriteria(
+            max_spread_pct=None, max_spread_abs=None, min_oi=None,
+            dte_min=None, dte_max=None, max_quote_age_min=None))
+        base = ScreenerCriteria(max_spread_pct=None, max_spread_abs=None,
+                                min_oi=None, dte_min=None, dte_max=None,
+                                max_quote_age_min=None,
+                                iv_min=20, iv_max=60,
+                                weight_spread=None, weight_oi=None,
+                                weight_iv=1.0)
+        high, _ = screen(qs, ScreenerCriteria(**{**base.__dict__, 'iv_pref': 'high'}))
+        low, _ = screen(qs, ScreenerCriteria(**{**base.__dict__, 'iv_pref': 'low'}))
+        self.assertEqual(high[0].quote.iv >= low[0].quote.iv, True)
 
     def test_screener_facade(self):
         s = OptionScreener(ScreenerCriteria())
