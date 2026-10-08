@@ -347,3 +347,56 @@ def asset_factory_equivalent(symbol):
 def test_parse_occ_matches_frozen_table(symbol, expected):
     assert parse_occ(symbol) == expected
     assert asset_factory_equivalent(symbol) == expected
+
+
+# --------------------------------------------------------------------- #
+# G. class AND attribute (Phase 12, review finding A)
+# --------------------------------------------------------------------- #
+
+# The factory decides the class *and* the option_type attribute, and both
+# must come from the OCC indicator position. Asserting only
+# `type(x) is Call` is blind: with a mutant that inverts option_type every
+# class assertion stays green (measured: 6 symbols kept `type is Call` /
+# `type is Put` while carrying the wrong option_type). These pins close
+# that gap.
+CLASS_AND_TYPE = [
+    ("AAPL260117C00150000", Call, "call"),       # AAPL contains a 'P'
+    ("AAPL260117P00150000", Put,  "put"),
+    ("SPY261218C00300000",  Call, "call"),
+    ("SPX261218C12000000",  Call, "call"),       # strike >= 10000
+    ("SPX261218P12000000",  Put,  "put"),
+    ("SPX261218C10000000",  Call, "call"),       # exact strike boundary
+    ("AAAAAAAAA261218C00250000", Call, "call"),  # long root
+]
+
+
+@pytest.mark.parametrize("symbol,expected_class,expected_type", CLASS_AND_TYPE)
+def test_class_and_option_type_agree(symbol, expected_class, expected_type):
+    a = asset_factory(symbol)
+    assert type(a) is expected_class
+    assert a.option_type == expected_type
+
+
+def test_option_type_matches_parse_occ_for_every_frozen_symbol():
+    # the attribute must agree with the OCC indicator position, not merely
+    # with the class - checked over the whole frozen table
+    for symbol, expected in FROZEN_OCC_SYMBOLS:
+        if expected is None:
+            continue
+        a = asset_factory(symbol)
+        assert a.option_type == expected[2], symbol
+        assert type(a) is (Call if expected[2] == "call" else Put), symbol
+
+
+def test_strike_zero_option_type_agree():
+    # the strike-0 contract passes the OCC pattern; class and attribute
+    # must stay in sync there as well
+    a = asset_factory("AAPL260116C00000000")
+    assert type(a) is Call
+    assert a.option_type == "call"
+
+
+def test_long_root_option_type_agree():
+    a = asset_factory("ABCDEFGHI261218P00250000")
+    assert type(a) is Put
+    assert a.option_type == "put"
