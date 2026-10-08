@@ -158,6 +158,95 @@ def test_adapter_rejects_invalid_symbol():
 
 
 # --------------------------------------------------------------------- #
+# E. QA follow-up (Phase 7): root length and digit-root coverage
+# --------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("symbol", ["ABCDEFG260116C00250000", "SPXW261016C00250000"])
+def test_long_and_suffixed_root_accepted(symbol):
+    # pins that the root carries no length limit AND no digit restriction:
+    # the pattern is [A-Z]+, so 7 letters (ABCDEFG) and the SPXW weekly
+    # suffix parse. The 1-6 character rule belongs to the web ticker field,
+    # not here; the Judge proposal to tighten the root to [A-Z]{1,6} would
+    # break both cases.
+    assert type(asset_factory(symbol)) is Call
+
+
+@pytest.mark.parametrize("symbol", [
+    "AAPL1261120C00330000",   # digit inside the root
+    "BRK1261016C00250000",
+    "AAPL2261016C00250000",
+])
+def test_digit_root_is_not_an_occ_symbol(symbol):
+    # digit roots are not OCC option symbols. The old substring factory
+    # happily built a Call for them (AAPL1261120C00330000 -> Call K=330.0,
+    # underlying 'AAPL1'), i.e. it invented an underlying from a number.
+    with pytest.raises(ValueError, match=INVALID):
+        asset_factory(symbol)
+
+
+def test_strike_zero_kept():
+    # strike 0 passes the OCC pattern and both the parser and the factory
+    # accept it (unchanged from before); pinned so a future tightening is
+    # a deliberate decision, not an accident
+    a = asset_factory("AAPL260116C00000000")
+    assert type(a) is Call
+    assert a.strike == 0.0
+
+
+def test_short_symbol_nine_chars_raises():
+    assert asset_factory("GERTHAN8") is not None  # 8 chars -> ticker
+    with pytest.raises(ValueError, match=INVALID):
+        asset_factory("AAPL2601C")
+
+
+def test_feb28_accepted():
+    a = asset_factory("AAPL260228P00150000")
+    assert type(a) is Put
+    assert a.strike == 150.0
+
+
+def test_lowercase_occ_full_symbol():
+    # lowercase is normalised before the parse, so a lowercase OCC string
+    # becomes a real option - not a ticker
+    a = asset_factory("aapl260120c00100000")
+    assert type(a) is Call
+    assert a.underlying is not None
+    assert a.underlying.symbol == "AAPL"
+    assert a.strike == 100.0
+
+
+def test_spx_put_strike_4500():
+    # SPX strike 4500 -> the root "SPX" must not be eaten by the strike.
+    # The Judge case "SPX260219P45000000" is NOT 4500.0: 8 digits are read
+    # as int(k)/1000.0, so that string is 45000.0. Measured, not assumed.
+    a = asset_factory("SPX260219P04500000")
+    assert type(a) is Put
+    assert a.underlying is not None
+    assert a.underlying.symbol == "SPX"
+    assert a.strike == 4500.0
+
+
+def test_spx_strike_45000_from_eight_digits():
+    # the companion pin: same string without the leading zero is 45000.0.
+    # Both are one contract apart in strike, not a factor of ten apart in
+    # intent - the eight digits are the raw strike, not a shifted one.
+    a = asset_factory("SPX260219P45000000")
+    assert type(a) is Put
+    assert a.strike == 45000.0
+
+
+def test_screener_top_result_symbol():
+    # the live screener ranked AAPL261120C00330000 first (score 0.8567).
+    # Pinned so the highest-scoring delivered symbol stays a Call.
+    a = asset_factory("AAPL261120C00330000")
+    assert type(a) is Call
+    assert a.underlying is not None
+    assert a.underlying.symbol == "AAPL"
+    assert a.strike == 330.0
+    assert str(a.expiration_date) == "2026-11-20"
+
+
+# --------------------------------------------------------------------- #
 # D. move guard - the single OCC implementation stays in sync
 # --------------------------------------------------------------------- #
 
