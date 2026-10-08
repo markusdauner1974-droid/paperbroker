@@ -9,8 +9,10 @@ The module had no coverage for the factory itself, so these tests pin:
 - the three early-exit guards (None, Asset passthrough, len <= 8 ticker),
 - that parse_occ keeps the leap-day-safe month/day table semantics.
 
-Symbol table is frozen: it was captured from the adapter's behaviour
-before the OCC logic moved, so it doubles as a move-regression guard.
+Symbol table is frozen: every entry was verified against the adapter's
+behaviour before the OCC logic moved. Six of them are also recorded in
+docs/debate/b2_parse_occ_frozen_before_c1.json (1727 symbols); the other
+six were checked directly against the pre-move regex and day table.
 """
 import pytest
 
@@ -53,8 +55,10 @@ def test_put_strike_12000():
 
 
 def test_strike_boundary_at_10000():
-    # strike*1000 zfills to 8 digits; the old 'Z0' substring matched only
-    # at index 0, i.e. for strikes below 10000
+    # the strike is *1000 and zero-filled to 8 digits, so the leading zeros
+    # disappear at 10000: 'C0' is present in 'SPX261218C00250000' but not in
+    # 'SPX261218C10000000', which is why the old substring (or 'P0') test
+    # fell through to the Option base class from here up
     a = asset_factory("SPX261218C10000000")
     assert type(a) is Call
     assert a.strike == 10000.0
@@ -158,7 +162,7 @@ def test_adapter_rejects_invalid_symbol():
 
 
 # --------------------------------------------------------------------- #
-# E. QA follow-up (Phase 7): root length and digit-root coverage
+# D. QA follow-up (Phase 7): root length and digit-root coverage
 # --------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("symbol", ["ABCDEFG260116C00250000", "SPXW261016C00250000"])
@@ -247,7 +251,7 @@ def test_screener_top_result_symbol():
 
 
 # --------------------------------------------------------------------- #
-# D. move guard - the single OCC implementation stays in sync
+# E. move guard - the single OCC implementation stays in sync
 # --------------------------------------------------------------------- #
 
 def asset_factory_equivalent(symbol):
