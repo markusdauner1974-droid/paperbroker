@@ -240,8 +240,12 @@ def test_spx_strike_45000_from_eight_digits():
 
 
 def test_screener_top_result_symbol():
-    # the live screener ranked AAPL261120C00330000 first (score 0.8567).
-    # Pinned so the highest-scoring delivered symbol stays a Call.
+    # the live screener delivered AAPL261120C00330000 with a top-ranked
+    # score; pinned so a delivered symbol stays a Call. (The Phase 6 note
+    # claiming this exact symbol ranked first at score 0.8567 was wrong -
+    # measured top is AAPL261120C00345000 at 0.8217, and the ranking is
+    # data- and time-dependent. The pin below is about the class, which is
+    # what the factory decides.)
     a = asset_factory("AAPL261120C00330000")
     assert type(a) is Call
     assert a.underlying is not None
@@ -251,7 +255,83 @@ def test_screener_top_result_symbol():
 
 
 # --------------------------------------------------------------------- #
-# E. move guard - the single OCC implementation stays in sync
+# E. long roots (Phase 10): parse_occ accepts them, Option.__init__ must
+#    not hand the root back to the strict asset_factory check
+# --------------------------------------------------------------------- #
+
+def test_long_root_call_accepted():
+    # a 9-character root is a valid OCC symbol. Before this fix it raised
+    # "invalid OCC symbol: 'AAAAAAAAA'" from inside Option.__init__.
+    a = asset_factory("AAAAAAAAA261218C00250000")
+    assert type(a) is Call
+    assert a.underlying is not None
+    assert a.underlying.symbol == "AAAAAAAAA"
+    assert a.strike == 250.0
+    assert str(a.expiration_date) == "2026-12-18"
+
+
+def test_long_root_put_accepted():
+    a = asset_factory("ABCDEFGHI261218P00250000")
+    assert type(a) is Put
+    assert a.underlying is not None
+    assert a.underlying.symbol == "ABCDEFGHI"
+    assert a.strike == 250.0
+
+
+def test_long_root_strike_zero_kept():
+    # the strike-0 contract must survive the long-root path too
+    a = asset_factory("AAAAAAAAA260116C00000000")
+    assert type(a) is Call
+    assert a.strike == 0.0
+
+
+def test_long_root_direct_construction():
+    # the class itself, not only the factory, must accept a long root
+    a = Call("ABCDEFGHI261218C00250000")
+    assert a.strike == 250.0
+    assert a.underlying is not None
+    assert a.underlying.symbol == "ABCDEFGHI"
+
+
+def test_long_root_parse_occ_tuple():
+    # documents the boundary: parse_occ always accepted these; only the
+    # construction path disagreed with it
+    assert parse_occ("ABCDEFGHI261218C00250000") == (
+        "ABCDEFGHI", "2026-12-18", "call", 250.0)
+
+
+@pytest.mark.parametrize("symbol", [
+    "AAAAAAAAA261218C00250000",   # 9
+    "AAAAAAAAAA261218C00250000",  # 10
+    "AAAAAAAAAAAA261218C00250000",  # 12
+])
+def test_long_root_length_sweep(symbol):
+    a = asset_factory(symbol)
+    assert type(a) is Call
+    assert a.underlying is not None
+    assert a.underlying.symbol == symbol[:len(symbol) - 15]
+
+
+def test_eight_char_root_still_accepted():
+    # the inclusive boundary below the divergence: 8 characters already
+    # worked through the ticker branch and must keep working
+    a = asset_factory("AAAAAAAA261218C00250000")
+    assert type(a) is Call
+    assert a.underlying is not None
+    assert a.underlying.symbol == "AAAAAAAA"
+
+
+def test_long_root_lowercase_normalised():
+    # the construction path must normalise the root the same way the
+    # ticker branch does, otherwise the underlying comes out lowercase
+    a = asset_factory("abcdefghi261218c00250000")
+    assert type(a) is Call
+    assert a.underlying is not None
+    assert a.underlying.symbol == "ABCDEFGHI"
+
+
+# --------------------------------------------------------------------- #
+# F. move guard - the single OCC implementation stays in sync
 # --------------------------------------------------------------------- #
 
 def asset_factory_equivalent(symbol):

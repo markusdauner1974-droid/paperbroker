@@ -107,7 +107,13 @@ class Option(Asset):
             self.strike = float(r[0:8][::-1]) / 1000
             self.option_type = 'call' if r[8] == 'C' else 'put'
             self.expiration_date = arrow.get(r[9:15][::-1], 'YYMMDD').format('YYYY-MM-DD')
-            self.underlying = asset_factory(r[15:][::-1])
+            # build the underlying directly instead of handing the root back
+            # to asset_factory: that function rejects non-OCC strings longer
+            # than 8 characters, so any valid OCC symbol with a root of 9+
+            # characters (e.g. ABCDEFGHI261218C00250000) failed here. The
+            # root is already parsed, and upper() matches the normalisation
+            # the ticker branch applies.
+            self.underlying = Asset(r[15:][::-1].upper())
 
         else:
 
