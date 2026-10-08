@@ -43,6 +43,11 @@ def asset_factory(symbol=None):
         Create the appropriate asset based on the symbol.
     :param symbol: Case-insensitive symbol for the asset being created
     :return: An object that's a subclass of Asset or None
+    :raises ValueError: when the symbol is neither a short ticker nor a
+        valid OCC option symbol (e.g. an adjusted contract with a
+        non-C/P indicator). Previously such symbols were silently built
+        as a Put via a substring test, or failed with an unrelated
+        ValueError from float()/arrow.
     """
 
     if symbol is None:
@@ -53,15 +58,14 @@ def asset_factory(symbol=None):
 
     symbol = symbol.upper()
 
-    if len(symbol) > 8:
-        if 'P0' in symbol:
-            return Put(symbol)
-        elif 'C0' in symbol:
-            return Call(symbol)
-        else:
-            return Option(symbol)
-    else:
+    if len(symbol) <= 8:
         return Asset(symbol)
+
+    parsed = parse_occ(symbol)
+    if parsed is None:
+        raise ValueError(f"invalid OCC symbol: {symbol!r}")
+
+    return Call(symbol) if parsed[2] == 'call' else Put(symbol)
 
 """
 Asset: Assets are always identified by a symbol which uniquely identifies the asset and a type.
