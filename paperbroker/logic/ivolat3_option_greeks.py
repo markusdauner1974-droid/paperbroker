@@ -40,7 +40,7 @@ def get_option_greeks(option_type, strike, underlying_price, days_to_expiration,
     # option strike price
     k = strike
     # risk-free interest rate
-    r = days_to_expiration / 365 * 0.02 # (2% treasury rate)
+    r = 0.02  # annualized risk-free rate; only t carries the time scaling
     # drift rate (dividend)
     q = dividend
     # time remaining until expiration (in years)
