@@ -7,7 +7,35 @@
       to learn from the code. Most is in /paperbroker/logic/
 
 """
+import re
+
 import arrow
+
+_OCC = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
+
+_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]  # leap-day-safe upper bound
+
+
+def parse_occ(symbol):
+    """OCC symbol -> (underlying, 'YYYY-MM-DD', 'call'/'put', strike) or None.
+
+    Adjusted/mini contracts and other non-standard symbols return None;
+    the caller decides whether that is an error or a skip. The month/day
+    check uses a leap-day-safe upper bound table (29 for February), so
+    29 February is accepted in every year - the same semantics as the
+    previous CBOEQuoteAdapter._parse_occ.
+    """
+    m = _OCC.match(symbol)
+    if not m:
+        return None
+    underlying, yymmdd, cp, strike8 = m.groups()
+    # fast string decode of YYMMDD - real-calendar month/day table
+    # (no arrow in the hot path: this runs per contract)
+    mm, dd = int(yymmdd[2:4]), int(yymmdd[4:6])
+    if not (1 <= mm <= 12) or not (1 <= dd <= _DAYS_IN_MONTH[mm - 1]):
+        return None  # impossible dates like 21-18 or 30 February
+    expiration = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+    return underlying, expiration, "call" if cp == "C" else "put", int(strike8) / 1000.0
 
 
 def asset_factory(symbol=None):
@@ -15,6 +43,11 @@ def asset_factory(symbol=None):
         Create the appropriate asset based on the symbol.
     :param symbol: Case-insensitive symbol for the asset being created
     :return: An object that's a subclass of Asset or None
+    :raises ValueError: when the symbol is neither a short ticker nor a
+        valid OCC option symbol (e.g. an adjusted contract with a
+        non-C/P indicator). Previously such symbols were silently built
+        as a Put via a substring test, or failed with an unrelated
+        ValueError from float()/arrow.
     """
 
     if symbol is None:
@@ -25,15 +58,14 @@ def asset_factory(symbol=None):
 
     symbol = symbol.upper()
 
-    if len(symbol) > 8:
-        if 'P0' in symbol:
-            return Put(symbol)
-        elif 'C0' in symbol:
-            return Call(symbol)
-        else:
-            return Option(symbol)
-    else:
+    if len(symbol) <= 8:
         return Asset(symbol)
+
+    parsed = parse_occ(symbol)
+    if parsed is None:
+        raise ValueError(f"invalid OCC symbol: {symbol!r}")
+
+    return Call(symbol) if parsed[2] == 'call' else Put(symbol)
 
 """
 Asset: Assets are always identified by a symbol which uniquely identifies the asset and a type.
@@ -75,7 +107,13 @@ class Option(Asset):
             self.strike = float(r[0:8][::-1]) / 1000
             self.option_type = 'call' if r[8] == 'C' else 'put'
             self.expiration_date = arrow.get(r[9:15][::-1], 'YYMMDD').format('YYYY-MM-DD')
-            self.underlying = asset_factory(r[15:][::-1])
+            # build the underlying directly instead of handing the root back
+            # to asset_factory: that function rejects non-OCC strings longer
+            # than 8 characters, so any valid OCC symbol with a root of 9+
+            # characters (e.g. ABCDEFGHI261218C00250000) failed here. The
+            # root is already parsed, and upper() matches the normalisation
+            # the ticker branch applies.
+            self.underlying = Asset(r[15:][::-1].upper())
 
         else:
 
