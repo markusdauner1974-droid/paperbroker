@@ -99,3 +99,10 @@ listenses inside the namespace, the QNAP only exposes `127.0.0.1:8090`.
 - Merge only after CI green + all bot findings resolved + owner approval.
 - Dependencies kept minimal (`arrow`, `requests`); no simulation code
   reintroduced - history carries everything that was removed.
+## Code Review (Kody / Kodus)
+
+This repo is connected to Kody (Kodus) for AI code review.
+Kody runs on a **self-hosted Ollama-Cloud Mistral endpoint** via BYOK
+(bring-your-own-key, Community plan - free). This line exists as a
+live BYOK verification target: if Kody reviews this PR, reviews run
+on the org's own key instead of the (expired) Kodus trial tokens.
