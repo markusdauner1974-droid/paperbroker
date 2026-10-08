@@ -21,7 +21,7 @@ from collections import OrderedDict
 import arrow
 import requests
 
-from ...assets import Asset, Call, Option, Put, asset_factory
+from ...assets import _DAYS_IN_MONTH, Asset, Call, Option, Put, asset_factory, parse_occ
 from ...quotes import OptionQuote, Quote
 from .QuoteAdapter import QuoteAdapter
 
@@ -37,10 +37,6 @@ class CboeRequestError(Exception):
 _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                "AppleWebKit/537.36 (KHTML, like Gecko) "
                "Chrome/131.0.0.0 Safari/537.36")
-
-_OCC = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
-
-_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]  # leap-day-safe upper bound
 
 
 def _num(value, scale=1.0):
@@ -145,19 +141,13 @@ class CBOEQuoteAdapter(QuoteAdapter):
 
     @staticmethod
     def _parse_occ(symbol):
-        """OCC symbol -> (underlying, 'YYYY-MM-DD', 'call'/'put', strike)."""
-        m = _OCC.match(symbol)
-        if not m:
-            # adjusted/mini contracts and other non-standard symbols: skip
-            return None
-        underlying, yymmdd, cp, strike8 = m.groups()
-        # fast string decode of YYMMDD - real-calendar month/day table
-        # (no arrow in the hot path: this runs per contract)
-        mm, dd = int(yymmdd[2:4]), int(yymmdd[4:6])
-        if not (1 <= mm <= 12) or not (1 <= dd <= _DAYS_IN_MONTH[mm - 1]):
-            return None  # impossible dates like 21-18 or 30 February
-        expiration = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
-        return underlying, expiration, "call" if cp == "C" else "put", int(strike8) / 1000.0
+        """OCC symbol -> (underlying, 'YYYY-MM-DD', 'call'/'put', strike) or None.
+
+        Thin delegate: the single OCC implementation lives in assets.parse_occ.
+        Kept as a method because callers use it as a class attribute
+        (CBOEQuoteAdapter._parse_occ) and the adapter calls it via self.
+        """
+        return parse_occ(symbol)
 
     def _quote_from_contract(self, contract, quote_date, underlying_price):
         parsed = self._parse_occ(contract.get("option", ""))

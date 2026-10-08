@@ -7,7 +7,35 @@
       to learn from the code. Most is in /paperbroker/logic/
 
 """
+import re
+
 import arrow
+
+_OCC = re.compile(r"^([A-Z]+)(\d{6})([CP])(\d{8})$")
+
+_DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]  # leap-day-safe upper bound
+
+
+def parse_occ(symbol):
+    """OCC symbol -> (underlying, 'YYYY-MM-DD', 'call'/'put', strike) or None.
+
+    Adjusted/mini contracts and other non-standard symbols return None;
+    the caller decides whether that is an error or a skip. The month/day
+    check uses a leap-day-safe upper bound table (29 for February), so
+    29 February is accepted in every year - the same semantics as the
+    previous CBOEQuoteAdapter._parse_occ.
+    """
+    m = _OCC.match(symbol)
+    if not m:
+        return None
+    underlying, yymmdd, cp, strike8 = m.groups()
+    # fast string decode of YYMMDD - real-calendar month/day table
+    # (no arrow in the hot path: this runs per contract)
+    mm, dd = int(yymmdd[2:4]), int(yymmdd[4:6])
+    if not (1 <= mm <= 12) or not (1 <= dd <= _DAYS_IN_MONTH[mm - 1]):
+        return None  # impossible dates like 21-18 or 30 February
+    expiration = f"20{yymmdd[0:2]}-{yymmdd[2:4]}-{yymmdd[4:6]}"
+    return underlying, expiration, "call" if cp == "C" else "put", int(strike8) / 1000.0
 
 
 def asset_factory(symbol=None):
