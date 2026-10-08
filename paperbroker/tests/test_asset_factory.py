@@ -322,8 +322,10 @@ def test_eight_char_root_still_accepted():
 
 
 def test_long_root_lowercase_normalised():
-    # the construction path must normalise the root the same way the
-    # ticker branch does, otherwise the underlying comes out lowercase
+    # a lowercase symbol must yield an uppercase underlying. The normalisation
+    # happens inside Asset.__init__ ("self.symbol = symbol.upper()"), not via
+    # asset_factory - corrected after a review note measured 0 differences
+    # with or without the explicit .upper() at the call site.
     a = asset_factory("abcdefghi261218c00250000")
     assert type(a) is Call
     assert a.underlying is not None
