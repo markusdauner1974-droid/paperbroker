@@ -70,9 +70,9 @@ class OptionQuote(Quote):
             self.delta = (greeks['delta'] * 100) if greeks['delta'] is not None and not math.isnan(greeks['delta']) else delta
             self.iv = (greeks['iv'] * 100) if greeks['iv'] is not None and not math.isnan(greeks['iv']) else iv
             self.gamma = (greeks['gamma'] * 100) if greeks['gamma'] is not None and not math.isnan(greeks['gamma']) else gamma
-            self.vega = (greeks['vega'] * 100) if greeks['vega'] is not None and not math.isnan(greeks['vega']) else vega
+            self.vega = greeks['vega'] if greeks['vega'] is not None and not math.isnan(greeks['vega']) else vega
             self.theta = (greeks['theta'] * 100) if greeks['theta'] is not None and not math.isnan(greeks['theta']) else theta
-            self.rho = (greeks['rho'] * 100) if greeks['rho'] is not None and not math.isnan(greeks['rho']) else rho
+            self.rho = greeks['rho'] if greeks['rho'] is not None and not math.isnan(greeks['rho']) else rho
         else:
             self.delta = delta
             self.iv = iv

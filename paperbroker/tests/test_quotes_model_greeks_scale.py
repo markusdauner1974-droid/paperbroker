@@ -67,21 +67,18 @@ def test_the_module_still_returns_vega_and_rho_per_one_unit():
     assert raw["rho"] == pytest.approx(CALL_RHO_GOLD, abs=1e-6)
 
 
-@pytest.mark.xfail(reason="vega x100 not removed yet", strict=False)
 def test_model_path_stores_call_vega_without_the_x100_factor():
     """The x100 defect stored 4519.2554986837; CALL_VEGA_GOLD is correct."""
     q = _model_quote(CALL_SYMBOL, CALL_PRICE)
     assert q.vega == pytest.approx(CALL_VEGA_GOLD, abs=1e-4)
 
 
-@pytest.mark.xfail(reason="rho x100 not removed yet", strict=False)
 def test_model_path_stores_call_rho_without_the_x100_factor():
     """The x100 defect stored 2216.5078242223; CALL_RHO_GOLD is correct."""
     q = _model_quote(CALL_SYMBOL, CALL_PRICE)
     assert q.rho == pytest.approx(CALL_RHO_GOLD, abs=1e-4)
 
 
-@pytest.mark.xfail(reason="put rho x100 not removed yet", strict=False)
 def test_model_path_stores_put_rho_and_vega_without_the_x100_factor():
     """A put carries a negative rho; the x100 defect stored -1995.483169.
 
