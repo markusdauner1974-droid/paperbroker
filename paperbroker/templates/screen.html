@@ -51,10 +51,12 @@
   <form method="get" action="/">
     <input name="ticker" id="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required autocomplete="off">
     <select name="expiration" id="expiration" {% if not dates %}disabled{% endif %}>
-      {% if dates %}
-        {% for d in dates %}<option value="{{ d }}" {% if d == expiration %}selected{% endif %}>{{ d }}</option>{% endfor %}
-      {% else %}
+      {% if not dates_loaded %}
         <option value="">Verfaelle werden geladen ...</option>
+      {% elif not dates %}
+        <option value="" disabled>Nicht verfuegbar</option>
+      {% else %}
+        {% for d in dates %}<option value="{{ d }}" {% if d == expiration %}selected{% endif %}>{{ d }}</option>{% endfor %}
       {% endif %}
     </select>
     <span class="spin" id="spin">Verfaelle laden ...</span>

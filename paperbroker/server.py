@@ -170,9 +170,18 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             app.logger.exception("screen failed for %s %s", ticker, expiration)
             error = "Marktdaten-Fehler - Details im Server-Log."
         lamp_source = quotes if quotes is not None else results
+        # B-14: the <select> and the validation must read the same list. The
+        # offer is the DTE-filtered list, but a bookmarked date that is real
+        # yet filtered out must stay in it - otherwise the form renders one
+        # date while screening another. Only dates that are really in the
+        # chain qualify, so a made-up date still cannot get in.
+        offered = list(selectable) if selectable else []
+        if expiration and dates and expiration in dates and expiration not in offered:
+            offered = [expiration] + offered
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
-            dates=selectable, results=results, dropped_count=len(dropped) if dropped else 0,
+            dates=offered, dates_loaded=dates is not None,
+            results=results, dropped_count=len(dropped) if dropped else 0,
             error=error, freshness=_freshness_lamp(lamp_source, now_fn=now_fn),
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")

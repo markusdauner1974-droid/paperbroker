@@ -316,9 +316,6 @@ class TestDteWindow(unittest.TestCase):
 
     # --- B-14: the <select> and validation must read the SAME list ---
 
-    @pytest.mark.xfail(strict=True,
-                       reason="B-14: the index route drops a filtered bookmark "
-                              "from the <select>, so the form shows another date")
     def test_index_keeps_an_out_of_window_bookmark(self):
         # 200 alone is not enough: test_filtered_but_real_date_still_returns_200
         # was green while the <select> rendered WITHOUT the bookmarked date,
@@ -335,9 +332,6 @@ class TestDteWindow(unittest.TestCase):
         ).get_data(as_text=True)
         self.assertIn('<option value="2026-10-16" selected>', html)
 
-    @pytest.mark.xfail(strict=True,
-                       reason="B-14b: an empty window renders the LOADING "
-                              "placeholder, but nothing is loading")
     def test_empty_window_says_unavailable_not_loading(self):
         html = self._app(
             ScreenerCriteria(dte_min=900, dte_max=1000)
