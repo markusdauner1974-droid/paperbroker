@@ -241,8 +241,7 @@ class TestDteWindow(unittest.TestCase):
     """
 
     # the five fixture dates against the pinned clock 2026-10-07T14:35
-    ALL_DATES = ["2026-10-09", "2026-10-14", "2026-10-16",
-                 "2026-11-21", "2026-12-18"]
+    ALL_DATES = list(_MockAdapter(make()).expirations)
     IN_WINDOW = ["2026-10-14", "2026-10-16", "2026-11-21"]
 
     def _app(self, criteria=None, now_fn=None):
