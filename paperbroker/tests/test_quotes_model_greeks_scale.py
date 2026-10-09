@@ -100,3 +100,87 @@ def test_theta_keeps_its_x100_day_scaling():
     """
     q = _model_quote(CALL_SYMBOL, CALL_PRICE)
     assert q.theta == pytest.approx(CALL_THETA_GOLD, abs=1e-3)
+
+
+# --- delta: the last factor of the scale series (added in slice 4) ----------
+#
+# ``delta`` is stored x100 in both paths: the adapter scales the CBOE raw value
+# with ``scale=100.0`` and the model path multiplies the module value by 100.
+# The web UI formats it with ``'%.0f'`` and the /api/screen payload carries it,
+# so the 0-100 (percent point) convention is the one the surface expects.
+#
+# The module returns delta as a fraction, so the factor 100 is correct here -
+# unlike vega and rho, which the module already returns per 1.00 unit.
+#
+# The tests below pin the RELATION to the module value, not a bare literal: a
+# literal copied from the running code cannot tell right from wrong.
+
+CALL_DELTA_RAW = 0.5987589102724356
+PUT_DELTA_RAW = -0.4647431650488514
+
+
+def test_the_module_still_returns_delta_as_a_fraction():
+    """Pin the source of truth every x100 assertion below is derived from.
+
+    If this fails, the module's reference scale moved and the tolerances in
+    this section are meaningless.
+    """
+    raw = get_option_greeks("call", CALL_STRIKE, SPOT, CALL_DTE, CALL_PRICE,
+                            dividend=0.0)
+    assert raw["delta"] == pytest.approx(CALL_DELTA_RAW, abs=1e-9)
+    raw_put = get_option_greeks("put", PUT_STRIKE, SPOT, PUT_DTE, PUT_PRICE,
+                                dividend=0.0)
+    assert raw_put["delta"] == pytest.approx(PUT_DELTA_RAW, abs=1e-9)
+
+
+def test_model_path_stores_call_delta_on_the_x100_scale():
+    """Dropping the factor 100 would store 0.5987589102724356 instead.
+
+    The magnitude bound alone already catches that: it fails for every value
+    <= 1, independently of the exact raw delta.
+    """
+    q = _model_quote(CALL_SYMBOL, CALL_PRICE)
+    assert q.delta == pytest.approx(CALL_DELTA_RAW * 100, abs=1e-9)
+    assert 1 < abs(q.delta) <= 100
+
+
+def test_model_path_stores_put_delta_on_the_x100_scale_and_keeps_the_sign():
+    """A put carries a negative delta; the x100 factor must not drop the sign.
+
+    Note the live chain does contain puts with delta exactly 0.000, so the
+    assertion is ``< 0`` only for this fixture, never ``<= 0`` as an identity.
+    """
+    q = _model_quote(PUT_SYMBOL, PUT_PRICE)
+    assert q.delta == pytest.approx(PUT_DELTA_RAW * 100, abs=1e-9)
+    assert q.delta < 0.0
+
+
+def test_delta_carries_the_factor_vega_and_rho_do_not():
+    """The asymmetry is the point of this file: delta x100, vega/rho x1.
+
+    A future "unify the scale" change that adds the factor to vega/rho, or
+    removes it from delta, fails here in one place.
+    """
+    q = _model_quote(CALL_SYMBOL, CALL_PRICE)
+    raw = get_option_greeks("call", CALL_STRIKE, SPOT, CALL_DTE, CALL_PRICE,
+                            dividend=0.0)
+    assert q.delta == pytest.approx(raw["delta"] * 100, abs=1e-9)
+    assert q.vega == pytest.approx(raw["vega"], abs=1e-9)
+    assert q.rho == pytest.approx(raw["rho"], abs=1e-9)
+
+
+@pytest.mark.parametrize("model_delta", [None, float("nan")])
+def test_delta_falls_back_to_the_supplied_parameter(monkeypatch, model_delta):
+    """The other half of the line: a missing model delta keeps the caller's.
+
+    ``monkeypatch`` replaces the imported symbol, so the guard
+    ``is not None and not math.isnan(...)`` is exercised directly.
+    """
+    import paperbroker.quotes as quotes_module
+
+    monkeypatch.setattr(quotes_module, "get_option_greeks", lambda *a, **k: {
+        "delta": model_delta, "iv": 0.2, "gamma": 0.01,
+        "vega": 1.0, "theta": -0.1, "rho": 0.5,
+    })
+    q = _model_quote(CALL_SYMBOL, CALL_PRICE, delta=42.0)
+    assert q.delta == 42.0

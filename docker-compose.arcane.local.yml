@@ -1,5 +1,5 @@
-# LOCALE ARCANE-VARIANTE (individuell, NICHT auf GitHub!)
-# GitHub-Version bleibt die generische. Diese Datei nur lokal für Markus.
+# ARCANE-VARIANTE (individuell) - ACHTUNG: Diese Datei ist im oeffentlichen Repository getrackt und auf GitHub sichtbar.
+# Nuetzlich neben der generischen docker-compose.yml, darf aber KEINE Secrets enthalten - Werte gehoeren in Umgebungsvariablen (${VAR}).
 #
 # Keine Defaults im YML: alle Werte kommen aus dem ENV-Block
 # (Arcane Stack -> Environment-Tab oder .env-Datei daneben).
