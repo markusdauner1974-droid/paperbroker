@@ -9,6 +9,7 @@ import unittest
 from datetime import datetime
 
 import arrow
+import pytest
 from flask import Flask
 
 from paperbroker.assets import asset_factory
@@ -312,6 +313,56 @@ class TestDteWindow(unittest.TestCase):
                 "/api/screen",
                 query_string={"ticker": "SPY", "expiration": date})
             self.assertEqual(res.status_code, 200, date)
+
+    # --- B-14: the <select> and validation must read the SAME list ---
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-14: the index route drops a filtered bookmark "
+                              "from the <select>, so the form shows another date")
+    def test_index_keeps_an_out_of_window_bookmark(self):
+        # 200 alone is not enough: test_filtered_but_real_date_still_returns_200
+        # was green while the <select> rendered WITHOUT the bookmarked date,
+        # leaving the form displaying a different date than it screened for.
+        html = self._app().test_client().get(
+            "/", query_string={"ticker": "SPY", "expiration": "2026-12-18"}
+        ).get_data(as_text=True)
+        self.assertIn('<option value="2026-12-18" selected>', html)
+
+    def test_in_window_bookmark_is_still_marked(self):
+        # control for the test above: the normal case must not regress
+        html = self._app().test_client().get(
+            "/", query_string={"ticker": "SPY", "expiration": "2026-10-16"}
+        ).get_data(as_text=True)
+        self.assertIn('<option value="2026-10-16" selected>', html)
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-14b: an empty window renders the LOADING "
+                              "placeholder, but nothing is loading")
+    def test_empty_window_says_unavailable_not_loading(self):
+        html = self._app(
+            ScreenerCriteria(dte_min=900, dte_max=1000)
+        ).test_client().get("/", query_string={"ticker": "SPY"}
+                            ).get_data(as_text=True)
+        # match the OPTION, not the bare phrase: the same text also lives in
+        # the JS loader (invalidateSelector), so a bare assertNotIn is useless
+        self.assertNotIn('<option value="">Verfaelle werden geladen', html)
+        self.assertIn('<option value="" disabled>Nicht verfuegbar', html)
+
+    def test_no_ticker_still_says_loading(self):
+        # the real loading state (no dates fetched yet) keeps its placeholder
+        html = self._app().test_client().get("/").get_data(as_text=True)
+        self.assertIn('<option value="">Verfaelle werden geladen', html)
+
+    def test_unlisted_date_never_reaches_the_picker(self):
+        # the union guard: only dates that are really in the chain may be
+        # added back to the offer list. Note the index route reports this
+        # softly (200 + message) where /api/screen aborts with 400.
+        res = self._app().test_client().get(
+            "/", query_string={"ticker": "SPY", "expiration": "2030-01-01"})
+        self.assertEqual(res.status_code, 200)
+        html = res.get_data(as_text=True)
+        self.assertIn("nicht gelistet", html)
+        self.assertNotIn('<option value="2030-01-01"', html)
 
     def test_picker_uses_the_injected_screener_criteria(self):
         d = self._picker_dates(ScreenerCriteria(dte_min=20)).get_json()
