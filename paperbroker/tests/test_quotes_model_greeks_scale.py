@@ -184,3 +184,62 @@ def test_delta_falls_back_to_the_supplied_parameter(monkeypatch, model_delta):
     })
     q = _model_quote(CALL_SYMBOL, CALL_PRICE, delta=42.0)
     assert q.delta == 42.0
+
+
+# --- gamma and iv: the last two fields of the model-path scale series ---------
+#
+# The model path stores delta, gamma, iv and theta x100, and vega and rho x1.
+# After slice 3 and slice 4 the file pinned delta, vega, rho and theta. gamma and
+# iv stayed unpinned: two mutants (gamma x100x100, iv without the factor) ran
+# through all 158 tests with rc=0. The assertions below close that gap.
+#
+# gamma has no consumer in the codebase - the word appears only in a comment in
+# screener.py. Its pin is regression protection, not a user-facing fix. iv is
+# read in four places (screener iv=0 gate, iv_min/iv_max band, scoring, reasons).
+#
+# Values measured 2026-10-09 against master 7c2b24d.
+
+CALL_GAMMA_GOLD = 1.2385527516986996
+CALL_IV_GOLD = 26.709501566323933
+PUT_GAMMA_GOLD = 1.3429366744652824
+PUT_IV_GOLD = 25.316917091381995
+
+
+def test_model_path_stores_call_gamma_on_the_x100_scale():
+    """Dropping or doubling the factor 100 stores 0.012385527516986995 or 123.85527516986996."""
+    q = _model_quote(CALL_SYMBOL, CALL_PRICE)
+    assert q.gamma == pytest.approx(CALL_GAMMA_GOLD, rel=1e-9)
+    assert 1 < q.gamma <= 100
+
+
+def test_model_path_stores_call_iv_on_the_x100_scale():
+    """The factor 100 is what turns the module's 0.26709501566323934 into percent points."""
+    q = _model_quote(CALL_SYMBOL, CALL_PRICE)
+    assert q.iv == pytest.approx(CALL_IV_GOLD, rel=1e-9)
+    assert 1 < q.iv < 100
+
+
+def test_model_path_stores_put_gamma_and_iv_on_the_x100_scale():
+    """The put carries its own sigma, so both values are pinned from its own price.
+
+    gamma is put/call symmetric for a shared sigma; this put has a different one.
+    """
+    q = _model_quote(PUT_SYMBOL, PUT_PRICE)
+    assert q.gamma == pytest.approx(PUT_GAMMA_GOLD, rel=1e-9)
+    assert q.iv == pytest.approx(PUT_IV_GOLD, rel=1e-9)
+    assert q.gamma > 0.0
+    assert q.iv > 0.0
+
+
+def test_gamma_and_iv_fall_back_to_the_supplied_parameters():
+    """The other half of both lines: the fallback branch must not scale at all.
+
+    ``underlying_price=None`` makes the model branch unreachable, so the caller's
+    values pass through untouched. The values are deliberately ragged: a mutant
+    that rounds or truncates in the else branch (round(g, 2), int(g)) still passes
+    the round values 7.0 / 33.0, but not these.
+    """
+    q = _model_quote(CALL_SYMBOL, CALL_PRICE, underlying_price=None,
+                     gamma=7.123456789012345, iv=33.987654321)
+    assert q.gamma == 7.123456789012345
+    assert q.iv == 33.987654321
