@@ -5,6 +5,7 @@ Covers the debate-judge requirements: input validation (no path
 injection into the CBOE URL), trend failure != flat, freshness lamp,
 healthz liveness without external calls.
 """
+import re
 import unittest
 from datetime import datetime
 
@@ -331,6 +332,26 @@ class TestDteWindow(unittest.TestCase):
             "/", query_string={"ticker": "SPY", "expiration": "2026-10-16"}
         ).get_data(as_text=True)
         self.assertIn('<option value="2026-10-16" selected>', html)
+
+    def test_bookmarked_date_is_listed_first(self):
+        # keeping the bookmarked date is not enough - it has to come FIRST.
+        # Appending it would still satisfy the "is it there" test while
+        # burying the very date the user asked for at the bottom of a list
+        # of dates they did not ask about.
+        html = self._app().test_client().get(
+            "/", query_string={"ticker": "SPY", "expiration": "2026-12-18"}
+        ).get_data(as_text=True)
+        options = re.findall(r'<option value="([^"]*)"', html)
+        self.assertEqual(options[0], "2026-12-18")
+        self.assertEqual(options, ["2026-12-18"] + self.IN_WINDOW)
+
+    def test_non_bookmarked_ticker_keeps_the_window_order(self):
+        # without a bookmark the offer is exactly the filtered list, so the
+        # "bookmark first" rule must not reorder anything on its own
+        html = self._app().test_client().get(
+            "/", query_string={"ticker": "SPY"}).get_data(as_text=True)
+        options = re.findall(r'<option value="([^"]*)"', html)
+        self.assertEqual(options, self.IN_WINDOW)
 
     def test_empty_window_says_unavailable_not_loading(self):
         html = self._app(
