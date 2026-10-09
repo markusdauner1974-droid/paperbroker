@@ -9,8 +9,11 @@ import unittest
 from datetime import datetime
 
 import arrow
+import pytest
 from flask import Flask
 
+from paperbroker.assets import asset_factory
+from paperbroker.screener import OptionScreener, ScreenerCriteria
 from paperbroker.server import create_app
 from paperbroker.tests.test_screener import make
 
@@ -20,7 +23,13 @@ class _MockAdapter:
 
     def __init__(self, quotes):
         self.quotes = quotes
-        self.expirations = ["2026-10-09", "2026-10-16"]
+        # The five dates span the default DTE window [7, 45] from the
+        # pinned clock 2026-10-07: 2 (below), 7 (lower bound, inclusive),
+        # 9 (inside), 45 (upper bound, inclusive), 72 (above). A fixture
+        # with only in-window dates cannot tell a dte_min-only filter
+        # from a full-window filter.
+        self.expirations = ["2026-10-09", "2026-10-14", "2026-10-16",
+                            "2026-11-21", "2026-12-18"]
 
     def get_expiration_dates(self, underlying_asset=None):
         return list(self.expirations)
@@ -100,7 +109,9 @@ class TestServerDisplay(unittest.TestCase):
         res = self.client.get("/api/screen", query_string={"ticker": "SPY"})
         self.assertEqual(res.status_code, 200)
         data = res.get_json()
-        self.assertEqual(data["listed_dates"], ["2026-10-09", "2026-10-16"])
+        self.assertEqual(data["listed_dates"], ["2026-10-09", "2026-10-14",
+                                                "2026-10-16", "2026-11-21",
+                                                "2026-12-18"])
         self.assertEqual(data["results"], [])
 
     def test_lamp_reports_stale_chain_despite_empty_results(self):
@@ -160,7 +171,9 @@ class TestServerDisplay(unittest.TestCase):
         res = self.client.get("/api/screen", query_string={"ticker": "SPY"})
         self.assertEqual(res.status_code, 200)
         d = res.get_json()
-        self.assertEqual(d["listed_dates"], ["2026-10-09", "2026-10-16"])
+        self.assertEqual(d["listed_dates"], ["2026-10-09", "2026-10-14",
+                                             "2026-10-16", "2026-11-21",
+                                             "2026-12-18"])
         self.assertEqual(d["results"], [])
         self.assertIsNone(d["freshness"])
         self.assertIsNone(d["expiration"])
@@ -212,6 +225,126 @@ class TestServerDisplay(unittest.TestCase):
                                                  "expiration": "2026-10-16"})
         self.assertEqual(res.status_code, 200)
         self.assertIn("Ungueltiger Ticker", res.get_data(as_text=True))
+
+
+class TestDteWindow(unittest.TestCase):
+    """B-11: the expiration picker must only offer dates that can hit.
+
+    17 of 25 AAPL dates fall outside [dte_min, dte_max] - 3 below and 14
+    above - so the picker listed dates that can never produce a hit. The
+    window filter narrows the OFFERED list; validation still runs against
+    the full list, so a bookmarked (filtered) date returns 200 with zero
+    hits instead of 400.
+    """
+
+    # the five fixture dates against the pinned clock 2026-10-07T14:35
+    ALL_DATES = ["2026-10-09", "2026-10-14", "2026-10-16",
+                 "2026-11-21", "2026-12-18"]
+    IN_WINDOW = ["2026-10-14", "2026-10-16", "2026-11-21"]
+
+    def _app(self, criteria=None):
+        app = create_app(
+            quote_adapter=_MockAdapter(make()),
+            screener=None if criteria is None else OptionScreener(criteria),
+            now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _picker_dates(self, criteria=None, path="/api/screen", ticker="SPY"):
+        res = self._app(criteria).test_client().get(
+            path, query_string={"ticker": ticker})
+        return res
+
+    # --- characterisation of the calendar-day rule (green on master) ---
+
+    def test_days_to_expiration_space_and_t_separator(self):
+        # the T- and space-separated forms of the same instant must not
+        # drift apart: raw .days would return -1 on expiration day
+        opt = asset_factory("AAPL261009C00250000")
+        self.assertEqual(opt.get_days_to_expiration("2026-10-07T14:35:00"), 2)
+        self.assertEqual(opt.get_days_to_expiration("2026-10-07 14:35:00"), 2)
+
+    def test_days_to_expiration_accepts_date_and_arrow(self):
+        opt = asset_factory("AAPL261009C00250000")
+        self.assertEqual(opt.get_days_to_expiration("2026-10-07"), 2)
+        self.assertEqual(
+            opt.get_days_to_expiration(arrow.get("2026-10-07")), 2)
+        self.assertEqual(
+            opt.get_days_to_expiration(datetime(2026, 10, 7).date()), 2)
+
+    def test_days_to_expiration_negative_on_past_expiry(self):
+        # an expired date must stay negative, not be clamped to 0
+        opt = asset_factory("AAPL261009C00250000")
+        self.assertEqual(opt.get_days_to_expiration("2026-10-10 00:00:00"), -1)
+
+    # --- the window filter (red on master) ---
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-11: picker still lists the full date set")
+    def test_picker_lists_only_dates_inside_the_dte_window(self):
+        d = self._picker_dates().get_json()
+        self.assertEqual(d["listed_dates"], self.IN_WINDOW)
+
+    def test_picker_keeps_the_inclusive_lower_boundary(self):
+        # dte == 7 must remain selectable (>= not >)
+        d = self._picker_dates().get_json()
+        self.assertIn("2026-10-14", d["listed_dates"])
+
+    def test_picker_keeps_the_inclusive_upper_boundary(self):
+        # dte == 45 must remain selectable (<= not <)
+        d = self._picker_dates().get_json()
+        self.assertIn("2026-11-21", d["listed_dates"])
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-11: index route still renders every date")
+    def test_index_html_does_not_list_out_of_window_dates(self):
+        res = self._picker_dates(path="/")
+        html = res.get_data(as_text=True)
+        self.assertNotIn("2026-12-18", html)   # 72 dte, above the window
+        self.assertIn("2026-11-21", html)       # 45 dte, still offered
+
+    def test_filtered_but_real_date_still_returns_200(self):
+        # the regression guard on the DANGEROUS direction: narrowing the
+        # OFFER must not narrow VALIDATION - a saved link to a real but
+        # filtered date keeps working (200, zero hits), not 400
+        for date in ("2026-12-18", "2026-10-09"):
+            res = self._app().test_client().get(
+                "/api/screen",
+                query_string={"ticker": "SPY", "expiration": date})
+            self.assertEqual(res.status_code, 200, date)
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-11: picker ignores the screener's criteria")
+    def test_picker_uses_the_injected_screener_criteria(self):
+        d = self._picker_dates(ScreenerCriteria(dte_min=20)).get_json()
+        self.assertEqual(d["listed_dates"], ["2026-11-21"])
+        d = self._picker_dates(ScreenerCriteria(dte_max=10)).get_json()
+        self.assertEqual(d["listed_dates"], ["2026-10-14", "2026-10-16"])
+
+    # --- the optional bounds: None disables that side ---
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-11: no DTE filter exists yet")
+    def test_picker_without_a_lower_bound(self):
+        # dte_min=None disables the floor - a naive chained comparison
+        # would raise TypeError instead of widening the list
+        d = self._picker_dates(ScreenerCriteria(dte_min=None)).get_json()
+        self.assertEqual(d["listed_dates"], self.ALL_DATES[:-1])
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-11: no DTE filter exists yet")
+    def test_picker_without_an_upper_bound(self):
+        d = self._picker_dates(ScreenerCriteria(dte_max=None)).get_json()
+        self.assertEqual(d["listed_dates"], self.ALL_DATES[1:])
+
+    @pytest.mark.xfail(strict=True,
+                       reason="B-11: no DTE filter exists yet")
+    def test_empty_window_yields_an_empty_picker(self):
+        # a window that matches nothing is a legal state: empty picker,
+        # HTTP 200, no crash and no fallback to the unfiltered list
+        res = self._picker_dates(ScreenerCriteria(dte_min=60, dte_max=80))
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["listed_dates"], [])
 
 
 if __name__ == "__main__":
