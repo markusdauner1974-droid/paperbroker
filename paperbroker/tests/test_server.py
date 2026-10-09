@@ -46,6 +46,12 @@ def _clock():
     return lambda: arrow.get("2026-10-07T14:35:00")
 
 
+def _later_clock():
+    """A second as-of day, to prove the filter reads the clock rather than
+    a frozen date (see test_window_follows_the_injected_clock)."""
+    return lambda: arrow.get("2026-11-15T14:35:00")
+
+
 class TestServerDisplay(unittest.TestCase):
     def setUp(self):
         self.app = create_app(quote_adapter=_MockAdapter(make()),
@@ -239,16 +245,17 @@ class TestDteWindow(unittest.TestCase):
                  "2026-11-21", "2026-12-18"]
     IN_WINDOW = ["2026-10-14", "2026-10-16", "2026-11-21"]
 
-    def _app(self, criteria=None):
+    def _app(self, criteria=None, now_fn=None):
         app = create_app(
             quote_adapter=_MockAdapter(make()),
             screener=None if criteria is None else OptionScreener(criteria),
-            now_fn=_clock())
+            now_fn=now_fn or _clock())
         app.config["TESTING"] = True
         return app
 
-    def _picker_dates(self, criteria=None, path="/api/screen", ticker="SPY"):
-        res = self._app(criteria).test_client().get(
+    def _picker_dates(self, criteria=None, path="/api/screen", ticker="SPY",
+                      now_fn=None):
+        res = self._app(criteria, now_fn).test_client().get(
             path, query_string={"ticker": ticker})
         return res
 
@@ -332,6 +339,22 @@ class TestDteWindow(unittest.TestCase):
         res = self._picker_dates(ScreenerCriteria(dte_min=10, dte_max=40))
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["listed_dates"], [])
+
+    # --- the window must follow the CLOCK, not a frozen date ---
+
+    def test_window_follows_the_injected_clock(self):
+        # Every other test pins the clock to 2026-10-07, so a hardcoded
+        # as_of inside the filter would pass all of them. Measured: with
+        # as_of frozen to 2026-10-07 the suite stays green. This case moves
+        # the as-of day and demands the offered set move with it.
+        later = _later_clock()
+        d = self._picker_dates(now_fn=later).get_json()
+        # against 2026-11-15 the fixture dtes are [-37,-32,-30, 6, 33]:
+        # only 2026-12-18 falls inside [7, 45]
+        self.assertEqual(d["listed_dates"], ["2026-12-18"])
+        # and the SAME dates judged at the original clock give the other set
+        d = self._picker_dates().get_json()
+        self.assertEqual(d["listed_dates"], self.IN_WINDOW)
 
 
 if __name__ == "__main__":
