@@ -19,6 +19,7 @@ import arrow
 from flask import Flask, abort, jsonify, render_template, request
 
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
+from .assets import calendar_days_between
 from .PaperBroker import PaperBroker
 from .screener import OptionScreener, ScreenerCriteria
 
@@ -63,6 +64,26 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         # even when the internet is down
         return jsonify(status="ok")
 
+    def _in_dte_window(dte, criteria):
+        # Same semantics as the screener's per-quote DTE filter
+        # (screener.py:242-247): a None bound disables that side.
+        if criteria.dte_min is not None and dte < criteria.dte_min:
+            return False
+        if criteria.dte_max is not None and dte > criteria.dte_max:
+            return False
+        return True
+
+    def _selectable_dates(dates):
+        # B-11: the picker must only OFFER dates that can still hit. A
+        # chain runs years out, but the screener window is ~6 weeks, so
+        # most listed dates were dead entries in the dropdown. Validation
+        # keeps using the FULL list, so a bookmarked date that fell out of
+        # the window still answers 200 with zero hits instead of 400.
+        criteria = screener.criteria
+        as_of = now_fn()
+        return [d for d in dates
+                if _in_dte_window(calendar_days_between(d, as_of), criteria)]
+
     def _parse_args():
         ticker = request.args.get("ticker", "").upper().strip()
         # form-first flow (CodeRabbit finding): load the expiration list
@@ -72,8 +93,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             abort(400, description="invalid ticker (1-6 letters A-Z expected)")
         expiration = request.args.get("expiration", "").strip()
         dates = None
+        selectable = None
         if ticker:
             dates = broker.get_expiration_dates(ticker)
+            selectable = _selectable_dates(dates)
         if expiration:
             if not _DATE_RE.match(expiration):
                 abort(400, description="invalid expiration (YYYY-MM-DD expected)")
@@ -83,15 +106,15 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                 abort(400, description="expiration is not a listed date for this ticker")
         elif not ticker:
             abort(400, description="ticker and expiration required")
-        return ticker, expiration, dates
+        return ticker, expiration, dates, selectable
 
     @app.get("/api/screen")
     def api_screen():
-        ticker, expiration, dates = _parse_args()
+        ticker, expiration, dates, selectable = _parse_args()
         if not expiration:
-            # picker stage: list real dates, no chain scan yet
+            # picker stage: offer only the dates that can still hit
             return jsonify(ticker=ticker, expiration=None,
-                           listed_dates=dates, results=[], freshness=None)
+                           listed_dates=selectable, results=[], freshness=None)
         quotes = broker.get_options(ticker, expiration)
         results, dropped = screener.screen(quotes, now_fn=now_fn)
         return jsonify(
@@ -123,13 +146,14 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         ticker = request.args.get("ticker", "").upper().strip()
         expiration = request.args.get("expiration", "").strip()
         error = None
-        results = dropped = dates = quotes = None
+        results = dropped = dates = selectable = quotes = None
         try:
             if ticker:
                 if not _TICKER_RE.match(ticker):
                     error = "Ungueltiger Ticker - 1-6 Buchstaben A-Z."
                 else:
                     dates = broker.get_expiration_dates(ticker)
+                    selectable = _selectable_dates(dates)
                     if expiration:
                         if not _DATE_RE.match(expiration):
                             error = "Ungueltiges Verfallsdatum - JJJJ-MM-TT."
@@ -148,7 +172,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         lamp_source = quotes if quotes is not None else results
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
-            dates=dates, results=results, dropped_count=len(dropped) if dropped else 0,
+            dates=selectable, results=results, dropped_count=len(dropped) if dropped else 0,
             error=error, freshness=_freshness_lamp(lamp_source, now_fn=now_fn),
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
