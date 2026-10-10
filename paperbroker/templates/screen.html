@@ -28,6 +28,10 @@
     .score{font-weight:700;color:#2fbf71}
     .mismatch{color:#e6b93c}
     .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:.9rem;color:#9aa3b5;margin-bottom:10px}
+    .dropped-summary{background:#1a2233;border:1px solid #2c3650;border-radius:8px;padding:10px 12px;margin-bottom:12px}
+    .dropped-summary ul{margin:6px 0 0;padding-left:18px;font-size:.9rem}
+    .dropped-summary li{margin:2px 0}
+    .drop-count{color:#e6b93c;font-weight:700}
   </style>
 </head>
 <body>
@@ -37,6 +41,7 @@
     <span class="badge">Datenalter:
       <span class="lamp {{ freshness }}"></span>
       {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}aelter{% else %}alt{% endif %}
+      {%- if freshness_age is not none %} ({{ freshness_age }} min{% if freshness_limit is not none %}, Grenze {{ freshness_limit }} min{% endif %}){% endif %}
     </span>
   {% endif %}
   {% if trend %}
@@ -69,6 +74,16 @@
       <span>Kandidaten: <b>{{ results|length }}</b></span>
       <span>Gefiltert: {{ dropped_count }}</span>
     </div>
+    {% if dropped_reasons %}
+      <div class="dropped-summary">
+        <p class="note">Warum gestrichen? Je Kontrakt zaehlt der erste zutreffende Filter.</p>
+        <ul class="dropped-reasons">
+          {% for g in dropped_reasons -%}
+          <li class="drop-reason">{{ g.reason }} <span class="drop-count">{{ g.count }}</span></li>
+          {% endfor -%}
+        </ul>
+      </div>
+    {% endif %}
     {% if results %}
       <table>
         <thead><tr>

@@ -268,7 +268,13 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
     """max_quote_age_min uses quote_timestamp. Fail-closed: when the guard
     is enabled, a quote whose age cannot be established (missing or
     unparseable timestamp) is dropped with a distinct reason - unknown
-    freshness must not silently pass a 30-minute guard."""
+    freshness must not silently pass a 30-minute guard.
+
+    B-17: the clock call is checked SEPARATELY. A failing now_fn() is an
+    internal error, not an unreadable timestamp - the reason text is shown
+    on the page, so it must not lie. Measured 2026-10-10: a caller passing
+    an arrow object instead of a function got 'unparseable timestamp' for
+    67 contracts although all 104 carried a valid timestamp."""
     from datetime import datetime
 
     import arrow
@@ -284,17 +290,26 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
             dropped.append((q, "freshness unknown (no quote_timestamp)"))
             continue
         try:
+            now_v = now_fn()
+            if now_v is None:
+                raise ValueError("clock returned None")
+            if getattr(now_v, 'tzinfo', None) is not None or isinstance(now_v, arrow.Arrow):
+                now_naive = arrow.get(now_v).to('UTC').naive
+            elif isinstance(now_v, datetime):
+                now_naive = now_v
+            else:
+                raise TypeError(f"unsupported clock value: {type(now_v).__name__}")
+        except Exception:
+            # internal error, NOT an unreadable timestamp (B-17)
+            dropped.append((q, "freshness unknown (clock error)"))
+            continue
+        try:
             # normalize both sides to UTC, THEN strip the offset: arrow
             # timestamps carry UTC, callers may pass aware arrows in any
             # timezone, .naive alone drops the offset WITHOUT conversion
             # (a 14:35-04:00 clock read against a 14:30 UTC stamp would
             # look 5 min old instead of 5 h 5 min) - so to('UTC') first
             ts_naive = arrow.get(str(ts).replace(' ', 'T')).to('UTC').naive
-            now_v = now_fn()
-            if getattr(now_v, 'tzinfo', None) is not None or isinstance(now_v, arrow.Arrow):
-                now_naive = arrow.get(now_v).to('UTC').naive
-            else:
-                now_naive = now_v
             age_s = (now_naive - ts_naive).total_seconds()
         except Exception:
             dropped.append((q, "freshness unknown (unparseable timestamp)"))
@@ -317,6 +332,10 @@ def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
     never for IV filtering.
     """
     criteria.validate()
+    # ORDER MATTERS for the drop reasons: a contract is reported with the
+    # FIRST filter that rejects it (data -> stale -> spread -> oi -> volume
+    # -> iv -> dte -> sizes). The page shows those reasons, so this order is
+    # part of the user-visible contract.
     dropped_all = []
     quotes, d = filter_data_complete(quotes);           dropped_all += d
     quotes, d = filter_stale(quotes, criteria, now_fn); dropped_all += d
