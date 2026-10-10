@@ -757,6 +757,11 @@ class TestCriteriaPanel(unittest.TestCase):
         picker = self._app().test_client().get(
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertNotIn("criteria", picker)                     # no picker echo
+        # the request criteria must reach the PICKER too (B-14: one source):
+        # dte_min=45 leaves only the 45-dte date of the fixture chain
+        narrow = self._app().test_client().get(
+            "/api/screen", query_string={"ticker": "SPY", "dte_min": "45"}).get_json()
+        self.assertEqual(narrow["listed_dates"], ["2026-11-21"])
 
 
 if __name__ == "__main__":
