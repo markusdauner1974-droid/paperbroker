@@ -771,5 +771,91 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertEqual(options, ["2026-11-21"])
 
 
+
+class TestResultList(unittest.TestCase):
+    """Ausbau-Slice 3 (D): what the result list shows, and in which order.
+
+    The row order is produced by the SERVER (the template no longer sorts), so
+    it is observable in the test client. Ties keep the historical order: a
+    stable ascending sort, then reversed - of two equal scores the later
+    contract comes first.
+    """
+
+    def _app(self, quotes=None, criteria=None):
+        app = create_app(
+            quote_adapter=_MockAdapter(make() if quotes is None else quotes),
+            screener=None if criteria is None else OptionScreener(criteria),
+            now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _page(self, params, quotes=None, criteria=None):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params)
+        return self._app(quotes, criteria).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    @staticmethod
+    def _stats(page):
+        m = re.search(r'<div class="stats">(.*?)</div>', page, re.S)
+        return " ".join(re.sub(r"<[^>]+>", " ", m.group(1)).split())
+
+    @staticmethod
+    def _symbols(page):
+        # first cell of every row (all 9 cells of a row match <td> too - the
+        # first extraction attempt collected all of them and proved nothing)
+        body = page.split("<tbody>")[-1].split("</tbody>")[0]
+        rows = re.findall(r"<tr>(.*?)</tr>", body, re.S)
+        return [re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', row, re.S)[0].strip()
+                for row in rows]
+
+    # --- what the list shows ---
+
+    def test_the_contract_cell_carries_the_score_reasons(self):
+        self.assertIn('title="spread 2.0%; OI 8000; IV 28"', self._page({}))
+
+    def test_the_reasons_come_from_the_contract(self):
+        # a chain with different numbers: a fixed text in the template cannot
+        # satisfy this one
+        chain = [quote("AAPL260116C00240000", bid=1.00, ask=1.10, iv=21.0,
+                       oi=4242, volume=7, dte=10)]
+        self.assertIn('title="spread 9.5%; OI 4242; IV 21"', self._page({}, chain))
+
+    def test_the_delta_column_states_its_unit(self):
+        page = self._page({})
+        self.assertIn("<th>Δ×100</th>", page)
+        self.assertNotIn("<th>Δ</th>", page)
+
+    def test_the_header_shows_the_expiration_and_the_dte(self):
+        stats = self._stats(self._page({}))
+        self.assertIn("Verfall 2026-10-16", stats)
+        self.assertIn("DTE 10", stats)
+
+    def test_the_header_dte_follows_the_contracts(self):
+        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
+                       oi=8000, volume=1200, dte=23)]
+        self.assertIn("DTE 23", self._stats(self._page({}, chain)))
+
+    def test_the_header_shows_no_dte_without_results(self):
+        stats = self._stats(self._page({"min_oi": "999999"}))
+        self.assertIn("Verfall 2026-10-16", stats)
+        self.assertNotIn("DTE", stats)
+        self.assertIn("Kandidaten: 0", stats)
+
+    # --- in which order (pin: green before and after) ---
+
+    def test_the_rows_are_ordered_by_score_and_ties_are_kept(self):
+        tie_a = quote("AAPL260116C00240000", bid=2.40, ask=2.50, iv=30.0,
+                      oi=1500, volume=300, dte=10)
+        best = quote("AAPL260116C00245000", bid=5.00, ask=5.10, iv=28.0,
+                      oi=8000, volume=1200, dte=10)
+        tie_b = quote("AAPL260116C00261000", bid=2.40, ask=2.50, iv=30.0,
+                      oi=1500, volume=300, dte=10)
+        page = self._page({}, [tie_a, best, tie_b])
+        self.assertEqual(self._symbols(page),
+                         ["AAPL260116C00245000", "AAPL260116C00261000",
+                          "AAPL260116C00240000"])
+
+
 if __name__ == "__main__":
     unittest.main()
