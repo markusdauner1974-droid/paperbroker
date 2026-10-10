@@ -618,5 +618,156 @@ class TestDropReasons(unittest.TestCase):
         self.assertIn('<span class="drop-count">2</span>', html_page)
 
 
+
+class TestCriteriaPanel(unittest.TestCase):
+    """Ausbau-Slice 2 (A): the filter criteria become operator-settable.
+
+    Six fields plus the switch `ignore_quote_age`. The criteria of the app the
+    request runs against stay the BASE: only values the request really sets
+    override them (the picker tests inject their own criteria).
+    0 is a valid, sharp age bound - the switch is the only way to turn the
+    guard off, and it is announced on the page.
+    """
+
+    def _app(self, quotes=None, criteria=None):
+        app = create_app(
+            quote_adapter=_MockAdapter(make() if quotes is None else quotes),
+            screener=None if criteria is None else OptionScreener(criteria),
+            now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    @staticmethod
+    def _stale_chain():
+        # every fixture is 275 min old: with the default 30-min guard the
+        # chain is wiped; a settable guard lets two of them through
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = "2026-10-07 10:00:00"
+        return qs
+
+    @staticmethod
+    def _stats(html_page):
+        m = re.search(r'<div class="stats">(.*?)</div>', html_page, re.S)
+        return " ".join(re.sub(r"<[^>]+>", " ", m.group(1)).split())
+
+    def _request(self, params, quotes=None, criteria=None, path="/"):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params)
+        return self._app(quotes, criteria).test_client().get(path, query_string=query)
+
+    def _page(self, params, quotes=None, criteria=None):
+        return self._request(params, quotes, criteria).get_data(as_text=True)
+
+    def _json(self, params, quotes=None, criteria=None):
+        return self._request(params, criteria=criteria, quotes=quotes,
+                             path="/api/screen").get_json()
+
+    # --- the age guard becomes settable (the Saturday case) ---
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_the_age_guard_becomes_settable(self):
+        stale = self._stale_chain()
+        self.assertIn("Kandidaten: 0", self._stats(self._page({}, stale)))
+        html = self._page({"max_quote_age_min": "999"}, stale)
+        self.assertIn("Kandidaten: 2", self._stats(html))
+        self.assertIn("(275 min, Grenze 999 min)", html)
+        # the form shows what is in effect and offers the switch
+        self.assertIn('name="max_quote_age_min"', html)
+        self.assertIn('value="999"', html)
+        self.assertIn('name="ignore_quote_age"', html)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_the_switch_disables_the_age_check_visibly(self):
+        html = self._page({"ignore_quote_age": "1"}, self._stale_chain())
+        self.assertIn("Kandidaten: 2", self._stats(html))
+        self.assertIn("(275 min, Grenze aus)", html)
+        self.assertIn("Alter-Grenze aus", html)          # the banner
+        labels = re.findall(r'<li class="drop-reason">(.*?) <span', html)
+        self.assertTrue(labels)
+        self.assertTrue(all("stale" not in label for label in labels), labels)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_the_switch_is_stateless(self):
+        cli = self._app().test_client()
+        base_q = {"ticker": "SPY", "expiration": "2026-10-16"}
+        a = cli.get("/api/screen", query_string=base_q).get_json()
+        b = cli.get("/api/screen",
+                    query_string={**base_q, "ignore_quote_age": "1"}).get_json()
+        c = cli.get("/api/screen", query_string=base_q).get_json()
+        self.assertEqual(a["criteria"]["max_quote_age_min"], 30)
+        self.assertIsNone(b["criteria"]["max_quote_age_min"])
+        self.assertEqual(c["criteria"]["max_quote_age_min"], 30)
+
+    # --- the injected criteria stay the base ---
+
+    def test_an_injected_criteria_stays_the_base(self):
+        picker = self._app(criteria=ScreenerCriteria(dte_min=40)).test_client().get(
+            "/api/screen", query_string={"ticker": "SPY"}).get_json()
+        self.assertEqual(picker["listed_dates"], ["2026-11-21"])
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_a_request_value_overrides_the_injected_criteria(self):
+        # injected dte_min=20 against a request that sets dte_max=10 -> the
+        # merged set is contradictory: reported, not silently accepted
+        # error texts are rendered escaped ("&lt;=") - compare the visible text
+        page = html.unescape(self._page({"dte_max": "10"},
+                                        criteria=ScreenerCriteria(dte_min=20)))
+        self.assertIn("dte_min <= dte_max", page)
+        self.assertNotIn("Kandidaten:", page)
+
+    # --- contradictions and bad values are errors, not silence ---
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_contradicting_criteria_are_reported(self):
+        page = html.unescape(self._page({"dte_min": "45", "dte_max": "7"}))
+        self.assertIn("dte_min <= dte_max", page)
+        self.assertNotIn("Kandidaten:", page)
+        res = self._request({"dte_min": "45", "dte_max": "7"}, path="/api/screen")
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("dte_min <= dte_max", res.get_json()["error"])
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_bad_values_are_reported_readably(self):
+        for params, needle in (({"min_oi": "abc"}, "keine ganze Zahl"),
+                               ({"min_volume": "-5"}, "min_volume >= 0"),
+                               ({"max_spread_pct": "nan"}, "endliche Zahl")):
+            page = html.unescape(self._page(params))
+            self.assertIn(needle, page)
+            self.assertNotIn("Kandidaten:", page)
+            self.assertEqual(self._request(params, path="/api/screen").status_code, 400)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_a_comma_decimal_gets_a_hint(self):
+        html = self._page({"max_spread_pct": "7,5"})
+        self.assertIn("Punkt als Dezimaltrenner", html)
+        self.assertNotIn("Kandidaten:", html)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_an_unknown_parameter_is_named(self):
+        html = self._page({"min_o": "500"})
+        self.assertIn("Unbekannte Parameter", html)
+        self.assertIn("min_o", html)
+        self.assertIn("Kandidaten: 2", self._stats(html))   # criteria unchanged
+
+    # --- the fields really move the result ---
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_a_min_oi_moves_the_candidate_count(self):
+        self.assertIn("Kandidaten: 2", self._stats(self._page({})))
+        self.assertIn("Kandidaten: 1", self._stats(self._page({"min_oi": "5000"})))
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
+    def test_the_echo_is_the_object_that_computed(self):
+        d = self._json({"dte_min": "045"})
+        self.assertEqual(d["criteria"]["dte_min"], 45)          # int, not "045"
+        self.assertEqual(d["criteria"]["max_quote_age_min"], 30)
+        self.assertIsNone(d["criteria"]["iv_min"])
+        self.assertEqual(len(d["criteria"]), 17)
+        picker = self._app().test_client().get(
+            "/api/screen", query_string={"ticker": "SPY"}).get_json()
+        self.assertNotIn("criteria", picker)                     # no picker echo
+
+
 if __name__ == "__main__":
     unittest.main()
