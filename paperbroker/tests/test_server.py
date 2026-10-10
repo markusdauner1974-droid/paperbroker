@@ -665,7 +665,6 @@ class TestCriteriaPanel(unittest.TestCase):
 
     # --- the age guard becomes settable (the Saturday case) ---
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_the_age_guard_becomes_settable(self):
         stale = self._stale_chain()
         self.assertIn("Kandidaten: 0", self._stats(self._page({}, stale)))
@@ -677,7 +676,6 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertIn('value="999"', html)
         self.assertIn('name="ignore_quote_age"', html)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_the_switch_disables_the_age_check_visibly(self):
         html = self._page({"ignore_quote_age": "1"}, self._stale_chain())
         self.assertIn("Kandidaten: 2", self._stats(html))
@@ -687,7 +685,6 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertTrue(labels)
         self.assertTrue(all("stale" not in label for label in labels), labels)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_the_switch_is_stateless(self):
         cli = self._app().test_client()
         base_q = {"ticker": "SPY", "expiration": "2026-10-16"}
@@ -706,7 +703,6 @@ class TestCriteriaPanel(unittest.TestCase):
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertEqual(picker["listed_dates"], ["2026-11-21"])
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_a_request_value_overrides_the_injected_criteria(self):
         # injected dte_min=20 against a request that sets dte_max=10 -> the
         # merged set is contradictory: reported, not silently accepted
@@ -718,7 +714,6 @@ class TestCriteriaPanel(unittest.TestCase):
 
     # --- contradictions and bad values are errors, not silence ---
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_contradicting_criteria_are_reported(self):
         page = html.unescape(self._page({"dte_min": "45", "dte_max": "7"}))
         self.assertIn("dte_min <= dte_max", page)
@@ -727,7 +722,6 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertEqual(res.status_code, 400)
         self.assertIn("dte_min <= dte_max", res.get_json()["error"])
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_bad_values_are_reported_readably(self):
         for params, needle in (({"min_oi": "abc"}, "keine ganze Zahl"),
                                ({"min_volume": "-5"}, "min_volume >= 0"),
@@ -737,13 +731,11 @@ class TestCriteriaPanel(unittest.TestCase):
             self.assertNotIn("Kandidaten:", page)
             self.assertEqual(self._request(params, path="/api/screen").status_code, 400)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_a_comma_decimal_gets_a_hint(self):
         html = self._page({"max_spread_pct": "7,5"})
         self.assertIn("Punkt als Dezimaltrenner", html)
         self.assertNotIn("Kandidaten:", html)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_an_unknown_parameter_is_named(self):
         html = self._page({"min_o": "500"})
         self.assertIn("Unbekannte Parameter", html)
@@ -752,12 +744,10 @@ class TestCriteriaPanel(unittest.TestCase):
 
     # --- the fields really move the result ---
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_a_min_oi_moves_the_candidate_count(self):
         self.assertIn("Kandidaten: 2", self._stats(self._page({})))
         self.assertIn("Kandidaten: 1", self._stats(self._page({"min_oi": "5000"})))
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 2)")
     def test_the_echo_is_the_object_that_computed(self):
         d = self._json({"dte_min": "045"})
         self.assertEqual(d["criteria"]["dte_min"], 45)          # int, not "045"

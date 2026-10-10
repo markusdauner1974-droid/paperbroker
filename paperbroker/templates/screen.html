@@ -32,6 +32,12 @@
     .dropped-summary ul{margin:6px 0 0;padding-left:18px;font-size:.9rem}
     .dropped-summary li{margin:2px 0}
     .drop-count{color:#e6b93c;font-weight:700}
+    .warn{background:#3a2f1f;border:1px solid #7c6a33;padding:10px 12px;border-radius:8px;margin-bottom:12px}
+    .hint{background:#1a2233;border:1px solid #2c3650;padding:8px 12px;border-radius:8px;margin-bottom:12px}
+    fieldset.crit{border:1px solid #2c3650;border-radius:8px;padding:8px 12px;margin-bottom:12px}
+    fieldset.crit legend{font-size:.85rem;color:#9aa3b5;padding:0 6px}
+    fieldset.crit label{font-size:.85rem;color:#9aa3b5;display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}
+    fieldset.crit input[type=number]{width:5.5rem;font-size:.95rem;padding:6px 8px}
   </style>
 </head>
 <body>
@@ -41,7 +47,7 @@
     <span class="badge">Datenalter:
       <span class="lamp {{ freshness }}"></span>
       {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}aelter{% else %}alt{% endif %}
-      {%- if freshness_age is not none %} ({{ freshness_age }} min{% if freshness_limit is not none %}, Grenze {{ freshness_limit }} min{% endif %}){% endif %}
+      {%- if freshness_age is not none %} ({{ freshness_age }} min, {% if freshness_limit is not none %}Grenze {{ freshness_limit }} min{% else %}Grenze aus{% endif %}){% endif %}
     </span>
   {% endif %}
   {% if trend %}
@@ -50,6 +56,13 @@
 </header>
 <main>
   {% if feed_note %}<p class="note">{{ feed_note }}.</p>{% endif %}
+
+  {% if age_off %}
+    <div class="warn">Alter-Grenze aus - die Kurse koennen Stunden alt sein. Der Screener rechnet
+      damit auf veralteten Kursen (Handel auf eigenes Risiko).</div>
+  {% endif %}
+
+  {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
 
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
 
@@ -66,6 +79,16 @@
     </select>
     <span class="spin" id="spin">Verfaelle laden ...</span>
     <button type="submit">Scan</button>
+    <fieldset class="crit">
+      <legend>Filter (leer = Standard)</legend>
+      <label>DTE von <input type="number" name="dte_min" min="0" value="{{ criteria.dte_min if criteria.dte_min is not none else '' }}"></label>
+      <label>bis <input type="number" name="dte_max" min="0" value="{{ criteria.dte_max if criteria.dte_max is not none else '' }}"></label>
+      <label>Spread max % <input type="number" step="0.1" name="max_spread_pct" min="0" value="{{ criteria.max_spread_pct if criteria.max_spread_pct is not none else '' }}"></label>
+      <label>OI min <input type="number" name="min_oi" min="0" value="{{ criteria.min_oi if criteria.min_oi is not none else '' }}"></label>
+      <label>Volumen min <input type="number" name="min_volume" min="0" value="{{ criteria.min_volume if criteria.min_volume is not none else '' }}"></label>
+      <label>Alter max min <input type="number" name="max_quote_age_min" min="0" value="{{ criteria.max_quote_age_min if criteria.max_quote_age_min is not none else '' }}" {% if age_off %}disabled{% endif %}></label>
+      <label><input type="checkbox" name="ignore_quote_age" value="1" {% if age_off %}checked{% endif %}> Alter-Grenze aus</label>
+    </fieldset>
   </form>
 
   {% if results is not none %}
