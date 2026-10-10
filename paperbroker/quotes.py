@@ -12,7 +12,9 @@ from .logic.ivolat3_option_greeks import get_option_greeks
 def quote_factory(quote_date, asset, price=None, bid=0.0, ask=0.0, bid_size=0, ask_size=0, underlying_price=None):
     asset = asset_factory(asset)
     if isinstance(asset, Option):
-        return OptionQuote(quote_date, asset, price=price, bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size, underlying_price=None)
+        return OptionQuote(quote_date, asset, price=price, bid=bid, ask=ask,
+                           bid_size=bid_size, ask_size=ask_size,
+                           underlying_price=underlying_price)
     else:
         return Quote(quote_date, asset, price=price, bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size)
 
