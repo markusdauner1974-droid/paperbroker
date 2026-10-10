@@ -11,6 +11,8 @@
 import unittest
 from unittest.mock import MagicMock
 
+import pytest
+
 from ..adapters.quotes.CBOEQuoteAdapter import (
     CboeNotFoundError,
     CBOEQuoteAdapter,
@@ -212,6 +214,16 @@ class TestCboeAdapter(unittest.TestCase):
         ad.get_options("FAKE")
         self.assertEqual(ad._session.get.call_count, 1)  # 3 calls, 1 fetch
 
+
+    @pytest.mark.xfail(strict=True, reason="B-3a: the feed can leave current_price null")
+    def test_missing_spot_yields_none_and_does_not_crash_the_getter(self):
+        # the feed may deliver a null current_price (tolerated by _fetch); the
+        # value getter must not subtract that None silently
+        payload = _chain_payload(["FAKE261016C00100000"], current_price=None)
+        ad = self._adapter_with(payload)
+        q = ad.get_options("FAKE", expiration_date="2026-10-16")[0]
+        self.assertIsNone(q.underlying_price)
+        self.assertIsNone(q.get_extrinsic_value())
 
 class TestOptionQuoteExtension(unittest.TestCase):
 

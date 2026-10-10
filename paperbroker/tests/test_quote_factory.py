@@ -101,3 +101,45 @@ def test_adapter_path_is_untouched_by_the_factory():
     assert quote.greeks_source == "adapter"
     assert quote.delta == 53.79
     assert quote.iv == 25.56
+
+
+# --- B-3a: the value getters with a missing spot -------------------------
+# ``get_intrinsic_value`` returns None silently when no spot is known; the
+# extrinsic value subtracted that None and crashed. Pinned here because the
+# defect is a contract of these two getters, not of the factory alone.
+
+@pytest.mark.xfail(strict=True, reason="B-3a: the getter subtracts a silently missing spot")
+def test_without_a_spot_the_extrinsic_value_is_none():
+    quote = quote_factory(**ARGS)
+    assert quote.underlying_price is None
+    assert quote.get_extrinsic_value() is None
+
+
+@pytest.mark.xfail(strict=True, reason="B-3a: the getter subtracts a silently missing spot")
+def test_direct_construction_without_a_spot_is_none_too():
+    quote = OptionQuote(**ARGS)
+    assert quote.get_intrinsic_value() is None
+    assert quote.get_extrinsic_value() is None
+
+
+def test_a_spot_of_zero_is_a_number_not_a_missing_value():
+    # 0.0 is falsy: a guard like ``if not intrinsic`` would swallow it, so the
+    # falsy boundary is pinned explicitly - the trap that survived in Slice 7
+    quote = quote_factory(underlying_price=0.0, **ARGS)
+    assert quote.get_extrinsic_value() == PRICE
+
+
+def test_without_a_price_the_extrinsic_value_is_none():
+    # no bid/ask passed: Quote.__init__ would otherwise derive the mid price
+    quote = OptionQuote(quote_date=QUOTE_DATE, asset=OPTION, underlying_price=SPOT)
+    assert quote.price is None
+    assert quote.get_extrinsic_value() is None
+
+
+def test_an_explicit_spot_argument_overrides_the_missing_instance_spot():
+    # the getter takes a spot of its own; OptionQuote forwards it as
+    # ``underlying_price or self.underlying_price``. The only test that catches a
+    # delegate which drops that override instead of forwarding it.
+    quote = OptionQuote(**ARGS)
+    assert quote.underlying_price is None
+    assert quote.get_extrinsic_value(underlying_price=350.0) == pytest.approx(0.75, abs=1e-9)
