@@ -108,14 +108,12 @@ def test_adapter_path_is_untouched_by_the_factory():
 # extrinsic value subtracted that None and crashed. Pinned here because the
 # defect is a contract of these two getters, not of the factory alone.
 
-@pytest.mark.xfail(strict=True, reason="B-3a: the getter subtracts a silently missing spot")
 def test_without_a_spot_the_extrinsic_value_is_none():
     quote = quote_factory(**ARGS)
     assert quote.underlying_price is None
     assert quote.get_extrinsic_value() is None
 
 
-@pytest.mark.xfail(strict=True, reason="B-3a: the getter subtracts a silently missing spot")
 def test_direct_construction_without_a_spot_is_none_too():
     quote = OptionQuote(**ARGS)
     assert quote.get_intrinsic_value() is None
