@@ -811,11 +811,9 @@ class TestResultList(unittest.TestCase):
 
     # --- what the list shows ---
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 3)")
     def test_the_contract_cell_carries_the_score_reasons(self):
         self.assertIn('title="spread 2.0%; OI 8000; IV 28"', self._page({}))
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 3)")
     def test_the_reasons_come_from_the_contract(self):
         # a chain with different numbers: a fixed text in the template cannot
         # satisfy this one
@@ -823,25 +821,21 @@ class TestResultList(unittest.TestCase):
                        oi=4242, volume=7, dte=10)]
         self.assertIn('title="spread 9.5%; OI 4242; IV 21"', self._page({}, chain))
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 3)")
     def test_the_delta_column_states_its_unit(self):
         page = self._page({})
         self.assertIn("<th>Δ×100</th>", page)
         self.assertNotIn("<th>Δ</th>", page)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 3)")
     def test_the_header_shows_the_expiration_and_the_dte(self):
         stats = self._stats(self._page({}))
         self.assertIn("Verfall 2026-10-16", stats)
         self.assertIn("DTE 10", stats)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 3)")
     def test_the_header_dte_follows_the_contracts(self):
         chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
                        oi=8000, volume=1200, dte=23)]
         self.assertIn("DTE 23", self._stats(self._page({}, chain)))
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 3)")
     def test_the_header_shows_no_dte_without_results(self):
         stats = self._stats(self._page({"min_oi": "999999"}))
         self.assertIn("Verfall 2026-10-16", stats)

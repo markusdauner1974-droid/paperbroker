@@ -312,6 +312,18 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         if expiration and dates and expiration in dates and expiration not in offered:
             offered = [expiration] + offered
         age_min = _newest_quote_age_min(lamp_source, now_fn=now_fn)
+        # D (Ausbau-Slice 3): the row order is a property of the RESULT, not
+        # of the template. Sorting here keeps the order checkable in the test
+        # client (there is no JS runner) and it is the order every consumer
+        # sees. Tie order stays EXACTLY what the template's `|sort|reverse`
+        # produced: stable ascending sort, then reversed. `sorted(reverse=True)`
+        # would flip contracts with EQUAL scores - a silent behaviour change.
+        if results is not None:
+            results = list(reversed(sorted(results, key=lambda r: r.score)))
+        # the header shows the DTE the DTE filter used (screener.filter_dte
+        # reads quote.days_to_expiration) - the same field, not a second
+        # computation. No rows -> no DTE claim.
+        dte = results[0].quote.days_to_expiration if results else None
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
             dates=offered, dates_loaded=dates is not None,
@@ -324,6 +336,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             # the limit shown in the header is the EFFECTIVE one (A): it is the
             # value the operator picked, not the app default
             freshness_limit=criteria.max_quote_age_min,
+            dte=dte,
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
 

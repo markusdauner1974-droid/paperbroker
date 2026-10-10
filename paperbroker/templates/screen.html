@@ -96,6 +96,8 @@
       <span>Kette: {{ results|length + dropped_count }}</span>
       <span>Kandidaten: <b>{{ results|length }}</b></span>
       <span>Gefiltert: {{ dropped_count }}</span>
+      <span>Verfall {{ expiration }}</span>
+      {% if dte is not none %}<span>DTE {{ dte }} (Kalendertage)</span>{% endif %}
     </div>
     {% if dropped_reasons %}
       <div class="dropped-summary">
@@ -110,12 +112,12 @@
     {% if results %}
       <table>
         <thead><tr>
-          <th>Kontrakt</th><th>Bid</th><th>Ask</th><th>Spread %</th><th>IV %</th><th>OI</th><th>Vol</th><th>Δ</th><th>Score</th>
+          <th>Kontrakt</th><th>Bid</th><th>Ask</th><th>Spread %</th><th>IV %</th><th>OI</th><th>Vol</th><th>Δ×100</th><th>Score</th>
         </tr></thead>
         <tbody>
-        {% for r in results|sort(attribute='score')|reverse %}
+        {% for r in results %}
           <tr>
-            <td>{{ r.quote.asset.symbol }}</td>
+            <td title="{{ r.reasons|join('; ') }}">{{ r.quote.asset.symbol }}</td>
             <td>{{ r.quote.bid }}</td><td>{{ r.quote.ask }}</td>
             <td>{{ '%.1f'|format(r.spread_pct) }}</td>
             <td>{{ '%.0f'|format(r.quote.iv) }}</td>
