@@ -486,7 +486,6 @@ class TestDropReasons(unittest.TestCase):
 
     # --- the empty case: the whole chain fails the age guard ---
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_the_page_names_the_reasons_when_nothing_hits(self):
         html = self._page(self._stale_chain())
         self.assertIn("Keine Kontrakte haben die Kriterien bestanden", html)
@@ -494,14 +493,12 @@ class TestDropReasons(unittest.TestCase):
         self.assertEqual(self._pairs(html),
                          [("stale 275 min", 6), ("iv=0 illiquid", 1)])
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_the_page_shows_the_age_and_the_limit(self):
         # the lamp already said "alt"; UX-1 adds the measured value
         html_page = self._page(self._stale_chain())
         self.assertIn("lamp red", html_page)
         self.assertIn("(275 min, Grenze 30 min)", html_page)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_the_header_age_agrees_with_the_reason_text(self):
         # 14:35:00 - 10:00:24 = 274.6 min: the header must round the same way
         # as the "stale N min" text (274.6 -> 275), not floor it to 274
@@ -514,7 +511,6 @@ class TestDropReasons(unittest.TestCase):
 
     # --- the mixed case: candidates exist, drops are still explained ---
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_the_block_is_rendered_with_candidates_too(self):
         html = self._page(self._mixed_chain())
         self.assertIn("Kandidaten: <b>1</b>", html)
@@ -524,7 +520,6 @@ class TestDropReasons(unittest.TestCase):
                          [("iv=0 illiquid", 2), ("OI # < #", 2),
                           ("spread 28.6% > 10.0%", 1)])
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_two_numbers_of_one_family_collapse_into_one_group(self):
         pairs = dict((r, c) for r, c in self._pairs(self._page(self._mixed_chain())))
         # 5 and 200 are different bounds - one family, one line
@@ -532,7 +527,6 @@ class TestDropReasons(unittest.TestCase):
         self.assertNotIn("OI 5 < 500", pairs)
         self.assertNotIn("OI 200 < 500", pairs)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_a_single_raw_text_keeps_its_measured_value(self):
         # a group with exactly one text shows it (with its number)
         pairs = dict(self._pairs(self._page(self._stale_chain())))
@@ -541,7 +535,6 @@ class TestDropReasons(unittest.TestCase):
 
     # --- the JSON contract (additive) ---
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_json_carries_the_groups_additively(self):
         d = self._json(self._mixed_chain())
         self.assertIsInstance(d["dropped"], int)          # unchanged
@@ -553,14 +546,12 @@ class TestDropReasons(unittest.TestCase):
         counts = [g["count"] for g in d["dropped_reasons"]]
         self.assertEqual(counts, sorted(counts, reverse=True))
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_json_and_html_report_the_same_groups(self):
         chain = self._mixed_chain()
         self.assertEqual(self._pairs(self._page(chain)),
                          [(g["reason"], g["count"])
                           for g in self._json(chain)["dropped_reasons"]])
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_the_empty_list_is_carried_in_both_stages(self):
         # picker stage: no scan happened yet - and a scan that dropped
         # nothing; the key exists in both, the list is empty (contract:
@@ -606,7 +597,6 @@ class TestDropReasons(unittest.TestCase):
         self.assertIsNone(lamp(self._one("gestern abend"), now_fn=_clock()))
         self.assertIsNone(lamp([], now_fn=_clock()))
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_the_lamp_reads_the_fetched_chain_and_the_header_shows_it(self):
         # newest governs; the lamp reads the FETCHED chain (CodeRabbit), not
         # the results - here the fresh contract is the DROPPED one
@@ -620,7 +610,6 @@ class TestDropReasons(unittest.TestCase):
         self.assertIn("lamp green", html_page)
         self.assertIn("(5 min, Grenze 30 min)", html_page)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_a_reason_text_cannot_inject_markup(self):
         # the reasons are free text from the screener; they are rendered
         # escaped, so a '<' stays text (measured: '&lt;' in the HTML)

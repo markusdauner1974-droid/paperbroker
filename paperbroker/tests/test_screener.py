@@ -7,7 +7,6 @@ import unittest
 from datetime import datetime
 
 import arrow
-import pytest
 
 from paperbroker.assets import asset_factory
 from paperbroker.quotes import OptionQuote
@@ -294,7 +293,6 @@ class TestClockErrorLabel(unittest.TestCase):
         return filter_stale(chain, ScreenerCriteria(max_quote_age_min=30),
                             now_fn=now_fn)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_a_failing_clock_is_labelled_clock_error(self):
         # an arrow object instead of a callable: now_fn() raises TypeError.
         # The FULL label is pinned - a prefix assertion would also match the
@@ -305,7 +303,6 @@ class TestClockErrorLabel(unittest.TestCase):
         self.assertEqual({r for _q, r in dropped},
                          {"freshness unknown (clock error)"})
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
     def test_a_raising_clock_is_labelled_clock_error_too(self):
         # not TypeError-specific: any clock failure is an internal error
         def boom():

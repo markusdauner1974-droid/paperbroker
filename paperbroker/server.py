@@ -32,6 +32,16 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _FRESH_GREEN_MIN = 30
 _FRESH_YELLOW_MIN = 120
 
+# UX-1 (Ausbau-Slice 1): the screener hands back one free-text reason per
+# dropped contract ("stale 257 min", "OI 7 < 500"). Counting the raw texts
+# would give roughly one line per contract (measured: 48 distinct texts for
+# 97 drops with the age guard off), so numbers are folded to a placeholder.
+# It is a NUMBER TOKEN, not a single digit: folding digit by digit would
+# split "7.41" and "10.2" into different groups although both are "spread
+# too wide". A group whose raw texts are all identical keeps the raw text,
+# so the measured value stays on the page ("stale 257 min", not "stale # min").
+_REASON_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
 
 def create_app(quote_adapter=None, screener=None, now_fn=None):
     """now_fn: injectable clock for tests (default: real arrow.get).
@@ -73,6 +83,28 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             return False
         return True
 
+    def _drop_reason_groups(dropped):
+        """Aggregate the screener's per-quote drop reasons for page + JSON.
+
+        Output: [{"reason": str, "count": int}, ...], count descending.
+        Ties keep the order in which the filters produced them (= pipeline
+        order), because that is the order a reader expects: the filter that
+        acts first is named first. HTML and JSON consume the same list -
+        parity by construction.
+        """
+        groups = {}
+        for _quote, reason in dropped or []:
+            raw = str(reason)
+            pattern = _REASON_NUM_RE.sub("#", raw)
+            entry = groups.setdefault(pattern, {"count": 0, "raw": set()})
+            entry["count"] += 1
+            entry["raw"].add(raw)
+        out = [{"reason": next(iter(e["raw"])) if len(e["raw"]) == 1 else pattern,
+                "count": e["count"]}
+               for pattern, e in groups.items()]
+        out.sort(key=lambda g: -g["count"])   # stable: ties keep pipeline order
+        return out
+
     def _selectable_dates(dates):
         # B-11: the picker must only OFFER dates that can still hit. A
         # chain runs years out, but the screener window is ~6 weeks, so
@@ -112,9 +144,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
     def api_screen():
         ticker, expiration, dates, selectable = _parse_args()
         if not expiration:
-            # picker stage: offer only the dates that can still hit
+            # picker stage: offer only the dates that can still hit. No
+            # screening happened, so the drop list is empty - but the key
+            # is always present, so a consumer never needs a key check.
             return jsonify(ticker=ticker, expiration=None,
-                           listed_dates=selectable, results=[], freshness=None)
+                           listed_dates=selectable, results=[], freshness=None,
+                           dropped_reasons=[])
         quotes = broker.get_options(ticker, expiration)
         results, dropped = screener.screen(quotes, now_fn=now_fn)
         return jsonify(
@@ -123,6 +158,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             chain_size=len(quotes),
             candidates=len(results),
             dropped=len(dropped),
+            dropped_reasons=_drop_reason_groups(dropped),
             freshness=_freshness_lamp(quotes, now_fn=now_fn),
             results=[
                 {
@@ -178,11 +214,17 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         offered = list(selectable) if selectable else []
         if expiration and dates and expiration in dates and expiration not in offered:
             offered = [expiration] + offered
+        age_min = _newest_quote_age_min(lamp_source, now_fn=now_fn)
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
             dates=offered, dates_loaded=dates is not None,
             results=results, dropped_count=len(dropped) if dropped else 0,
-            error=error, freshness=_freshness_lamp(lamp_source, now_fn=now_fn),
+            dropped_reasons=_drop_reason_groups(dropped),
+            error=error, freshness=_lamp_state(age_min),
+            # same rounding as the "stale N min" reason text (f"{x:.0f}"),
+            # so the header never contradicts the list underneath it
+            freshness_age=None if age_min is None else int(round(age_min)),
+            freshness_limit=screener.criteria.max_quote_age_min,
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
 
@@ -233,16 +275,19 @@ def _trend_label(direction):
         direction, direction)
 
 
-def _freshness_lamp(quotes, now_fn=None):
-    """Green/yellow/red from the youngest quote in the FETCHED chain.
+def _newest_quote_age_min(quotes, now_fn=None):
+    """Age in minutes of the YOUNGEST quote in the FETCHED chain.
 
-    (CodeRabbit finding: pass the raw chain, not the screened results -
+    (CodeRabbit finding: use the raw chain, not the screened results -
     the stale-quote guard can remove every candidate and hide the very
     staleness the lamp is supposed to report.)
 
     Accepts OptionQuote objects or ScreenResults (duck-typed). None/no
-    rows -> None: the template shows 'keine Daten' instead of inventing
-    a traffic light without input.
+    rows / no readable timestamp -> None: the template shows 'keine
+    Daten' instead of inventing a number without input.
+
+    UX-1: this is the single place where the age is computed - the lamp
+    colour and the minutes shown in the header come from the same value.
     """
     if not quotes:
         return None
@@ -261,9 +306,20 @@ def _freshness_lamp(quotes, now_fn=None):
             newest = t
     if newest is None:
         return None
-    age_min = (now - newest).total_seconds() / 60.0
+    return (now - newest).total_seconds() / 60.0
+
+
+def _lamp_state(age_min):
+    """green/yellow/red from a quote age; None age -> None (no lamp)."""
+    if age_min is None:
+        return None
     if age_min < _FRESH_GREEN_MIN:
         return "green"
     if age_min < _FRESH_YELLOW_MIN:
         return "yellow"
     return "red"
+
+
+def _freshness_lamp(quotes, now_fn=None):
+    """Traffic light for the fetched chain (same value as the age above)."""
+    return _lamp_state(_newest_quote_age_min(quotes, now_fn=now_fn))
