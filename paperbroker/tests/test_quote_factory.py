@@ -44,7 +44,6 @@ FIELDS = ("quote_type", "bid", "ask", "bid_size", "ask_size", "price",
 GREEKS = ("delta", "iv", "gamma", "vega", "theta", "rho")
 
 
-@pytest.mark.xfail(strict=True, reason='B-3: quote_factory drops underlying_price (master)')
 def test_factory_passes_the_underlying_price_through():
     quote = quote_factory(underlying_price=SPOT, **ARGS)
     assert quote.underlying_price == SPOT
@@ -54,7 +53,6 @@ def test_factory_passes_the_underlying_price_through():
     assert zero.underlying_price == 0.0
 
 
-@pytest.mark.xfail(strict=True, reason='B-3: quote_factory drops underlying_price (master)')
 def test_factory_is_field_equivalent_to_the_direct_constructor():
     from_factory = quote_factory(underlying_price=SPOT, **ARGS)
     from_constructor = OptionQuote(underlying_price=SPOT, **ARGS)
@@ -62,20 +60,17 @@ def test_factory_is_field_equivalent_to_the_direct_constructor():
         assert getattr(from_factory, field) == getattr(from_constructor, field), field
 
 
-@pytest.mark.xfail(strict=True, reason='B-3: quote_factory drops underlying_price (master)')
 def test_intrinsic_value_uses_the_forwarded_spot():
     quote = quote_factory(underlying_price=SPOT, **ARGS)
     assert quote.get_intrinsic_value() == pytest.approx(SPOT - STRIKE, abs=1e-6)
     assert quote.get_intrinsic_value() == pytest.approx(INTRINSIC, abs=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason='B-3: quote_factory drops underlying_price (master)')
 def test_extrinsic_value_no_longer_raises():
     quote = quote_factory(underlying_price=SPOT, **ARGS)
     assert quote.get_extrinsic_value() == pytest.approx(EXTRINSIC, abs=1e-6)
 
 
-@pytest.mark.xfail(strict=True, reason='B-3: quote_factory drops underlying_price (master)')
 def test_model_branch_fills_all_six_greeks():
     quote = quote_factory(underlying_price=SPOT, **ARGS)
     assert quote.greeks_source == "model"
