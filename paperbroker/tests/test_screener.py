@@ -7,6 +7,7 @@ import unittest
 from datetime import datetime
 
 import arrow
+import pytest
 
 from paperbroker.assets import asset_factory
 from paperbroker.quotes import OptionQuote
@@ -262,6 +263,88 @@ def filter_stale_mock(criteria, now_fn):
     for q in qs:
         q.quote_timestamp = "2026-10-07 14:30:00"
     return filter_stale(qs, criteria, now_fn=now_fn)
+
+
+
+class TestClockErrorLabel(unittest.TestCase):
+    """B-17: fail-closed stays, but the REASON must be true.
+
+    Measured 2026-10-10: a caller passing an arrow OBJECT instead of a
+    function as now_fn received 'freshness unknown (unparseable timestamp)'
+    for 67 contracts, although all 104 carried a valid timestamp. The reason
+    text is what UX-1 puts on the page.
+    """
+
+    TS = "2026-10-07 14:30:00"          # valid, 30 min before the clock below
+    LATER = "2026-10-07T15:01:00"       # 31 min -> stale (boundary is ">")
+
+    def _chain(self):
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = self.TS
+        return qs
+
+    def _chain_with_ts(self, value):
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = value
+        return qs
+
+    def _run(self, chain, now_fn):
+        return filter_stale(chain, ScreenerCriteria(max_quote_age_min=30),
+                            now_fn=now_fn)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_a_failing_clock_is_labelled_clock_error(self):
+        # an arrow object instead of a callable: now_fn() raises TypeError.
+        # The FULL label is pinned - a prefix assertion would also match the
+        # old, wrong text.
+        kept, dropped = self._run(self._chain(), arrow.get(self.LATER))
+        self.assertEqual(kept, [])                    # fail-closed, as before
+        self.assertEqual(len(dropped), 7)
+        self.assertEqual({r for _q, r in dropped},
+                         {"freshness unknown (clock error)"})
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_a_raising_clock_is_labelled_clock_error_too(self):
+        # not TypeError-specific: any clock failure is an internal error
+        def boom():
+            raise RuntimeError("clock down")
+
+        kept, dropped = self._run(self._chain(), boom)
+        self.assertEqual(kept, [])
+        self.assertEqual(len(dropped), 7)
+        self.assertEqual({r for _q, r in dropped},
+                         {"freshness unknown (clock error)"})
+
+    def test_the_age_boundary_is_exclusive_and_keeps_minutes(self):
+        # pin: measured 2026-10-10 - "if age_s > max_age_s" keeps a quote of
+        # EXACTLY max_quote_age_min (30 min) and drops it at 31 min; the
+        # normal path must keep reporting the age in minutes
+        kept, dropped = self._run(self._chain(),
+                                  lambda: arrow.get("2026-10-07T15:00:00"))
+        self.assertEqual(len(kept), 7)          # exactly 30 min -> kept
+        self.assertEqual(dropped, [])
+        kept, dropped = self._run(self._chain(), lambda: arrow.get(self.LATER))
+        self.assertEqual(kept, [])
+        self.assertEqual(len(dropped), 7)
+        self.assertEqual({r for _q, r in dropped}, {"stale 31 min"})
+
+    def test_a_missing_timestamp_keeps_its_own_label(self):
+        # pin: already correct today - must not be folded into the other two
+        kept, dropped = self._run(self._chain_with_ts(None),
+                                  lambda: arrow.get(self.LATER))
+        self.assertEqual(kept, [])
+        self.assertEqual({r for _q, r in dropped},
+                         {"freshness unknown (no quote_timestamp)"})
+
+    def test_an_unreadable_timestamp_keeps_its_unparseable_label(self):
+        # pin: only a really unreadable stamp may say "unparseable"
+        kept, dropped = self._run(self._chain_with_ts("gestern abend"),
+                                  lambda: arrow.get(self.LATER))
+        self.assertEqual(kept, [])
+        self.assertEqual({r for _q, r in dropped},
+                         {"freshness unknown (unparseable timestamp)"})
 
 
 if __name__ == "__main__":

@@ -5,6 +5,7 @@ Covers the debate-judge requirements: input validation (no path
 injection into the CBOE URL), trend failure != flat, freshness lamp,
 healthz liveness without external calls.
 """
+import html
 import re
 import unittest
 from datetime import datetime
@@ -15,8 +16,8 @@ from flask import Flask
 
 from paperbroker.assets import asset_factory
 from paperbroker.screener import OptionScreener, ScreenerCriteria
-from paperbroker.server import create_app
-from paperbroker.tests.test_screener import make
+from paperbroker.server import _freshness_lamp, create_app
+from paperbroker.tests.test_screener import make, quote
 
 
 class _MockAdapter:
@@ -420,6 +421,212 @@ class TestDteWindow(unittest.TestCase):
         # and the SAME dates judged at the original clock give the other set
         d = self._picker_dates().get_json()
         self.assertEqual(d["listed_dates"], self.IN_WINDOW)
+
+
+
+class TestDropReasons(unittest.TestCase):
+    """UX-1 (Ausbau-Slice 1): the page names WHY a contract was dropped."""
+
+    STALE_TS = "2026-10-07 10:00:00"     # 275 min before the pinned clock
+
+    def _app(self, quotes, criteria=None):
+        app = create_app(
+            quote_adapter=_MockAdapter(quotes),
+            screener=None if criteria is None else OptionScreener(criteria),
+            now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _stale_chain(self):
+        qs = make()
+        for q in qs:
+            q.quote_timestamp = self.STALE_TS
+        return qs
+
+    def _mixed_chain(self):
+        # six contracts, one clean candidate. The drops cover a raw-text
+        # group (two identical "iv=0 illiquid"), a PATTERN group (two
+        # different OI bounds) and a single raw group (one wide spread).
+        return [
+            quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0, oi=8000,
+                  dte=10),                                   # candidate
+            quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=0.0, oi=1500,
+                  dte=10),                                   # iv=0 illiquid
+            quote("AAPL260116C00260000", bid=2.40, ask=2.50, iv=0.0, oi=1500,
+                  dte=10),                                   # iv=0 illiquid
+            quote("AAPL260116C00270000", bid=1.20, ask=1.30, iv=30.0, oi=5,
+                  dte=10),                                   # OI 5 < 500
+            quote("AAPL260116C00275000", bid=1.20, ask=1.30, iv=30.0, oi=200,
+                  dte=10),                                   # OI 200 < 500
+            quote("AAPL260116C00280000", bid=1.50, ask=2.00, iv=45.0, oi=9000,
+                  dte=10),                                   # spread 28.6 %
+        ]
+
+    @staticmethod
+    def _pairs(html_page):
+        """Read the rendered groups: (reason, count) in page order.
+
+        The template is autoescaped, so '<' and '>' arrive as entities -
+        unescape BEFORE comparing, because the browser shows the text.
+        """
+        return [(html.unescape(m.group(1)), int(m.group(2))) for m in re.finditer(
+            r'<li class="drop-reason">(.*?) <span class="drop-count">(\d+)</span></li>',
+            html_page)]
+
+    def _page(self, quotes, criteria=None):
+        return self._app(quotes, criteria).test_client().get(
+            "/", query_string={"ticker": "SPY", "expiration": "2026-10-16"}
+        ).get_data(as_text=True)
+
+    def _json(self, quotes, criteria=None):
+        return self._app(quotes, criteria).test_client().get(
+            "/api/screen",
+            query_string={"ticker": "SPY", "expiration": "2026-10-16"}
+        ).get_json()
+
+    # --- the empty case: the whole chain fails the age guard ---
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_the_page_names_the_reasons_when_nothing_hits(self):
+        html = self._page(self._stale_chain())
+        self.assertIn("Keine Kontrakte haben die Kriterien bestanden", html)
+        # drop order is the pipeline order: iv=0 first, the rest is stale
+        self.assertEqual(self._pairs(html),
+                         [("stale 275 min", 6), ("iv=0 illiquid", 1)])
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_the_page_shows_the_age_and_the_limit(self):
+        # the lamp already said "alt"; UX-1 adds the measured value
+        html_page = self._page(self._stale_chain())
+        self.assertIn("lamp red", html_page)
+        self.assertIn("(275 min, Grenze 30 min)", html_page)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_the_header_age_agrees_with_the_reason_text(self):
+        # 14:35:00 - 10:00:24 = 274.6 min: the header must round the same way
+        # as the "stale N min" text (274.6 -> 275), not floor it to 274
+        chain = make()
+        for q in chain:
+            q.quote_timestamp = "2026-10-07 10:00:24"
+        html_page = self._page(chain)
+        self.assertIn("(275 min, Grenze 30 min)", html_page)
+        self.assertEqual(self._pairs(html_page)[0], ("stale 275 min", 6))
+
+    # --- the mixed case: candidates exist, drops are still explained ---
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_the_block_is_rendered_with_candidates_too(self):
+        html = self._page(self._mixed_chain())
+        self.assertIn("Kandidaten: <b>1</b>", html)
+        # ties (both count 2) keep the order the filters produced them in:
+        # data-complete (iv=0) runs before oi; the spread group is last
+        self.assertEqual(self._pairs(html),
+                         [("iv=0 illiquid", 2), ("OI # < #", 2),
+                          ("spread 28.6% > 10.0%", 1)])
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_two_numbers_of_one_family_collapse_into_one_group(self):
+        pairs = dict((r, c) for r, c in self._pairs(self._page(self._mixed_chain())))
+        # 5 and 200 are different bounds - one family, one line
+        self.assertEqual(pairs.get("OI # < #"), 2)
+        self.assertNotIn("OI 5 < 500", pairs)
+        self.assertNotIn("OI 200 < 500", pairs)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_a_single_raw_text_keeps_its_measured_value(self):
+        # a group with exactly one text shows it (with its number)
+        pairs = dict(self._pairs(self._page(self._stale_chain())))
+        self.assertIn("stale 275 min", pairs)
+        self.assertNotIn("stale # min", pairs)
+
+    # --- the JSON contract (additive) ---
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_json_carries_the_groups_additively(self):
+        d = self._json(self._mixed_chain())
+        self.assertIsInstance(d["dropped"], int)          # unchanged
+        self.assertEqual(d["dropped"], 5)
+        self.assertEqual(d["dropped_reasons"],
+                         [{"reason": "iv=0 illiquid", "count": 2},
+                          {"reason": "OI # < #", "count": 2},
+                          {"reason": "spread 28.6% > 10.0%", "count": 1}])
+        counts = [g["count"] for g in d["dropped_reasons"]]
+        self.assertEqual(counts, sorted(counts, reverse=True))
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_json_and_html_report_the_same_groups(self):
+        chain = self._mixed_chain()
+        self.assertEqual(self._pairs(self._page(chain)),
+                         [(g["reason"], g["count"])
+                          for g in self._json(chain)["dropped_reasons"]])
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_the_empty_list_is_carried_in_both_stages(self):
+        # picker stage: no scan happened yet - and a scan that dropped
+        # nothing; the key exists in both, the list is empty (contract:
+        # a consumer never needs a key check)
+        picker = self._app(self._stale_chain()).test_client().get(
+            "/api/screen", query_string={"ticker": "SPY"}).get_json()
+        self.assertEqual(picker["dropped_reasons"], [])
+        clean = self._json([quote("AAPL260116C00240000", bid=5.00, ask=5.10,
+                                  iv=28.0, oi=8000, dte=10)])
+        self.assertEqual(clean["dropped_reasons"], [])
+        self.assertEqual(clean["dropped"], 0)
+
+    # --- edge case: nothing dropped at all ---
+
+    def test_no_drops_render_no_block(self):
+        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
+                       oi=8000, dte=10)]
+        html_page = self._page(chain)
+        self.assertIn("Kandidaten: <b>1</b>", html_page)
+        self.assertIn("Datenalter:", html_page)          # the header stays
+        # match the ELEMENT, not the bare class: the same name also lives
+        # in the <style> block, so a substring check would always pass
+        self.assertNotIn('<div class="dropped-summary">', html_page)
+        self.assertNotIn('<li class="drop-reason">', html_page)
+
+    @staticmethod
+    def _one(ts):
+        return [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
+                      oi=8000, dte=10, quote_timestamp=ts)]
+
+    def test_the_lamp_bands_and_the_missing_value(self):
+        # pin: measured before this slice - green < 30, yellow < 120, red
+        # from 120 min; unreadable or absent timestamp -> no lamp at all
+        lamp = _freshness_lamp
+        self.assertEqual(lamp(self._one("2026-10-07 14:06:00"), now_fn=_clock()),
+                         "green")                       # 29 min
+        self.assertEqual(lamp(self._one("2026-10-07 14:05:00"), now_fn=_clock()),
+                         "yellow")                      # 30 min exactly
+        self.assertEqual(lamp(self._one("2026-10-07 12:36:00"), now_fn=_clock()),
+                         "yellow")                      # 119 min
+        self.assertEqual(lamp(self._one("2026-10-07 12:35:00"), now_fn=_clock()),
+                         "red")                         # 120 min exactly
+        self.assertIsNone(lamp(self._one("gestern abend"), now_fn=_clock()))
+        self.assertIsNone(lamp([], now_fn=_clock()))
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_the_lamp_reads_the_fetched_chain_and_the_header_shows_it(self):
+        # newest governs; the lamp reads the FETCHED chain (CodeRabbit), not
+        # the results - here the fresh contract is the DROPPED one
+        mixed = [
+            quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=0.0, oi=8000,
+                  dte=10, quote_timestamp="2026-10-07 14:30:00"),   # fresh, dropped
+            quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=28.0, oi=1500,
+                  dte=10, quote_timestamp="2026-10-07 10:00:00"),   # old, stale
+        ]
+        html_page = self._page(mixed)
+        self.assertIn("lamp green", html_page)
+        self.assertIn("(5 min, Grenze 30 min)", html_page)
+
+    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice 1)")
+    def test_a_reason_text_cannot_inject_markup(self):
+        # the reasons are free text from the screener; they are rendered
+        # escaped, so a '<' stays text (measured: '&lt;' in the HTML)
+        html_page = self._page(self._mixed_chain())
+        self.assertIn("OI # &lt; #", html_page)
+        self.assertIn('<span class="drop-count">2</span>', html_page)
 
 
 if __name__ == "__main__":
