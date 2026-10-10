@@ -13,6 +13,7 @@
 #   (a raw ticker would allow path injection against cdn.cboe.com).      #
 # ---------------------------------------------------------------------- #
 
+import math
 import re
 
 import arrow
@@ -21,7 +22,7 @@ from flask import Flask, abort, jsonify, render_template, request
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
 from .PaperBroker import PaperBroker
-from .screener import OptionScreener, ScreenerCriteria
+from .screener import OptionScreener, ScreenerCriteria, screen
 
 _TICKER_RE = re.compile(r"^[A-Z]{1,6}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -41,6 +42,85 @@ _FRESH_YELLOW_MIN = 120
 # too wide". A group whose raw texts are all identical keeps the raw text,
 # so the measured value stays on the page ("stale 257 min", not "stale # min").
 _REASON_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+
+
+# ---------------------------------------------------------------------- #
+# Ausbau-Slice 2 (A): operator-settable filter criteria.                  #
+#                                                                          #
+# A request value overrides the injected base only when it is present and  #
+# not empty, so a request without parameters keeps whatever the app was    #
+# built with (the picker tests inject their own criteria).                  #
+# The switch ignore_quote_age=1 is the ONLY way to disable the age guard:   #
+# 0 is a valid, sharp bound ("everything older than 0 s"), not "off".       #
+# ---------------------------------------------------------------------- #
+_CRITERIA_INT_FIELDS = ("dte_min", "dte_max", "min_oi", "min_volume", "max_quote_age_min")
+_CRITERIA_FLOAT_FIELDS = ("max_spread_pct",)
+_CRITERIA_FIELDS = _CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
+_CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
+_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age")
+
+
+def _parse_criteria_value(field, raw):
+    """Parse one request value into the criteria type.
+
+    Raises ValueError with a readable hint. A comma is rejected on purpose:
+    the value has to round-trip through the URL and the reasons printed by the
+    screener use a dot ("spread 28.6% > 10.0%").
+    """
+    text = str(raw).strip()
+    if "," in text:
+        raise ValueError(f"{field}: bitte den Punkt als Dezimaltrenner verwenden "
+                         f"(z. B. 7.5 statt '{text}').")
+    if field in _CRITERIA_INT_FIELDS:
+        try:
+            return int(text)
+        except ValueError as exc:
+            raise ValueError(f"{field}: '{text}' ist keine ganze Zahl.") from exc
+    try:
+        value = float(text)
+    except ValueError as exc:
+        raise ValueError(f"{field}: '{text}' ist keine Zahl.") from exc
+    if not math.isfinite(value):
+        raise ValueError(f"{field}: '{text}' ist keine endliche Zahl.")
+    return value
+
+
+def _criteria_from_request(base_criteria, args):
+    """Merge the settable criteria from the request over the base criteria.
+
+    Returns (criteria, error, unknown):
+      error   - readable text when a value is unusable or the merged set is
+                contradictory (validate()), else None
+      unknown - request parameters that were not used (they are named on the
+                page instead of being ignored silently)
+    """
+    values = {name: getattr(base_criteria, name) for name in _CRITERIA_ECHO_FIELDS}
+    for field in _CRITERIA_FIELDS:
+        raw = args.get(field, "").strip()
+        if not raw:
+            continue
+        try:
+            values[field] = _parse_criteria_value(field, raw)
+        except ValueError as exc:
+            return base_criteria, str(exc), []
+    if args.get("ignore_quote_age", "").strip() == "1":
+        values["max_quote_age_min"] = None
+    criteria = ScreenerCriteria(**values)
+    try:
+        criteria.validate()
+    except ValueError as exc:
+        return base_criteria, str(exc), []
+    unknown = [k for k in args.keys()
+               if k not in _IGNORED_PARAMS and k not in _CRITERIA_FIELDS]
+    return criteria, None, sorted(unknown)
+
+
+def _criteria_echo(criteria):
+    """All 17 effective criteria as a JSON-able dict (None -> null).
+
+    One serialisation for every field - a whitelist would drift.
+    """
+    return {name: getattr(criteria, name) for name in _CRITERIA_ECHO_FIELDS}
 
 
 def create_app(quote_adapter=None, screener=None, now_fn=None):
@@ -105,18 +185,21 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         out.sort(key=lambda g: -g["count"])   # stable: ties keep pipeline order
         return out
 
-    def _selectable_dates(dates):
+    def _selectable_dates(dates, criteria):
         # B-11: the picker must only OFFER dates that can still hit. A
         # chain runs years out, but the screener window is ~6 weeks, so
         # most listed dates were dead entries in the dropdown. Validation
         # keeps using the FULL list, so a bookmarked date that fell out of
         # the window still answers 200 with zero hits instead of 400.
-        criteria = screener.criteria
         as_of = now_fn()
         return [d for d in dates
                 if _in_dte_window(calendar_days_between(d, as_of), criteria)]
 
     def _parse_args():
+        # one criteria object per request: base = injected criteria, the URL
+        # overrides only what it really sets (Ausbau-Slice 2, A)
+        criteria, criteria_error, unknown = _criteria_from_request(
+            screener.criteria, request.args)
         ticker = request.args.get("ticker", "").upper().strip()
         # form-first flow (CodeRabbit finding): load the expiration list
         # as soon as the ticker is valid so the selector appears without
@@ -128,7 +211,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         selectable = None
         if ticker:
             dates = broker.get_expiration_dates(ticker)
-            selectable = _selectable_dates(dates)
+            selectable = _selectable_dates(dates, criteria)
         if expiration:
             if not _DATE_RE.match(expiration):
                 abort(400, description="invalid expiration (YYYY-MM-DD expected)")
@@ -138,11 +221,15 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                 abort(400, description="expiration is not a listed date for this ticker")
         elif not ticker:
             abort(400, description="ticker and expiration required")
-        return ticker, expiration, dates, selectable
+        if criteria_error:
+            # a contradictory or unparsable criteria set is a client error -
+            # no silent correction (panel decision)
+            abort(400, description=criteria_error)
+        return ticker, expiration, dates, selectable, criteria, unknown
 
     @app.get("/api/screen")
     def api_screen():
-        ticker, expiration, dates, selectable = _parse_args()
+        ticker, expiration, dates, selectable, criteria, unknown = _parse_args()
         if not expiration:
             # picker stage: offer only the dates that can still hit. No
             # screening happened, so the drop list is empty - but the key
@@ -151,7 +238,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                            listed_dates=selectable, results=[], freshness=None,
                            dropped_reasons=[])
         quotes = broker.get_options(ticker, expiration)
-        results, dropped = screener.screen(quotes, now_fn=now_fn)
+        results, dropped = screen(quotes, criteria, now_fn=now_fn)
         return jsonify(
             ticker=ticker,
             expiration=expiration,
@@ -159,6 +246,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             candidates=len(results),
             dropped=len(dropped),
             dropped_reasons=_drop_reason_groups(dropped),
+            criteria=_criteria_echo(criteria),
             freshness=_freshness_lamp(quotes, now_fn=now_fn),
             results=[
                 {
@@ -182,14 +270,23 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         ticker = request.args.get("ticker", "").upper().strip()
         expiration = request.args.get("expiration", "").strip()
         error = None
+        hint = None
         results = dropped = dates = selectable = quotes = None
+        criteria, criteria_error, unknown = _criteria_from_request(
+            screener.criteria, request.args)
+        if unknown:
+            hint = ("Unbekannte Parameter ignoriert: " + ", ".join(unknown)
+                    + " (bedienbar sind: " + ", ".join(_CRITERIA_FIELDS)
+                    + ", ignore_quote_age)")
+        if criteria_error:
+            error = criteria_error
         try:
-            if ticker:
+            if ticker and not criteria_error:
                 if not _TICKER_RE.match(ticker):
                     error = "Ungueltiger Ticker - 1-6 Buchstaben A-Z."
                 else:
                     dates = broker.get_expiration_dates(ticker)
-                    selectable = _selectable_dates(dates)
+                    selectable = _selectable_dates(dates, criteria)
                     if expiration:
                         if not _DATE_RE.match(expiration):
                             error = "Ungueltiges Verfallsdatum - JJJJ-MM-TT."
@@ -197,8 +294,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                             error = "Verfallsdatum ist fuer diesen Ticker nicht gelistet."
                         else:
                             quotes = broker.get_options(ticker, expiration)
-                            results, dropped = screener.screen(
-                                quotes, trend=_load_trend(ticker), now_fn=now_fn)
+                            results, dropped = screen(
+                                quotes, criteria, trend=_load_trend(ticker), now_fn=now_fn)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,
@@ -220,11 +317,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             dates=offered, dates_loaded=dates is not None,
             results=results, dropped_count=len(dropped) if dropped else 0,
             dropped_reasons=_drop_reason_groups(dropped),
+            criteria=criteria, age_off=criteria.max_quote_age_min is None,
+            hint=hint,
             error=error, freshness=_lamp_state(age_min),
-            # same rounding as the "stale N min" reason text (f"{x:.0f}"),
-            # so the header never contradicts the list underneath it
             freshness_age=None if age_min is None else int(round(age_min)),
-            freshness_limit=screener.criteria.max_quote_age_min,
+            # the limit shown in the header is the EFFECTIVE one (A): it is the
+            # value the operator picked, not the app default
+            freshness_limit=criteria.max_quote_age_min,
             trend=_trend_display(ticker) if ticker else None,
             feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
 
