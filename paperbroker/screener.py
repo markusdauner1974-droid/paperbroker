@@ -291,6 +291,14 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
             continue
         try:
             now_v = now_fn()
+            if now_v is None:
+                raise ValueError("clock returned None")
+            if getattr(now_v, 'tzinfo', None) is not None or isinstance(now_v, arrow.Arrow):
+                now_naive = arrow.get(now_v).to('UTC').naive
+            elif isinstance(now_v, datetime):
+                now_naive = now_v
+            else:
+                raise TypeError(f"unsupported clock value: {type(now_v).__name__}")
         except Exception:
             # internal error, NOT an unreadable timestamp (B-17)
             dropped.append((q, "freshness unknown (clock error)"))
@@ -302,10 +310,6 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
             # (a 14:35-04:00 clock read against a 14:30 UTC stamp would
             # look 5 min old instead of 5 h 5 min) - so to('UTC') first
             ts_naive = arrow.get(str(ts).replace(' ', 'T')).to('UTC').naive
-            if getattr(now_v, 'tzinfo', None) is not None or isinstance(now_v, arrow.Arrow):
-                now_naive = arrow.get(now_v).to('UTC').naive
-            else:
-                now_naive = now_v
             age_s = (now_naive - ts_naive).total_seconds()
         except Exception:
             dropped.append((q, "freshness unknown (unparseable timestamp)"))

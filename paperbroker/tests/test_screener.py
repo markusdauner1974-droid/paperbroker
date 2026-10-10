@@ -314,6 +314,17 @@ class TestClockErrorLabel(unittest.TestCase):
         self.assertEqual({r for _q, r in dropped},
                          {"freshness unknown (clock error)"})
 
+    def test_a_clock_returning_junk_is_labelled_clock_error(self):
+        # CodeRabbit (PR #19): a clock function returning None - or anything
+        # that is not a datetime - must not be reported as an unreadable
+        # timestamp. Fail-closed either way, but the label has to be true.
+        for bad in (lambda: None, lambda: "2026-10-07T15:00:00"):
+            kept, dropped = self._run(self._chain(), bad)
+            self.assertEqual(kept, [])
+            self.assertEqual(len(dropped), 7)
+            self.assertEqual({r for _q, r in dropped},
+                             {"freshness unknown (clock error)"})
+
     def test_the_age_boundary_is_exclusive_and_keeps_minutes(self):
         # pin: measured 2026-10-10 - "if age_s > max_age_s" keeps a quote of
         # EXACTLY max_quote_age_min (30 min) and drops it at 31 min; the
