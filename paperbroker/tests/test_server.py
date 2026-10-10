@@ -680,7 +680,7 @@ class TestCriteriaPanel(unittest.TestCase):
         html = self._page({"ignore_quote_age": "1"}, self._stale_chain())
         self.assertIn("Kandidaten: 2", self._stats(html))
         self.assertIn("(275 min, Grenze aus)", html)
-        self.assertIn("Alter-Grenze aus", html)          # the banner
+        self.assertIn('class="warn"', html)            # the banner element
         labels = re.findall(r'<li class="drop-reason">(.*?) <span', html)
         self.assertTrue(labels)
         self.assertTrue(all("stale" not in label for label in labels), labels)
@@ -762,6 +762,13 @@ class TestCriteriaPanel(unittest.TestCase):
         narrow = self._app().test_client().get(
             "/api/screen", query_string={"ticker": "SPY", "dte_min": "45"}).get_json()
         self.assertEqual(narrow["listed_dates"], ["2026-11-21"])
+        # ... and on the PAGE too: the picker there is built by index(), not by
+        # the API helper - a mutant that passes the base criteria to only one
+        # of the two routes has to fail here (B-14: one source for both)
+        page = self._app().test_client().get(
+            "/", query_string={"ticker": "SPY", "dte_min": "45"}).get_data(as_text=True)
+        options = re.findall(r'<option value="(\d{4}-\d{2}-\d{2})"', page)
+        self.assertEqual(options, ["2026-11-21"])
 
 
 if __name__ == "__main__":
