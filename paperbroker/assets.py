@@ -160,7 +160,8 @@ class Option(Asset):
         super().__init__(symbol, self.option_type)
 
     def get_extrinsic_value(self, underlying_price=None, price=None):
-        return (abs(price) - self.get_intrinsic_value(underlying_price=underlying_price)) if price is not None else None
+        intrinsic = self.get_intrinsic_value(underlying_price=underlying_price)
+        return (abs(price) - intrinsic) if price is not None and intrinsic is not None else None
 
     def get_intrinsic_value(self, underlying_price=None):
 
