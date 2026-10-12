@@ -1297,6 +1297,34 @@ class TestChainBoundary(unittest.TestCase):
         self.assertIn("chain_skipped", body)
         self.assertEqual(body["chain_skipped"], 0)
 
+    def test_the_skip_count_reaches_the_screen(self):
+        """Pins the echo itself: a chain that skipped rows must say how many.
+
+        Measured blind spot: with a constant 0 the screen kept answering 200
+        and the mutant survived, so the count is pinned with a stub adapter.
+        """
+        from paperbroker.adapters.quotes.CBOEQuoteAdapter import ChainResult
+        from paperbroker.assets import asset_factory
+        from paperbroker.quotes import OptionQuote
+
+        class _Stub:
+            def get_expiration_dates(self, underlying_asset=None):
+                return ["2026-10-16"]
+
+            def get_options(self, underlying_asset=None, expiration_date=None):
+                asset = asset_factory(self._good)
+                return ChainResult([OptionQuote("2026-10-12 09:28:47", asset,
+                                                bid=5.0, ask=5.2)], skipped=2)
+
+            _good = "NVDA261016C00115000"
+
+        app = server_module.create_app(quote_adapter=_Stub(), now_fn=_clock())
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        body = app.test_client().get(
+            "/api/screen?ticker=NVDA&expiration=2026-10-16").get_json()
+        self.assertEqual(body["chain_skipped"], 2)
+        self.assertEqual(body["chain_size"], 1)
+
     def test_picker_survives_one_unusable_row(self):
         """The picker died before a date was even chosen (measured)."""
         rows = [self._row(self.BAD), self._row(self.GOOD)]
