@@ -20,6 +20,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
@@ -364,6 +365,16 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         offered = list(selectable) if selectable else []
         if expiration and dates and expiration in dates and expiration not in offered:
             offered = [expiration] + offered
+        # Darstellung (Slice K): die Reihenfolge der ANZEIGE, nicht die der
+        # Schnittstelle. /api/screen liefert unveraendert die Kettenreihenfolge -
+        # dort haengen Zusicherungen dran; sortiert wird nur, was die Seite zeigt.
+        # Unbekannte Werte behandelt _vertical_sort_key wie die Voreinstellung;
+        # eine zweite Pruefung hier waere wirkungslos (als Mutant M5 gemessen).
+        sort_mode = request.args.get("sort", "rendite_desc")
+        vertical_rows = None if vertical_kept is None else [
+            (v, _spread_return_pct(v), _spread_be_gap_pct(v))
+            for v in sorted(vertical_kept, key=_vertical_sort_key(sort_mode))
+        ]
         age_min = _newest_quote_age_min(lamp_source, now_fn=now_fn)
         # D (Ausbau-Slice 3): the row order is a property of the RESULT, not
         # of the template. Sorting here keeps the order checkable in the test
@@ -382,7 +393,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             dates=offered, dates_loaded=dates is not None,
             results=results, dropped_count=len(dropped) if dropped else 0,
             dropped_reasons=_drop_reason_groups(dropped),
-            verticals=vertical_kept,
+            verticals=vertical_rows,
+            sort_links=_sort_links(request.args),
             vertical_drops=_drop_reason_groups(vertical_dropped),
             criteria=criteria, age_off=criteria.max_quote_age_min is None,
             hint=hint,
@@ -572,6 +584,60 @@ def _newest_quote_age_min(quotes, now_fn=None):
     if newest is None:
         return None
     return (now - newest).total_seconds() / 60.0
+
+
+def _spread_return_pct(v):
+    """Rendite eines Spreads in Prozent - None, wenn der Nenner fehlt.
+
+    Der Nenner ist der maximale Verlust. Er kann 0 sein (Debit 0); dann wird
+    nicht gerechnet: eine Division durch Null waere kein Ergebnis, die Seite
+    zeigt an dieser Stelle einen Strich.
+    """
+    return v.max_profit / v.max_loss * 100.0 if v.max_loss else None
+
+
+def _spread_be_gap_pct(v):
+    """Abstand des Kurses zum Break-even in Prozent - None, wenn kein Kurs.
+
+    Positiv heisst: der Kurs muss steigen, um den Break-even zu erreichen.
+    `underlying_price` ist optional; ohne Kurs wird nicht gerechnet.
+    """
+    spot = v.long.underlying_price
+    return (v.breakeven - spot) / spot * 100.0 if spot else None
+
+
+def _vertical_sort_key(mode):
+    """Sortierschluessel der Spread-ANZEIGE (nicht der Schnittstelle).
+
+    Unbekannte Werte (None) sortieren ans Ende, damit sie nichts verdraengen.
+    Der dritte Schluessel ist das Symbol - ohne ihn waere die Reihenfolge bei
+    Gleichstand von der Kettenreihenfolge abhaengig statt reproduzierbar.
+    """
+    def key(v):
+        if mode == "none":
+            return (0,)
+        rendite = _spread_return_pct(v)
+        abstand = _spread_be_gap_pct(v)
+        if mode == "be_asc":
+            return (abstand if abstand is not None else 9e9,
+                    -(rendite or 0.0), v.symbol)
+        return (-(rendite if rendite is not None else -1.0),
+                abstand if abstand is not None else 9e9, v.symbol)
+    return key
+
+
+def _sort_links(args):
+    """Die drei Sortier-Adressen MIT den uebrigen Parametern.
+
+    Ohne sie wuerde ein Klick auf einen Spaltenkopf Ticker, Verfall und alle
+    Filter verlieren - die Seite fiele auf die Auswahl zurueck.
+    """
+    links = {}
+    for mode in ("rendite_desc", "be_asc", "none"):
+        paar = [(k, wert) for k, wert in args.items(multi=True) if k != "sort"]
+        paar.append(("sort", mode))
+        links[mode] = urlencode(paar)
+    return links
 
 
 def _lamp_state(age_min):

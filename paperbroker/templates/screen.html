@@ -158,17 +158,19 @@
         nicht dieselben Regeln wie die Liste oben. Debit = Kauf zum Ask, Verkauf zum Bid.</p>
       <table>
         <thead><tr>
-          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit</th><th>max Verlust</th><th>max Gewinn</th><th>Breakeven</th><th>Debit/Breite</th><th>Hinweis</th>
+          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite</th><th>Hinweis</th>
         </tr></thead>
-        {% for v in verticals %}
+        {% for v, rendite, abstand in verticals %}
           <tr>
-            <td>{{ v.symbol }}</td>
+            <td title="{{ v.long.asset.symbol }} / {{ v.short.asset.symbol }}">{{ v.long.asset.underlying.symbol }} {{ '%.2f'|format(v.long.asset.strike) }} / {{ '%.2f'|format(v.short.asset.strike) }} Call</td>
             <td>{{ v.expiration }}</td>
             <td>{{ '%.2f'|format(v.strike_width) }}</td>
             <td>{{ '%.2f'|format(v.net_debit) }}</td>
             <td>{{ '%.2f'|format(v.max_loss) }}</td>
             <td>{{ '%.2f'|format(v.max_profit) }}</td>
+            <td{% if v.max_profit == 0 %} title="kein Gewinn moeglich"{% endif %}>{% if rendite is none %}-{% else %}{{ '%.2f'|format(rendite) }} %{% endif %}</td>
             <td>{{ '%.2f'|format(v.breakeven) }}</td>
+            <td>{% if abstand is none %}-{% else %}{{ '%+.2f'|format(abstand) }} %{% endif %}</td>
             <td>{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio) }}{% endif %}</td>
             <td>{% if v.debit_ge_width %}kein Gewinn moeglich{% else %}-{% endif %}</td>
           </tr>
