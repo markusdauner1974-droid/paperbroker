@@ -259,6 +259,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             ticker=ticker,
             expiration=expiration,
             chain_size=len(quotes),
+            # B-16: rows the adapter had to skip (list subclass carries
+            # the count); the key is always present so a consumer never
+            # needs a key check
+            chain_skipped=getattr(quotes, "skipped", 0),
             candidates=len(results),
             dropped=len(dropped),
             dropped_reasons=_drop_reason_groups(dropped),

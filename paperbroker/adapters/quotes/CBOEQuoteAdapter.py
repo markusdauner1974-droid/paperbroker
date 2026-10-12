@@ -14,9 +14,11 @@
     get_options. TTL refreshes when the CBOE timestamp changes (the feed
     updates roughly every 15 minutes); a bounded LRU keeps memory in check.
 """
+import logging
 import math
 import re
 from collections import OrderedDict
+from datetime import date
 
 import arrow
 import requests
@@ -50,6 +52,31 @@ def _num(value, scale=1.0):
     if isinstance(v, float) and math.isnan(v):
         return None
     return v * scale
+
+
+logger = logging.getLogger(__name__)
+
+
+def _is_real_date(value):
+    """True when the date really exists (29 February only in a leap year)."""
+    try:
+        date.fromisoformat(value)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+class ChainResult(list):
+    """The chain as an ordinary list, plus how many rows were unusable.
+
+    A list subclass on purpose: callers index and count the result and the
+    JSON echo serialises it as an array - all of that stays unchanged
+    (measured 2026-10-12), so no existing assertion had to be touched.
+    """
+
+    def __init__(self, items=(), skipped=0):
+        super().__init__(items)
+        self.skipped = skipped
 
 
 class CBOEQuoteAdapter(QuoteAdapter):
@@ -156,22 +183,13 @@ class CBOEQuoteAdapter(QuoteAdapter):
         underlying, expiration, option_type, strike = parsed
 
         oc_symbol = contract["option"]
-        try:
-            asset = asset_factory(oc_symbol)
-            if isinstance(asset, Option):
-                pass
-        except Exception:
-            asset = None
-        if asset is None:
-            # asset_factory could not build a proper Option (rare symbol
-            # variants) - fall back to a manually constructed Option
-            underlying_asset = Asset(underlying)
-            if option_type == "call":
-                asset = Call(underlying=underlying_asset, option_type=option_type,
-                             strike=strike, expiration_date=expiration)
-            else:
-                asset = Put(underlying=underlying_asset, option_type=option_type,
-                            strike=strike, expiration_date=expiration)
+        # B-9: no silent fallback. The old fallback built the option by hand
+        # and passed an `option_type` argument that Call/Put do not accept, so
+        # every contract that reached it died with a TypeError (measured
+        # 2026-10-12) and took the whole chain down with it. A contract that
+        # cannot be built now raises and is skipped by the per-contract
+        # boundary in get_options instead.
+        asset = asset_factory(oc_symbol)
 
         q = OptionQuote(
             quote_date=quote_date,
@@ -277,17 +295,37 @@ class CBOEQuoteAdapter(QuoteAdapter):
             raise ValueError(f"expiration_date not parseable: {expiration_date!r}")
 
         out = []
+        skipped = 0
         for contract in chain["options"]:
             parsed = self._parse_occ(contract.get("option", ""))
             if parsed is None:
                 continue
             if exp is not None and parsed[1] != exp:
                 continue
-            q = self._quote_from_contract(contract, quote_date, chain["current_price"])
+            # B-16: one malformed row must cost exactly that row. Without this
+            # boundary a single contract that the parser accepts but the option
+            # constructor cannot build killed the whole request (measured:
+            # 4314 quotes -> 0). The boundary is deliberately broad because
+            # CboeNotFoundError is not a ValueError (measured MRO), so a narrow
+            # tuple would lose coverage as soon as the row fails elsewhere.
+            try:
+                q = self._quote_from_contract(contract, quote_date, chain["current_price"])
+            except Exception as exc:  # noqa: BLE001 - boundary by design
+                skipped += 1
+                logger.warning("get_options(%s): skipping %r (%s: %s)", underlying,
+                               contract.get("option"), type(exc).__name__, exc)
+                continue
             if q is not None:
                 q.quote_timestamp = chain["timestamp"]
                 out.append(q)
-        return out
+        if skipped:
+            logger.warning("get_options(%s): %d of %d contracts skipped",
+                           underlying, skipped, len(chain["options"]))
+        if skipped and not out:
+            # never let a fully unusable chain look like "no candidates"
+            raise CboeNotFoundError(
+                f"all {len(chain['options'])} contracts of {underlying} unusable")
+        return ChainResult(out, skipped=skipped)
 
     def get_expiration_dates(self, underlying_asset=None):
         """Sorted 'YYYY-MM-DD' strings available for an underlying."""
@@ -299,4 +337,9 @@ class CBOEQuoteAdapter(QuoteAdapter):
             parsed = self._parse_occ(contract.get("option", ""))
             if parsed:
                 dates.add(parsed[1])
-        return sorted(dates)
+        # B-16: the leap-day-safe table accepts 29 February in every year, but
+        # the option constructor refuses it in a non-leap year (measured) and
+        # such a date took the whole screen down before a date was even picked.
+        # Offer only dates that really exist; a real 29 February (leap year)
+        # stays in the list.
+        return sorted(d for d in dates if _is_real_date(d))

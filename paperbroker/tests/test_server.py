@@ -1260,5 +1260,78 @@ class TestTrendWiring(unittest.TestCase):
         self.assertIn("steigend", page)
 
 
+
+class TestChainBoundary(unittest.TestCase):
+    """Ausbau-Slice E (B-16): one unusable row must not take the screen down."""
+
+    BAD = "NVDA260229C00115000"
+    GOOD = "NVDA261016C00115000"
+
+    def _chain(self, rows):
+        return {"timestamp": "2026-10-12 09:28:47", "current_price": 229.4,
+                "options": rows}
+
+    def _row(self, symbol):
+        return {"option": symbol, "bid": 5.0, "ask": 5.2, "last_trade_price": 5.1,
+                "delta": 50.0, "iv": 40.0, "gamma": 1.0, "vega": 10.0,
+                "theta": -5.0, "rho": 2.0, "open_interest": 100, "volume": 10}
+
+    def _screen(self, rows, query):
+        from paperbroker.adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
+        ad = CBOEQuoteAdapter(now_fn=_clock())
+        ad._fetch = lambda symbol: self._chain(rows)
+        app = server_module.create_app(quote_adapter=ad, now_fn=_clock())
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        return app.test_client().get(query)
+
+    def test_screen_survives_one_unusable_row(self):
+        rows = [self._row(self.BAD), self._row(self.GOOD)]
+        res = self._screen(rows, "/api/screen?ticker=NVDA&expiration=2026-10-16")
+        self.assertEqual(res.status_code, 200)
+        body = res.get_json()
+        self.assertEqual(body["chain_size"], 1)
+        # MEASURED: with an expiration the unusable row is already dropped by the
+        # date filter, so nothing reaches the per-contract boundary and the
+        # counter stays 0 - the key must still be present for a consumer. The
+        # counter itself is pinned at the adapter level (no date filter there).
+        self.assertIn("chain_skipped", body)
+        self.assertEqual(body["chain_skipped"], 0)
+
+    def test_the_skip_count_reaches_the_screen(self):
+        """Pins the echo itself: a chain that skipped rows must say how many.
+
+        Measured blind spot: with a constant 0 the screen kept answering 200
+        and the mutant survived, so the count is pinned with a stub adapter.
+        """
+        from paperbroker.adapters.quotes.CBOEQuoteAdapter import ChainResult
+        from paperbroker.assets import asset_factory
+        from paperbroker.quotes import OptionQuote
+
+        class _Stub:
+            def get_expiration_dates(self, underlying_asset=None):
+                return ["2026-10-16"]
+
+            def get_options(self, underlying_asset=None, expiration_date=None):
+                asset = asset_factory(self._good)
+                return ChainResult([OptionQuote("2026-10-12 09:28:47", asset,
+                                                bid=5.0, ask=5.2)], skipped=2)
+
+            _good = "NVDA261016C00115000"
+
+        app = server_module.create_app(quote_adapter=_Stub(), now_fn=_clock())
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        body = app.test_client().get(
+            "/api/screen?ticker=NVDA&expiration=2026-10-16").get_json()
+        self.assertEqual(body["chain_skipped"], 2)
+        self.assertEqual(body["chain_size"], 1)
+
+    def test_picker_survives_one_unusable_row(self):
+        """The picker died before a date was even chosen (measured)."""
+        rows = [self._row(self.BAD), self._row(self.GOOD)]
+        res = self._screen(rows, "/api/screen?ticker=NVDA")
+        self.assertEqual(res.status_code, 200)
+        self.assertNotIn("2026-02-29", res.get_json()["listed_dates"])
+
+
 if __name__ == "__main__":
     unittest.main()
