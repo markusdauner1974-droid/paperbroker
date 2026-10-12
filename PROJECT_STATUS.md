@@ -6,13 +6,16 @@ stays local in `docs/` and is **not** part of the repository.
 
 ## Baseline (frozen)
 
+**This file is a snapshot, not a live view.** It is refreshed when the state is deliberately frozen.
+The always-current sources are `git log --merges` (history) and the CI page of the repository.
+
 | Item | Value |
 |---|---|
-| `master` | `9bef691c25b5f3119b2ccaab19612c281fa82c15` (merge of PR #27) |
+| `master` | `31f19af675f9390525a046a410623d3410013137` (merge of PR #29, last merge of the documentation freeze) |
 | Test suite | **295 passed** (`pytest paperbroker/tests`) |
 | Lint | `ruff` clean, run in the CI form over the tracked files |
 | CI on `master` | **4/4 green** — Lint ruff · Test suite pytest 3.13 · Docker image build · publish |
-| Commits | 155 |
+| Commits | 158 |
 | Runtime dependencies | `arrow`, `requests`, `flask` (`requirements.txt` and `setup.py` agree — pinned by a test) |
 | Open audit findings | **none** |
 
@@ -22,6 +25,8 @@ Everything in this table was measured on the commit above, not estimated.
 
 | PR | Merge commit | What it added |
 |---|---|---|
+| #29 | `31f19af` | Pass the trend variables through the local Arcane stack as well |
+| #28 | `f58d24c` | Freeze the state: `PROJECT_STATUS.md`, rewritten README, trend variables in the compose file |
 | #27 | `9bef691` | Declare Flask and the template asset; `setuptools` + explicit `[build-system]` (B-13) |
 | #26 | `6d7c79e` | Pin the sign of the extrinsic value above the intrinsic value (B-15) |
 | #25 | `5d6c4bb` | One unusable contract no longer takes the whole chain down; skip count reported (B-16 + B-9) |
@@ -86,8 +91,17 @@ whole package directory.
 
 ## How work is done here (unchanged)
 
-- One change set per pull request; **all** checks must be green before a merge — the code-review bot
+- One change set per pull request; **all** checks must be green before a merge — the code-review bots
   included. PR titles, bodies and comments are written in English.
+- **A merge gate must read two systems, not one.** GitHub Actions report as *check runs*; CodeRabbit
+  reports as a *commit status*. A gate that only looks at `check-runs` sees "all green" while a review
+  is still pending, and `mergeable_state: unstable` then looks like a race instead of what it is — the
+  open status. Measured on PR #29: four green check runs, `combined status: pending`,
+  `CodeRabbit: Review in progress`. Both sources are polled, and the merge waits.
+- A bot that ends in `failure` **without a finding** (HTTP 503, "temporarily overloaded", "rules could
+  not be evaluated") is an outage, not a review result: do not merge, do not treat it as a finding, and
+  retry the review a bounded number of times. Measured on PR #28: the retry brought the review back to
+  green and the merge then went through.
 - **Every number in a PR body is measured, never estimated**, and the before/after evidence is quoted
   verbatim. A finding is re-measured before it is worked on: several entries in the local knowledge
   base had already been fixed when they were picked up, and the status lines were corrected instead of
