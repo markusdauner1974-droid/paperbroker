@@ -6,6 +6,8 @@ injection into the CBOE URL), trend failure != flat, freshness lamp,
 healthz liveness without external calls.
 """
 import html
+import json
+import os
 import re
 import unittest
 from datetime import datetime
@@ -14,8 +16,9 @@ import arrow
 import pytest
 from flask import Flask
 
+from paperbroker import server as server_module
 from paperbroker.assets import asset_factory
-from paperbroker.screener import OptionScreener, ScreenerCriteria
+from paperbroker.screener import OptionScreener, ScreenerCriteria, TrendSignal
 from paperbroker.server import _freshness_lamp, create_app
 from paperbroker.tests.test_screener import make, make_verticals, quote
 
@@ -970,6 +973,287 @@ class TestVerticalSpreadList(unittest.TestCase):
                                        iv=28.0, oi=8000, volume=1200, dte=10)])
         self.assertEqual(data["verticals"], [])
         self.assertEqual(data["vertical_drops"], [])
+
+
+_ENV_KEYS = ("PAPERBROKER_TREND_MCP_URL", "PAPERBROKER_TREND_TOKEN",
+             "PAPERBROKER_TREND_TIMEOUT_S")
+
+
+def _mcp_envelope(stage, symbol="AAPL"):
+    """The documented MCP shape: result.content[0].text is a JSON STRING."""
+    inner = json.dumps({"symbol": symbol, "stage": stage})
+    return json.dumps({"jsonrpc": "2.0", "id": 1,
+                       "result": {"content": [{"type": "text", "text": inner}]}}).encode()
+
+
+class _FakeTransport:
+    """Records every call; never touches the network."""
+
+    def __init__(self, status=200, body=b""):
+        self.status = status
+        self.body = body
+        self.calls = []
+
+    def __call__(self, url, headers, body, timeout):
+        self.calls.append({"url": url, "headers": headers, "body": body, "timeout": timeout})
+        return self.status, self.body
+
+
+class _FakeProvider:
+    def __init__(self, signal):
+        self.signal = signal
+
+    def get_trend(self, ticker):
+        return self.signal
+
+
+class _BrokenProvider:
+    def get_trend(self, ticker):
+        raise RuntimeError("boom")
+
+
+class TestTrendDirectionRule(unittest.TestCase):
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_direction_two_is_up(self):
+        self.assertEqual(server_module._direction_from_stage(2), "up")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_direction_four_is_down(self):
+        self.assertEqual(server_module._direction_from_stage(4), "down")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_direction_one_is_flat(self):
+        self.assertEqual(server_module._direction_from_stage(1), "flat")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_direction_three_is_flat(self):
+        # the only catcher for a "3 -> up" mutant
+        self.assertEqual(server_module._direction_from_stage(3), "flat")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_direction_missing_or_string_stage_raises(self):
+        # no subTest here: a subtest failure is not catchable by xfail(strict)
+        for bad in (None, 5, "2"):
+            with self.assertRaises(ValueError):
+                server_module._direction_from_stage(bad)
+
+
+class TestTrendTransport(unittest.TestCase):
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_transport_returns_status_and_body(self):
+        import io
+        from unittest import mock
+
+        class _Resp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        with mock.patch.object(server_module.urllib.request, "urlopen",
+                               return_value=_Resp(b'{"ok":1}')):
+            status, body = server_module._urllib_transport("http://x/mcp/", {}, b"{}", 2.0)
+        self.assertEqual(status, 200)
+        self.assertEqual(body, b'{"ok":1}')
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_transport_http_error_carries_status_and_body(self):
+        import io
+        import urllib.error
+        from unittest import mock
+
+        err = urllib.error.HTTPError("http://x/mcp/", 401, "no", {}, io.BytesIO(b'{"detail":"auth"}'))
+        with mock.patch.object(server_module.urllib.request, "urlopen", side_effect=err):
+            status, body = server_module._urllib_transport("http://x/mcp/", {}, b"{}", 2.0)
+        self.assertEqual(status, 401)
+        self.assertEqual(body, b'{"detail":"auth"}')
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_transport_posts_with_headers_and_timeout(self):
+        import io
+        from unittest import mock
+
+        seen = {}
+
+        class _Resp(io.BytesIO):
+            status = 200
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def _fake_urlopen(req, timeout=None):
+            seen["method"] = req.get_method()
+            seen["url"] = req.full_url
+            seen["timeout"] = timeout
+            seen["auth"] = req.get_header("Authorization")
+            seen["ctype"] = req.get_header("Content-type")
+            seen["body"] = req.data
+            return _Resp(b"{}")
+
+        with mock.patch.object(server_module.urllib.request, "urlopen", side_effect=_fake_urlopen):
+            server_module._urllib_transport("http://x/mcp/", {"Authorization": "Bearer T",
+                                                              "Content-Type": "application/json"},
+                                            b'{"a":1}', 2.0)
+        self.assertEqual(seen["method"], "POST")
+        self.assertEqual(seen["url"], "http://x/mcp/")
+        self.assertEqual(seen["timeout"], 2.0)
+        self.assertEqual(seen["auth"], "Bearer T")
+        self.assertEqual(seen["ctype"], "application/json")
+        self.assertEqual(seen["body"], b'{"a":1}')
+
+
+class TestTrendProvider(unittest.TestCase):
+    def _provider(self, status=200, body=b""):
+        fake = _FakeTransport(status, body)
+        return server_module._MCPTrendProvider("http://x/mcp", "T", 2.0, transport=fake), fake
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_provider_url_is_normalised_to_mcp_slash(self):
+        for raw in ("http://x/mcp", "http://x/mcp/"):
+            prov = server_module._MCPTrendProvider(raw, "T", 2.0, transport=_FakeTransport())
+            self.assertEqual(prov.url, "http://x/mcp/")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_provider_sends_bearer_and_tool_call(self):
+        prov, fake = self._provider(200, _mcp_envelope(2))
+        prov.get_trend("AAPL")
+        call = fake.calls[0]
+        self.assertEqual(call["headers"]["Authorization"], "Bearer T")
+        self.assertEqual(call["headers"]["Content-Type"], "application/json")
+        sent = json.loads(call["body"])
+        self.assertEqual(sent["method"], "tools/call")
+        self.assertEqual(sent["params"]["name"], "stock_snapshot")
+        self.assertEqual(sent["params"]["arguments"], {"symbol": "AAPL"})
+        self.assertEqual(call["timeout"], 2.0)
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_provider_extracts_direction_from_stage(self):
+        prov, _ = self._provider(200, _mcp_envelope(2))
+        sig = prov.get_trend("AAPL")
+        self.assertEqual(sig.direction, "up")
+        self.assertEqual(sig.symbol, "AAPL")
+        prov, _ = self._provider(200, _mcp_envelope(4, "MSFT"))
+        self.assertEqual(prov.get_trend("MSFT").direction, "down")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_provider_raises_on_every_failure(self):
+        cases = [
+            ("status 401", 401, b'{"detail":"Authentication required"}'),
+            ("empty body", 200, b""),
+            ("html instead of json", 200, b"<html>nope</html>"),
+            ("rpc error", 200, json.dumps({"error": {"code": -32600}}).encode()),
+            ("isError", 200, json.dumps({"result": {"isError": True, "content": []}}).encode()),
+            ("stage missing", 200, json.dumps(
+                {"result": {"content": [{"text": json.dumps({"symbol": "AAPL"})}]}}).encode()),
+            ("stage string", 200, _mcp_envelope("2")),
+        ]
+        for name, status, body in cases:
+            prov, _ = self._provider(status, body)
+            with self.assertRaises((RuntimeError, ValueError), msg=name):
+                prov.get_trend("AAPL")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_provider_token_never_in_exception(self):
+        secret = "SUPER-SECRET-TOKEN"
+        prov = server_module._MCPTrendProvider("http://x/mcp", secret, 2.0,
+                                               transport=_FakeTransport(401, b"nope"))
+        try:
+            prov.get_trend("AAPL")
+        except Exception as exc:  # noqa: BLE001 - the text is the assertion
+            self.assertNotIn(secret, str(exc))
+            self.assertNotIn(secret, repr(exc))
+        else:
+            self.fail("kein Fehler geworfen")
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_provider_hostile_symbol_does_not_corrupt_body(self):
+        prov, fake = self._provider(200, _mcp_envelope(2))
+        prov.get_trend('AA"PL{')
+        sent = json.loads(fake.calls[0]["body"])
+        self.assertEqual(sent["params"]["arguments"]["symbol"], 'AA"PL{')
+
+
+class TestTrendConfig(unittest.TestCase):
+    def setUp(self):
+        self._env = {k: os.environ.pop(k, None) for k in _ENV_KEYS}
+
+    def tearDown(self):
+        for key, value in self._env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
+
+    def test_gate_is_none_without_config(self):
+        self.assertIsNone(server_module._get_trend_provider())
+
+    def test_gate_is_none_on_partial_config(self):
+        os.environ["PAPERBROKER_TREND_MCP_URL"] = "http://x/mcp"
+        self.assertIsNone(server_module._get_trend_provider())
+        os.environ.pop("PAPERBROKER_TREND_MCP_URL")
+        os.environ["PAPERBROKER_TREND_TOKEN"] = "T"
+        self.assertIsNone(server_module._get_trend_provider())
+        os.environ["PAPERBROKER_TREND_MCP_URL"] = ""
+        self.assertIsNone(server_module._get_trend_provider())
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_gate_builds_provider_with_full_config(self):
+        os.environ["PAPERBROKER_TREND_MCP_URL"] = "http://x/mcp"
+        os.environ["PAPERBROKER_TREND_TOKEN"] = "T"
+        prov = server_module._get_trend_provider()
+        self.assertIsNotNone(prov)
+        self.assertEqual(prov.url, "http://x/mcp/")
+        self.assertEqual(prov.token, "T")
+        self.assertEqual(prov.timeout, 2.0)
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_gate_timeout_default_and_override(self):
+        os.environ["PAPERBROKER_TREND_MCP_URL"] = "http://x/mcp"
+        os.environ["PAPERBROKER_TREND_TOKEN"] = "T"
+        os.environ["PAPERBROKER_TREND_TIMEOUT_S"] = "7.5"
+        self.assertEqual(server_module._get_trend_provider().timeout, 7.5)
+        for bad in ("", "abc", "0", "-1"):
+            os.environ["PAPERBROKER_TREND_TIMEOUT_S"] = bad
+            self.assertEqual(server_module._get_trend_provider().timeout, 2.0, bad)
+
+
+class TestTrendWiring(unittest.TestCase):
+    def _client(self):
+        return create_app(quote_adapter=_MockAdapter(make()), now_fn=_clock()).test_client()
+
+    def test_page_without_provider_shows_no_trend_badge(self):
+        html_out = self._client().get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
+        self.assertNotIn("Trend:", html_out)
+
+    def test_json_reports_the_unavailable_source_not_a_calm_market(self):
+        import unittest.mock as mock
+        with mock.patch.object(server_module, "_get_trend_provider", return_value=_BrokenProvider()):
+            client = self._client()
+            data = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16").get_json()
+            page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
+        self.assertNotIn("trend", json.dumps(data))
+        self.assertIn("Trend nicht verfuegbar", page)
+
+    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
+    def test_json_and_page_agree_on_trend_reasons(self):
+        import unittest.mock as mock
+        signal = TrendSignal(symbol="AAPL", direction="up")
+        with mock.patch.object(server_module, "_get_trend_provider",
+                               return_value=_FakeProvider(signal)):
+            client = self._client()
+            data = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16").get_json()
+            page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
+        json_reasons = [r for row in data["results"] for r in row["reasons"] if "trend" in r]
+        self.assertTrue(json_reasons, "kein Trend-Grund im JSON")
+        for reason in json_reasons:
+            self.assertIn(reason, page, "Seite und JSON gehen auseinander")
+        self.assertIn("steigend", page)
 
 
 if __name__ == "__main__":
