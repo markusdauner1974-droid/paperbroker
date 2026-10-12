@@ -1571,5 +1571,140 @@ class TestChainBoundary(unittest.TestCase):
         self.assertNotIn("2026-02-29", res.get_json()["listed_dates"])
 
 
+
+class TheSpreadListIsReadyToDecide(unittest.TestCase):
+    """Slice K: Rendite, Break-even-Abstand, Strikes im Klartext, Sortierung.
+
+    Die Zahlen sind reine Arithmetik aus dem Spread-Objekt; die Reihenfolge der
+    ANZEIGE darf von der Reihenfolge der Schnittstelle abweichen (dort haengen
+    die Zusicherungen der bestehenden Tests).
+    """
+
+    @staticmethod
+    def _app(quotes=None, criteria=None):
+        adapter = _MockAdapter(make_verticals() if quotes is None else quotes)
+        # die Fixture liegt auf ihrem eigenen Verfall; /api/screen und die Seite
+        # nehmen nur ein Datum an, das die Kette wirklich listet
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(criteria or ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _page(self, params=None, quotes=None):
+        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query.update(params or {})
+        return self._app(quotes).test_client().get("/", query_string=query).get_data(as_text=True)
+
+    def _json(self, quotes=None):
+        return self._app(quotes).test_client().get(
+            "/api/screen", query_string={"ticker": "AAPL", "expiration": "2026-01-16"}).get_json()
+
+    @staticmethod
+    def _spread_rows(page):
+        """Nur die Spread-Tabelle: die zweite <table> der Seite."""
+        tabelle = re.findall(r"<table>(.*?)</table>", page, re.S)[-1]
+        zeilen = re.findall(r"<tr>(.*?)</tr>", tabelle, re.S)
+        return [[re.sub(r"<[^>]+>", "", c).strip() for c in
+                 re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)]
+                for zeile in zeilen[1:]]
+
+    # --- die neuen Spalten tragen gerechnete Zahlen ---
+
+    def test_the_page_shows_the_return_of_every_spread(self):
+        zeilen = self._spread_rows(self._page())
+        self.assertEqual([z[0] for z in zeilen],
+                         ["AMZN 260.00 / 262.50 Call",
+                          "TSLA 290.00 / 292.50 Call",
+                          "AAPL 250.00 / 252.50 Call"])
+        self.assertEqual([z[6] for z in zeilen], ["257.14 %", "257.14 %", "0.00 %"])
+
+    def test_the_page_shows_the_distance_to_the_break_even(self):
+        zeilen = self._spread_rows(self._page())
+        self.assertEqual([z[8] for z in zeilen], ["+4.28 %", "+16.28 %", "+1.00 %"])
+
+    def test_the_spread_cell_names_the_trade_and_keeps_the_codes_in_the_tooltip(self):
+        html = self._page()
+        self.assertIn('title="AAPL260116C00250000 / AAPL260116C00252500"', html)
+        self.assertIn(">AAPL 250.00 / 252.50 Call<", html)
+
+    def test_the_spread_row_keeps_the_shape_the_other_tests_parse(self):
+        # die Muster der uebrigen Tests duerfen nicht brechen: <tr> ohne
+        # Attribute, <td> hoechstens mit title, genau ein tbody, zwei Tabellen
+        loose = ScreenerCriteria(max_quote_age_min=None, max_spread_pct=None,
+                                 min_oi=None, dte_min=None, dte_max=None)
+        page = self._app(criteria=loose).test_client().get(
+            "/", query_string={"ticker": "AAPL", "expiration": "2026-01-16"}).get_data(as_text=True)
+        for zeile in self._spread_rows(page):
+            self.assertEqual(len(zeile), 11)
+        self.assertEqual(page.count("<tbody>"), 1)
+        self.assertEqual(page.count("<table>"), 2)
+
+    # --- die Reihenfolge: Seite sortiert, Schnittstelle nicht ---
+
+    def test_the_page_sorts_by_return_per_default(self):
+        self.assertEqual(self._spread_rows(self._page())[0][0], "AMZN 260.00 / 262.50 Call")
+        self.assertEqual(self._spread_rows(self._page())[-1][0], "AAPL 250.00 / 252.50 Call")
+
+    def test_the_page_can_sort_by_distance_to_break_even(self):
+        zeilen = self._spread_rows(self._page({"sort": "be_asc"}))
+        self.assertEqual([z[8] for z in zeilen], ["+1.00 %", "+4.28 %", "+16.28 %"])
+
+    def test_the_page_can_keep_the_chain_order(self):
+        self.assertEqual([z[0] for z in self._spread_rows(self._page({"sort": "none"}))],
+                         ["AAPL 250.00 / 252.50 Call", "AMZN 260.00 / 262.50 Call",
+                          "TSLA 290.00 / 292.50 Call"])
+
+    def test_an_unknown_sort_mode_falls_back_to_the_return(self):
+        self.assertEqual(self._spread_rows(self._page({"sort": "quatsch"}))[0][0],
+                         self._spread_rows(self._page())[0][0])
+
+    def test_the_api_keeps_the_chain_order_while_the_page_sorts(self):
+        # die Entscheidung selbst: gleiche Werte, verschiedene Reihenfolge
+        self.assertEqual([v["symbol"][:4] for v in self._json()["verticals"]],
+                         ["AAPL", "AMZN", "TSLA"])
+        self.assertEqual(self._spread_rows(self._page())[0][0][:4], "AMZN")
+
+    def test_the_sort_links_keep_the_other_parameters(self):
+        html = self._page({"max_spread_pct": "5"})
+        self.assertIn("ticker=AAPL", html)
+        self.assertIn("sort=rendite_desc", html)
+        self.assertIn("sort=be_asc", html)
+        self.assertIn("max_spread_pct=5", html)
+
+    # --- die Faelle, die die Mock-Kette nicht triggert (Restrisiko des Urteils) ---
+
+    def test_a_spread_without_loss_never_reaches_the_page_and_the_guard_still_holds(self):
+        # GEMESSEN: die Bein-Regel sortiert `debit <= 0` schon aus, ein Spread
+        # ohne Verlust kann die Seite also gar nicht erreichen. Der Schutz in
+        # der Anzeige wird deshalb direkt geprueft - nicht ueber die Seite.
+        kette = [quote("AAPL260116C00250000", bid=0.45, ask=0.50, iv=30.0, oi=1500, dte=10),
+                 quote("AAPL260116C00252500", bid=0.50, ask=0.55, iv=30.0, oi=1500, dte=10)]
+        behalten, verworfen = server_module.vertical_spreads(kette)
+        self.assertEqual(behalten, [])
+        self.assertEqual(verworfen[0][1], "debit 0.0 <= 0")
+
+        class OhneVerlust:
+            max_loss = 0.0
+            max_profit = 1.0
+
+        class MitVerlust:
+            max_loss = 2.0
+            max_profit = 1.0
+
+        self.assertIsNone(server_module._spread_return_pct(OhneVerlust()))
+        self.assertEqual(server_module._spread_return_pct(MitVerlust()), 50.0)
+
+    def test_a_spread_without_spot_shows_a_dash(self):
+        kette = [quote("AAPL260116C00250000", bid=1.10, ask=1.20, iv=30.0, oi=1500, dte=10,
+                       underlying_price=None),
+                 quote("AAPL260116C00252500", bid=0.45, ask=0.50, iv=30.0, oi=1500, dte=10,
+                       underlying_price=None)]
+        self.assertEqual(self._spread_rows(self._page(quotes=kette))[0][8], "-")
+        # ... und nur dort: die Rendite ist rechenbar und bleibt eine Zahl
+        self.assertNotEqual(self._spread_rows(self._page(quotes=kette))[0][6], "-")
+
+
 if __name__ == "__main__":
     unittest.main()
