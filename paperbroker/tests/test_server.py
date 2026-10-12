@@ -1284,7 +1284,6 @@ class TestChainBoundary(unittest.TestCase):
         app.config["PROPAGATE_EXCEPTIONS"] = False
         return app.test_client().get(query)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice E, B-16)")
     def test_screen_survives_one_unusable_row(self):
         rows = [self._row(self.BAD), self._row(self.GOOD)]
         res = self._screen(rows, "/api/screen?ticker=NVDA&expiration=2026-10-16")
@@ -1298,7 +1297,6 @@ class TestChainBoundary(unittest.TestCase):
         self.assertIn("chain_skipped", body)
         self.assertEqual(body["chain_skipped"], 0)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice E, B-16)")
     def test_picker_survives_one_unusable_row(self):
         """The picker died before a date was even chosen (measured)."""
         rows = [self._row(self.BAD), self._row(self.GOOD)]

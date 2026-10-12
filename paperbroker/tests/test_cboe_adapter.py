@@ -11,8 +11,6 @@
 import unittest
 from unittest.mock import MagicMock
 
-import pytest
-
 from ..adapters.quotes.CBOEQuoteAdapter import (
     CboeNotFoundError,
     CBOEQuoteAdapter,
@@ -226,7 +224,6 @@ class TestCboeAdapter(unittest.TestCase):
 
 
     # ---------------------------------------------------------- Ausbau-Slice E
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice E, B-16)")
     def test_one_unusable_row_costs_exactly_that_row(self):
         """B-16: a row the parser accepts but the option constructor cannot
         build (29 Feb in a non-leap year) killed the whole chain before."""
@@ -240,7 +237,6 @@ class TestCboeAdapter(unittest.TestCase):
         self.assertEqual(quotes.skipped, 1)
         self.assertNotIn("FAKE260229C00130000", [q.asset.symbol for q in quotes])
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice E, B-16)")
     def test_a_clean_chain_skips_nothing(self):
         payload = _chain_payload(["FAKE261016C00100000", "FAKE261016P00110000"])
         ad = self._adapter_with(payload)
@@ -248,7 +244,6 @@ class TestCboeAdapter(unittest.TestCase):
         self.assertEqual(len(quotes), 2)
         self.assertEqual(quotes.skipped, 0)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice E, B-16)")
     def test_a_chain_of_only_unusable_rows_raises(self):
         """A totally unusable chain must not look like "no candidates"."""
         payload = _chain_payload(["FAKE260229C00100000", "FAKE260229P00110000"])
@@ -262,7 +257,6 @@ class TestCboeAdapter(unittest.TestCase):
         with self.assertRaises(CboeNotFoundError):
             ad.get_quote("FAKE260229C00100000")
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice E, B-16)")
     def test_expiration_dates_offer_only_real_dates(self):
         """The 29 Feb of a non-leap year must not be offered."""
         payload = _chain_payload(["FAKE261016C00100000", "FAKE260229C00100000"])
