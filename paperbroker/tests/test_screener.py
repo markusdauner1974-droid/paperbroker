@@ -7,7 +7,6 @@ import unittest
 from datetime import datetime
 
 import arrow
-import pytest
 
 from paperbroker.assets import asset_factory
 from paperbroker.quotes import OptionQuote
@@ -409,7 +408,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         from paperbroker import screener as module
         return module.form_vertical_pairs, module.leg_drop_reason, module.vertical_spreads
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_fixture_yields_four_adjacent_call_pairs(self):
         form_vertical_pairs, _leg, _vs = self._api()
         pairs = form_vertical_pairs(make())
@@ -419,7 +417,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
                           "AAPL260116C00261000/AAPL260116C00263000",
                           "AAPL260116C00263000/AAPL260116C00265000"])
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_strikes_are_sorted_before_pairing(self):
         # the input order is deliberately REVERSED - without the strike sort
         # the pair would be built upside down (negative width)
@@ -429,7 +426,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual((pair.long.asset.strike, pair.short.asset.strike), (240.0, 245.0))
         self.assertEqual(pair.strike_width, 5.0)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_two_expirations_never_pair_with_each_other(self):
         # the group key carries the expiration: 240 (Jan) and 270 (Feb) are
         # not adjacent legs of one spread
@@ -439,13 +435,11 @@ class TestVerticalCallSpreads(unittest.TestCase):
                          [p.symbol for p in pairs])
         self.assertEqual([p.expiration for p in pairs], ["2026-01-16"] * 4)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_lower_strike_is_the_long_leg(self):
         form_vertical_pairs, _leg, _vs = self._api()
         pair = form_vertical_pairs(make())[0]
         self.assertEqual((pair.long.asset.strike, pair.short.asset.strike), (240.0, 245.0))
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_debit_is_ask_long_minus_bid_short(self):
         form_vertical_pairs, _leg, _vs = self._api()
         pair = form_vertical_pairs(make())[0]
@@ -454,7 +448,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(pair.net_debit, 2.7)
         self.assertEqual(pair.net_debit, pair.max_loss)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_width_profit_breakeven_and_ratio(self):
         form_vertical_pairs, _leg, _vs = self._api()
         pair = form_vertical_pairs(make())[0]
@@ -463,7 +456,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(pair.breakeven, 242.7)         # 240.0 + 2.7
         self.assertEqual(pair.debit_width_ratio, 0.54)  # 2.7 / 5.0
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_derived_numbers_are_rounded_at_the_source(self):
         # Break points, measured on the two-decimal float grid:
         #   width 5.00 - debit 4.02 = 0.9800000000000004  -> 0.98
@@ -481,7 +473,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(pair.max_profit, 0.98)
         self.assertEqual(pair.breakeven, 54.02)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_max_loss_is_the_debit_not_the_remainder(self):
         # the panel draft had max_loss = width - debit; that is the maximum
         # PROFIT, and pinning it would have inverted the worst case
@@ -490,7 +481,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(pair.max_loss, 2.7)
         self.assertNotEqual(pair.max_loss, 2.3)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_pairs_are_formed_before_the_leg_rules_run(self):
         _fp, _leg, vertical_spreads = self._api()
         form_vertical_pairs, _leg, vertical_spreads = self._api()
@@ -503,7 +493,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         # listed or carries a reason
         self.assertEqual(len(kept) + len(dropped), len(form_vertical_pairs(make())))
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_one_reason_per_dropped_pair_naming_strike_and_value(self):
         _fp, _leg, vertical_spreads = self._api()
         _kept, dropped = vertical_spreads(make())
@@ -512,7 +501,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
                           "strike 261.0 call: OI 40 < 500",
                           "strike 263.0 call: iv 0.0"])
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_leg_without_two_sides_drops_the_pair(self):
         _fp, leg_drop_reason, vertical_spreads = self._api()
         chain = make_verticals()
@@ -527,7 +515,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         msft = [q for q in chain if q.asset.strike == 270.0][0]
         self.assertEqual(leg_drop_reason(msft), "strike 270.0 call: no bid/ask")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_open_interest_floor_is_inclusive_on_both_sides(self):
         # BOTH sides of the boundary: exactly 500 survives, one below drops.
         # Only pinning the boundary itself would let a shift by one pass.
@@ -540,7 +527,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
                       oi=499, volume=100, dte=10)
         self.assertEqual(leg_drop_reason(below), "strike 257.5 call: OI 499 < 500")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_missing_open_interest_is_not_treated_as_liquid(self):
         _fp, leg_drop_reason, _vs = self._api()
         chain = make_verticals()
@@ -548,7 +534,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertIsNone(nvda.open_interest)
         self.assertEqual(leg_drop_reason(nvda), "strike 282.5 call: OI None < 500")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_put_pair_is_never_built(self):
         form_vertical_pairs, _leg, _vs = self._api()
         pairs = form_vertical_pairs(make_verticals())
@@ -556,7 +541,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertNotIn("P00", "".join(p.symbol for p in pairs))
         self.assertTrue(all(p.long.asset.option_type == "call" for p in pairs))
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_debit_equal_to_the_width_is_flagged_not_dropped(self):
         _fp, _leg, vertical_spreads = self._api()
         kept, _dropped = vertical_spreads(make_verticals())
@@ -568,7 +552,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         # the ordinary pair right next to it must NOT be flagged
         self.assertFalse(kept[1].debit_ge_width)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_duplicated_strike_neither_crashes_nor_divides_by_zero(self):
         # no live chain measured carries a duplicated strike in one group
         # (0 of 688 pairs), but the case must stay defined: width 0 gives no
@@ -589,7 +572,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         kept, dropped = vertical_spreads(chain)
         self.assertEqual(len(kept) + len(dropped), 2)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_different_underlyings_never_pair_with_each_other(self):
         # the group key carries the underlying: same expiration and same
         # strikes on two tickers are still two spreads, never one
@@ -606,7 +588,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
                          ["AAPL260116C00240000/AAPL260116C00245000",
                           "MSFT260116C00240000/MSFT260116C00245000"])
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_non_positive_debit_is_dropped(self):
         # pair rule: with BOTH legs quoted, the higher strike's bid reaching
         # the lower strike's ask (debit <= 0) is incoherent data - it would
@@ -633,7 +614,6 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual([reason for _pair, reason in dropped_zero],
                          ["debit 0.0 <= 0"])
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_an_empty_chain_yields_no_pairs(self):
         form_vertical_pairs, _leg, vertical_spreads = self._api()
         self.assertEqual(form_vertical_pairs([]), [])

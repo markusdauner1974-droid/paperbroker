@@ -890,7 +890,6 @@ class TestVerticalSpreadList(unittest.TestCase):
         return self._app(quotes, criteria).test_client().get(
             "/", query_string=query).get_data(as_text=True)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_api_lists_the_pairs_that_pass_the_leg_rules(self):
         data = self._json()
         self.assertEqual([v["symbol"] for v in data["verticals"]],
@@ -898,7 +897,6 @@ class TestVerticalSpreadList(unittest.TestCase):
                           "AMZN260116C00260000/AMZN260116C00262500",
                           "TSLA260116C00290000/TSLA260116C00292500"])
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_pair_carries_the_four_numbers_and_the_ratio(self):
         v = self._json()["verticals"][1]          # AMZN 260/262.5
         self.assertEqual(v["long_symbol"], "AMZN260116C00260000")
@@ -912,7 +910,6 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertEqual(v["debit_width_ratio"], 0.28)
         self.assertIs(v["debit_ge_width"], False)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_pair_without_profit_is_flagged_and_still_listed(self):
         data = self._json()
         flagged = [v for v in data["verticals"] if v["debit_ge_width"]]
@@ -922,7 +919,6 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertEqual(flagged[0]["max_profit"], 0.0)
         self.assertIn("kein Gewinn moeglich", self._page())
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_both_lists_are_rendered_side_by_side_on_one_page(self):
         # the spread table is additive: with loosened single-option criteria
         # BOTH tables have rows, and the page stays one document
@@ -933,19 +929,16 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertIn("Vertikale Call-Spreads", page)
         self.assertIn("Kontrakt", page)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_api_reports_why_pairs_were_dropped(self):
         self.assertEqual(self._json()["vertical_drops"],
                          [{"reason": "strike 270.0 call: no bid/ask", "count": 1},
                           {"reason": "strike 282.5 call: OI None < 500", "count": 1}])
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_put_pair_never_reaches_the_list(self):
         data = self._json()
         self.assertNotIn("P00", "".join(v["symbol"] for v in data["verticals"]))
         self.assertNotIn("P00", "".join(g["reason"] for g in data["vertical_drops"]))
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_the_page_shows_the_numbers_the_json_carries(self):
         page = self._page()
         for v in self._json()["verticals"]:
@@ -972,7 +965,6 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertIn("<th>\u0394\u00d7100</th>", page)
         self.assertNotIn("<th>\u0394</th>", page)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice B)")
     def test_a_chain_without_neighbours_reports_two_empty_lists(self):
         data = self._json(quotes=[quote("AAPL260116C00240000", bid=5.00, ask=5.10,
                                        iv=28.0, oi=8000, volume=1200, dte=10)])
