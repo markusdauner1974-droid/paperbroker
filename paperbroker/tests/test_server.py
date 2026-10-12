@@ -775,6 +775,174 @@ class TestCriteriaPanel(unittest.TestCase):
 
 
 
+class TestSettableCriteria(unittest.TestCase):
+    """Slice I: the eleven criteria that had no form field are settable now.
+
+    Every test passes the field through the REQUEST. A test that built the
+    criteria object directly would pass on the old code too, so it would pin
+    nothing. The numbers are measured, not guessed
+    (docs/debate/ausI_phase4_expectations.txt).
+    """
+
+    def _app(self, quotes=None):
+        app = create_app(
+            quote_adapter=_MockAdapter(make() if quotes is None else quotes),
+            screener=None,
+            now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _json(self, params, quotes=None):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params)
+        return self._app(quotes).test_client().get(
+            "/api/screen", query_string=query).get_json()
+
+    def _page(self, params, quotes=None):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params)
+        return self._app(quotes).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    @staticmethod
+    def _gruende(d):
+        return {g["reason"]: g["count"] for g in d["dropped_reasons"]}
+
+    # --- the seven that change the SELECTION -------------------------------
+
+    def test_min_bid_size_is_settable_and_moves_the_result(self):
+        self.assertEqual(self._json({})["candidates"], 2)
+        d = self._json({"min_bid_size": "200"})          # every fixture size is 100
+        self.assertEqual(d["criteria"]["min_bid_size"], 200)
+        self.assertEqual(d["candidates"], 0)
+        self.assertEqual(self._gruende(d)["size below minimum"], 2)
+
+    def test_min_ask_size_is_settable_and_moves_the_result(self):
+        d = self._json({"min_ask_size": "200"})
+        self.assertEqual(d["criteria"]["min_ask_size"], 200)
+        self.assertEqual(d["candidates"], 0)
+        self.assertEqual(self._gruende(d)["size below minimum"], 2)
+
+    def test_iv_min_drops_the_low_iv_contract(self):
+        d = self._json({"iv_min": "29"})                 # IVs are 28 and 30
+        self.assertEqual(d["criteria"]["iv_min"], 29.0)
+        self.assertEqual(d["candidates"], 1)
+        self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL260116C00245000"])
+        self.assertEqual(self._gruende(d)["IV # < #"], 2)
+
+    def test_iv_max_drops_the_high_iv_contract(self):
+        d = self._json({"iv_max": "29"})
+        self.assertEqual(d["criteria"]["iv_max"], 29.0)
+        self.assertEqual(d["candidates"], 1)
+        self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL260116C00240000"])
+        self.assertEqual(self._gruende(d)["IV # > #"], 2)
+
+    def test_max_spread_abs_tightens_the_penny_zone(self):
+        # the default bound is 0.10 and lets one penny contract through the
+        # relative filter; at 0.01 the same filter catches three of them, and
+        # the reasons are printed with the digits masked because their numbers
+        # differ (page and JSON read the same list)
+        d = self._json({"max_spread_abs": "0.01"})
+        self.assertEqual(d["criteria"]["max_spread_abs"], 0.01)
+        self.assertEqual(self._gruende(d)["penny-spread #$ > #$ (mid #)"], 3)
+        self.assertNotIn("penny-spread 0.15$ > 0.10$ (mid 0.88)", self._gruende(d))
+
+    def test_require_oi_can_be_switched_off(self):
+        # the OI-less contract only survives when the spread bounds are wide
+        # enough - otherwise it dies in the penny filter first (measured)
+        weit = {"max_spread_pct": "50", "max_spread_abs": "1"}
+        an = self._json(weit)
+        self.assertTrue(an["criteria"]["require_oi"])
+        self.assertEqual(an["candidates"], 2)
+        self.assertEqual(self._gruende(an)["missing OI"], 1)
+        aus = self._json({**weit, "require_oi": "0"})
+        self.assertFalse(aus["criteria"]["require_oi"])
+        self.assertEqual(aus["candidates"], 3)
+        self.assertIn("AAPL260116C00265000", [r["symbol"] for r in aus["results"]])
+        self.assertNotIn("missing OI", self._gruende(aus))
+
+    def test_require_volume_can_be_switched_on(self):
+        # make() has no contract without volume, so this test brings its own
+        kette = make() + [quote("AAPL260116C00270000", bid=1.00, ask=1.05, iv=27.0,
+                                oi=3000, volume=None, dte=10)]
+        weit = {"max_spread_pct": "50", "max_spread_abs": "1"}
+        aus = self._json(weit, quotes=kette)
+        self.assertFalse(aus["criteria"]["require_volume"])
+        self.assertEqual(aus["candidates"], 3)
+        an = self._json({**weit, "require_volume": "1"}, quotes=kette)
+        self.assertTrue(an["criteria"]["require_volume"])
+        self.assertEqual(an["candidates"], 2)
+        self.assertEqual(self._gruende(an)["missing volume"], 1)
+
+    # --- the four that change the RANKING ---------------------------------
+
+    def test_the_weights_change_the_score(self):
+        d = self._json({"weight_spread": "1", "weight_oi": "0", "weight_iv": "0"})
+        self.assertEqual(d["criteria"]["weight_spread"], 1.0)
+        self.assertAlmostEqual(d["results"][0]["score"], 0.802, places=3)
+
+    def test_a_zero_weight_sum_scores_zero_without_an_error(self):
+        # measured: the score is normalised by the weight sum; sum 0 -> 0.0.
+        # It is the documented answer, not a client error.
+        d = self._json({"weight_spread": "0", "weight_oi": "0", "weight_iv": "0"})
+        self.assertEqual([r["score"] for r in d["results"]], [0.0, 0.0])
+
+    def test_iv_pref_turns_the_iv_note_around(self):
+        band = {"iv_min": "20", "iv_max": "60"}
+        hoch = self._json({**band, "iv_pref": "high"})
+        tief = self._json({**band, "iv_pref": "low"})
+        self.assertEqual(hoch["criteria"]["iv_pref"], "high")
+        self.assertAlmostEqual(hoch["results"][0]["score"], 0.741, places=3)
+        self.assertAlmostEqual(tief["results"][0]["score"], 0.861, places=3)
+        self.assertEqual(hoch["candidates"], tief["candidates"])   # selection identical
+
+    # --- the guards that already existed, now reachable from the form -----
+
+    def test_a_bad_switch_value_is_a_readable_400(self):
+        res = self._app().test_client().get(
+            "/api/screen", query_string={"ticker": "SPY", "expiration": "2026-10-16",
+                                        "require_oi": "2"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("'0' oder '1'", res.get_json()["error"])
+
+    def test_a_bad_choice_is_a_readable_400(self):
+        res = self._app().test_client().get(
+            "/api/screen", query_string={"ticker": "SPY", "expiration": "2026-10-16",
+                                        "iv_pref": "bogus"})
+        self.assertEqual(res.status_code, 400)
+        self.assertIn("iv_pref", res.get_json()["error"])
+
+    def test_contradictory_iv_band_and_negative_weight_are_rejected(self):
+        for params, text in (({"iv_min": "60", "iv_max": "20"}, "iv_min <= iv_max"),
+                             ({"weight_spread": "-1"}, "weight_spread >= 0")):
+            res = self._app().test_client().get(
+                "/api/screen", query_string={"ticker": "SPY", "expiration": "2026-10-16",
+                                             **params})
+            self.assertEqual(res.status_code, 400, params)
+            self.assertIn(text, res.get_json()["error"], params)
+
+    # --- the form itself and the "empty = default" rule --------------------
+
+    def test_the_form_offers_every_criterion_and_names_no_unknown_parameter(self):
+        html = self._page({})
+        for feld in ("max_spread_abs", "min_bid_size", "min_ask_size", "iv_min", "iv_max",
+                     "iv_pref", "require_oi", "require_volume", "weight_spread",
+                     "weight_oi", "weight_iv"):
+            self.assertIn(f'name="{feld}"', html, feld)
+        self.assertNotIn("Unbekannte Parameter", html)
+        # a real typo is still named (the old guard is untouched)
+        self.assertIn("foo", self._page({"foo": "bar"}))
+
+    def test_an_empty_field_keeps_the_default_instead_of_zero(self):
+        # measured: min_bid_size=None means "off", 0 means "size >= 0" and drops
+        # every quote whose size is 0 - so an empty field must not become 0
+        d = self._json({"min_bid_size": "", "iv_min": "", "require_oi": ""})
+        self.assertIsNone(d["criteria"]["min_bid_size"])
+        self.assertIsNone(d["criteria"]["iv_min"])
+        self.assertTrue(d["criteria"]["require_oi"])
+        self.assertEqual(d["candidates"], 2)
+
+
 class TestResultList(unittest.TestCase):
     """Ausbau-Slice 3 (D): what the result list shows, and in which order.
 
