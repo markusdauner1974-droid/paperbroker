@@ -1112,7 +1112,6 @@ class TestTrendProvider(unittest.TestCase):
             prov = server_module._MCPTrendProvider(raw, "T", 2.0, transport=_FakeTransport())
             self.assertEqual(prov.url, "http://x/mcp/")
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice C2)")
     def test_provider_sends_bearer_and_tool_call(self):
         prov, fake = self._provider(200, _mcp_envelope(2))
         prov.get_trend("AAPL")
@@ -1125,7 +1124,6 @@ class TestTrendProvider(unittest.TestCase):
         self.assertEqual(sent["params"]["arguments"], {"symbol": "AAPL"})
         self.assertEqual(call["timeout"], 2.0)
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice C2)")
     def test_provider_extracts_direction_from_stage(self):
         prov, _ = self._provider(200, _mcp_envelope(2))
         sig = prov.get_trend("AAPL")
@@ -1170,7 +1168,6 @@ class TestTrendProvider(unittest.TestCase):
         else:
             self.fail("kein Fehler geworfen")
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice C2)")
     def test_provider_hostile_symbol_does_not_corrupt_body(self):
         prov, fake = self._provider(200, _mcp_envelope(2))
         prov.get_trend('AA"PL{')
@@ -1178,7 +1175,6 @@ class TestTrendProvider(unittest.TestCase):
         self.assertEqual(sent["params"]["arguments"]["symbol"], 'AA"PL{')
 
 
-    @pytest.mark.xfail(strict=True, reason="red before the fix (Ausbau-Slice C2)")
     def test_provider_reads_stage_from_technicals(self):
         """MEASURED 2026-10-12: the numbers live under "technicals"."""
         prov, _ = self._provider(200, _mcp_envelope(2))
