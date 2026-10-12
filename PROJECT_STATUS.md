@@ -11,11 +11,11 @@ The always-current sources are `git log --merges` (history) and the CI page of t
 
 | Item | Value |
 |---|---|
-| `master` | `31f19af675f9390525a046a410623d3410013137` (merge of PR #29, last merge of the documentation freeze) |
-| Test suite | **295 passed** (`pytest paperbroker/tests`) |
+| `master` | `102a94054d439ad7b67ddd970621f4818421974a` (merge of PR #31) |
+| Test suite | **310 passed** (`pytest paperbroker/tests`) |
 | Lint | `ruff` clean, run in the CI form over the tracked files |
 | CI on `master` | **4/4 green** — Lint ruff · Test suite pytest 3.13 · Docker image build · publish |
-| Commits | 158 |
+| Commits | 164 |
 | Runtime dependencies | `arrow`, `requests`, `flask` (`requirements.txt` and `setup.py` agree — pinned by a test) |
 | Open audit findings | **none** |
 
@@ -25,6 +25,8 @@ Everything in this table was measured on the commit above, not estimated.
 
 | PR | Merge commit | What it added |
 |---|---|---|
+| #31 | `102a940` | Make all eleven remaining criteria settable from the form; the last usability gap |
+| #30 | `7cffacd` | Refresh the frozen baseline and record the two-system merge gate |
 | #29 | `31f19af` | Pass the trend variables through the local Arcane stack as well |
 | #28 | `f58d24c` | Freeze the state: `PROJECT_STATUS.md`, rewritten README, trend variables in the compose file |
 | #27 | `9bef691` | Declare Flask and the template asset; `setuptools` + explicit `[build-system]` (B-13) |
@@ -57,12 +59,19 @@ Everything in this table was measured on the commit above, not estimated.
 dropped_reasons, verticals, vertical_drops`, plus `chain_skipped` when a chain was fetched. Each
 result carries `symbol, bid, ask, iv, open_interest, volume, delta, score, spread_pct, reasons`.
 
-**Settable filters — 6 of the 17 `ScreenerCriteria` fields, plus the age switch.** Reachable from the
-form and from the query string: `max_spread_pct`, `min_oi`, `min_volume`, `dte_min`, `dte_max`,
-`max_quote_age_min`, and `ignore_quote_age=1` as the only way to disable the age guard (`0` is a
-sharp bound, not "off"). The other 11 fields exist in the code with defaults and are **not** reachable
-from the page: `max_spread_abs`, `min_bid_size`, `min_ask_size`, `iv_min`, `iv_max`, `iv_pref`,
-`require_oi`, `require_volume`, `weight_spread`, `weight_oi`, `weight_iv`.
+**Filters — all 17 `ScreenerCriteria` fields are settable**, from the form and from the query string,
+in two groups (PR #31). The ones that change the *selection*: `max_spread_pct`, `max_spread_abs` ($),
+`min_oi`, `min_volume`, `min_bid_size`, `min_ask_size`, `iv_min` (%), `iv_max` (%), `require_oi`,
+`require_volume`, `dte_min`, `dte_max`, `max_quote_age_min`. The ones that change the *ranking*:
+`iv_pref` (high/low) and the three weights `weight_spread`, `weight_oi`, `weight_iv`. `ignore_quote_age=1`
+remains the only way to disable the age guard (`0` is a sharp bound, not "off").
+
+Three rules the form follows, each one measured: an **empty field keeps the default** (`min_bid_size`
+empty means "off", while `0` means "size at least 0" and drops every quote of size 0); a **switch with a
+`True` default is a pair of radio buttons**, not a checkbox, because an unticked checkbox means "field
+absent" and would keep the default forever; a **zero weight sum scores 0.0** instead of raising, because
+that is the documented answer and not a client error. IV is percent, without conversion (measured at the
+adapter: stored as percent, `scale=100.0`).
 
 **Trend** — the provider is created only when `PAPERBROKER_TREND_MCP_URL` **and**
 `PAPERBROKER_TREND_TOKEN` are set; otherwise the app runs without trend input, byte-for-byte as before.
@@ -78,15 +87,13 @@ whole package directory.
 
 ## Open topics
 
-1. **Future timestamps pass the age guard** (measured 2026-10-12). The guard compares
+1. **Future timestamps pass the age guard** (measured 2026-10-12, still open). The guard compares
    `age_s > max_age_s`; a timestamp *after* the clock yields a negative age and is kept. Measured with
    `9999-12-31 23:59:59`: 2 of 2 contracts kept, no reason reported. A feed with a clock running ahead
    would slip through. Candidate fix: treat a future timestamp as suspect and name it.
-2. **Eleven filter criteria are not reachable from the page** (see above). The engine supports them;
-   the form does not expose them, so the operator cannot use them. This is the largest usability gap.
-3. **Result table columns** — the API carries bid/ask/iv/open interest/volume/delta/score/spread; the
+2. **Result table columns** — the API carries bid/ask/iv/open interest/volume/delta/score/spread; the
    table does not yet offer DTE, mid, moneyness, sorting or a CSV export.
-4. **sdist behaviour is unverified.** Wheel and install path are measured; a source distribution was
+3. **sdist behaviour is unverified.** Wheel and install path are measured; a source distribution was
    never built or inspected in this project.
 
 ## How work is done here (unchanged)
