@@ -131,6 +131,39 @@
     {% else %}
       <p class="note">Keine Kontrakte haben die Kriterien bestanden.</p>
     {% endif %}
+    {% if verticals %}
+      <h2>Vertikale Call-Spreads</h2>
+      <p class="note">Rohe Kette, eigene Bein-Regeln (beide Seiten gestellt, OI &ge; 500, IV &gt; 0) -
+        nicht dieselben Regeln wie die Liste oben. Debit = Kauf zum Ask, Verkauf zum Bid.</p>
+      <table>
+        <thead><tr>
+          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit</th><th>max Verlust</th><th>max Gewinn</th><th>Breakeven</th><th>Debit/Breite</th><th>Hinweis</th>
+        </tr></thead>
+        {% for v in verticals %}
+          <tr>
+            <td>{{ v.symbol }}</td>
+            <td>{{ v.expiration }}</td>
+            <td>{{ '%.2f'|format(v.strike_width) }}</td>
+            <td>{{ '%.2f'|format(v.net_debit) }}</td>
+            <td>{{ '%.2f'|format(v.max_loss) }}</td>
+            <td>{{ '%.2f'|format(v.max_profit) }}</td>
+            <td>{{ '%.2f'|format(v.breakeven) }}</td>
+            <td>{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio) }}{% endif %}</td>
+            <td>{% if v.debit_ge_width %}kein Gewinn moeglich{% else %}-{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </table>
+    {% endif %}
+    {% if vertical_drops %}
+      <div class="dropped-summary">
+        <p class="note">Warum kein Spread? Je Paar zaehlt das erste Bein, das eine Regel verletzt.</p>
+        <ul class="dropped-reasons vertical-drops">
+          {% for g in vertical_drops -%}
+          <li class="vertical-reason">{{ g.reason }} <span class="vertical-count">{{ g.count }}</span></li>
+          {% endfor -%}
+        </ul>
+      </div>
+    {% endif %}
   {% elif not error and ticker %}
     <p class="note">Scan laufen ... (falls dies steht, war die Ergebnisliste leer)</p>
   {% else %}

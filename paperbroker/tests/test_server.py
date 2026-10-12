@@ -17,7 +17,7 @@ from flask import Flask
 from paperbroker.assets import asset_factory
 from paperbroker.screener import OptionScreener, ScreenerCriteria
 from paperbroker.server import _freshness_lamp, create_app
-from paperbroker.tests.test_screener import make, quote
+from paperbroker.tests.test_screener import make, make_verticals, quote
 
 
 class _MockAdapter:
@@ -855,6 +855,121 @@ class TestResultList(unittest.TestCase):
         self.assertEqual(self._symbols(page),
                          ["AAPL260116C00245000", "AAPL260116C00261000",
                           "AAPL260116C00240000"])
+
+
+
+class TestVerticalSpreadList(unittest.TestCase):
+    """Ausbau-Slice B: the second list (vertical call spreads).
+
+    The chain is the RAW one - the single-option filters of the first table
+    never feed it. The mock adapter ignores the ticker, so one call covers
+    every underlying of the fixture.
+    """
+
+    def _app(self, quotes=None, criteria=None):
+        adapter = _MockAdapter(make_verticals() if quotes is None else quotes)
+        # the fixture lives on its own date; /api/screen only accepts a date
+        # the chain really lists
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(
+            quote_adapter=adapter,
+            screener=None if criteria is None else OptionScreener(criteria),
+            now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _json(self, quotes=None, criteria=None, params=None):
+        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query.update(params or {})
+        return self._app(quotes, criteria).test_client().get(
+            "/api/screen", query_string=query).get_json()
+
+    def _page(self, quotes=None, criteria=None, params=None):
+        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query.update(params or {})
+        return self._app(quotes, criteria).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    def test_the_api_lists_the_pairs_that_pass_the_leg_rules(self):
+        data = self._json()
+        self.assertEqual([v["symbol"] for v in data["verticals"]],
+                         ["AAPL260116C00250000/AAPL260116C00252500",
+                          "AMZN260116C00260000/AMZN260116C00262500",
+                          "TSLA260116C00290000/TSLA260116C00292500"])
+
+    def test_a_pair_carries_the_four_numbers_and_the_ratio(self):
+        v = self._json()["verticals"][1]          # AMZN 260/262.5
+        self.assertEqual(v["long_symbol"], "AMZN260116C00260000")
+        self.assertEqual(v["short_symbol"], "AMZN260116C00262500")
+        self.assertEqual(v["expiration"], "2026-01-16")
+        self.assertEqual(v["strike_width"], 2.5)
+        self.assertEqual(v["net_debit"], 0.7)     # 1.20 - 0.50
+        self.assertEqual(v["max_loss"], 0.7)
+        self.assertEqual(v["max_profit"], 1.8)    # 2.5 - 0.7
+        self.assertEqual(v["breakeven"], 260.7)   # 260.0 + 0.7
+        self.assertEqual(v["debit_width_ratio"], 0.28)
+        self.assertIs(v["debit_ge_width"], False)
+
+    def test_a_pair_without_profit_is_flagged_and_still_listed(self):
+        data = self._json()
+        flagged = [v for v in data["verticals"] if v["debit_ge_width"]]
+        self.assertEqual([v["symbol"] for v in flagged],
+                         ["AAPL260116C00250000/AAPL260116C00252500"])
+        self.assertEqual(flagged[0]["net_debit"], 2.5)      # == width
+        self.assertEqual(flagged[0]["max_profit"], 0.0)
+        self.assertIn("kein Gewinn moeglich", self._page())
+
+    def test_both_lists_are_rendered_side_by_side_on_one_page(self):
+        # the spread table is additive: with loosened single-option criteria
+        # BOTH tables have rows, and the page stays one document
+        criteria = ScreenerCriteria(max_quote_age_min=None, max_spread_pct=None,
+                                    min_oi=None, dte_min=None, dte_max=None)
+        page = self._page(criteria=criteria)
+        self.assertEqual(page.count("<table>"), 2)
+        self.assertIn("Vertikale Call-Spreads", page)
+        self.assertIn("Kontrakt", page)
+
+    def test_the_api_reports_why_pairs_were_dropped(self):
+        self.assertEqual(self._json()["vertical_drops"],
+                         [{"reason": "strike 270.0 call: no bid/ask", "count": 1},
+                          {"reason": "strike 282.5 call: OI None < 500", "count": 1}])
+
+    def test_a_put_pair_never_reaches_the_list(self):
+        data = self._json()
+        self.assertNotIn("P00", "".join(v["symbol"] for v in data["verticals"]))
+        self.assertNotIn("P00", "".join(g["reason"] for g in data["vertical_drops"]))
+
+    def test_the_page_shows_the_numbers_the_json_carries(self):
+        page = self._page()
+        for v in self._json()["verticals"]:
+            for field in ("strike_width", "net_debit", "max_loss",
+                          "max_profit", "breakeven"):
+                self.assertIn(f"{v[field]:.2f}", page)
+            self.assertIn(f"{v['debit_width_ratio']:.2f}", page)
+
+    def test_the_first_table_is_untouched(self):
+        criteria = ScreenerCriteria(max_quote_age_min=None)
+        app = create_app(quote_adapter=_MockAdapter(make()),
+                         screener=OptionScreener(criteria), now_fn=_clock())
+        app.config["TESTING"] = True
+        page = app.test_client().get(
+            "/", query_string={"ticker": "SPY", "expiration": "2026-10-16"}
+        ).get_data(as_text=True)
+        # the single-option rows are still the FIRST tbody section, and the
+        # new table must not introduce a second one
+        body = page.split("<tbody>")[-1].split("</tbody>")[0]
+        symbols = [re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', row, re.S)[0].strip()
+                   for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
+        self.assertEqual(symbols, ["AAPL260116C00240000", "AAPL260116C00245000"])
+        self.assertEqual(page.count("<tbody>"), 1)
+        self.assertIn("<th>\u0394\u00d7100</th>", page)
+        self.assertNotIn("<th>\u0394</th>", page)
+
+    def test_a_chain_without_neighbours_reports_two_empty_lists(self):
+        data = self._json(quotes=[quote("AAPL260116C00240000", bid=5.00, ask=5.10,
+                                       iv=28.0, oi=8000, volume=1200, dte=10)])
+        self.assertEqual(data["verticals"], [])
+        self.assertEqual(data["vertical_drops"], [])
 
 
 if __name__ == "__main__":

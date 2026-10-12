@@ -22,7 +22,7 @@ from flask import Flask, abort, jsonify, render_template, request
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
 from .PaperBroker import PaperBroker
-from .screener import OptionScreener, ScreenerCriteria, screen
+from .screener import OptionScreener, ScreenerCriteria, screen, vertical_spreads
 
 _TICKER_RE = re.compile(r"^[A-Z]{1,6}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -236,9 +236,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             # is always present, so a consumer never needs a key check.
             return jsonify(ticker=ticker, expiration=None,
                            listed_dates=selectable, results=[], freshness=None,
-                           dropped_reasons=[])
+                           dropped_reasons=[], verticals=[],
+                           vertical_drops=[])
         quotes = broker.get_options(ticker, expiration)
         results, dropped = screen(quotes, criteria, now_fn=now_fn)
+        vertical_kept, vertical_dropped = vertical_spreads(quotes)
         return jsonify(
             ticker=ticker,
             expiration=expiration,
@@ -248,6 +250,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             dropped_reasons=_drop_reason_groups(dropped),
             criteria=_criteria_echo(criteria),
             freshness=_freshness_lamp(quotes, now_fn=now_fn),
+            # B (Ausbau-Slice B): vertical CALL spreads from the RAW chain.
+            # They are deliberately not built from `results` - the eight
+            # single-option filters do not preserve strike adjacency
+            # (measured: 0 candidates -> 0 pairs on a live chain that
+            # carries 102 adjacent call pairs).
+            verticals=[v.as_dict() for v in vertical_kept],
+            vertical_drops=_drop_reason_groups(vertical_dropped),
             results=[
                 {
                     "symbol": r.quote.asset.symbol,
@@ -272,6 +281,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         error = None
         hint = None
         results = dropped = dates = selectable = quotes = None
+        vertical_kept = vertical_dropped = None
         criteria, criteria_error, unknown = _criteria_from_request(
             screener.criteria, request.args)
         if unknown:
@@ -296,6 +306,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                             quotes = broker.get_options(ticker, expiration)
                             results, dropped = screen(
                                 quotes, criteria, trend=_load_trend(ticker), now_fn=now_fn)
+                            # the RAW chain, not the screened candidates (B)
+                            vertical_kept, vertical_dropped = vertical_spreads(quotes)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,
@@ -329,6 +341,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             dates=offered, dates_loaded=dates is not None,
             results=results, dropped_count=len(dropped) if dropped else 0,
             dropped_reasons=_drop_reason_groups(dropped),
+            verticals=vertical_kept,
+            vertical_drops=_drop_reason_groups(vertical_dropped),
             criteria=criteria, age_off=criteria.max_quote_age_min is None,
             hint=hint,
             error=error, freshness=_lamp_state(age_min),

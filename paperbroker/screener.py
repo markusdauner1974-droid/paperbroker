@@ -413,3 +413,165 @@ class OptionScreener:
 
     def screen(self, quotes, trend=None, now_fn=None):
         return screen(quotes, self.criteria, trend=trend, now_fn=now_fn)
+
+# ---------------------------------------------------------------------- #
+# Ausbau-Slice B: vertical call spreads from the raw chain.
+#
+# A vertical is a property of the CHAIN, not of the screened candidate
+# list: the eight single-option filters do not preserve strike adjacency.
+# Measured on four live chains (2026-10-10): the default criteria left
+# 0 candidates and therefore 0 pairs on every chain, while the raw chains
+# carried 102/104/300/182 adjacent call pairs; with the age guard off only
+# 7 candidates -> 5 pairs survived. So the pairs are formed FIRST and the
+# per-leg rules run afterwards - the same contract screen() uses when it
+# reports the FIRST filter that rejects a contract.
+#
+# Puts are deliberately not built here: no quote fixture in the suite
+# carries a put, so a put rule could not be pinned by a test. The rule
+# would read: long the HIGHER strike, breakeven = short strike - debit.
+# ---------------------------------------------------------------------- #
+
+LEG_MIN_OI = 500      # per-leg open-interest floor (same value the screener uses)
+
+
+@dataclass
+class VerticalPair:
+    """One vertical call spread: long the lower strike, short the higher.
+
+    Every derived number comes from ONE rounded debit, so the page and the
+    JSON cannot drift apart: 5.1 - 2.4 is 2.6999999999999997 in binary
+    floating point, and the source is the single place to round it.
+    """
+
+    long: OptionQuote
+    short: OptionQuote
+
+    @property
+    def symbol(self):
+        return f"{self.long.asset.symbol}/{self.short.asset.symbol}"
+
+    @property
+    def expiration(self):
+        return self.long.asset.expiration_date
+
+    @property
+    def strike_width(self):
+        return round(self.short.asset.strike - self.long.asset.strike, 2)
+
+    @property
+    def net_debit(self):
+        """Immediately executable cost: buy the long leg at ask, sell the
+        short leg at bid. Rule 1 guarantees both sides are quoted, so no
+        missing-side fallback is needed here."""
+        return round(self.long.ask - self.short.bid, 2)
+
+    @property
+    def max_loss(self):
+        # a debit spread loses at most what it costs - no second computation
+        return self.net_debit
+
+    @property
+    def max_profit(self):
+        return round(self.strike_width - self.net_debit, 2)
+
+    @property
+    def breakeven(self):
+        return round(self.long.asset.strike + self.net_debit, 2)
+
+    @property
+    def debit_width_ratio(self):
+        width = self.strike_width
+        return round(self.net_debit / width, 4) if width else None
+
+    @property
+    def debit_ge_width(self):
+        """Derived marker, never stored: at or above the width the spread
+        cannot make money. Measured on the raw chains: 316 of 560 cleanly
+        quoted call pairs - the most common case, so it stays visible
+        instead of being filtered away."""
+        return self.net_debit >= self.strike_width
+
+    def as_dict(self):
+        """The JSON shape - built from the same attributes the page reads."""
+        return {
+            "symbol": self.symbol,
+            "expiration": self.expiration,
+            "long_symbol": self.long.asset.symbol,
+            "short_symbol": self.short.asset.symbol,
+            "long_strike": self.long.asset.strike,
+            "short_strike": self.short.asset.strike,
+            "strike_width": self.strike_width,
+            "net_debit": self.net_debit,
+            "max_loss": self.max_loss,
+            "max_profit": self.max_profit,
+            "breakeven": self.breakeven,
+            "debit_width_ratio": self.debit_width_ratio,
+            "debit_ge_width": self.debit_ge_width,
+        }
+
+
+def form_vertical_pairs(chain, option_type="call"):
+    """Adjacent-strike pairs per (underlying, expiration) from the RAW chain.
+
+    The iteration order IS the output order: groups ascending by
+    (underlying, expiration, option_type), strikes ascending inside a group.
+    Nothing is sorted afterwards, so the order is reproducible without any
+    scoring rule.
+    """
+    groups = {}
+    for quote in chain or []:
+        asset = getattr(quote, "asset", None)
+        if asset is None or getattr(asset, "option_type", None) != option_type:
+            continue
+        key = (getattr(asset.underlying, "symbol", None),
+               getattr(asset, "expiration_date", None),
+               option_type)
+        groups.setdefault(key, []).append(quote)
+    pairs = []
+    for key in sorted(groups):
+        legs = sorted(groups[key], key=lambda q: q.asset.strike)
+        pairs.extend(VerticalPair(long=lower, short=upper)
+                     for lower, upper in zip(legs, legs[1:], strict=False))
+    return pairs
+
+
+def leg_drop_reason(leg):
+    """First rule that rejects ONE leg, in rule order.
+
+    One reason per pair, not a list - the reader sees the same shape the
+    single-option drop list already uses ("OI 7 < 500").
+    """
+    if not (leg.bid and leg.ask and leg.bid > 0 and leg.ask > 0):
+        return f"strike {leg.asset.strike} {leg.asset.option_type}: no bid/ask"
+    oi = leg.open_interest
+    if oi is None or oi < LEG_MIN_OI:
+        return f"strike {leg.asset.strike} {leg.asset.option_type}: OI {oi} < {LEG_MIN_OI}"
+    if not (leg.iv and leg.iv > 0):
+        return f"strike {leg.asset.strike} {leg.asset.option_type}: iv {leg.iv}"
+    return None
+
+
+def vertical_spreads(chain, option_type="call"):
+    """(kept pairs, dropped pairs with reason).
+
+    Pairs first, rules afterwards: filtering the legs before pairing would
+    break strike adjacency and change the result. Measured on the owning
+    fixture: pairs-first gives 4 pairs / 1 kept / 3 dropped, filter-first
+    gives 3 pairs / 1 kept / 2 dropped.
+    """
+    kept, dropped = [], []
+    for pair in form_vertical_pairs(chain, option_type=option_type):
+        reason = leg_drop_reason(pair.long) or leg_drop_reason(pair.short)
+        if reason is None and pair.net_debit <= 0:
+            # PAIR-level rule (both legs are quoted by now): a debit at or
+            # below zero means the higher strike's bid reaches the lower
+            # strike's ask. That is an incoherent quote pair, not an
+            # opportunity - and it would print a profit ABOVE the width.
+            # Measured on four live chains (2026-10-10): 0 of 560 cleanly
+            # quoted call pairs, so the rule is a guard, not a filter.
+            reason = f"debit {pair.net_debit} <= 0"
+        if reason is None:
+            kept.append(pair)
+        else:
+            dropped.append((pair, reason))
+    return kept, dropped

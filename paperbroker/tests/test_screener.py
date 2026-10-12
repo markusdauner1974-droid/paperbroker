@@ -355,5 +355,270 @@ class TestClockErrorLabel(unittest.TestCase):
                          {"freshness unknown (unparseable timestamp)"})
 
 
+
+def make_verticals():
+    """Vertical-spread fixture (Ausbau-Slice B).
+
+    Deliberately separate from make(): that chain is pinned by the existing
+    drop counts and by the display tests, so it must not change. One
+    adjacent CALL pair per underlying, each carrying exactly ONE edge case,
+    plus a PUT pair that must never show up:
+
+      AAPL 250/252.5      debit == width exactly (2.50) -> flagged, listed
+      AMZN 260/262.5      long leg open_interest == 500 exactly -> survives
+      MSFT 270/272.5      long leg has no bid (0.0) -> dropped: no bid/ask
+      NVDA 280/282.5      short leg open_interest is None -> dropped: OI None
+      TSLA 290/292.5      ordinary tradeable pair
+      AAPL PUT 250/252.5  must not appear anywhere (calls only)
+
+    Every quote is FRESH against _clock(), so the age guard never hides the
+    chain, and every strike pair is adjacent, so the pair count is exact.
+    """
+    return [
+        quote("AAPL260116C00250000", bid=2.60, ask=3.00, iv=30.0, oi=1200, volume=100, dte=10),
+        quote("AAPL260116C00252500", bid=0.50, ask=0.60, iv=30.0, oi=1200, volume=100, dte=10),
+        quote("AAPL260116P00250000", bid=2.60, ask=3.00, iv=30.0, oi=1200, volume=100, dte=10),
+        quote("AAPL260116P00252500", bid=0.50, ask=0.60, iv=30.0, oi=1200, volume=100, dte=10),
+        quote("AMZN260116C00260000", bid=1.00, ask=1.20, iv=30.0, oi=500, volume=100, dte=10),
+        quote("AMZN260116C00262500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100, dte=10),
+        quote("MSFT260116C00270000", bid=0.0, ask=1.00, iv=30.0, oi=1500, volume=100, dte=10),
+        quote("MSFT260116C00272500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100, dte=10),
+        quote("NVDA260116C00280000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=100, dte=10),
+        quote("NVDA260116C00282500", bid=0.50, ask=0.70, iv=30.0, oi=None, volume=100, dte=10),
+        quote("TSLA260116C00290000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=100, dte=10),
+        quote("TSLA260116C00292500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100, dte=10),
+    ]
+
+
+class TestVerticalCallSpreads(unittest.TestCase):
+    """Ausbau-Slice B: adjacent-strike CALL spreads from the raw chain.
+
+    The four numbers of a pair are pure arithmetic on measured quote
+    fields, so every expected value below is hand-derivable:
+    debit = ask(long) - bid(short), max loss = debit,
+    max profit = width - debit, breakeven = long strike + debit.
+    """
+
+    @staticmethod
+    def _api():
+        # MODULE import, attribute access at call time: the first commit
+        # carries the tests only, so the module must still import (a
+        # `from ... import name` at module level would break the whole
+        # collection). This way the red proof is a failing TEST.
+        from paperbroker import screener as module
+        return module.form_vertical_pairs, module.leg_drop_reason, module.vertical_spreads
+
+    def test_the_fixture_yields_four_adjacent_call_pairs(self):
+        form_vertical_pairs, _leg, _vs = self._api()
+        pairs = form_vertical_pairs(make())
+        self.assertEqual([p.symbol for p in pairs],
+                         ["AAPL260116C00240000/AAPL260116C00245000",
+                          "AAPL260116C00245000/AAPL260116C00261000",
+                          "AAPL260116C00261000/AAPL260116C00263000",
+                          "AAPL260116C00263000/AAPL260116C00265000"])
+
+    def test_the_strikes_are_sorted_before_pairing(self):
+        # the input order is deliberately REVERSED - without the strike sort
+        # the pair would be built upside down (negative width)
+        form_vertical_pairs, _leg, _vs = self._api()
+        descending = [make()[1], make()[0]]
+        pair = form_vertical_pairs(descending)[0]
+        self.assertEqual((pair.long.asset.strike, pair.short.asset.strike), (240.0, 245.0))
+        self.assertEqual(pair.strike_width, 5.0)
+
+    def test_two_expirations_never_pair_with_each_other(self):
+        # the group key carries the expiration: 240 (Jan) and 270 (Feb) are
+        # not adjacent legs of one spread
+        form_vertical_pairs, _leg, _vs = self._api()
+        pairs = form_vertical_pairs(make())
+        self.assertNotIn("AAPL260116C00265000/AAPL260216C00270000",
+                         [p.symbol for p in pairs])
+        self.assertEqual([p.expiration for p in pairs], ["2026-01-16"] * 4)
+
+    def test_the_lower_strike_is_the_long_leg(self):
+        form_vertical_pairs, _leg, _vs = self._api()
+        pair = form_vertical_pairs(make())[0]
+        self.assertEqual((pair.long.asset.strike, pair.short.asset.strike), (240.0, 245.0))
+
+    def test_the_debit_is_ask_long_minus_bid_short(self):
+        form_vertical_pairs, _leg, _vs = self._api()
+        pair = form_vertical_pairs(make())[0]
+        # 5.10 - 2.40 is 2.6999999999999997 in binary floating point - the
+        # pair rounds once at the source, so 2.7 is the pinned value
+        self.assertEqual(pair.net_debit, 2.7)
+        self.assertEqual(pair.net_debit, pair.max_loss)
+
+    def test_width_profit_breakeven_and_ratio(self):
+        form_vertical_pairs, _leg, _vs = self._api()
+        pair = form_vertical_pairs(make())[0]
+        self.assertEqual(pair.strike_width, 5.0)
+        self.assertEqual(pair.max_profit, 2.3)          # 5.0 - 2.7
+        self.assertEqual(pair.breakeven, 242.7)         # 240.0 + 2.7
+        self.assertEqual(pair.debit_width_ratio, 0.54)  # 2.7 / 5.0
+
+    def test_the_derived_numbers_are_rounded_at_the_source(self):
+        # Break points, measured on the two-decimal float grid:
+        #   width 5.00 - debit 4.02 = 0.9800000000000004  -> 0.98
+        #   strike 50.0 + debit 4.02 = 54.019999999999996 -> 54.02
+        # The literals are taken FROM those break points, not from the next
+        # plausible example: a pair one step off would stay green.
+        form_vertical_pairs, _leg, _vs = self._api()
+        chain = [quote("XYZ260116C00050000", bid=4.00, ask=4.12, iv=30.0,
+                       oi=1500, volume=100, dte=10),
+                 quote("XYZ260116C00055000", bid=0.10, ask=0.30, iv=30.0,
+                       oi=1500, volume=100, dte=10)]
+        pair = form_vertical_pairs(chain)[0]
+        self.assertEqual(pair.strike_width, 5.0)
+        self.assertEqual(pair.net_debit, 4.02)
+        self.assertEqual(pair.max_profit, 0.98)
+        self.assertEqual(pair.breakeven, 54.02)
+
+    def test_max_loss_is_the_debit_not_the_remainder(self):
+        # the panel draft had max_loss = width - debit; that is the maximum
+        # PROFIT, and pinning it would have inverted the worst case
+        form_vertical_pairs, _leg, _vs = self._api()
+        pair = form_vertical_pairs(make())[0]
+        self.assertEqual(pair.max_loss, 2.7)
+        self.assertNotEqual(pair.max_loss, 2.3)
+
+    def test_the_pairs_are_formed_before_the_leg_rules_run(self):
+        _fp, _leg, vertical_spreads = self._api()
+        form_vertical_pairs, _leg, vertical_spreads = self._api()
+        kept, dropped = vertical_spreads(make())
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(len(dropped), 3)
+        self.assertEqual(kept[0].symbol,
+                         "AAPL260116C00240000/AAPL260116C00245000")
+        # conservation: no pair may vanish silently - every raw pair is either
+        # listed or carries a reason
+        self.assertEqual(len(kept) + len(dropped), len(form_vertical_pairs(make())))
+
+    def test_one_reason_per_dropped_pair_naming_strike_and_value(self):
+        _fp, _leg, vertical_spreads = self._api()
+        _kept, dropped = vertical_spreads(make())
+        self.assertEqual([reason for _pair, reason in dropped],
+                         ["strike 261.0 call: OI 40 < 500",
+                          "strike 261.0 call: OI 40 < 500",
+                          "strike 263.0 call: iv 0.0"])
+
+    def test_a_leg_without_two_sides_drops_the_pair(self):
+        _fp, leg_drop_reason, vertical_spreads = self._api()
+        chain = make_verticals()
+        kept, dropped = vertical_spreads(chain)
+        self.assertEqual([p.symbol for p in kept],
+                         ["AAPL260116C00250000/AAPL260116C00252500",
+                          "AMZN260116C00260000/AMZN260116C00262500",
+                          "TSLA260116C00290000/TSLA260116C00292500"])
+        self.assertEqual([reason for _p, reason in dropped],
+                         ["strike 270.0 call: no bid/ask",
+                          "strike 282.5 call: OI None < 500"])
+        msft = [q for q in chain if q.asset.strike == 270.0][0]
+        self.assertEqual(leg_drop_reason(msft), "strike 270.0 call: no bid/ask")
+
+    def test_the_open_interest_floor_is_inclusive_on_both_sides(self):
+        # BOTH sides of the boundary: exactly 500 survives, one below drops.
+        # Only pinning the boundary itself would let a shift by one pass.
+        _fp, leg_drop_reason, _vs = self._api()
+        chain = make_verticals()
+        amzn = [q for q in chain if q.asset.strike == 260.0][0]
+        self.assertEqual(amzn.open_interest, 500)
+        self.assertIsNone(leg_drop_reason(amzn))
+        below = quote("AMZN260116C00257500", bid=0.60, ask=0.80, iv=30.0,
+                      oi=499, volume=100, dte=10)
+        self.assertEqual(leg_drop_reason(below), "strike 257.5 call: OI 499 < 500")
+
+    def test_missing_open_interest_is_not_treated_as_liquid(self):
+        _fp, leg_drop_reason, _vs = self._api()
+        chain = make_verticals()
+        nvda = [q for q in chain if q.asset.strike == 282.5][0]
+        self.assertIsNone(nvda.open_interest)
+        self.assertEqual(leg_drop_reason(nvda), "strike 282.5 call: OI None < 500")
+
+    def test_a_put_pair_is_never_built(self):
+        form_vertical_pairs, _leg, _vs = self._api()
+        pairs = form_vertical_pairs(make_verticals())
+        self.assertEqual(len(pairs), 5)
+        self.assertNotIn("P00", "".join(p.symbol for p in pairs))
+        self.assertTrue(all(p.long.asset.option_type == "call" for p in pairs))
+
+    def test_debit_equal_to_the_width_is_flagged_not_dropped(self):
+        _fp, _leg, vertical_spreads = self._api()
+        kept, _dropped = vertical_spreads(make_verticals())
+        pair = kept[0]
+        self.assertEqual(pair.strike_width, 2.5)
+        self.assertEqual(pair.net_debit, 2.5)
+        self.assertEqual(pair.max_profit, 0.0)
+        self.assertTrue(pair.debit_ge_width)
+        # the ordinary pair right next to it must NOT be flagged
+        self.assertFalse(kept[1].debit_ge_width)
+
+    def test_a_duplicated_strike_neither_crashes_nor_divides_by_zero(self):
+        # no live chain measured carries a duplicated strike in one group
+        # (0 of 688 pairs), but the case must stay defined: width 0 gives no
+        # ratio (None) and flags, and nothing vanishes silently.
+        form_vertical_pairs, _leg, vertical_spreads = self._api()
+        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100, dte=10),
+                 quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100, dte=10),
+                 quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=30.0,
+                       oi=1500, volume=100, dte=10)]
+        pairs = form_vertical_pairs(chain)
+        self.assertEqual(len(pairs), 2)
+        self.assertEqual(pairs[0].strike_width, 0.0)
+        self.assertIsNone(pairs[0].debit_width_ratio)
+        self.assertTrue(pairs[0].debit_ge_width)
+        self.assertEqual(pairs[1].strike_width, 5.0)
+        kept, dropped = vertical_spreads(chain)
+        self.assertEqual(len(kept) + len(dropped), 2)
+
+    def test_different_underlyings_never_pair_with_each_other(self):
+        # the group key carries the underlying: same expiration and same
+        # strikes on two tickers are still two spreads, never one
+        form_vertical_pairs, _leg, _vs = self._api()
+        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100, dte=10),
+                 quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=30.0,
+                       oi=1500, volume=100, dte=10),
+                 quote("MSFT260116C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100, dte=10),
+                 quote("MSFT260116C00245000", bid=2.40, ask=2.50, iv=30.0,
+                       oi=1500, volume=100, dte=10)]
+        self.assertEqual([p.symbol for p in form_vertical_pairs(chain)],
+                         ["AAPL260116C00240000/AAPL260116C00245000",
+                          "MSFT260116C00240000/MSFT260116C00245000"])
+
+    def test_a_non_positive_debit_is_dropped(self):
+        # pair rule: with BOTH legs quoted, the higher strike's bid reaching
+        # the lower strike's ask (debit <= 0) is incoherent data - it would
+        # print a profit above the width. Measured: 0 of 560 live pairs.
+        form_vertical_pairs, _leg, vertical_spreads = self._api()
+        chain = [quote("AAPL260116C00240000", bid=1.90, ask=2.00, iv=30.0,
+                       oi=1500, volume=100, dte=10),
+                 quote("AAPL260116C00245000", bid=2.50, ask=2.70, iv=30.0,
+                       oi=1500, volume=100, dte=10)]
+        kept, dropped = vertical_spreads(chain)
+        self.assertEqual(kept, [])
+        self.assertEqual([reason for _pair, reason in dropped],
+                         ["debit -0.5 <= 0"])
+        self.assertEqual(form_vertical_pairs(chain)[0].max_profit, 5.5)
+        # BOTH sides of the boundary: exactly zero is "not positive" too,
+        # otherwise a shift to `debit < 0` stays green
+        boundary = [quote("AAPL260116C00240000", bid=2.40, ask=2.50, iv=30.0,
+                          oi=1500, volume=100, dte=10),
+                    quote("AAPL260116C00245000", bid=2.50, ask=2.70, iv=30.0,
+                          oi=1500, volume=100, dte=10)]
+        kept_zero, dropped_zero = vertical_spreads(boundary)
+        self.assertEqual(form_vertical_pairs(boundary)[0].net_debit, 0.0)
+        self.assertEqual(kept_zero, [])
+        self.assertEqual([reason for _pair, reason in dropped_zero],
+                         ["debit 0.0 <= 0"])
+
+    def test_an_empty_chain_yields_no_pairs(self):
+        form_vertical_pairs, _leg, vertical_spreads = self._api()
+        self.assertEqual(form_vertical_pairs([]), [])
+        self.assertEqual(vertical_spreads([]), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()
