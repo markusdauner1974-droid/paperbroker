@@ -466,7 +466,12 @@ class _MCPTrendProvider:
         if "error" in payload or result.get("isError"):
             raise RuntimeError("trend source rpc")
         try:
-            stage = json.loads(result["content"][0]["text"])["stage"]
+            snapshot = json.loads(result["content"][0]["text"])
+            # MEASURED 2026-10-12 against the live source (smoke test with the
+            # secret): the numbers live under "technicals". The top level carries
+            # breadth/summary/stock/themes - reading it made every lookup fail
+            # closed, so the page only ever said "Trend nicht verfuegbar".
+            stage = snapshot["technicals"]["stage"]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise RuntimeError("trend source payload") from exc
         # the REQUESTED symbol is echoed: the screener matches trend.symbol

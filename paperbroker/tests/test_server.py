@@ -980,8 +980,10 @@ _ENV_KEYS = ("PAPERBROKER_TREND_MCP_URL", "PAPERBROKER_TREND_TOKEN",
 
 
 def _mcp_envelope(stage, symbol="AAPL"):
-    """The documented MCP shape: result.content[0].text is a JSON STRING."""
-    inner = json.dumps({"symbol": symbol, "stage": stage})
+    """The MEASURED shape (2026-10-12): result.content[0].text is a JSON string
+    whose numbers live under "technicals", not at the top level."""
+    inner = json.dumps({"stock": {"symbol": symbol},
+                        "technicals": {"symbol": symbol, "stage": stage}})
     return json.dumps({"jsonrpc": "2.0", "id": 1,
                        "result": {"content": [{"type": "text", "text": inner}]}}).encode()
 
@@ -1128,7 +1130,11 @@ class TestTrendProvider(unittest.TestCase):
         self.assertEqual(sig.direction, "up")
         self.assertEqual(sig.symbol, "AAPL")
         prov, _ = self._provider(200, _mcp_envelope(4, "MSFT"))
-        self.assertEqual(prov.get_trend("MSFT").direction, "down")
+        sig = prov.get_trend("MSFT")
+        self.assertEqual(sig.direction, "down")
+        # the echo is the contract: the screener matches trend.symbol against the
+        # underlying, so a constant would silently label the wrong ticker
+        self.assertEqual(sig.symbol, "MSFT")
 
     def test_provider_raises_on_every_failure(self):
         cases = [
@@ -1136,6 +1142,10 @@ class TestTrendProvider(unittest.TestCase):
             ("empty body", 200, b""),
             ("html instead of json", 200, b"<html>nope</html>"),
             ("rpc error", 200, json.dumps({"error": {"code": -32600}}).encode()),
+            ("rpc error NEXT TO a valid payload", 200, json.dumps(
+                {"error": {"code": -32600}, "result": {"content": [
+                    {"type": "text", "text": json.dumps({"technicals": {"stage": 2}})}]}}).encode()),
+            ("401 with a VALID mcp body", 401, _mcp_envelope(2)),
             ("isError", 200, json.dumps({"result": {"isError": True, "content": []}}).encode()),
             ("stage missing", 200, json.dumps(
                 {"result": {"content": [{"text": json.dumps({"symbol": "AAPL"})}]}}).encode()),
@@ -1163,6 +1173,17 @@ class TestTrendProvider(unittest.TestCase):
         prov.get_trend('AA"PL{')
         sent = json.loads(fake.calls[0]["body"])
         self.assertEqual(sent["params"]["arguments"]["symbol"], 'AA"PL{')
+
+
+    def test_provider_reads_stage_from_technicals(self):
+        """MEASURED 2026-10-12: the numbers live under "technicals"."""
+        prov, _ = self._provider(200, _mcp_envelope(2))
+        self.assertEqual(prov.get_trend("AAPL").direction, "up")
+        # a stage at the TOP level is not the measured place and must not pass
+        prov, _ = self._provider(200, json.dumps({"result": {"content": [
+            {"type": "text", "text": json.dumps({"stage": 2})}]}}).encode())
+        with self.assertRaises(RuntimeError):
+            prov.get_trend("AAPL")
 
 
 class TestTrendConfig(unittest.TestCase):
