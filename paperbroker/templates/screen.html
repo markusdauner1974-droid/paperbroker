@@ -46,7 +46,7 @@
   {% if freshness %}
     <span class="badge">Datenalter:
       <span class="lamp {{ freshness }}"></span>
-      {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}aelter{% else %}alt{% endif %}
+      {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}aelter{% elif freshness_age is not none and freshness_age < 0 %}Zukunft{% else %}alt{% endif %}
       {%- if freshness_age is not none %} ({{ freshness_age }} min, {% if freshness_limit is not none %}Grenze {{ freshness_limit }} min{% else %}Grenze aus{% endif %}){% endif %}
     </span>
   {% endif %}

@@ -264,6 +264,14 @@ def filter_sizes(quotes, criteria: ScreenerCriteria):
     return kept, dropped
 
 
+# Clock skew is seconds, not minutes. A quote claiming to be more than a
+# minute in the FUTURE is a broken feed, not a fast clock - and the plain
+# `age_s > max_age_s` check could never see it, because a future timestamp
+# makes the age negative. Shared with the freshness lamp so both sides read
+# one rule instead of two.
+FUTURE_TOLERANCE_S = 60
+
+
 def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
     """max_quote_age_min uses quote_timestamp. Fail-closed: when the guard
     is enabled, a quote whose age cannot be established (missing or
@@ -274,7 +282,15 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
     internal error, not an unreadable timestamp - the reason text is shown
     on the page, so it must not lie. Measured 2026-10-10: a caller passing
     an arrow object instead of a function got 'unparseable timestamp' for
-    67 contracts although all 104 carried a valid timestamp."""
+    contracts although all 104 carried a valid timestamp.
+
+    Slice J: a timestamp AFTER the clock yields a NEGATIVE age, so the plain
+    `age_s > max_age_s` check let every such quote through - measured: +1 s,
+    +1 day and 9999-12-31 were all kept with no reason, while the lamp called
+    the chain "frisch". More than FUTURE_TOLERANCE_S ahead is therefore
+    dropped and named as such; the tolerance covers clock skew of seconds and
+    nothing else. With the guard switched off nothing is checked here.
+    """
     from datetime import datetime
 
     import arrow
@@ -314,7 +330,11 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
         except Exception:
             dropped.append((q, "freshness unknown (unparseable timestamp)"))
             continue
-        if age_s > max_age_s:
+        if age_s < -FUTURE_TOLERANCE_S:
+            # the wording keeps the rounding of the stale branch below: the
+            # existing edge (30 min + 1 s reads "stale 30 min") must not move
+            dropped.append((q, f"future timestamp (+{(-age_s)/60:.0f} min)"))
+        elif age_s > max_age_s:
             dropped.append((q, f"stale {age_s/60:.0f} min"))
         else:
             kept.append(q)

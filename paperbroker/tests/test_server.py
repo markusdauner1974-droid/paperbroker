@@ -943,6 +943,76 @@ class TestSettableCriteria(unittest.TestCase):
         self.assertEqual(d["candidates"], 2)
 
 
+class TestFutureTimestampLamp(unittest.TestCase):
+    """Slice J: the lamp must not call a chain with a future timestamp fresh.
+
+    Measured before the fix: with every timestamp one day ahead the page read
+    "Datenalter: frisch (-1440 min, Grenze 30 min)" and the JSON said green.
+
+    The lamp reads the RAW chain, so it is the backstop when the age guard is
+    switched off - the assertion that carries the slice therefore runs with
+    the guard OFF: with the guard on, the filter would drop the contract and
+    mask the lamp.
+    """
+
+    def _app(self, quotes=None):
+        app = create_app(quote_adapter=_MockAdapter(make() if quotes is None else quotes),
+                         screener=None, now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    @staticmethod
+    def _kette(ts):
+        k = make()
+        for q in k:
+            q.quote_timestamp = ts
+        return k
+
+    def _page(self, quotes, params=None):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params or {})
+        return self._app(quotes).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    def _json(self, quotes, params=None):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params or {})
+        return self._app(quotes).test_client().get(
+            "/api/screen", query_string=query).get_json()
+
+    def test_the_lamp_turns_red_with_the_guard_switched_off(self):
+        page = self._page(self._kette("2026-10-08 14:35:00"), {"ignore_quote_age": "1"})
+        self.assertIn("Zukunft", page)          # not "frisch", not "alt"
+        self.assertNotIn("frisch", page)
+        self.assertIn("-1440 min", page)        # the number stays honest
+        self.assertIn("Grenze aus", page)
+        self.assertEqual(self._json(self._kette("2026-10-08 14:35:00"),
+                                    {"ignore_quote_age": "1"})["freshness"], "red")
+
+    def test_the_filter_drops_a_future_timestamp_and_names_it(self):
+        d = self._json(self._kette("2026-10-08 14:35:00"))
+        self.assertEqual(d["candidates"], 0)
+        self.assertIn("future timestamp (+1440 min)",
+                      [g["reason"] for g in d["dropped_reasons"]])
+
+    def test_one_contract_of_seven_ahead_leaves_the_other_six_alone(self):
+        k = make()
+        k[0].quote_timestamp = "2026-10-08 14:35:00"     # one of the two winners
+        d = self._json(k)
+        self.assertEqual(d["candidates"], 1)
+        self.assertEqual(d["freshness"], "red")          # raw chain: it is the youngest
+        self.assertIn("future timestamp (+1440 min)",
+                      [g["reason"] for g in d["dropped_reasons"]])
+
+    def test_half_a_minute_ahead_is_still_fresh(self):
+        # separates the SHARED tolerance from a strict lamp: the filter keeps
+        # this quote, so the lamp must not turn red for it
+        page = self._page(self._kette("2026-10-07 14:35:30"))
+        self.assertIn("frisch", page)
+        self.assertNotIn("Zukunft", page)
+        self.assertEqual(self._json(self._kette("2026-10-07 14:35:30"))["freshness"], "green")
+
+
 class TestResultList(unittest.TestCase):
     """Ausbau-Slice 3 (D): what the result list shows, and in which order.
 

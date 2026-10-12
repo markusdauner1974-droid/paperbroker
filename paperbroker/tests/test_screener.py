@@ -390,6 +390,62 @@ def make_verticals():
     ]
 
 
+class TestFutureTimestamps(unittest.TestCase):
+    """Slice J: a timestamp AFTER the clock must not pass the age guard.
+
+    Measured before the fix: every future timestamp was kept with no reason
+    (+1 s, +1 day, 9999-12-31), while the lamp reported the chain as fresh.
+    Fail-closed is the rule everywhere else in this pipeline, so this was the
+    one open door.
+    """
+
+    JETZT = "2026-10-07T14:35:00"
+
+    def _q(self, ts):
+        return quote("AAPL260116C00240000", quote_timestamp=ts)
+
+    def _lauf(self, ts, max_age=30):
+        c = ScreenerCriteria(max_quote_age_min=max_age)
+        return filter_stale([self._q(ts)], c, now_fn=lambda: arrow.get(self.JETZT))
+
+    def test_a_clock_skew_of_seconds_still_passes(self):
+        # the tolerance is the boundary: -60 s is not suspicious, -61 s is
+        for ts in ("2026-10-07 14:35:00", "2026-10-07 14:35:01", "2026-10-07 14:35:30",
+                   "2026-10-07 14:36:00"):
+            kept, dropped = self._lauf(ts)
+            self.assertEqual(len(kept), 1, ts)
+            self.assertEqual(dropped, [], ts)
+
+    def test_a_timestamp_just_beyond_the_tolerance_is_dropped_and_named(self):
+        kept, dropped = self._lauf("2026-10-07 14:36:01")
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped[0][1], "future timestamp (+1 min)")
+
+    def test_a_day_ahead_is_dropped_with_the_real_distance(self):
+        kept, dropped = self._lauf("2026-10-08 14:35:00")
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped[0][1], "future timestamp (+1440 min)")
+
+    def test_the_far_future_is_dropped_too(self):
+        kept, dropped = self._lauf("9999-12-31 23:59:59")
+        self.assertEqual(kept, [])
+        self.assertTrue(dropped[0][1].startswith("future timestamp (+"), dropped[0][1])
+
+    def test_the_existing_stale_edge_did_not_move(self):
+        # exactly 30 min stays; 30 min + 1 s keeps the old wording (rounded)
+        kept, dropped = self._lauf("2026-10-07 14:05:00")
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, [])
+        kept, dropped = self._lauf("2026-10-07 14:04:59")
+        self.assertEqual(kept, [])
+        self.assertEqual(dropped[0][1], "stale 30 min")
+
+    def test_the_guard_switched_off_does_not_check_at_all(self):
+        kept, dropped = self._lauf("9999-12-31 23:59:59", max_age=None)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, [])
+
+
 class TestVerticalCallSpreads(unittest.TestCase):
     """Ausbau-Slice B: adjacent-strike CALL spreads from the raw chain.
 
