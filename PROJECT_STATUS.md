@@ -11,11 +11,11 @@ The always-current sources are `git log --merges` (history) and the CI page of t
 
 | Item | Value |
 |---|---|
-| `master` | `102a94054d439ad7b67ddd970621f4818421974a` (merge of PR #31) |
-| Test suite | **310 passed** (`pytest paperbroker/tests`) |
+| `master` | `3b6309b90c2eda880c6fff4163b0495305bb9879` (merge of PR #33) |
+| Test suite | **320 passed** (`pytest paperbroker/tests`) |
 | Lint | `ruff` clean, run in the CI form over the tracked files |
 | CI on `master` | **4/4 green** — Lint ruff · Test suite pytest 3.13 · Docker image build · publish |
-| Commits | 164 |
+| Commits | 169 |
 | Runtime dependencies | `arrow`, `requests`, `flask` (`requirements.txt` and `setup.py` agree — pinned by a test) |
 | Open audit findings | **none** |
 
@@ -25,6 +25,8 @@ Everything in this table was measured on the commit above, not estimated.
 
 | PR | Merge commit | What it added |
 |---|---|---|
+| #33 | `3b6309b` | A timestamp after the clock fails closed; the lamp warns instead of reassuring |
+| #32 | `f8f44c6` | Record that every criterion is settable |
 | #31 | `102a940` | Make all eleven remaining criteria settable from the form; the last usability gap |
 | #30 | `7cffacd` | Refresh the frozen baseline and record the two-system merge gate |
 | #29 | `31f19af` | Pass the trend variables through the local Arcane stack as well |
@@ -77,6 +79,13 @@ adapter: stored as percent, `scale=100.0`).
 `PAPERBROKER_TREND_TOKEN` are set; otherwise the app runs without trend input, byte-for-byte as before.
 A failing trend service degrades to "trend unavailable" and never breaks the screen.
 
+**Freshness** — a quote older than the guard is dropped and named (`stale 252 min`); so is one whose
+age cannot be established (`no quote_timestamp`, `unparseable timestamp`, `clock error`), and — since
+PR #33 — one that claims to be more than 60 s in the **future** (`future timestamp (+1440 min)`). The
+lamp reads the raw chain and turns **red** for that case instead of green; the badge reads `Zukunft`
+rather than `alt`. The 60 s tolerance is clock skew, not a licence. With the guard switched off
+(`ignore_quote_age=1`) nothing is filtered and the lamp is the only warning left.
+
 **Chain robustness** — a contract that cannot be parsed is dropped and counted (`ChainResult.skipped`,
 `chain_skipped` in the JSON); a chain that is unusable as a whole still raises, so an empty result can
 never look like "no candidates".
@@ -87,13 +96,9 @@ whole package directory.
 
 ## Open topics
 
-1. **Future timestamps pass the age guard** (measured 2026-10-12, still open). The guard compares
-   `age_s > max_age_s`; a timestamp *after* the clock yields a negative age and is kept. Measured with
-   `9999-12-31 23:59:59`: 2 of 2 contracts kept, no reason reported. A feed with a clock running ahead
-   would slip through. Candidate fix: treat a future timestamp as suspect and name it.
-2. **Result table columns** — the API carries bid/ask/iv/open interest/volume/delta/score/spread; the
+1. **Result table columns** — the API carries bid/ask/iv/open interest/volume/delta/score/spread; the
    table does not yet offer DTE, mid, moneyness, sorting or a CSV export.
-3. **sdist behaviour is unverified.** Wheel and install path are measured; a source distribution was
+2. **sdist behaviour is unverified.** Wheel and install path are measured; a source distribution was
    never built or inspected in this project.
 
 ## How work is done here (unchanged)
