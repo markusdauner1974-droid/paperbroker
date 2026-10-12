@@ -32,6 +32,9 @@ ASK_SIZE = 27
 STRIKE = 335.0
 INTRINSIC = 5.5301
 EXTRINSIC = 10.2199
+# Ausbau-Slice F (B-15): deep in the money - inner value 65.0 > PRICE 15.75
+SPOT_DEEP_ITM = 400.0
+DEEP_ITM_EXTRINSIC = -49.25
 
 ARGS = dict(quote_date=QUOTE_DATE, asset=OPTION, price=PRICE, bid=BID, ask=ASK,
             bid_size=BID_SIZE, ask_size=ASK_SIZE)
@@ -141,3 +144,17 @@ def test_an_explicit_spot_argument_overrides_the_missing_instance_spot():
     quote = OptionQuote(**ARGS)
     assert quote.underlying_price is None
     assert quote.get_extrinsic_value(underlying_price=350.0) == pytest.approx(0.75, abs=1e-9)
+
+def test_extrinsic_value_negative_when_intrinsic_exceeds_price():
+    # Ausbau-Slice F (B-15): the extrinsic value IS negative once the inner value is
+    # worth more than the quote - `abs(price) - intrinsic` keeps that sign. The
+    # variant `abs(price - intrinsic)` answered +49.25 and survived the whole suite
+    # (292 passed, measured 2026-10-12) until this pin.
+    # The pin sits at the QUOTE level on purpose: an asset-level pin does not catch a
+    # wrapper that clamps the value in quotes.py:93 (measured: survives there).
+    # Equivalent variants, deliberately not chased (price >= 0, intrinsic >= 0):
+    # `price - intrinsic`, `abs(price) - abs(intrinsic)`.
+    quote = quote_factory(underlying_price=SPOT_DEEP_ITM, **ARGS)
+    assert quote.get_intrinsic_value() == pytest.approx(65.0, abs=1e-6)
+    assert quote.get_extrinsic_value() == pytest.approx(DEEP_ITM_EXTRINSIC)
+
