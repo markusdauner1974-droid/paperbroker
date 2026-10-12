@@ -1013,24 +1013,19 @@ class _BrokenProvider:
 
 
 class TestTrendDirectionRule(unittest.TestCase):
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_direction_two_is_up(self):
         self.assertEqual(server_module._direction_from_stage(2), "up")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_direction_four_is_down(self):
         self.assertEqual(server_module._direction_from_stage(4), "down")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_direction_one_is_flat(self):
         self.assertEqual(server_module._direction_from_stage(1), "flat")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_direction_three_is_flat(self):
         # the only catcher for a "3 -> up" mutant
         self.assertEqual(server_module._direction_from_stage(3), "flat")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_direction_missing_or_string_stage_raises(self):
         # no subTest here: a subtest failure is not catchable by xfail(strict)
         for bad in (None, 5, "2"):
@@ -1039,7 +1034,6 @@ class TestTrendDirectionRule(unittest.TestCase):
 
 
 class TestTrendTransport(unittest.TestCase):
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_transport_returns_status_and_body(self):
         import io
         from unittest import mock
@@ -1059,7 +1053,6 @@ class TestTrendTransport(unittest.TestCase):
         self.assertEqual(status, 200)
         self.assertEqual(body, b'{"ok":1}')
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_transport_http_error_carries_status_and_body(self):
         import io
         import urllib.error
@@ -1071,7 +1064,6 @@ class TestTrendTransport(unittest.TestCase):
         self.assertEqual(status, 401)
         self.assertEqual(body, b'{"detail":"auth"}')
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_transport_posts_with_headers_and_timeout(self):
         import io
         from unittest import mock
@@ -1113,13 +1105,11 @@ class TestTrendProvider(unittest.TestCase):
         fake = _FakeTransport(status, body)
         return server_module._MCPTrendProvider("http://x/mcp", "T", 2.0, transport=fake), fake
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_provider_url_is_normalised_to_mcp_slash(self):
         for raw in ("http://x/mcp", "http://x/mcp/"):
             prov = server_module._MCPTrendProvider(raw, "T", 2.0, transport=_FakeTransport())
             self.assertEqual(prov.url, "http://x/mcp/")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_provider_sends_bearer_and_tool_call(self):
         prov, fake = self._provider(200, _mcp_envelope(2))
         prov.get_trend("AAPL")
@@ -1132,7 +1122,6 @@ class TestTrendProvider(unittest.TestCase):
         self.assertEqual(sent["params"]["arguments"], {"symbol": "AAPL"})
         self.assertEqual(call["timeout"], 2.0)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_provider_extracts_direction_from_stage(self):
         prov, _ = self._provider(200, _mcp_envelope(2))
         sig = prov.get_trend("AAPL")
@@ -1141,7 +1130,6 @@ class TestTrendProvider(unittest.TestCase):
         prov, _ = self._provider(200, _mcp_envelope(4, "MSFT"))
         self.assertEqual(prov.get_trend("MSFT").direction, "down")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_provider_raises_on_every_failure(self):
         cases = [
             ("status 401", 401, b'{"detail":"Authentication required"}'),
@@ -1158,7 +1146,6 @@ class TestTrendProvider(unittest.TestCase):
             with self.assertRaises((RuntimeError, ValueError), msg=name):
                 prov.get_trend("AAPL")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_provider_token_never_in_exception(self):
         secret = "SUPER-SECRET-TOKEN"
         prov = server_module._MCPTrendProvider("http://x/mcp", secret, 2.0,
@@ -1171,7 +1158,6 @@ class TestTrendProvider(unittest.TestCase):
         else:
             self.fail("kein Fehler geworfen")
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_provider_hostile_symbol_does_not_corrupt_body(self):
         prov, fake = self._provider(200, _mcp_envelope(2))
         prov.get_trend('AA"PL{')
@@ -1202,7 +1188,6 @@ class TestTrendConfig(unittest.TestCase):
         os.environ["PAPERBROKER_TREND_MCP_URL"] = ""
         self.assertIsNone(server_module._get_trend_provider())
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_gate_builds_provider_with_full_config(self):
         os.environ["PAPERBROKER_TREND_MCP_URL"] = "http://x/mcp"
         os.environ["PAPERBROKER_TREND_TOKEN"] = "T"
@@ -1212,7 +1197,6 @@ class TestTrendConfig(unittest.TestCase):
         self.assertEqual(prov.token, "T")
         self.assertEqual(prov.timeout, 2.0)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_gate_timeout_default_and_override(self):
         os.environ["PAPERBROKER_TREND_MCP_URL"] = "http://x/mcp"
         os.environ["PAPERBROKER_TREND_TOKEN"] = "T"
@@ -1240,7 +1224,6 @@ class TestTrendWiring(unittest.TestCase):
         self.assertNotIn("trend", json.dumps(data))
         self.assertIn("Trend nicht verfuegbar", page)
 
-    @pytest.mark.xfail(strict=True, reason="red before the build (Ausbau-Slice C)")
     def test_json_and_page_agree_on_trend_reasons(self):
         import unittest.mock as mock
         signal = TrendSignal(symbol="AAPL", direction="up")
