@@ -20,8 +20,6 @@ import fnmatch
 import pathlib
 import re
 
-import pytest
-
 ROOT = pathlib.Path(__file__).resolve().parents[2]
 
 
@@ -52,7 +50,6 @@ def _names(entries):
     return out
 
 
-@pytest.mark.xfail(reason="B-13: setup.py does not declare flask yet", strict=True)
 def test_requirements_txt_and_install_requires_agree():
     lines = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
     wanted = _names([line for line in lines
@@ -62,7 +59,6 @@ def test_requirements_txt_and_install_requires_agree():
     assert missing == [], f"declared in requirements.txt but not in setup.py: {missing}"
 
 
-@pytest.mark.xfail(reason="B-13: setup.py declares no package_data yet", strict=True)
 def test_every_shipped_asset_is_covered_by_package_data():
     kwargs = _setup_kwargs()
     patterns = [pat for globs in kwargs.get("package_data", {}).values() for pat in globs]

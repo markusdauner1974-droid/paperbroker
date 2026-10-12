@@ -1,4 +1,4 @@
-from distutils.core import setup
+from setuptools import setup
 
 setup(name='paperbroker',
       version='0.1.3',
@@ -13,6 +13,13 @@ setup(name='paperbroker',
                ],
         install_requires=[
             'arrow',
-            'requests'
-        ]
+            'requests',
+            # B-13: the server imports flask; requirements.txt already had it
+            'flask>=3.1'
+        ],
+        # B-13: templates/ holds screen.html but is not a python package
+        # (no __init__.py), so it needs an explicit data declaration
+        package_data={
+            'paperbroker': ['templates/*.html']
+        }
      )
