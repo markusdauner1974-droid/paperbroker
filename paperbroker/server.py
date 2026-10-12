@@ -13,8 +13,13 @@
 #   (a raw ticker would allow path injection against cdn.cboe.com).      #
 # ---------------------------------------------------------------------- #
 
+import json
+import logging
 import math
+import os
 import re
+import urllib.error
+import urllib.request
 
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
@@ -22,7 +27,15 @@ from flask import Flask, abort, jsonify, render_template, request
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
 from .PaperBroker import PaperBroker
-from .screener import OptionScreener, ScreenerCriteria, screen, vertical_spreads
+from .screener import (
+    OptionScreener,
+    ScreenerCriteria,
+    TrendSignal,
+    screen,
+    vertical_spreads,
+)
+
+logger = logging.getLogger(__name__)
 
 _TICKER_RE = re.compile(r"^[A-Z]{1,6}$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -239,7 +252,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                            dropped_reasons=[], verticals=[],
                            vertical_drops=[])
         quotes = broker.get_options(ticker, expiration)
-        results, dropped = screen(quotes, criteria, now_fn=now_fn)
+        results, dropped = screen(quotes, criteria, trend=_load_trend(ticker),
+                                  now_fn=now_fn)
         vertical_kept, vertical_dropped = vertical_spreads(quotes)
         return jsonify(
             ticker=ticker,
@@ -377,14 +391,107 @@ def _load_trend(ticker):
         return None
     try:
         return provider.get_trend(ticker)
-    except Exception:
+    except Exception as exc:  # noqa: BLE001 - any source failure = no trend
+        # visible in the log: "source down" must not be indistinguishable
+        # from "no provider configured" (the UI text is the same by design)
+        logger.warning("trend source failed (%s)", type(exc).__name__)
         return _TrendInfo("flat", source_ok=False)
 
 
+_STAGE_DIRECTION = {1: "flat", 2: "up", 3: "flat", 4: "down"}
+_TREND_TIMEOUT_DEFAULT = 2.0
+
+
+def _direction_from_stage(stage):
+    """Weinstein stage -> trend direction.
+
+    Anything that is not one of the four integers raises: a silent "flat"
+    on a real "up" would be a confident wrong trend, which is worse for the
+    side annotation than a visible source failure.
+    """
+    if type(stage) is not int or stage not in _STAGE_DIRECTION:
+        raise ValueError("stage ungueltig")
+    return _STAGE_DIRECTION[stage]
+
+
+def _urllib_transport(url, headers, body, timeout):
+    """The real transport (stdlib only).
+
+    Returns (status, body) instead of raising on HTTP status, so the
+    provider has ONE place that decides what counts as a failure.
+    """
+    req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as exc:
+        return exc.code, exc.read()
+
+
+class _MCPTrendProvider:
+    """Trend from the xang1234 MCP endpoint (JSON-RPC 2.0 over HTTP).
+
+    Only the direction is used (it picks the call/put side, never IV).
+    Envelope is the documented MCP shape: result.content[0].text carries a
+    JSON string (not a nested object). Every failure raises - _load_trend
+    turns it into source_ok=False, so a dead source never looks calm.
+    """
+
+    def __init__(self, url, token, timeout=_TREND_TIMEOUT_DEFAULT, transport=None):
+        # /mcp without the trailing slash answers 307; normalise once, so
+        # callers may pass either form.
+        self.url = url.rstrip("/") + "/"
+        self.token = token
+        self.timeout = timeout
+        self._transport = transport or _urllib_transport
+
+    def get_trend(self, symbol):
+        body = json.dumps({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "tools/call",
+            "params": {"name": "stock_snapshot",
+                       "arguments": {"symbol": symbol}},
+        }).encode("utf-8")
+        headers = {"Authorization": "Bearer " + self.token,
+                   "Content-Type": "application/json"}
+        status, raw = self._transport(self.url, headers, body, self.timeout)
+        if status != 200:
+            raise RuntimeError(f"trend source http {status}")
+        try:
+            payload = json.loads(raw)
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("trend source body") from exc
+        result = payload.get("result") or {}
+        if "error" in payload or result.get("isError"):
+            raise RuntimeError("trend source rpc")
+        try:
+            stage = json.loads(result["content"][0]["text"])["stage"]
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise RuntimeError("trend source payload") from exc
+        # the REQUESTED symbol is echoed: the screener matches trend.symbol
+        # against the quote's underlying symbol.
+        return TrendSignal(symbol, _direction_from_stage(stage))
+
+
 def _get_trend_provider():
-    # Phase 5: none wired yet (xang1234 gets connected in a follow-up);
-    # the protocol + Fake provider land first so the wiring is a one-liner
-    return None
+    """Provider only when the config is COMPLETE, else None.
+
+    None is today's behaviour, byte for byte: no trend input, no exception,
+    no badge. An empty string counts as missing.
+    """
+    url = os.environ.get("PAPERBROKER_TREND_MCP_URL", "")
+    token = os.environ.get("PAPERBROKER_TREND_TOKEN", "")
+    if not url or not token:
+        return None
+    raw = os.environ.get("PAPERBROKER_TREND_TIMEOUT_S", "")
+    try:
+        timeout = float(raw) if raw else _TREND_TIMEOUT_DEFAULT
+    except (TypeError, ValueError):
+        timeout = _TREND_TIMEOUT_DEFAULT
+    if timeout <= 0:
+        timeout = _TREND_TIMEOUT_DEFAULT
+    return _MCPTrendProvider(url, token, timeout)
 
 
 def _trend_display(ticker):
