@@ -66,9 +66,19 @@ _REASON_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 # The switch ignore_quote_age=1 is the ONLY way to disable the age guard:   #
 # 0 is a valid, sharp bound ("everything older than 0 s"), not "off".       #
 # ---------------------------------------------------------------------- #
-_CRITERIA_INT_FIELDS = ("dte_min", "dte_max", "min_oi", "min_volume", "max_quote_age_min")
-_CRITERIA_FLOAT_FIELDS = ("max_spread_pct",)
-_CRITERIA_FIELDS = _CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
+# Slice I: every field ScreenerCriteria honours is settable from the form.
+# Three input shapes share one parser: numbers (int/float), a switch with an
+# explicit "unset" state (bool), and a choice of names (iv_pref). An empty
+# field keeps the dataclass default - that is why "unset" must not be spelled
+# as 0: min_bid_size=0 demands a size >= 0 and drops every quote with size 0.
+_CRITERIA_INT_FIELDS = ("dte_min", "dte_max", "min_oi", "min_volume", "max_quote_age_min",
+                        "min_bid_size", "min_ask_size")
+_CRITERIA_FLOAT_FIELDS = ("max_spread_pct", "max_spread_abs", "iv_min", "iv_max",
+                          "weight_spread", "weight_oi", "weight_iv")
+_CRITERIA_BOOL_FIELDS = ("require_oi", "require_volume")
+_CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
+_CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
+                    + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
 _IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age")
 
@@ -89,6 +99,18 @@ def _parse_criteria_value(field, raw):
             return int(text)
         except ValueError as exc:
             raise ValueError(f"{field}: '{text}' ist keine ganze Zahl.") from exc
+    if field in _CRITERIA_BOOL_FIELDS:
+        # The empty field (handled above) means "keep the default"; a switch
+        # therefore only has to name the two explicit states.
+        if text not in ("0", "1"):
+            raise ValueError(f"{field}: '0' oder '1' erwartet (ist: '{text}').")
+        return text == "1"
+    if field in _CRITERIA_CHOICE_FIELDS:
+        erlaubt = _CRITERIA_CHOICE_FIELDS[field]
+        if text not in erlaubt:
+            raise ValueError(f"{field}: einer von {', '.join(erlaubt)} erwartet "
+                             f"(ist: '{text}').")
+        return text
     try:
         value = float(text)
     except ValueError as exc:
