@@ -8,6 +8,7 @@
 # - Bind-Mount /share/Docker/paperbroker-screener statt named volume
 # - Container im externen Netzwerk md-netzwerk
 # - Variablen WERTE stehen im ENV-Block, im YML nur ${VAR}-Platzhalter
+# - PAPERBROKER_TREND_* durchgereicht (optional; leer = ohne Trend-Eingang)
 
 services:
   paperbroker-screener:
@@ -27,8 +28,13 @@ services:
       - "/share/Docker/paperbroker-screener:/app/.cache"
     environment:
       - FLASK_DEBUG=${FLASK_DEBUG:?FLASK_DEBUG must be set (keep 0)}
-      # Trend provider comes later (xang1234). Absent config = the app
-      # runs without trend input (TrendProvider=None is a valid contract).
+      # Trend provider (xang1234 MCP). Optional, NOT required: an empty
+      # value means "no trend input", the same behaviour as before the
+      # provider was wired (no badge, no exception). Switch it on by
+      # setting URL and TOKEN in the environment block.
+      - PAPERBROKER_TREND_MCP_URL=${PAPERBROKER_TREND_MCP_URL:-}
+      - PAPERBROKER_TREND_TOKEN=${PAPERBROKER_TREND_TOKEN:-}
+      - PAPERBROKER_TREND_TIMEOUT_S=${PAPERBROKER_TREND_TIMEOUT_S:-}
     networks:
       - md-netzwerk
 
