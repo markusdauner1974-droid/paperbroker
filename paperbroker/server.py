@@ -28,6 +28,7 @@ from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
 from .PaperBroker import PaperBroker
 from .screener import (
+    FUTURE_TOLERANCE_S,
     OptionScreener,
     ScreenerCriteria,
     TrendSignal,
@@ -577,6 +578,11 @@ def _lamp_state(age_min):
     """green/yellow/red from a quote age; None age -> None (no lamp)."""
     if age_min is None:
         return None
+    if age_min < -FUTURE_TOLERANCE_S / 60:
+        # Slice J: the youngest timestamp of the RAW chain is in the future.
+        # Measured before the fix: the page said "frisch (-1440 min)" and the
+        # JSON said green. Same tolerance as the stale guard - one rule.
+        return "red"
     if age_min < _FRESH_GREEN_MIN:
         return "green"
     if age_min < _FRESH_YELLOW_MIN:
