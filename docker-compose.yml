@@ -11,6 +11,12 @@
 #   APP_PORT       port INSIDE the container (do not change; Dockerfile
 #                  EXPOSE + healthcheck expect it)
 #   FLASK_DEBUG    keep 0 (1 would expose the Werkzeug debugger - unsafe)
+#   PAPERBROKER_TREND_MCP_URL / _TOKEN / _TIMEOUT_S
+#                  optional trend provider (xang1234 MCP). Leave empty to
+#                  run without trend input - that is the documented default
+#                  and the app behaves exactly as if the variables were
+#                  absent (no badge, no exception). The provider is only
+#                  created when URL AND token are both set.
 
 services:
   paperbroker-screener:
@@ -24,8 +30,12 @@ services:
       - cboe_cache:/app/.cache
     environment:
       - FLASK_DEBUG=${FLASK_DEBUG:-0}
-      # Trend provider comes later (xang1234). Absent config = the app
-      # runs without trend input (TrendProvider=None is a valid contract).
+      # Trend provider (xang1234 MCP). All three default to empty, which
+      # means "no trend input" - the same behaviour as before the provider
+      # was wired. Set URL and TOKEN to switch the trend on.
+      - PAPERBROKER_TREND_MCP_URL=${PAPERBROKER_TREND_MCP_URL:-}
+      - PAPERBROKER_TREND_TOKEN=${PAPERBROKER_TREND_TOKEN:-}
+      - PAPERBROKER_TREND_TIMEOUT_S=${PAPERBROKER_TREND_TIMEOUT_S:-}
 
 volumes:
   cboe_cache:
