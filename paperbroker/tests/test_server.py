@@ -1781,5 +1781,191 @@ class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
         self.assertNotIn("verfuegbar", page)
 
 
+class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
+    """ausD1 (D1): die Filter liegen in vier Gruppen in einem Raster, die Seite
+    ist breiter als ihre breiteste Tabelle, und das Feld mit der scharfen Null
+    traegt seinen Hinweis.
+
+    Zahlen aus der Messung (docs/210_ausD1_phase1_bis3.md): die Spread-Tabelle
+    ist 837 px breit, der Inhaltsbereich war 760 px, der Leerraum betrug 37,4 %
+    der Fensterbreite. Geprueft werden REGELN aus dem <style>-Block, nicht das
+    blosse Wort "display:grid" - das kann auch in einer fremden Regel oder im
+    <script> stehen und wuerde nichts beweisen.
+    """
+
+    #: Die vier Gruppen mit ihren Feldern IN DOKUMENTREIHENFOLGE. Die Reihenfolge
+    #: ist der Inhalt dieses Slices: sie folgt der Frage des Nutzers, nicht der
+    #: Reihenfolge der Kriterien im Rechenmodul.
+    GRUPPEN = (
+        ("Liquidit\u00e4t", ("max_spread_pct", "max_spread_abs", "min_oi", "min_volume",
+                             "min_bid_size", "min_ask_size", "require_oi", "require_volume")),
+        ("Laufzeit und Frische", ("dte_min", "dte_max", "max_quote_age_min",
+                                  "ignore_quote_age")),
+        ("Volatilit\u00e4t", ("iv_min", "iv_max", "iv_pref")),
+        ("Bewertung", ("weight_spread", "weight_oi", "weight_iv")),
+    )
+
+    #: Die 14 Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
+    ZAHLENFELDER = ("dte_min", "dte_max", "max_spread_pct", "max_spread_abs", "min_oi",
+                    "min_volume", "min_bid_size", "min_ask_size", "iv_min", "iv_max",
+                    "max_quote_age_min", "weight_spread", "weight_oi", "weight_iv")
+
+    @staticmethod
+    def _page():
+        adapter = _MockAdapter(make() + make_verticals())
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app.test_client().get(
+            "/", query_string={"ticker": "AAPL", "expiration": "2026-01-16"}
+        ).get_data(as_text=True)
+
+    @staticmethod
+    def _ohne_style_und_script(page):
+        # Die Struktur-Zaehlungen duerfen nicht auf Literale im JS oder CSS
+        # hereinfallen (am Basis-Blob gemessen: dort steht keins, aber ein
+        # spaeterer Zusatz im <script> wuerde die Zaehlung sonst still brechen).
+        return re.sub(r"<style>.*?</style>|<script>.*?</script>", "", page, flags=re.S)
+
+    @staticmethod
+    def _gruppen(page):
+        """[(legend, (name, ...)), ...] in Dokumentreihenfolge.
+
+        Eine Funkgruppe erscheint im HTML mehrfach (ein <input> je Knopf) und
+        zaehlt hier EINMAL: aufeinanderfolgende gleiche Namen werden
+        zusammengefasst. Gemessen am Basis-Blob liefert ein rohes findall
+        ('require_oi', 'require_oi', 'require_volume', 'require_volume') -
+        eine Zusicherung darauf wuerde die Knopfe zaehlen, nicht die Felder.
+        """
+        ergebnis = []
+        for block in re.findall(r'<fieldset class="crit">(.*?)</fieldset>', page, re.S):
+            legend = re.search(r"<legend>(.*?)</legend>", block).group(1)
+            roh = re.findall(r'name="([^"]+)"', block)
+            felder = tuple(n for i, n in enumerate(roh) if i == 0 or roh[i - 1] != n)
+            ergebnis.append((legend, felder))
+        return ergebnis
+
+    @staticmethod
+    def _namen(page):
+        """{name: Anzahl} ueber das ganze Formular."""
+        form = re.search(r"<form.*?</form>", page, re.S).group(0)
+        gezaehlt = {}
+        for name in re.findall(r'name="([^"]+)"', form):
+            gezaehlt[name] = gezaehlt.get(name, 0) + 1
+        return gezaehlt
+
+    # --- die Breite ---
+
+    def test_the_page_is_wider_than_its_widest_table(self):
+        # die breiteste Tabelle braucht gemessen 837 px; mit 2x16 px Polster
+        # sind das 869 px. Die Zahl wird AUS DER REGEL gelesen und geprueft -
+        # ein "assertIn('1100', page)" waere blind (die Zahl kann aus Daten
+        # stammen), ein "assertIn('max-width', page)" erst recht.
+        page = self._page()
+        regel = re.search(r"main\{([^}]*)\}", page).group(1)
+        breite = int(re.search(r"max-width:(\d+)px", regel).group(1))
+        self.assertEqual(breite, 1100)
+        self.assertGreaterEqual(breite, 869)
+        self.assertNotIn("max-width:760px", page)
+
+    # --- das Raster ---
+
+    def test_the_grid_sits_on_the_fieldset_not_on_the_form(self):
+        page = self._page()
+        # ein Grid am <form> macht jedes <fieldset> zu EINEM Rasterfeld
+        # (D0-Befund); ohne Spaltenangabe faellt das Raster auf eine Spalte
+        # zurueck und waere optisch der alte Zustand
+        self.assertIn("fieldset.crit{display:grid", page)
+        self.assertIn("grid-template-columns:repeat(auto-fill,minmax(230px,1fr))", page)
+        self.assertNotIn("form{display:grid", page)
+        # ohne diese Angabe bleiben die Kaesten Flex-Elemente des <form> und
+        # schrumpfen (gemessen: 206-345 px statt voller Breite)
+        self.assertEqual(page.count("flex:1 1 100%"), 1)
+        # grid-column steht im CSS, nicht am Element: genau die zwei Regeln
+        self.assertEqual(re.findall(r"grid-column:([^;}]+)", page), ["1/-1", "1/-1"])
+
+    def test_the_fields_are_grouped_by_the_question_they_answer(self):
+        # Gleichheit, nicht Teilzeichenkette: Reihenfolge der Gruppen UND der
+        # Felder je Gruppe sind der Inhalt dieses Slices
+        self.assertEqual(self._gruppen(self._page()), list(self.GRUPPEN))
+
+    def test_every_field_survives_the_regrouping(self):
+        # die schaerfste Zusicherung: ein beim Umbau verlorenes oder doppeltes
+        # Feld laesst sich nicht durch Textsuche finden
+        erwartet = {"ticker": 1, "expiration": 1, "require_oi": 2,
+                    "require_volume": 2, "iv_pref": 3, "ignore_quote_age": 1}
+        for name in self.ZAHLENFELDER:
+            erwartet[name] = 1
+        self.assertEqual(self._namen(self._page()), erwartet)
+
+    def test_no_control_is_added_or_lost(self):
+        page = self._page()
+        self.assertEqual(page.count("<input"), 23)
+        self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
+        self.assertEqual(page.count("<button"), 1)
+        self.assertEqual(page.count("<fieldset"), 4)
+        self.assertEqual(page.count("<legend>"), 4)
+
+    def test_the_controls_stay_outside_the_groups(self):
+        # Ticker, Verfallsauswahl und der Scan-Knopf gehoeren NICHT in eine
+        # Filtergruppe: sie sind die Eingabe, die Gruppen sind die Filter.
+        page = self._page()
+        erstes = page.index('<fieldset class="crit">')
+        self.assertLess(page.index('name="ticker"'), erstes)
+        self.assertLess(page.index('<select name="expiration"'), erstes)
+        self.assertLess(page.index("<button"), erstes)
+        # ... und die Gruppen stehen alle im Formular (sonst werden die Filter
+        # nicht mitgesendet)
+        form = re.search(r"<form.*?</form>", page, re.S).group(0)
+        self.assertEqual(form.count('<fieldset class="crit">'), 4)
+        self.assertEqual(form.count("</fieldset>"), 4)
+
+    # --- die Beschriftungen ---
+
+    def test_the_labels_carry_their_unit(self):
+        page = self._page()
+        for text in ("DTE von (Tage)", "DTE bis (Tage)", "Alter max (min)",
+                     "Spread max (%)", "Spread max ($)", "IV min (%)", "IV max (%)"):
+            self.assertIn("<label>" + text + " <input", page, text)
+        for alt in ("Spread max %", "Spread max $", "Alter max min", "IV min %", "IV max %"):
+            self.assertNotIn("<label>" + alt + " <input", page, alt)
+        # die zwei in Slice D0 festgenagelten Texte bleiben Wort fuer Wort
+        self.assertIn("Geld-Gr\u00f6\u00dfe min", page)
+        self.assertIn("Brief-Gr\u00f6\u00dfe min", page)
+
+    def test_the_sharp_zero_is_named_at_its_field(self):
+        # server.py:69 - 0 ist eine scharfe Grenze, kein "aus"; gemessen
+        # (docs/210_ausD1_phase1_bis3.md) loescht 0 die ganze Liste
+        # (19 gefiltert, 0 Kandidaten)
+        label = re.search(r"<label>Alter max \(min\).*?</label>", self._page(), re.S).group(0)
+        self.assertIn('<small class="warn-min">0 streicht alle Kurse (nicht \u00bbaus\u00ab)'
+                      "</small>", label)
+
+    def test_no_legend_promises_a_standard_that_is_not_one(self):
+        # "leer = Standard" stand zweimal auf der Seite und war gemessen
+        # irrefuehrend (10 von 14 Zahlenfeldern sind vorbelegt). Seitenweit
+        # geprueft, damit der Hinweis nicht in ein anderes Element wandern kann.
+        self.assertNotIn("leer = Standard", self._page())
+
+    # --- die Struktur, die alle anderen Tests parsen ---
+
+    def test_the_page_keeps_the_shape_every_other_test_parses(self):
+        page = self._ohne_style_und_script(self._page())
+        self.assertEqual(page.count("<table>"), 2)
+        self.assertEqual(page.count("<tbody>"), 1)
+        # <tr> ohne Attribute: jede Zeile wird mit r"<tr>(.*?)</tr>" zerlegt
+        self.assertEqual(len(re.findall(r"<tr[^>]*>", page)), page.count("<tr>"))
+        # in der Spread-Tabelle trifft das Zellmuster der Bestandstests JEDE
+        # Zelle (11 je Zeile) - dort ist kein <td class=...> erlaubt
+        spread = re.findall(r"<table>(.*?)</table>", page, re.S)[-1]
+        zeilen = re.findall(r"<tr>(.*?)</tr>", spread, re.S)[1:]
+        self.assertEqual(len(zeilen), 4)
+        for zeile in zeilen:
+            self.assertEqual(
+                len(re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)), 11)
+
+
 if __name__ == "__main__":
     unittest.main()
