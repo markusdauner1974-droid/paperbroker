@@ -1175,7 +1175,7 @@ class TestVerticalSpreadList(unittest.TestCase):
     def test_the_api_reports_why_pairs_were_dropped(self):
         self.assertEqual(self._json()["vertical_drops"],
                          [{"reason": "strike 270.0 call: kein Geld-/Briefkurs", "count": 1},
-                          {"reason": "strike 282.5 call: OI None < 500", "count": 1}])
+                          {"reason": "strike 282.5 call: OI fehlt", "count": 1}])
 
     def test_a_put_pair_never_reaches_the_list(self):
         data = self._json()
@@ -1207,6 +1207,27 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertEqual(page.count("<tbody>"), 1)
         self.assertIn("<th>\u0394\u00d7100</th>", page)
         self.assertNotIn("<th>\u0394</th>", page)
+
+    def test_the_feed_note_is_german_and_no_python_value_reaches_the_page(self):
+        """Feed-Zeile deutsch, kein Python-Wert, Tooltips bleiben lesbar.
+
+        Die Feed-Zeile war von keiner Zusicherung gepinnt (gemessen) - sie
+        nennt als einzige den Datenursprung, also gehoert sie festgehalten.
+        "None" war ein ausgedruckter Python-Wert, kein Wort. Die Hinweise
+        stehen als Tooltip am Symbol und duerfen nicht unbrauchbar lang
+        werden (Basisstand gemessen: laengster Tooltip 51 Zeichen).
+        """
+        client = self._app().test_client()
+        html_page = client.get("/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True)
+        self.assertIn("CBOE-Kursdaten zeitversetzt", html_page)
+        self.assertIn("ca. 15 Minuten hinter Echtzeit", html_page)
+        self.assertNotIn("delayed feed", html_page)
+        self.assertNotIn("None", html_page)
+        self.assertIn("OI fehlt", html_page)
+        tooltips = re.findall(r'title="([^"]*)"', html_page)
+        self.assertTrue(tooltips, "keine Tooltips mehr auf der Seite")
+        self.assertLessEqual(max(len(t) for t in tooltips), 64)
+
 
     def test_a_chain_without_neighbours_reports_two_empty_lists(self):
         data = self._json(quotes=[quote("AAPL260116C00240000", bid=5.00, ask=5.10,
@@ -1493,7 +1514,7 @@ class TestTrendWiring(unittest.TestCase):
             client = self._client()
             data = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16").get_json()
             page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
-        json_reasons = [r for row in data["results"] for r in row["reasons"] if "trend" in r]
+        json_reasons = [r for row in data["results"] for r in row["reasons"] if "Trend" in r]
         self.assertTrue(json_reasons, "kein Trend-Grund im JSON")
         for reason in json_reasons:
             self.assertIn(reason, page, "Seite und JSON gehen auseinander")
