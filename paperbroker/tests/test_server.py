@@ -2189,5 +2189,103 @@ class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
         self.assertEqual(len(im_label), 14)
 
 
+class TheColoursCarryEnoughContrast(unittest.TestCase):
+    """D2c: jede Schriftfarbe der Seite traegt 4,5:1, jeder Bedienrahmen 3,0:1.
+
+    Gemessen im Browser (berechnete Stile, 1280 px):
+
+        Sortier-Links      #0000ee auf #0f1420 = 1,96:1   -> #8ab4ff = 8,81:1
+        Knoptschrift       #e6e9ef auf #2c6bed = 3,89:1   -> #ffffff = 4,74:1
+        Bedienrahmen       #2c3650 auf #0f1420 = 1,53:1   -> #5b6f99 = 3,66:1
+        Pfeil-Marker       #6b7689 auf #0f1420 = 4,01:1   -> #828da5 = 5,52:1
+
+    Die Sortier-Links waren der schwerste Fall: die Seite hatte ueberhaupt keine
+    a-Regel, deshalb griff das Browser-Blau #0000ee - auf dunklem Grund so gut wie
+    unlesbar. Kein Werkzeug haette das gemeldet, nur die Messung am gerenderten
+    Dokument.
+    """
+
+    @staticmethod
+    def _app(quotes=None):
+        adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _page(self, params=None, quotes=None):
+        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query.update(params or {})
+        return self._app(quotes).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    # --- die Kontrastrechnung (WCAG 2.1, relative Leuchtdichte) -----------
+    @staticmethod
+    def _leuchtdichte(farbe):
+        if len(farbe) == 4:            # Kurzform "#fff" -> "#ffffff"
+            farbe = "#" + "".join(2 * z for z in farbe[1:])
+        werte = []
+        for i in (1, 3, 5):
+            v = int(farbe[i:i + 2], 16) / 255
+            werte.append(v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4)
+        return 0.2126 * werte[0] + 0.7152 * werte[1] + 0.0722 * werte[2]
+
+    def _kontrast(self, vorne, hinten):
+        a, b = self._leuchtdichte(vorne), self._leuchtdichte(hinten)
+        return (max(a, b) + 0.05) / (min(a, b) + 0.05)
+
+    SEITE = "#0f1420"
+    KNOPF = "#2c6bed"
+
+    def test_the_sort_links_have_a_colour_of_their_own(self):
+        # ohne diese Regel nimmt der Browser sein Blau (#0000ee) - 1,96:1
+        page = self._page()
+        self.assertIn("a,a:visited{color:#8ab4ff}", page)
+
+    def test_the_button_text_is_white(self):
+        page = self._page()
+        self.assertIn("button{background:#2c6bed;border-color:#2c6bed;color:#fff;"
+                      "font-weight:600}", page)
+
+    def test_the_controls_have_a_visible_border(self):
+        page = self._page()
+        self.assertIn("input,button{font-size:1rem;padding:9px 12px;border-radius:8px;"
+                      "border:1px solid #5b6f99;background:#1a2233;color:inherit}", page)
+        self.assertIn("select{font-size:1rem;padding:9px;border-radius:8px;"
+                      "border:1px solid #5b6f99;", page)
+
+    def test_the_folded_blocks_carry_a_brighter_marker(self):
+        page = self._page()
+        self.assertIn('.dropped-summary summary::before{content:"\\25B8 ";color:#828da5}', page)
+
+    def test_the_four_measured_pairs_clear_their_threshold(self):
+        page = self._page()
+        for vorne, hinten, grenze, wo in (("#8ab4ff", self.SEITE, 4.5, "Sortier-Link"),
+                                          ("#fff", self.KNOPF, 4.5, "Knoptschrift"),   # die Seite schreibt die Kurzform
+                                          ("#5b6f99", self.SEITE, 3.0, "Bedienrahmen"),
+                                          ("#828da5", self.SEITE, 4.5, "Pfeil-Marker")):
+            self.assertIn(vorne, page, wo)
+            self.assertGreaterEqual(round(self._kontrast(vorne, hinten), 2), grenze,
+                                    f"{wo}: {vorne} auf {hinten}")
+
+    def test_every_text_colour_of_the_page_clears_four_and_a_half(self):
+        """Die Klasse des Fehlers, nicht nur der eine Fall.
+
+        Jede Schriftfarbe, die die Seite selbst setzt, muss 4,5:1 gegen die
+        Seitenflaeche tragen. Flaechen und rein zierende Rahmen duerfen
+        dunkler sein - sie sind keine Schrift.
+        """
+        page = self._page()
+        css = page[page.index("<style>"):page.index("</style>")]
+        schriftfarben = set(re.findall(r"(?<![-\w])color:\s*(#[0-9a-fA-F]{6}|#fff)\b", css))
+        self.assertGreaterEqual(len(schriftfarben), 5)
+        for farbe in sorted(schriftfarben):
+            self.assertGreaterEqual(
+                round(self._kontrast(farbe, self.SEITE), 2), 4.5,
+                f"Schriftfarbe {farbe} traegt nur {self._kontrast(farbe, self.SEITE):.2f}:1")
+
+
 if __name__ == "__main__":
     unittest.main()
