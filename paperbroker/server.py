@@ -335,15 +335,15 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         try:
             if ticker and not criteria_error:
                 if not _TICKER_RE.match(ticker):
-                    error = "Ungueltiger Ticker - 1-6 Buchstaben A-Z."
+                    error = "Ungültiger Ticker - 1-6 Buchstaben A-Z."
                 else:
                     dates = broker.get_expiration_dates(ticker)
                     selectable = _selectable_dates(dates, criteria)
                     if expiration:
                         if not _DATE_RE.match(expiration):
-                            error = "Ungueltiges Verfallsdatum - JJJJ-MM-TT."
+                            error = "Ungültiges Verfallsdatum - JJJJ-MM-TT."
                         elif not dates or expiration not in dates:
-                            error = "Verfallsdatum ist fuer diesen Ticker nicht gelistet."
+                            error = "Verfallsdatum ist für diesen Ticker nicht gelistet."
                         else:
                             quotes = broker.get_options(ticker, expiration)
                             results, dropped = screen(
@@ -423,7 +423,7 @@ def _load_trend(ticker):
     """Trend via provider if configured, else None (screener ignores it).
 
     Failure of the trend source must NOT look like a real 'flat' market:
-    the UI receives source_ok=False and shows 'Trend nicht verfuegbar'.
+    the UI receives source_ok=False and shows 'Trend nicht verfügbar'.
     """
     provider = _get_trend_provider()
     if provider is None:
@@ -509,7 +509,7 @@ class _MCPTrendProvider:
             # MEASURED 2026-10-12 against the live source (smoke test with the
             # secret): the numbers live under "technicals". The top level carries
             # breadth/summary/stock/themes - reading it made every lookup fail
-            # closed, so the page only ever said "Trend nicht verfuegbar".
+            # closed, so the page only ever said "Trend nicht verfügbar".
             stage = snapshot["technicals"]["stage"]
         except (KeyError, IndexError, TypeError, ValueError) as exc:
             raise RuntimeError("trend source payload") from exc
@@ -543,7 +543,7 @@ def _trend_display(ticker):
     if sig is None:
         return None
     if not getattr(sig, "source_ok", True):
-        return {"direction": "unavailable", "label": "Trend nicht verfuegbar"}
+        return {"direction": "unavailable", "label": "Trend nicht verfügbar"}
     return {"direction": sig.direction, "label": _trend_label(sig.direction)}
 
 
