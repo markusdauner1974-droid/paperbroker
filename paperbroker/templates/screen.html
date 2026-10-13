@@ -85,7 +85,7 @@
     </span>
   {% endif %}
   {% if trend %}
-    <span class="badge">Trend: {{ trend.label }}</span>
+    <span class="badge">Trend: {{ trend.label }}{% if trend.note %} - {{ trend.note }}{% endif %}</span>
   {% endif %}
 </header>
 <main>
@@ -118,12 +118,12 @@
     <a class="reset" href="?ticker={{ ticker }}&expiration={{ expiration }}">Standardwerte</a>
     <fieldset class="crit">
       <legend>Liquidität</legend>
-      <label>Spread max (%) · Standard 10.0 <input type="number" step="0.1" name="max_spread_pct" min="0" value="{{ criteria.max_spread_pct if criteria.max_spread_pct is not none else '' }}"></label>
-      <label>Spread max ($) · Standard 0.1 <input type="number" step="0.01" name="max_spread_abs" min="0" value="{{ criteria.max_spread_abs if criteria.max_spread_abs is not none else '' }}"></label>
-      <label>OI min · Standard 500 <input type="number" name="min_oi" min="0" value="{{ criteria.min_oi if criteria.min_oi is not none else '' }}"></label>
-      <label>Volumen min · Standard 0 <input type="number" name="min_volume" min="0" value="{{ criteria.min_volume if criteria.min_volume is not none else '' }}"></label>
-      <label>Geld-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_bid_size" min="0" value="{{ criteria.min_bid_size if criteria.min_bid_size is not none else '' }}"></label>
-      <label>Brief-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_ask_size" min="0" value="{{ criteria.min_ask_size if criteria.min_ask_size is not none else '' }}"></label>
+      <label>Spread max (%) · Standard 10.0 <input type="number" step="0.1" name="max_spread_pct" min="0" value="{{ request.args.get('max_spread_pct') or (criteria.max_spread_pct if criteria.max_spread_pct is not none else '') }}"></label>
+      <label>Spread max ($) · Standard 0.1 <input type="number" step="0.01" name="max_spread_abs" min="0" value="{{ request.args.get('max_spread_abs') or (criteria.max_spread_abs if criteria.max_spread_abs is not none else '') }}"></label>
+      <label>OI min · Standard 500 <input type="number" name="min_oi" min="0" value="{{ request.args.get('min_oi') or (criteria.min_oi if criteria.min_oi is not none else '') }}"></label>
+      <label>Volumen min · Standard 0 <input type="number" name="min_volume" min="0" value="{{ request.args.get('min_volume') or (criteria.min_volume if criteria.min_volume is not none else '') }}"></label>
+      <label>Geld-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_bid_size" min="0" value="{{ request.args.get('min_bid_size') or (criteria.min_bid_size if criteria.min_bid_size is not none else '') }}"></label>
+      <label>Brief-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_ask_size" min="0" value="{{ request.args.get('min_ask_size') or (criteria.min_ask_size if criteria.min_ask_size is not none else '') }}"></label>
       <span>OI-Pflicht
         <label><input type="radio" name="require_oi" value="" {% if criteria.require_oi %}checked{% endif %}> Standard (an)</label>
         <label><input type="radio" name="require_oi" value="0" {% if not criteria.require_oi %}checked{% endif %}> aus</label></span>
@@ -133,15 +133,15 @@
     </fieldset>
     <fieldset class="crit">
       <legend>Laufzeit und Frische</legend>
-      <label>DTE von (Tage) · Standard 7 <input type="number" name="dte_min" min="0" value="{{ criteria.dte_min if criteria.dte_min is not none else '' }}"></label>
-      <label>DTE bis (Tage) · Standard 45 <input type="number" name="dte_max" min="0" value="{{ criteria.dte_max if criteria.dte_max is not none else '' }}"></label>
-      <label>Alter max (min) · Standard 30 <input type="number" name="max_quote_age_min" min="0" value="{{ criteria.max_quote_age_min if criteria.max_quote_age_min is not none else '' }}" {% if age_off %}disabled{% endif %}> <small class="warn-min">0 streicht alle Kurse (nicht »aus«)</small></label>
+      <label>DTE von (Tage) · Standard 7 <input type="number" name="dte_min" min="0" value="{{ request.args.get('dte_min') or (criteria.dte_min if criteria.dte_min is not none else '') }}"></label>
+      <label>DTE bis (Tage) · Standard 45 <input type="number" name="dte_max" min="0" value="{{ request.args.get('dte_max') or (criteria.dte_max if criteria.dte_max is not none else '') }}"></label>
+      <label>Alter max (min) · Standard 30 <input type="number" name="max_quote_age_min" min="0" value="{{ request.args.get('max_quote_age_min') or (criteria.max_quote_age_min if criteria.max_quote_age_min is not none else '') }}" {% if age_off %}disabled{% endif %}> <small class="warn-min">0 streicht alle Kurse (nicht »aus«)</small></label>
       <label><input type="checkbox" name="ignore_quote_age" value="1" {% if age_off %}checked{% endif %}> Alter-Grenze aus</label>
     </fieldset>
     <fieldset class="crit">
       <legend>Volatilität</legend>
-      <label>IV min (%) · Standard aus (leer = Filter aus) <input type="number" step="0.1" name="iv_min" min="0" value="{{ criteria.iv_min if criteria.iv_min is not none else '' }}"></label>
-      <label>IV max (%) · Standard aus (leer = Filter aus) <input type="number" step="0.1" name="iv_max" min="0" value="{{ criteria.iv_max if criteria.iv_max is not none else '' }}"></label>
+      <label>IV min (%) · Standard aus (leer = Filter aus) <input type="number" step="0.1" name="iv_min" min="0" value="{{ request.args.get('iv_min') or (criteria.iv_min if criteria.iv_min is not none else '') }}"></label>
+      <label>IV max (%) · Standard aus (leer = Filter aus) <input type="number" step="0.1" name="iv_max" min="0" value="{{ request.args.get('iv_max') or (criteria.iv_max if criteria.iv_max is not none else '') }}"></label>
       <span>IV-Vorliebe
         <label><input type="radio" name="iv_pref" value="" {% if criteria.iv_pref is none %}checked{% endif %}> Standard</label>
         <label><input type="radio" name="iv_pref" value="high" {% if criteria.iv_pref == "high" %}checked{% endif %}> hohe IV</label>
@@ -149,9 +149,9 @@
     </fieldset>
     <fieldset class="crit">
       <legend>Bewertung</legend>
-      <label>Gewicht Spread · Standard 0.5 <input type="number" step="0.1" name="weight_spread" min="0" value="{{ criteria.weight_spread if criteria.weight_spread is not none else '' }}"></label>
-      <label>Gewicht OI · Standard 0.3 <input type="number" step="0.1" name="weight_oi" min="0" value="{{ criteria.weight_oi if criteria.weight_oi is not none else '' }}"></label>
-      <label>Gewicht IV · Standard 0.2 <input type="number" step="0.1" name="weight_iv" min="0" value="{{ criteria.weight_iv if criteria.weight_iv is not none else '' }}"></label>
+      <label>Gewicht Spread · Standard 0.5 <input type="number" step="0.1" name="weight_spread" min="0" value="{{ request.args.get('weight_spread') or (criteria.weight_spread if criteria.weight_spread is not none else '') }}"></label>
+      <label>Gewicht OI · Standard 0.3 <input type="number" step="0.1" name="weight_oi" min="0" value="{{ request.args.get('weight_oi') or (criteria.weight_oi if criteria.weight_oi is not none else '') }}"></label>
+      <label>Gewicht IV · Standard 0.2 <input type="number" step="0.1" name="weight_iv" min="0" value="{{ request.args.get('weight_iv') or (criteria.weight_iv if criteria.weight_iv is not none else '') }}"></label>
     </fieldset>
   </form>
   <div class="results">
