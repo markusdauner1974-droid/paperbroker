@@ -180,7 +180,7 @@ class TestScreenOrchestrator(unittest.TestCase):
         # a real now() goes stale (>30 min) and wipes the results
         now_fn = lambda: arrow.get("2026-10-07T14:35:00")  # noqa: E731
         results, _ = screen(make(), ScreenerCriteria(), trend=trend, now_fn=now_fn)
-        with_trend = [r for r in results if any("trend up match" in x for x in r.reasons)]
+        with_trend = [r for r in results if any("Trend steigend passt (Call)" in x for x in r.reasons)]
         self.assertTrue(with_trend)
 
     def test_criteria_validation_rejects_inverted(self):
@@ -368,7 +368,7 @@ def make_verticals():
       AAPL 250/252.5      debit == width exactly (2.50) -> flagged, listed
       AMZN 260/262.5      long leg open_interest == 500 exactly -> survives
       MSFT 270/272.5      long leg has no bid (0.0) -> dropped: kein Geld-/Briefkurs
-      NVDA 280/282.5      short leg open_interest is None -> dropped: OI None
+      NVDA 280/282.5      short leg open_interest is None -> dropped: OI fehlt
       TSLA 290/292.5      ordinary tradeable pair
       AAPL PUT 250/252.5  must not appear anywhere (calls only)
 
@@ -568,7 +568,7 @@ class TestVerticalCallSpreads(unittest.TestCase):
                           "TSLA260116C00290000/TSLA260116C00292500"])
         self.assertEqual([reason for _p, reason in dropped],
                          ["strike 270.0 call: kein Geld-/Briefkurs",
-                          "strike 282.5 call: OI None < 500"])
+                          "strike 282.5 call: OI fehlt"])
         msft = [q for q in chain if q.asset.strike == 270.0][0]
         self.assertEqual(leg_drop_reason(msft), "strike 270.0 call: kein Geld-/Briefkurs")
 
@@ -589,7 +589,63 @@ class TestVerticalCallSpreads(unittest.TestCase):
         chain = make_verticals()
         nvda = [q for q in chain if q.asset.strike == 282.5][0]
         self.assertIsNone(nvda.open_interest)
-        self.assertEqual(leg_drop_reason(nvda), "strike 282.5 call: OI None < 500")
+        self.assertEqual(leg_drop_reason(nvda), "strike 282.5 call: OI fehlt")
+
+    def test_the_five_trend_hints_speak_german(self):
+        """Alle fuenf Vorlagen: drei Richtungen, Symbol-Wache, Fehlpassung.
+
+        Die Kopfzeile sagt schon "Trend: steigend" (_trend_label) - die
+        Hinweise muessen dieselben Worte benutzen, sonst widerspricht sich
+        eine Seite selbst. Jeder Fall prueft zusaetzlich, dass KEIN
+        englisches Wort stehengeblieben ist.
+        """
+        now_fn = lambda: arrow.get("2026-10-07T14:35:00")  # noqa: E731
+        faelle = [
+            (TrendSignal(symbol="AAPL", direction="up"),
+             "Trend steigend passt (Call)"),
+            (TrendSignal(symbol="AAPL", direction="down"),
+             "Trend fallend passt nicht zu call"),
+            (TrendSignal(symbol="AAPL", direction="flat"),
+             "Trend neutral"),
+            (TrendSignal(symbol="MSFT", direction="up"),
+             "Trend-Symbol (MSFT) passt nicht"),
+        ]
+        for signal, erwartet in faelle:
+            with self.subTest(erwartet=erwartet):
+                results, _ = screen(make(), ScreenerCriteria(), trend=signal,
+                                    now_fn=now_fn)
+                self.assertTrue(results, "Fixture liefert keine Ergebnisse mehr")
+                hinweise = [x for r in results for x in r.reasons]
+                self.assertIn(erwartet, hinweise)
+                englisch = [x for x in hinweise
+                            if any(w in x for w in ("trend", "match", "mismatch"))]
+                self.assertEqual(englisch, [], "englischer Hinweis stehengeblieben")
+
+    def test_the_put_side_of_a_down_trend_says_put(self):
+        """Die Richtungsregel selbst: fallender Trend + Put = Passung.
+
+        make() liefert nur Calls (gemessen), der Put entsteht hier von Hand.
+        Spread bewusst eng (1.00/1.05), sonst faellt er durch max_spread_pct.
+        """
+        now_fn = lambda: arrow.get("2026-10-07T14:35:00")  # noqa: E731
+        puts = [quote("AAPL260116P00260000", bid=1.00, ask=1.05, iv=28.0,
+                      oi=8000, volume=100, dte=10)]
+        results, _ = screen(puts, ScreenerCriteria(),
+                            trend=TrendSignal(symbol="AAPL", direction="down"),
+                            now_fn=now_fn)
+        hinweise = [x for r in results for x in r.reasons]
+        self.assertIn("Trend fallend passt (Put)", hinweise)
+
+    def test_a_leg_without_iv_is_reported_as_missing(self):
+        """iv fehlt ist etwas anderes als iv 0.0 - der Leser sieht den Unterschied."""
+        _fp, leg_drop_reason, _vs = self._api()
+        ohne = quote("AAPL260116C00270000", bid=0.60, ask=0.80, iv=None,
+                     oi=900, volume=100, dte=10)
+        self.assertIsNone(ohne.iv)
+        self.assertEqual(leg_drop_reason(ohne), "strike 270.0 call: iv fehlt")
+        null = quote("AAPL260116C00270000", bid=0.60, ask=0.80, iv=0.0,
+                     oi=900, volume=100, dte=10)
+        self.assertEqual(leg_drop_reason(null), "strike 270.0 call: iv 0.0")
 
     def test_a_put_pair_is_never_built(self):
         form_vertical_pairs, _leg, _vs = self._api()

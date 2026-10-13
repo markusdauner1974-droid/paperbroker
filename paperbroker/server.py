@@ -33,6 +33,7 @@ from .screener import (
     OptionScreener,
     ScreenerCriteria,
     TrendSignal,
+    _trend_label,
     screen,
     vertical_spreads,
 )
@@ -405,7 +406,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             freshness_limit=criteria.max_quote_age_min,
             dte=dte,
             trend=_trend_display(ticker) if ticker else None,
-            feed_note="CBOE delayed feed - Daten ca. 15 min hinter Echtzeit")
+            feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit")
 
     return app
 
@@ -545,11 +546,6 @@ def _trend_display(ticker):
     if not getattr(sig, "source_ok", True):
         return {"direction": "unavailable", "label": "Trend nicht verfügbar"}
     return {"direction": sig.direction, "label": _trend_label(sig.direction)}
-
-
-def _trend_label(direction):
-    return {"up": "steigend", "down": "fallend", "flat": "neutral"}.get(
-        direction, direction)
 
 
 def _newest_quote_age_min(quotes, now_fn=None):
