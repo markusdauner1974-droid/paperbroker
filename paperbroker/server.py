@@ -280,7 +280,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         trend_signal = _trend_for_screener(ticker)
         results, dropped = screen(quotes, criteria, trend=trend_signal,
                                   now_fn=now_fn)
-        vertical_kept, vertical_dropped = vertical_spreads(quotes)
+        vertical_kept, vertical_dropped = vertical_spreads(quotes, criteria,
+                                                            now_fn=now_fn)
         return jsonify(
             ticker=ticker,
             expiration=expiration,
@@ -359,7 +360,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                                 quotes, criteria, trend=_trend_for_screener(ticker),
                                 now_fn=now_fn)
                             # the RAW chain, not the screened candidates (B)
-                            vertical_kept, vertical_dropped = vertical_spreads(quotes)
+                            vertical_kept, vertical_dropped = vertical_spreads(
+                                quotes, criteria, now_fn=now_fn)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,
