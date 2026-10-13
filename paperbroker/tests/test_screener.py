@@ -21,6 +21,7 @@ from paperbroker.screener import (
     filter_oi,
     filter_spread,
     filter_stale,
+    filter_volume,
     screen,
 )
 
@@ -64,9 +65,9 @@ def make(fresh_ts=FRESH):
         quote("AAPL260116C00261000", bid=0.05, ask=0.15, iv=45.0, oi=40, volume=10,
               dte=10),                                              # wide spread + low oi
         quote("AAPL260116C00263000", bid=1.00, ask=1.20, iv=0.0, oi=900, volume=100,
-              dte=10),                                              # illiquid (iv=0)
+              dte=10),                                              # illiquide (iv=0)
         quote("AAPL260116C00265000", bid=0.80, ask=0.95, iv=33.0, oi=None, volume=100,
-              dte=10),                                              # missing OI
+              dte=10),                                              # OI fehlt
         quote("AAPL260216C00270000", bid=1.50, ask=1.55, iv=26.0, oi=2200, volume=500,
               dte=132),                                             # beyond dte_max 45
         quote("AAPL260108C00240000", bid=0.30, ask=0.32, iv=52.0, oi=5000, volume=2000,
@@ -78,9 +79,9 @@ class TestPure(unittest.TestCase):
     def test_data_complete_drops_illiquid_only(self):
         kept, dropped = filter_data_complete(make())
         reasons = [r for _, r in dropped]
-        # 7 contracts - 1 iv=0 (illiquid); oi=None stays (tri-state tolerant)
+        # 7 contracts - 1 iv=0 (illiquide); oi=None stays (tri-state tolerant)
         self.assertEqual(len(kept), 6)
-        self.assertIn("iv=0 illiquid", " ".join(reasons))
+        self.assertIn("iv=0 illiquide", " ".join(reasons))
 
     def test_spread_filter_relative_and_absolute(self):
         qs = make()
@@ -196,7 +197,7 @@ class TestScreenOrchestrator(unittest.TestCase):
         qs, dropped = filter_stale_mock(c, now_fn)
         self.assertEqual(len(qs), 0)
         self.assertEqual(len(dropped), 7)
-        self.assertIn("stale", dropped[0][1])
+        self.assertIn("veraltet", dropped[0][1])
 
     def test_freshness_guard_drops_on_missing_timestamp(self):
         c = ScreenerCriteria(max_quote_age_min=10)
@@ -206,7 +207,7 @@ class TestScreenOrchestrator(unittest.TestCase):
             q.quote_timestamp = None   # adapter could not determine it
         kept, dropped = filter_stale(qs, c, now_fn=now_fn)
         self.assertEqual(len(kept), 0)
-        self.assertTrue(all("freshness unknown" in r for _, r in dropped))
+        self.assertTrue(all("Aktualität unbekannt" in r for _, r in dropped))
 
     def test_freshness_non_utc_now_converted(self):
         # 14:35-04:00 == 18:35 UTC; ts 14:30 UTC -> age 245 min > 30 limit
@@ -220,7 +221,7 @@ class TestScreenOrchestrator(unittest.TestCase):
         kept, dropped = filter_stale(qs, c, now_fn=now_fn)
         self.assertEqual(len(kept), 0)
         self.assertEqual(len(dropped), 7)
-        self.assertIn("stale 245 min", dropped[0][1])
+        self.assertIn("veraltet: 245 Min.", dropped[0][1])
 
     def test_iv_pref_validated(self):
         for bad in ("High", "sell", 1):
@@ -269,13 +270,13 @@ class TestClockErrorLabel(unittest.TestCase):
     """B-17: fail-closed stays, but the REASON must be true.
 
     Measured 2026-10-10: a caller passing an arrow OBJECT instead of a
-    function as now_fn received 'freshness unknown (unparseable timestamp)'
+    function as now_fn received 'Aktualität unbekannt (Zeitstempel unlesbar)'
     for 67 contracts, although all 104 carried a valid timestamp. The reason
     text is what UX-1 puts on the page.
     """
 
     TS = "2026-10-07 14:30:00"          # valid, 30 min before the clock below
-    LATER = "2026-10-07T15:01:00"       # 31 min -> stale (boundary is ">")
+    LATER = "2026-10-07T15:01:00"       # 31 min -> veraltet (boundary is ">")
 
     def _chain(self):
         qs = make()
@@ -301,7 +302,7 @@ class TestClockErrorLabel(unittest.TestCase):
         self.assertEqual(kept, [])                    # fail-closed, as before
         self.assertEqual(len(dropped), 7)
         self.assertEqual({r for _q, r in dropped},
-                         {"freshness unknown (clock error)"})
+                         {"Aktualität unbekannt (Uhrfehler)"})
 
     def test_a_raising_clock_is_labelled_clock_error_too(self):
         # not TypeError-specific: any clock failure is an internal error
@@ -312,7 +313,7 @@ class TestClockErrorLabel(unittest.TestCase):
         self.assertEqual(kept, [])
         self.assertEqual(len(dropped), 7)
         self.assertEqual({r for _q, r in dropped},
-                         {"freshness unknown (clock error)"})
+                         {"Aktualität unbekannt (Uhrfehler)"})
 
     def test_a_clock_returning_junk_is_labelled_clock_error(self):
         # CodeRabbit (PR #19): a clock function returning None - or anything
@@ -323,7 +324,7 @@ class TestClockErrorLabel(unittest.TestCase):
             self.assertEqual(kept, [])
             self.assertEqual(len(dropped), 7)
             self.assertEqual({r for _q, r in dropped},
-                             {"freshness unknown (clock error)"})
+                             {"Aktualität unbekannt (Uhrfehler)"})
 
     def test_the_age_boundary_is_exclusive_and_keeps_minutes(self):
         # pin: measured 2026-10-10 - "if age_s > max_age_s" keeps a quote of
@@ -336,7 +337,7 @@ class TestClockErrorLabel(unittest.TestCase):
         kept, dropped = self._run(self._chain(), lambda: arrow.get(self.LATER))
         self.assertEqual(kept, [])
         self.assertEqual(len(dropped), 7)
-        self.assertEqual({r for _q, r in dropped}, {"stale 31 min"})
+        self.assertEqual({r for _q, r in dropped}, {"veraltet: 31 Min."})
 
     def test_a_missing_timestamp_keeps_its_own_label(self):
         # pin: already correct today - must not be folded into the other two
@@ -344,7 +345,7 @@ class TestClockErrorLabel(unittest.TestCase):
                                   lambda: arrow.get(self.LATER))
         self.assertEqual(kept, [])
         self.assertEqual({r for _q, r in dropped},
-                         {"freshness unknown (no quote_timestamp)"})
+                         {"Aktualität unbekannt (kein Zeitstempel)"})
 
     def test_an_unreadable_timestamp_keeps_its_unparseable_label(self):
         # pin: only a really unreadable stamp may say "unparseable"
@@ -352,7 +353,7 @@ class TestClockErrorLabel(unittest.TestCase):
                                   lambda: arrow.get(self.LATER))
         self.assertEqual(kept, [])
         self.assertEqual({r for _q, r in dropped},
-                         {"freshness unknown (unparseable timestamp)"})
+                         {"Aktualität unbekannt (Zeitstempel unlesbar)"})
 
 
 
@@ -366,7 +367,7 @@ def make_verticals():
 
       AAPL 250/252.5      debit == width exactly (2.50) -> flagged, listed
       AMZN 260/262.5      long leg open_interest == 500 exactly -> survives
-      MSFT 270/272.5      long leg has no bid (0.0) -> dropped: no bid/ask
+      MSFT 270/272.5      long leg has no bid (0.0) -> dropped: kein Geld-/Briefkurs
       NVDA 280/282.5      short leg open_interest is None -> dropped: OI None
       TSLA 290/292.5      ordinary tradeable pair
       AAPL PUT 250/252.5  must not appear anywhere (calls only)
@@ -419,17 +420,17 @@ class TestFutureTimestamps(unittest.TestCase):
     def test_a_timestamp_just_beyond_the_tolerance_is_dropped_and_named(self):
         kept, dropped = self._lauf("2026-10-07 14:36:01")
         self.assertEqual(kept, [])
-        self.assertEqual(dropped[0][1], "future timestamp (+1 min)")
+        self.assertEqual(dropped[0][1], "Zeitstempel in der Zukunft (+1 Min.)")
 
     def test_a_day_ahead_is_dropped_with_the_real_distance(self):
         kept, dropped = self._lauf("2026-10-08 14:35:00")
         self.assertEqual(kept, [])
-        self.assertEqual(dropped[0][1], "future timestamp (+1440 min)")
+        self.assertEqual(dropped[0][1], "Zeitstempel in der Zukunft (+1440 Min.)")
 
     def test_the_far_future_is_dropped_too(self):
         kept, dropped = self._lauf("9999-12-31 23:59:59")
         self.assertEqual(kept, [])
-        self.assertTrue(dropped[0][1].startswith("future timestamp (+"), dropped[0][1])
+        self.assertTrue(dropped[0][1].startswith("Zeitstempel in der Zukunft (+"), dropped[0][1])
 
     def test_the_existing_stale_edge_did_not_move(self):
         # exactly 30 min stays; 30 min + 1 s keeps the old wording (rounded)
@@ -438,7 +439,7 @@ class TestFutureTimestamps(unittest.TestCase):
         self.assertEqual(dropped, [])
         kept, dropped = self._lauf("2026-10-07 14:04:59")
         self.assertEqual(kept, [])
-        self.assertEqual(dropped[0][1], "stale 30 min")
+        self.assertEqual(dropped[0][1], "veraltet: 30 Min.")
 
     def test_the_guard_switched_off_does_not_check_at_all(self):
         kept, dropped = self._lauf("9999-12-31 23:59:59", max_age=None)
@@ -566,10 +567,10 @@ class TestVerticalCallSpreads(unittest.TestCase):
                           "AMZN260116C00260000/AMZN260116C00262500",
                           "TSLA260116C00290000/TSLA260116C00292500"])
         self.assertEqual([reason for _p, reason in dropped],
-                         ["strike 270.0 call: no bid/ask",
+                         ["strike 270.0 call: kein Geld-/Briefkurs",
                           "strike 282.5 call: OI None < 500"])
         msft = [q for q in chain if q.asset.strike == 270.0][0]
-        self.assertEqual(leg_drop_reason(msft), "strike 270.0 call: no bid/ask")
+        self.assertEqual(leg_drop_reason(msft), "strike 270.0 call: kein Geld-/Briefkurs")
 
     def test_the_open_interest_floor_is_inclusive_on_both_sides(self):
         # BOTH sides of the boundary: exactly 500 survives, one below drops.
@@ -656,7 +657,7 @@ class TestVerticalCallSpreads(unittest.TestCase):
         kept, dropped = vertical_spreads(chain)
         self.assertEqual(kept, [])
         self.assertEqual([reason for _pair, reason in dropped],
-                         ["debit -0.5 <= 0"])
+                         ["Debit -0.5 <= 0"])
         self.assertEqual(form_vertical_pairs(chain)[0].max_profit, 5.5)
         # BOTH sides of the boundary: exactly zero is "not positive" too,
         # otherwise a shift to `debit < 0` stays green
@@ -668,12 +669,56 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(form_vertical_pairs(boundary)[0].net_debit, 0.0)
         self.assertEqual(kept_zero, [])
         self.assertEqual([reason for _pair, reason in dropped_zero],
-                         ["debit 0.0 <= 0"])
+                         ["Debit 0.0 <= 0"])
 
     def test_an_empty_chain_yields_no_pairs(self):
         form_vertical_pairs, _leg, vertical_spreads = self._api()
         self.assertEqual(form_vertical_pairs([]), [])
         self.assertEqual(vertical_spreads([]), ([], []))
+
+
+class TheReasonsAreGerman(unittest.TestCase):
+    """Slice D4: die Ausschuss-Gruende sind deutsch.
+
+    Uebersetzt ist nur die Beschreibung; die Namen (strike, DTE, OI, IV) und alle
+    Zahlen bleiben. Eine Zusicherung fuer jede der sieben Vorlagen, die bis dahin
+    von keiner Zusicherung gedeckt war (die zwei DTE-Vorlagen bleiben wortgleich,
+    sie bestehen nur aus Namen und Zahlen).
+    """
+
+    def test_the_illiquid_reason_names_the_zero_open_interest(self):
+        kept, dropped = filter_data_complete([quote("AAPL260116C00265000", oi=0)])
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _q, r in dropped], ["oi=0 illiquide"])
+
+    def test_the_spread_reason_without_a_quote(self):
+        ohne = quote("AAPL260116C00245000")
+        # kein Geld- und kein Briefkurs: der Grund entsteht VOR jeder Rechnung
+        ohne.bid, ohne.ask = None, None
+        kept, dropped = filter_spread([ohne], ScreenerCriteria(max_spread_abs=None))
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _q, r in dropped], ["Spread: kein Geld-/Briefkurs"])
+
+    def test_the_volume_reason(self):
+        kept, dropped = filter_volume([quote("AAPL260116C00245000", volume=50)],
+                                     ScreenerCriteria(min_volume=300))
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _q, r in dropped], ["Volumen 50 <= 300"])
+
+    def test_the_missing_data_reasons(self):
+        _k, iv = filter_iv([quote("AAPL260116C00245000", iv=None)], ScreenerCriteria())
+        self.assertEqual([r for _q, r in iv], ["IV fehlt"])
+        ohne = quote("AAPL260116C00245000")
+        ohne.days_to_expiration = None
+        _k, dte = filter_dte([ohne], ScreenerCriteria())
+        self.assertEqual([r for _q, r in dte], ["DTE fehlt"])
+
+    def test_the_dte_reasons_keep_names_and_numbers(self):
+        fenster = ScreenerCriteria(dte_min=7, dte_max=45)
+        _k, zu_kurz = filter_dte([quote("AAPL260108C00240000", dte=1)], fenster)
+        self.assertEqual([r for _q, r in zu_kurz], ["DTE 1 < 7"])
+        _k, zu_lang = filter_dte([quote("AAPL260216C00270000", dte=132)], fenster)
+        self.assertEqual([r for _q, r in zu_lang], ["DTE 132 > 45"])
 
 
 if __name__ == "__main__":
