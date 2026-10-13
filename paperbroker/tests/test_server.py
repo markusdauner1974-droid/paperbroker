@@ -173,7 +173,7 @@ class TestServerDisplay(unittest.TestCase):
         self.assertIn("loadDates", html)
         self.assertIn("/api/screen?ticker=", html)
         # spinner placeholder in the untouched select
-        self.assertIn("Verfaelle werden geladen", html)
+        self.assertIn("Verfälle werden geladen", html)
 
     def test_picker_api_contract_for_auto_loader(self):
         # the exact response shape the JS loader consumes: listed_dates
@@ -233,7 +233,7 @@ class TestServerDisplay(unittest.TestCase):
         res = self.client.get("/", query_string={"ticker": "../etc",
                                                  "expiration": "2026-10-16"})
         self.assertEqual(res.status_code, 200)
-        self.assertIn("Ungueltiger Ticker", res.get_data(as_text=True))
+        self.assertIn("Ungültiger Ticker", res.get_data(as_text=True))
 
 
 class TestDteWindow(unittest.TestCase):
@@ -364,13 +364,13 @@ class TestDteWindow(unittest.TestCase):
                             ).get_data(as_text=True)
         # match the OPTION, not the bare phrase: the same text also lives in
         # the JS loader (invalidateSelector), so a bare assertNotIn is useless
-        self.assertNotIn('<option value="">Verfaelle werden geladen', html)
-        self.assertIn('<option value="" disabled>Nicht verfuegbar', html)
+        self.assertNotIn('<option value="">Verfälle werden geladen', html)
+        self.assertIn('<option value="" disabled>Nicht verfügbar', html)
 
     def test_no_ticker_still_says_loading(self):
         # the real loading state (no dates fetched yet) keeps its placeholder
         html = self._app().test_client().get("/").get_data(as_text=True)
-        self.assertIn('<option value="">Verfaelle werden geladen', html)
+        self.assertIn('<option value="">Verfälle werden geladen', html)
 
     def test_unlisted_date_never_reaches_the_picker(self):
         # the union guard: only dates that are really in the chain may be
@@ -1158,7 +1158,7 @@ class TestVerticalSpreadList(unittest.TestCase):
                          ["AAPL260116C00250000/AAPL260116C00252500"])
         self.assertEqual(flagged[0]["net_debit"], 2.5)      # == width
         self.assertEqual(flagged[0]["max_profit"], 0.0)
-        self.assertIn("kein Gewinn moeglich", self._page())
+        self.assertIn("kein Gewinn möglich", self._page())
 
     def test_both_lists_are_rendered_side_by_side_on_one_page(self):
         # the spread table is additive: with loosened single-option criteria
@@ -1481,7 +1481,7 @@ class TestTrendWiring(unittest.TestCase):
             data = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16").get_json()
             page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
         self.assertNotIn("trend", json.dumps(data))
-        self.assertIn("Trend nicht verfuegbar", page)
+        self.assertIn("Trend nicht verfügbar", page)
 
     def test_json_and_page_agree_on_trend_reasons(self):
         import unittest.mock as mock
@@ -1704,6 +1704,81 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         self.assertEqual(self._spread_rows(self._page(quotes=kette))[0][8], "-")
         # ... und nur dort: die Rendite ist rechenbar und bleibt eine Zahl
         self.assertNotEqual(self._spread_rows(self._page(quotes=kette))[0][6], "-")
+
+
+
+class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
+    """Slice D0: die Oberflaeche schreibt deutsch MIT Umlauten, in EINER Schreibweise.
+
+    Ein assertNotIn auf EINER Seite waere blind: gemessen
+    (docs/debate/ausD_phase4_zustaende.txt) erscheinen die alten Schreibweisen
+    nur in BESTIMMTEN Zustaenden - "aelter" nur bei gelber Lampe, "Nicht
+    verfuegbar" nur ohne gelistete Verfallstage, "fuer" nur bei einem Verfall,
+    den die Kette nicht kennt, "waehlen"/"druecken" nur auf der Startseite.
+    Deshalb wird JEDER Zustand geprueft, in dem eines der Woerter stehen kann.
+    """
+
+    #: Die 11 alten Schreibweisen. Nach D0 darf KEINE mehr im HTML stehen.
+    ALTE = ("aelter", "koennen", "Verfaelle", "verfuegbar", "Groesse",
+            "zaehlt", "moeglich", "waehlen", "druecken", "Ungueltig", "fuer")
+
+    @staticmethod
+    def _client(clock=None, criteria=None):
+        # make() + make_verticals(): die VOLLE Seite braucht beide Ketten,
+        # sonst faellt die Einzelkontrakt-Tabelle weg (gemessen)
+        adapter = _MockAdapter(make() + make_verticals())
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(criteria if criteria is not None
+                                                 else ScreenerCriteria()),
+                         now_fn=clock or _clock())
+        app.config["TESTING"] = True
+        return app.test_client()
+
+    def _pages(self):
+        """Jeder Zustand, in dem eine der alten Schreibweisen vorkommen kann.
+
+        Zwei Klienten, weil sich zwei Zustaende ausschliessen: die volle Seite
+        braucht die STANDARD-Kriterien, der Warnhinweis "koennen" braucht
+        age_off (Alter-Grenze aus).
+        """
+        gruen = self._client()
+        aus = self._client(criteria=ScreenerCriteria(max_quote_age_min=None))
+        # 31 min statt 5: die Lampe steht dann auf gelb, und "aelter" erscheint
+        gelb = self._client(clock=lambda: arrow.get("2026-10-07T14:30:00").shift(minutes=31))
+        return {
+            "leere Startseite": gruen.get("/").get_data(as_text=True),
+            "Alter-Grenze aus": aus.get("/").get_data(as_text=True),
+            "Ticker ohne Verfall": gruen.get("/?ticker=AAPL").get_data(as_text=True),
+            "volle Seite": gruen.get("/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True),
+            "ungueltiger Ticker": gruen.get("/?ticker=../etc&expiration=2026-01-16").get_data(as_text=True),
+            "ungueltiges Datumsformat": gruen.get("/?ticker=AAPL&expiration=quatsch").get_data(as_text=True),
+            "Verfall nicht gelistet": gruen.get("/?ticker=AAPL&expiration=2019-01-01").get_data(as_text=True),
+            "gelbe Lampe": gelb.get("/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True),
+        }
+
+    def test_no_page_carries_an_old_spelling(self):
+        for zustand, page in self._pages().items():
+            for wort in self.ALTE:
+                self.assertNotIn(wort, page,
+                                 f"alte Schreibweise {wort!r} steht noch im Zustand {zustand!r}")
+
+    def test_the_page_renders_the_correct_spellings(self):
+        page = self._pages()["volle Seite"]
+        for wort in ("Verfälle werden geladen", "kein Gewinn möglich", "zählt",
+                     "Geld-Größe min", "Brief-Größe min"):
+            self.assertIn(wort, page, f"{wort!r} fehlt auf der Seite")
+
+    def test_the_trend_badge_is_german_when_the_source_fails(self):
+        # server.py:546 - der einzige deutsche Text, der aus dem Server in die
+        # Kopfzeile wandert; gemessen an der echten Route, nicht am Quelltext
+        import unittest.mock as mock
+        with mock.patch.object(server_module, "_get_trend_provider",
+                               return_value=_BrokenProvider()):
+            page = self._client().get(
+                "/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True)
+        self.assertIn("Trend nicht verfügbar", page)
+        self.assertNotIn("verfuegbar", page)
 
 
 if __name__ == "__main__":
