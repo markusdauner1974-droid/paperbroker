@@ -32,6 +32,11 @@ def option(symbol="AAPL260116C00245000", option_type="call", strike=245.0,
     return asset_factory(symbol)
 
 
+_LOOSE = ScreenerCriteria(max_spread_pct=100.0)
+# Fixture-Zeitstempel sind fest - dieselbe Uhr wie in den Proben.
+_NOW = lambda: arrow.get('2026-10-07T14:35:00')  # noqa: E731
+
+
 def quote(occ, bid=2.40, ask=2.50, iv=30.0, oi=1500, volume=300,
           underlying_price=250.0, dte=None, greeks_source='adapter', **kw):
     asset = asset_factory(occ)
@@ -365,15 +370,23 @@ def make_verticals():
     adjacent CALL pair per underlying, each carrying exactly ONE edge case,
     plus a PUT pair that must never show up:
 
-      AAPL 250/252.5      debit == width exactly (2.50) -> flagged, listed
-      AMZN 260/262.5      long leg open_interest == 500 exactly -> survives
-      MSFT 270/272.5      long leg has no bid (0.0) -> dropped: kein Geld-/Briefkurs
-      NVDA 280/282.5      short leg open_interest is None -> dropped: OI fehlt
+      AAPL 250/252.5      debit == width exactly (2.50) -> dropped by the PAIR
+                          rule (D7: only 0 < debit < width is still a result)
+      AMZN 260/262.5      long leg open_interest == 500 exactly
+      MSFT 270/272.5      long leg has no bid (0.0) -> dropped: Spread: kein Geld-/Briefkurs
+      NVDA 280/282.5      short leg open_interest is None
       TSLA 290/292.5      ordinary tradeable pair
       AAPL PUT 250/252.5  must not appear anywhere (calls only)
 
-    Every quote is FRESH against _clock(), so the age guard never hides the
-    chain, and every strike pair is adjacent, so the pair count is exact.
+    D7 note: the short legs of AMZN/NVDA/TSLA quote 0.50/0.70 - 0.20 $ wide at a
+    mid of 0.60 - so under the wide criteria of the tests below the default
+    ABSOLUTE spread bound (0.10 $ in the penny zone) rejects those legs before the
+    OI rules can speak. That is wanted: the leg chain here is the same chain the
+    list above uses. Tests that need the pairs to survive switch that one bound
+    off (see _WIDE in test_server.py).
+
+    Every quote is FRESH against the pinned clock, so the age guard never hides
+    the chain, and every strike pair is adjacent, so the pair count is exact.
     """
     return [
         quote("AAPL260116C00250000", bid=2.60, ask=3.00, iv=30.0, oi=1200, volume=100, dte=10),
@@ -541,7 +554,7 @@ class TestVerticalCallSpreads(unittest.TestCase):
     def test_the_pairs_are_formed_before_the_leg_rules_run(self):
         _fp, _leg, vertical_spreads = self._api()
         form_vertical_pairs, _leg, vertical_spreads = self._api()
-        kept, dropped = vertical_spreads(make())
+        kept, dropped = vertical_spreads(make(), _LOOSE, now_fn=_NOW)
         self.assertEqual(len(kept), 1)
         self.assertEqual(len(dropped), 3)
         self.assertEqual(kept[0].symbol,
@@ -551,26 +564,34 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(len(kept) + len(dropped), len(form_vertical_pairs(make())))
 
     def test_one_reason_per_dropped_pair_naming_strike_and_value(self):
+        # D7: one reason per dropped pair, in the order of the single-option
+        # chain. The middle pair is rejected by the PAIR rule (debit <= 0), so it
+        # carries the pair text instead of a leg name; the last pair is named by
+        # the data-completeness rule (iv=0 illiquide, not "iv 0.0").
         _fp, _leg, vertical_spreads = self._api()
-        _kept, dropped = vertical_spreads(make())
+        _kept, dropped = vertical_spreads(make(), _LOOSE, now_fn=_NOW)
         self.assertEqual([reason for _pair, reason in dropped],
                          ["strike 261.0 call: OI 40 < 500",
-                          "strike 261.0 call: OI 40 < 500",
-                          "strike 263.0 call: iv 0.0"])
+                          "Debit -0.85 außerhalb (0, 2.0) - kein Gewinn möglich",
+                          "strike 263.0 call: iv=0 illiquide"])
 
     def test_a_leg_without_two_sides_drops_the_pair(self):
         _fp, leg_drop_reason, vertical_spreads = self._api()
         chain = make_verticals()
-        kept, dropped = vertical_spreads(chain)
-        self.assertEqual([p.symbol for p in kept],
-                         ["AAPL260116C00250000/AAPL260116C00252500",
-                          "AMZN260116C00260000/AMZN260116C00262500",
-                          "TSLA260116C00290000/TSLA260116C00292500"])
+        kept, dropped = vertical_spreads(chain, _LOOSE, now_fn=_NOW)
+        # D7: the pairs are formed first and then run through the WHOLE leg chain,
+        # so with these criteria every raw pair is rejected - the one-sided MSFT
+        # leg still falls with its own reason, the others with the abs spread
+        # bound of the penny zone and the degenerated debit.
+        self.assertEqual([p.symbol for p in kept], [])
         self.assertEqual([reason for _p, reason in dropped],
-                         ["strike 270.0 call: kein Geld-/Briefkurs",
-                          "strike 282.5 call: OI fehlt"])
+                         ["Debit 2.5 außerhalb (0, 2.5) - kein Gewinn möglich",
+                          "strike 262.5 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.60)",
+                          "strike 270.0 call: Spread: kein Geld-/Briefkurs",
+                          "strike 282.5 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.60)",
+                          "strike 292.5 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.60)"])
         msft = [q for q in chain if q.asset.strike == 270.0][0]
-        self.assertEqual(leg_drop_reason(msft), "strike 270.0 call: kein Geld-/Briefkurs")
+        self.assertEqual(leg_drop_reason(msft, _LOOSE, _NOW), "strike 270.0 call: Spread: kein Geld-/Briefkurs")
 
     def test_the_open_interest_floor_is_inclusive_on_both_sides(self):
         # BOTH sides of the boundary: exactly 500 survives, one below drops.
@@ -579,17 +600,28 @@ class TestVerticalCallSpreads(unittest.TestCase):
         chain = make_verticals()
         amzn = [q for q in chain if q.asset.strike == 260.0][0]
         self.assertEqual(amzn.open_interest, 500)
-        self.assertIsNone(leg_drop_reason(amzn))
+        self.assertIsNone(leg_drop_reason(amzn, _LOOSE, _NOW))
         below = quote("AMZN260116C00257500", bid=0.60, ask=0.80, iv=30.0,
                       oi=499, volume=100, dte=10)
-        self.assertEqual(leg_drop_reason(below), "strike 257.5 call: OI 499 < 500")
+        # the leg still falls - but the chain names the FIRST rule it violates,
+        # and that is the absolute spread bound of the penny zone, not the floor
+        self.assertEqual(leg_drop_reason(below, _LOOSE, _NOW),
+                         "strike 257.5 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.70)")
+        # the floor itself stays pinned on a leg the spread rules let through
+        # ("OI 40 < 500" in test_one_reason_per_dropped_pair_...)
+        eng = quote("AMZN260116C00257500", bid=0.68, ask=0.72, iv=30.0,
+                    oi=499, volume=100, dte=10)
+        self.assertEqual(leg_drop_reason(eng, _LOOSE, _NOW), "strike 257.5 call: OI 499 < 500")
 
     def test_missing_open_interest_is_not_treated_as_liquid(self):
         _fp, leg_drop_reason, _vs = self._api()
         chain = make_verticals()
         nvda = [q for q in chain if q.asset.strike == 282.5][0]
         self.assertIsNone(nvda.open_interest)
-        self.assertEqual(leg_drop_reason(nvda), "strike 282.5 call: OI fehlt")
+        # D7: the leg is dropped, never silently kept - the reason comes from the
+        # first rule of the shared chain (the abs spread bound, as above)
+        self.assertEqual(leg_drop_reason(nvda, _LOOSE, _NOW),
+                         "strike 282.5 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.60)")
 
     def test_the_five_trend_hints_speak_german(self):
         """Alle fuenf Vorlagen: drei Richtungen, Symbol-Wache, Fehlpassung.
@@ -637,15 +669,26 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertIn("Trend fallend passt (Put)", hinweise)
 
     def test_a_leg_without_iv_is_reported_as_missing(self):
-        """iv fehlt ist etwas anderes als iv 0.0 - der Leser sieht den Unterschied."""
+        """D7: the leg carries the FIRST rule of the chain, not a private rule.
+
+        A 0.20 $ wide leg under a mid of 1 $ is named with the absolute spread
+        bound of the penny zone (the same rule the list above applies); a leg with
+        iv == 0 is named with the data-completeness rule. Both stay distinct, so
+        the reader can tell the two cases apart.
+        """
         _fp, leg_drop_reason, _vs = self._api()
         ohne = quote("AAPL260116C00270000", bid=0.60, ask=0.80, iv=None,
                      oi=900, volume=100, dte=10)
         self.assertIsNone(ohne.iv)
-        self.assertEqual(leg_drop_reason(ohne), "strike 270.0 call: iv fehlt")
+        self.assertEqual(leg_drop_reason(ohne, _LOOSE, _NOW),
+                         "strike 270.0 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.70)")
         null = quote("AAPL260116C00270000", bid=0.60, ask=0.80, iv=0.0,
                      oi=900, volume=100, dte=10)
-        self.assertEqual(leg_drop_reason(null), "strike 270.0 call: iv 0.0")
+        self.assertEqual(leg_drop_reason(null, _LOOSE, _NOW), "strike 270.0 call: iv=0 illiquide")
+        # with a narrow penny leg the iv rule is reached and keeps its own text
+        eng = quote("AAPL260116C00270000", bid=0.68, ask=0.72, iv=None,
+                    oi=900, volume=100, dte=10)
+        self.assertEqual(leg_drop_reason(eng, _LOOSE, _NOW), "strike 270.0 call: IV fehlt")
 
     def test_a_put_pair_is_never_built(self):
         form_vertical_pairs, _leg, _vs = self._api()
@@ -654,16 +697,29 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertNotIn("P00", "".join(p.symbol for p in pairs))
         self.assertTrue(all(p.long.asset.option_type == "call" for p in pairs))
 
-    def test_debit_equal_to_the_width_is_flagged_not_dropped(self):
-        _fp, _leg, vertical_spreads = self._api()
-        kept, _dropped = vertical_spreads(make_verticals())
-        pair = kept[0]
+    def test_debit_equal_to_the_width_is_dropped_with_a_reason(self):
+        # D7: the degenerated pair (debit == width, max profit 0) is no longer
+        # listed - the pair rule 0 < debit < width drops it and says why. Only a
+        # pair at or above the width may carry the flag; the ordinary neighbours
+        # must not.
+        form_vertical_pairs, _leg, vertical_spreads = self._api()
+        chain = make_verticals()
+        kept, dropped = vertical_spreads(chain, _LOOSE, now_fn=_NOW)
+        degenerate = [p for p, _r in dropped
+                      if p.symbol == "AAPL260116C00250000/AAPL260116C00252500"]
+        self.assertEqual(len(degenerate), 1)
+        pair = degenerate[0]
         self.assertEqual(pair.strike_width, 2.5)
         self.assertEqual(pair.net_debit, 2.5)
         self.assertEqual(pair.max_profit, 0.0)
         self.assertTrue(pair.debit_ge_width)
-        # the ordinary pair right next to it must NOT be flagged
-        self.assertFalse(kept[1].debit_ge_width)
+        self.assertEqual([r for p, r in dropped if p.symbol == pair.symbol],
+                         ["Debit 2.5 außerhalb (0, 2.5) - kein Gewinn möglich"])
+        self.assertEqual([p.symbol for p in kept], [])
+        # the flag is not blanket-applied: of all raw pairs only the degenerated
+        # one reaches the width
+        self.assertEqual([p.symbol for p in form_vertical_pairs(chain) if p.debit_ge_width],
+                         [pair.symbol])
 
     def test_a_duplicated_strike_neither_crashes_nor_divides_by_zero(self):
         # no live chain measured carries a duplicated strike in one group
@@ -682,7 +738,7 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertIsNone(pairs[0].debit_width_ratio)
         self.assertTrue(pairs[0].debit_ge_width)
         self.assertEqual(pairs[1].strike_width, 5.0)
-        kept, dropped = vertical_spreads(chain)
+        kept, dropped = vertical_spreads(chain, _LOOSE, now_fn=_NOW)
         self.assertEqual(len(kept) + len(dropped), 2)
 
     def test_different_underlyings_never_pair_with_each_other(self):
@@ -710,27 +766,27 @@ class TestVerticalCallSpreads(unittest.TestCase):
                        oi=1500, volume=100, dte=10),
                  quote("AAPL260116C00245000", bid=2.50, ask=2.70, iv=30.0,
                        oi=1500, volume=100, dte=10)]
-        kept, dropped = vertical_spreads(chain)
+        kept, dropped = vertical_spreads(chain, _LOOSE, now_fn=_NOW)
         self.assertEqual(kept, [])
         self.assertEqual([reason for _pair, reason in dropped],
-                         ["Debit -0.5 <= 0"])
+                         ["Debit -0.5 außerhalb (0, 5.0) - kein Gewinn möglich"])
         self.assertEqual(form_vertical_pairs(chain)[0].max_profit, 5.5)
-        # BOTH sides of the boundary: exactly zero is "not positive" too,
+        # BOTH sides of the boundary: exactly zero is outside (0, width) too,
         # otherwise a shift to `debit < 0` stays green
         boundary = [quote("AAPL260116C00240000", bid=2.40, ask=2.50, iv=30.0,
                           oi=1500, volume=100, dte=10),
                     quote("AAPL260116C00245000", bid=2.50, ask=2.70, iv=30.0,
                           oi=1500, volume=100, dte=10)]
-        kept_zero, dropped_zero = vertical_spreads(boundary)
+        kept_zero, dropped_zero = vertical_spreads(boundary, _LOOSE, now_fn=_NOW)
         self.assertEqual(form_vertical_pairs(boundary)[0].net_debit, 0.0)
         self.assertEqual(kept_zero, [])
         self.assertEqual([reason for _pair, reason in dropped_zero],
-                         ["Debit 0.0 <= 0"])
+                         ["Debit 0.0 außerhalb (0, 5.0) - kein Gewinn möglich"])
 
     def test_an_empty_chain_yields_no_pairs(self):
         form_vertical_pairs, _leg, vertical_spreads = self._api()
         self.assertEqual(form_vertical_pairs([]), [])
-        self.assertEqual(vertical_spreads([]), ([], []))
+        self.assertEqual(vertical_spreads([], _LOOSE, now_fn=_NOW), ([], []))
 
 
 class TheReasonsAreGerman(unittest.TestCase):

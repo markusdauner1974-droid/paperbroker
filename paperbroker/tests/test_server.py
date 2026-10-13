@@ -46,6 +46,21 @@ class _MockAdapter:
         return None
 
 
+_LOOSE = ScreenerCriteria(max_spread_pct=100.0)
+
+# D7: the leg chain of the spread section is the chain of the list above, so the
+# legs now also run through the default ABSOLUTE spread bound (0.10 $ in the penny
+# zone). The vertical fixture quotes the short legs of AMZN/NVDA/TSLA at
+# 0.50/0.70 - 0.20 $ wide at a mid of 0.60 - so EVERY pair would be rejected by
+# that one bound and the section would be empty: the sort, shape and column tests
+# below would then have no row left to check (and `_spread_rows` no table at all).
+# Tests whose subject is the surviving PAIR LIST run with `_LOOSE` and that single
+# bound switched off - the equivalence probe the panel asked for ("min_oi 500,
+# OI-Pflicht, kein Spread-Limit"). The bound itself stays pinned, on legs, in
+# test_screener.py (TestVerticalCallSpreads).
+_WIDE = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None)
+
+
 def _clock():
     """Pinned test clock: fixture ts are hardcoded '2026-10-07 14:30' -
     a real now() goes stale (>30 min) and wipes every result."""
@@ -1120,7 +1135,7 @@ class TestVerticalSpreadList(unittest.TestCase):
         adapter.expirations = ["2026-01-16"]
         app = create_app(
             quote_adapter=adapter,
-            screener=None if criteria is None else OptionScreener(criteria),
+            screener=OptionScreener(criteria or _WIDE),
             now_fn=_clock())
         app.config["TESTING"] = True
         return app
@@ -1138,14 +1153,15 @@ class TestVerticalSpreadList(unittest.TestCase):
             "/", query_string=query).get_data(as_text=True)
 
     def test_the_api_lists_the_pairs_that_pass_the_leg_rules(self):
+        # D7: the degenerated AAPL pair (debit == width) is dropped by the pair
+        # rule; AMZN and TSLA survive the leg chain under the wide criteria.
         data = self._json()
         self.assertEqual([v["symbol"] for v in data["verticals"]],
-                         ["AAPL260116C00250000/AAPL260116C00252500",
-                          "AMZN260116C00260000/AMZN260116C00262500",
+                         ["AMZN260116C00260000/AMZN260116C00262500",
                           "TSLA260116C00290000/TSLA260116C00292500"])
 
     def test_a_pair_carries_the_four_numbers_and_the_ratio(self):
-        v = self._json()["verticals"][1]          # AMZN 260/262.5
+        v = self._json()["verticals"][0]          # AMZN 260/262.5
         self.assertEqual(v["long_symbol"], "AMZN260116C00260000")
         self.assertEqual(v["short_symbol"], "AMZN260116C00262500")
         self.assertEqual(v["expiration"], "2026-01-16")
@@ -1157,28 +1173,46 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertEqual(v["debit_width_ratio"], 0.28)
         self.assertIs(v["debit_ge_width"], False)
 
-    def test_a_pair_without_profit_is_flagged_and_still_listed(self):
+    def test_a_pair_without_profit_is_dropped_with_a_reason(self):
+        """D7 (NEU 1 of the review): no pair with debit >= width is a result.
+
+        The degenerated AAPL pair (debit 2.50 == width 2.50, max profit 0) used
+        to stand in the list AS A RESULT, with a break-even outside the payoff
+        range. Now the pair rule drops it and names the reason.
+        """
         data = self._json()
-        flagged = [v for v in data["verticals"] if v["debit_ge_width"]]
-        self.assertEqual([v["symbol"] for v in flagged],
-                         ["AAPL260116C00250000/AAPL260116C00252500"])
-        self.assertEqual(flagged[0]["net_debit"], 2.5)      # == width
-        self.assertEqual(flagged[0]["max_profit"], 0.0)
+        self.assertNotIn("AAPL260116C00250000/AAPL260116C00252500",
+                         [v["symbol"] for v in data["verticals"]])
+        self.assertEqual([v["symbol"] for v in data["verticals"]
+                          if v["debit_ge_width"]], [])
+        self.assertEqual([(g["count"], g["reason"]) for g in data["vertical_drops"]
+                          if "kein Gewinn" in g["reason"]],
+                         [(1, "Debit 2.5 außerhalb (0, 2.5) - kein Gewinn möglich")])
         self.assertIn("kein Gewinn möglich", self._page())
 
     def test_both_lists_are_rendered_side_by_side_on_one_page(self):
         # the spread table is additive: with loosened single-option criteria
-        # BOTH tables have rows, and the page stays one document
+        # BOTH tables have rows, and the page stays one document. D7: loosened
+        # now includes the absolute spread bound - the fixture legs are 0.20 $
+        # wide in the penny zone, and the pairs must survive for the table to
+        # exist at all.
         criteria = ScreenerCriteria(max_quote_age_min=None, max_spread_pct=None,
-                                    min_oi=None, dte_min=None, dte_max=None)
+                                    max_spread_abs=None, min_oi=None,
+                                    dte_min=None, dte_max=None)
         page = self._page(criteria=criteria)
         self.assertEqual(page.count("<table>"), 2)
         self.assertIn("Vertikale Call-Spreads", page)
         self.assertIn("Kontrakt", page)
 
     def test_the_api_reports_why_pairs_were_dropped(self):
+        # D7: every dropped pair carries the reason of the first rule that
+        # rejects it - the pair rule for the degenerated AAPL pair, the leg
+        # chain for MSFT (one-sided) and NVDA (short leg without OI).
         self.assertEqual(self._json()["vertical_drops"],
-                         [{"reason": "strike 270.0 call: kein Geld-/Briefkurs", "count": 1},
+                         [{"reason": "Debit 2.5 außerhalb (0, 2.5) - kein Gewinn möglich",
+                           "count": 1},
+                          {"reason": "strike 270.0 call: Spread: kein Geld-/Briefkurs",
+                           "count": 1},
                           {"reason": "strike 282.5 call: OI fehlt", "count": 1}])
 
     def test_a_put_pair_never_reaches_the_list(self):
@@ -1495,7 +1529,7 @@ class TestTrendConfig(unittest.TestCase):
 
 class TestTrendWiring(unittest.TestCase):
     def _client(self):
-        return create_app(quote_adapter=_MockAdapter(make()), now_fn=_clock()).test_client()
+        return create_app(quote_adapter=_MockAdapter(make()), screener=OptionScreener(_LOOSE), now_fn=_clock()).test_client()
 
     def test_page_without_provider_shows_no_trend_badge(self):
         html_out = self._client().get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
@@ -1567,7 +1601,7 @@ class TestChainBoundary(unittest.TestCase):
         from paperbroker.adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
         ad = CBOEQuoteAdapter(now_fn=_clock())
         ad._fetch = lambda symbol: self._chain(rows)
-        app = server_module.create_app(quote_adapter=ad, now_fn=_clock())
+        app = server_module.create_app(quote_adapter=ad, screener=OptionScreener(_LOOSE), now_fn=_clock())
         app.config["PROPAGATE_EXCEPTIONS"] = False
         return app.test_client().get(query)
 
@@ -1605,7 +1639,7 @@ class TestChainBoundary(unittest.TestCase):
 
             _good = "NVDA261016C00115000"
 
-        app = server_module.create_app(quote_adapter=_Stub(), now_fn=_clock())
+        app = server_module.create_app(quote_adapter=_Stub(), screener=OptionScreener(_LOOSE), now_fn=_clock())
         app.config["PROPAGATE_EXCEPTIONS"] = False
         body = app.test_client().get(
             "/api/screen?ticker=NVDA&expiration=2026-10-16").get_json()
@@ -1636,7 +1670,7 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         # nehmen nur ein Datum an, das die Kette wirklich listet
         adapter.expirations = ["2026-01-16"]
         app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(criteria or ScreenerCriteria()),
+                         screener=OptionScreener(criteria or _WIDE),
                          now_fn=_clock())
         app.config["TESTING"] = True
         return app
@@ -1655,11 +1689,15 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         """Nur die Spread-Tabelle - am KOPF erkannt, nicht an der Position.
 
         Seit D2 stehen die Spreads VOR den Kontrakten; ein [-1] wie zuvor
-        griffe jetzt die Kontrakttabelle.
+        griffe jetzt die Kontrakttabelle. Fehlt die Tabelle ganz, wird das
+        benannt - ein leeres [] waere still und wuerde die Zusicherungen, die
+        ueber die Zeilen laufen, zu Leerproben machen.
         """
-        tabelle = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
-                    if "<th>Spread</th>" in t][0]
-        zeilen = re.findall(r"<tr>(.*?)</tr>", tabelle, re.S)
+        tabellen = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
+                    if "<th>Spread</th>" in t]
+        if not tabellen:
+            raise AssertionError("keine Spread-Tabelle auf der Seite")
+        zeilen = re.findall(r"<tr>(.*?)</tr>", tabellen[0], re.S)
         return [[re.sub(r"<[^>]+>", "", c).strip() for c in
                  re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)]
                 for zeile in zeilen[1:]]
@@ -1668,26 +1706,28 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     def test_the_page_shows_the_return_of_every_spread(self):
         zeilen = self._spread_rows(self._page())
+        # D7: the degenerated AAPL pair (debit == width, return 0.00 %) is no
+        # longer a result - it is dropped with the pair rule's reason.
         self.assertEqual([z[0] for z in zeilen],
                          ["AMZN 260.00 / 262.50 Call",
-                          "TSLA 290.00 / 292.50 Call",
-                          "AAPL 250.00 / 252.50 Call"])
-        self.assertEqual([z[6] for z in zeilen], ["257.14 %", "257.14 %", "0.00 %"])
+                          "TSLA 290.00 / 292.50 Call"])
+        self.assertEqual([z[6] for z in zeilen], ["257.14 %", "257.14 %"])
 
     def test_the_page_shows_the_distance_to_the_break_even(self):
         zeilen = self._spread_rows(self._page())
-        self.assertEqual([z[8] for z in zeilen], ["+4.28 %", "+16.28 %", "+1.00 %"])
+        self.assertEqual([z[8] for z in zeilen], ["+4.28 %", "+16.28 %"])
 
     def test_the_spread_cell_names_the_trade_and_keeps_the_codes_in_the_tooltip(self):
         html = self._page()
-        self.assertIn('title="AAPL260116C00250000 / AAPL260116C00252500"', html)
-        self.assertIn(">AAPL 250.00 / 252.50 Call<", html)
+        self.assertIn('title="AMZN260116C00260000 / AMZN260116C00262500"', html)
+        self.assertIn(">AMZN 260.00 / 262.50 Call<", html)
 
     def test_the_spread_row_keeps_the_shape_the_other_tests_parse(self):
         # die Muster der uebrigen Tests duerfen nicht brechen: <tr> ohne
         # Attribute, <td> hoechstens mit title, genau ein tbody, zwei Tabellen
         loose = ScreenerCriteria(max_quote_age_min=None, max_spread_pct=None,
-                                 min_oi=None, dte_min=None, dte_max=None)
+                                 max_spread_abs=None, min_oi=None,
+                                 dte_min=None, dte_max=None)
         page = self._app(criteria=loose).test_client().get(
             "/", query_string={"ticker": "AAPL", "expiration": "2026-01-16"}).get_data(as_text=True)
         for zeile in self._spread_rows(page):
@@ -1699,16 +1739,15 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     def test_the_page_sorts_by_return_per_default(self):
         self.assertEqual(self._spread_rows(self._page())[0][0], "AMZN 260.00 / 262.50 Call")
-        self.assertEqual(self._spread_rows(self._page())[-1][0], "AAPL 250.00 / 252.50 Call")
+        self.assertEqual(self._spread_rows(self._page())[-1][0], "TSLA 290.00 / 292.50 Call")
 
     def test_the_page_can_sort_by_distance_to_break_even(self):
         zeilen = self._spread_rows(self._page({"sort": "be_asc"}))
-        self.assertEqual([z[8] for z in zeilen], ["+1.00 %", "+4.28 %", "+16.28 %"])
+        self.assertEqual([z[8] for z in zeilen], ["+4.28 %", "+16.28 %"])
 
     def test_the_page_can_keep_the_chain_order(self):
         self.assertEqual([z[0] for z in self._spread_rows(self._page({"sort": "none"}))],
-                         ["AAPL 250.00 / 252.50 Call", "AMZN 260.00 / 262.50 Call",
-                          "TSLA 290.00 / 292.50 Call"])
+                         ["AMZN 260.00 / 262.50 Call", "TSLA 290.00 / 292.50 Call"])
 
     def test_an_unknown_sort_mode_falls_back_to_the_return(self):
         self.assertEqual(self._spread_rows(self._page({"sort": "quatsch"}))[0][0],
@@ -1717,15 +1756,19 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
     def test_the_api_keeps_the_chain_order_while_the_page_sorts(self):
         # die Entscheidung selbst: gleiche Werte, verschiedene Reihenfolge
         self.assertEqual([v["symbol"][:4] for v in self._json()["verticals"]],
-                         ["AAPL", "AMZN", "TSLA"])
+                         ["AMZN", "TSLA"])
         self.assertEqual(self._spread_rows(self._page())[0][0][:4], "AMZN")
 
     def test_the_sort_links_keep_the_other_parameters(self):
-        html = self._page({"max_spread_pct": "5"})
+        # D7: the spread section now runs through the same filters as the list, so
+        # a tight relative bound empties it - and an empty section has no header
+        # links to check. The value below keeps the fixture's pairs (14.3 % to
+        # 33.3 %) and still proves that the link carries what the user typed.
+        html = self._page({"max_spread_pct": "50"})
         self.assertIn("ticker=AAPL", html)
         self.assertIn("sort=rendite_desc", html)
         self.assertIn("sort=be_asc", html)
-        self.assertIn("max_spread_pct=5", html)
+        self.assertIn("max_spread_pct=50", html)
 
     # --- die Faelle, die die Mock-Kette nicht triggert (Restrisiko des Urteils) ---
 
@@ -1735,9 +1778,9 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         # der Anzeige wird deshalb direkt geprueft - nicht ueber die Seite.
         kette = [quote("AAPL260116C00250000", bid=0.45, ask=0.50, iv=30.0, oi=1500, dte=10),
                  quote("AAPL260116C00252500", bid=0.50, ask=0.55, iv=30.0, oi=1500, dte=10)]
-        behalten, verworfen = server_module.vertical_spreads(kette)
+        behalten, verworfen = server_module.vertical_spreads(kette, _LOOSE, now_fn=_clock)
         self.assertEqual(behalten, [])
-        self.assertEqual(verworfen[0][1], "Debit 0.0 <= 0")
+        self.assertEqual(verworfen[0][1], "Debit 0.0 außerhalb (0, 2.5) - kein Gewinn möglich")
 
         class OhneVerlust:
             max_loss = 0.0
@@ -1869,7 +1912,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         adapter = _MockAdapter(make() + make_verticals())
         adapter.expirations = ["2026-01-16"]
         app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(ScreenerCriteria()),
+                         screener=OptionScreener(_WIDE),
                          now_fn=_clock())
         app.config["TESTING"] = True
         return app.test_client().get(
@@ -2029,7 +2072,9 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         spread = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
                   if "<th>Spread</th>" in t][0]
         zeilen = re.findall(r"<tr>(.*?)</tr>", spread, re.S)[1:]
-        self.assertEqual(len(zeilen), 4)
+        # D7: 3 of the 4 pairs survive - the degenerated AAPL pair (debit ==
+        # width) is dropped by the pair rule now
+        self.assertEqual(len(zeilen), 3)
         for zeile in zeilen:
             self.assertEqual(
                 len(re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)), 11)
@@ -2057,7 +2102,7 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
         # Datum an, das die Kette wirklich listet
         adapter.expirations = ["2026-01-16"]
         app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(ScreenerCriteria()),
+                         screener=OptionScreener(_WIDE),
                          now_fn=_clock())
         app.config["TESTING"] = True
         return app
@@ -2123,7 +2168,8 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
 
     def test_the_lead_line_names_the_best_return(self):
         page = self._page()
-        self.assertIn('<p class="lede">4 Spreads, bester 257.14 % Rendite</p>', page)
+        # D7: 3 Spreads - the degenerated AAPL pair is no longer a result
+        self.assertIn('<p class="lede">3 Spreads, bester 257.14 % Rendite</p>', page)
         self.assertLess(page.index('class="lede"'), page.index('<div class="stats">'))
 
     def test_the_lead_line_is_the_maximum_and_not_the_first_row(self):
@@ -2134,7 +2180,7 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
         self.assertEqual(self._erste_spread_zeile(nach_rendite), "AMZN")
         self.assertEqual(self._erste_spread_zeile(nach_abstand), "AAPL")
         for page in (nach_rendite, nach_abstand):
-            self.assertIn("4 Spreads, bester 257.14 % Rendite", page)
+            self.assertIn("3 Spreads, bester 257.14 % Rendite", page)
 
     def test_without_spreads_there_is_no_lead_line(self):
         # ein einzelner Kontrakt hat keinen Nachbarn -> keine Spreads
@@ -2460,8 +2506,10 @@ class TestErrorBehaviour(unittest.TestCase):
     """
 
     def _client(self):
+        # D7: _WIDE - with _LOOSE only the pair of make() survives and the sort
+        # test below could not tell two orders apart (measured: 1 row for both).
         return create_app(quote_adapter=_MockAdapter(make() + make_verticals()),
-                          now_fn=_clock()).test_client()
+                          screener=OptionScreener(_WIDE), now_fn=_clock()).test_client()
 
     def _page(self, query):
         """Die Seite, entschluesselt - Meldungen enthalten "&gt;".
