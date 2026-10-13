@@ -49,13 +49,13 @@ _FRESH_GREEN_MIN = 30
 _FRESH_YELLOW_MIN = 120
 
 # UX-1 (Ausbau-Slice 1): the screener hands back one free-text reason per
-# dropped contract ("stale 257 min", "OI 7 < 500"). Counting the raw texts
+# dropped contract ("veraltet: 257 Min.", "OI 7 < 500"). Counting the raw texts
 # would give roughly one line per contract (measured: 48 distinct texts for
 # 97 drops with the age guard off), so numbers are folded to a placeholder.
 # It is a NUMBER TOKEN, not a single digit: folding digit by digit would
 # split "7.41" and "10.2" into different groups although both are "spread
 # too wide". A group whose raw texts are all identical keeps the raw text,
-# so the measured value stays on the page ("stale 257 min", not "stale # min").
+# so the measured value stays on the page ("veraltet: 257 Min.", not "veraltet: # Min.").
 _REASON_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 
 

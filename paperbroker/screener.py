@@ -142,10 +142,10 @@ def filter_data_complete(quotes):
     kept, dropped = [], []
     for q in quotes:
         if q.iv is not None and q.iv == 0:
-            dropped.append((q, "iv=0 illiquid"))
+            dropped.append((q, "iv=0 illiquide"))
             continue
         if q.open_interest is not None and q.open_interest == 0:
-            dropped.append((q, "oi=0 illiquid"))
+            dropped.append((q, "oi=0 illiquide"))
             continue
         kept.append(q)
     return kept, dropped
@@ -159,7 +159,7 @@ def filter_spread(quotes, criteria: ScreenerCriteria):
     for q in quotes:
         sp = _spread_pct(q)
         if sp is None:
-            dropped.append((q, "spread: no bid/ask"))
+            dropped.append((q, "Spread: kein Geld-/Briefkurs"))
             continue
         abs_sp = (q.ask - q.bid)
         mid = (q.bid + q.ask) / 2
@@ -174,9 +174,9 @@ def filter_spread(quotes, criteria: ScreenerCriteria):
             kept.append(q)
         else:
             if abs_bound is not None and abs_sp > abs_bound:
-                dropped.append((q, f"penny-spread {abs_sp:.2f}$ > {abs_bound:.2f}$ (mid {mid:.2f})"))
+                dropped.append((q, f"absoluter Spread {abs_sp:.2f}$ > {abs_bound:.2f}$ (Mitte {mid:.2f})"))
             else:
-                dropped.append((q, f"spread {sp:.1f}% > {criteria.max_spread_pct}%"))
+                dropped.append((q, f"Spread {sp:.1f}% > {criteria.max_spread_pct}%"))
     return kept, dropped
 
 
@@ -186,7 +186,7 @@ def filter_oi(quotes, criteria: ScreenerCriteria):
         oi = q.open_interest
         if oi is None:
             if criteria.require_oi:
-                dropped.append((q, "missing OI"))
+                dropped.append((q, "OI fehlt"))
             else:
                 kept.append(q)
             continue
@@ -203,12 +203,12 @@ def filter_volume(quotes, criteria: ScreenerCriteria):
         v = q.volume
         if v is None:
             if criteria.require_volume:
-                dropped.append((q, "missing volume"))
+                dropped.append((q, "Volumen fehlt"))
             else:
                 kept.append(q)
             continue
         if criteria.min_volume is not None and v <= criteria.min_volume:
-            dropped.append((q, f"volume {v} <= {criteria.min_volume}"))
+            dropped.append((q, f"Volumen {v} <= {criteria.min_volume}"))
         else:
             kept.append(q)
     return kept, dropped
@@ -220,7 +220,7 @@ def filter_iv(quotes, criteria: ScreenerCriteria):
     for q in quotes:
         iv = q.iv
         if iv is None:
-            dropped.append((q, "missing IV"))
+            dropped.append((q, "IV fehlt"))
             continue
         if criteria.iv_min is not None and iv < criteria.iv_min:
             dropped.append((q, f"IV {iv:.0f} < {criteria.iv_min}"))
@@ -237,7 +237,7 @@ def filter_dte(quotes, criteria: ScreenerCriteria):
     for q in quotes:
         d = q.days_to_expiration
         if d is None:
-            dropped.append((q, "missing DTE"))
+            dropped.append((q, "DTE fehlt"))
             continue
         if criteria.dte_min is not None and d < criteria.dte_min:
             dropped.append((q, f"DTE {d} < {criteria.dte_min}"))
@@ -260,7 +260,7 @@ def filter_sizes(quotes, criteria: ScreenerCriteria):
         if ok:
             kept.append(q)
         else:
-            dropped.append((q, "size below minimum"))
+            dropped.append((q, "Größe unter Minimum"))
     return kept, dropped
 
 
@@ -303,7 +303,7 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
     for q in quotes:
         ts = getattr(q, "quote_timestamp", None)
         if ts is None:
-            dropped.append((q, "freshness unknown (no quote_timestamp)"))
+            dropped.append((q, "Aktualität unbekannt (kein Zeitstempel)"))
             continue
         try:
             now_v = now_fn()
@@ -317,7 +317,7 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
                 raise TypeError(f"unsupported clock value: {type(now_v).__name__}")
         except Exception:
             # internal error, NOT an unreadable timestamp (B-17)
-            dropped.append((q, "freshness unknown (clock error)"))
+            dropped.append((q, "Aktualität unbekannt (Uhrfehler)"))
             continue
         try:
             # normalize both sides to UTC, THEN strip the offset: arrow
@@ -328,14 +328,14 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
             ts_naive = arrow.get(str(ts).replace(' ', 'T')).to('UTC').naive
             age_s = (now_naive - ts_naive).total_seconds()
         except Exception:
-            dropped.append((q, "freshness unknown (unparseable timestamp)"))
+            dropped.append((q, "Aktualität unbekannt (Zeitstempel unlesbar)"))
             continue
         if age_s < -FUTURE_TOLERANCE_S:
             # the wording keeps the rounding of the stale branch below: the
             # existing edge (30 min + 1 s reads "stale 30 min") must not move
-            dropped.append((q, f"future timestamp (+{(-age_s)/60:.0f} min)"))
+            dropped.append((q, f"Zeitstempel in der Zukunft (+{(-age_s)/60:.0f} Min.)"))
         elif age_s > max_age_s:
-            dropped.append((q, f"stale {age_s/60:.0f} min"))
+            dropped.append((q, f"veraltet: {age_s/60:.0f} Min."))
         else:
             kept.append(q)
     return kept, dropped
@@ -562,7 +562,7 @@ def leg_drop_reason(leg):
     single-option drop list already uses ("OI 7 < 500").
     """
     if not (leg.bid and leg.ask and leg.bid > 0 and leg.ask > 0):
-        return f"strike {leg.asset.strike} {leg.asset.option_type}: no bid/ask"
+        return f"strike {leg.asset.strike} {leg.asset.option_type}: kein Geld-/Briefkurs"
     oi = leg.open_interest
     if oi is None or oi < LEG_MIN_OI:
         return f"strike {leg.asset.strike} {leg.asset.option_type}: OI {oi} < {LEG_MIN_OI}"
@@ -589,7 +589,7 @@ def vertical_spreads(chain, option_type="call"):
             # opportunity - and it would print a profit ABOVE the width.
             # Measured on four live chains (2026-10-10): 0 of 560 cleanly
             # quoted call pairs, so the rule is a guard, not a filter.
-            reason = f"debit {pair.net_debit} <= 0"
+            reason = f"Debit {pair.net_debit} <= 0"
         if reason is None:
             kept.append(pair)
         else:

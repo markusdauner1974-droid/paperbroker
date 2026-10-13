@@ -448,15 +448,15 @@ class TestDropReasons(unittest.TestCase):
 
     def _mixed_chain(self):
         # six contracts, one clean candidate. The drops cover a raw-text
-        # group (two identical "iv=0 illiquid"), a PATTERN group (two
+        # group (two identical "iv=0 illiquide"), a PATTERN group (two
         # different OI bounds) and a single raw group (one wide spread).
         return [
             quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0, oi=8000,
                   dte=10),                                   # candidate
             quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=0.0, oi=1500,
-                  dte=10),                                   # iv=0 illiquid
+                  dte=10),                                   # iv=0 illiquide
             quote("AAPL260116C00260000", bid=2.40, ask=2.50, iv=0.0, oi=1500,
-                  dte=10),                                   # iv=0 illiquid
+                  dte=10),                                   # iv=0 illiquide
             quote("AAPL260116C00270000", bid=1.20, ask=1.30, iv=30.0, oi=5,
                   dte=10),                                   # OI 5 < 500
             quote("AAPL260116C00275000", bid=1.20, ask=1.30, iv=30.0, oi=200,
@@ -494,7 +494,7 @@ class TestDropReasons(unittest.TestCase):
         self.assertIn("Keine Kontrakte haben die Kriterien bestanden", html)
         # drop order is the pipeline order: iv=0 first, the rest is stale
         self.assertEqual(self._pairs(html),
-                         [("stale 275 min", 6), ("iv=0 illiquid", 1)])
+                         [("veraltet: 275 Min.", 6), ("iv=0 illiquide", 1)])
 
     def test_the_page_shows_the_age_and_the_limit(self):
         # the lamp already said "alt"; UX-1 adds the measured value
@@ -510,7 +510,7 @@ class TestDropReasons(unittest.TestCase):
             q.quote_timestamp = "2026-10-07 10:00:24"
         html_page = self._page(chain)
         self.assertIn("(275 min, Grenze 30 min)", html_page)
-        self.assertEqual(self._pairs(html_page)[0], ("stale 275 min", 6))
+        self.assertEqual(self._pairs(html_page)[0], ("veraltet: 275 Min.", 6))
 
     # --- the mixed case: candidates exist, drops are still explained ---
 
@@ -520,8 +520,8 @@ class TestDropReasons(unittest.TestCase):
         # ties (both count 2) keep the order the filters produced them in:
         # data-complete (iv=0) runs before oi; the spread group is last
         self.assertEqual(self._pairs(html),
-                         [("iv=0 illiquid", 2), ("OI # < #", 2),
-                          ("spread 28.6% > 10.0%", 1)])
+                         [("iv=0 illiquide", 2), ("OI # < #", 2),
+                          ("Spread 28.6% > 10.0%", 1)])
 
     def test_two_numbers_of_one_family_collapse_into_one_group(self):
         pairs = dict((r, c) for r, c in self._pairs(self._page(self._mixed_chain())))
@@ -533,8 +533,8 @@ class TestDropReasons(unittest.TestCase):
     def test_a_single_raw_text_keeps_its_measured_value(self):
         # a group with exactly one text shows it (with its number)
         pairs = dict(self._pairs(self._page(self._stale_chain())))
-        self.assertIn("stale 275 min", pairs)
-        self.assertNotIn("stale # min", pairs)
+        self.assertIn("veraltet: 275 Min.", pairs)
+        self.assertNotIn("veraltet: # Min.", pairs)
 
     # --- the JSON contract (additive) ---
 
@@ -543,9 +543,9 @@ class TestDropReasons(unittest.TestCase):
         self.assertIsInstance(d["dropped"], int)          # unchanged
         self.assertEqual(d["dropped"], 5)
         self.assertEqual(d["dropped_reasons"],
-                         [{"reason": "iv=0 illiquid", "count": 2},
+                         [{"reason": "iv=0 illiquide", "count": 2},
                           {"reason": "OI # < #", "count": 2},
-                          {"reason": "spread 28.6% > 10.0%", "count": 1}])
+                          {"reason": "Spread 28.6% > 10.0%", "count": 1}])
         counts = [g["count"] for g in d["dropped_reasons"]]
         self.assertEqual(counts, sorted(counts, reverse=True))
 
@@ -817,13 +817,13 @@ class TestSettableCriteria(unittest.TestCase):
         d = self._json({"min_bid_size": "200"})          # every fixture size is 100
         self.assertEqual(d["criteria"]["min_bid_size"], 200)
         self.assertEqual(d["candidates"], 0)
-        self.assertEqual(self._gruende(d)["size below minimum"], 2)
+        self.assertEqual(self._gruende(d)["Größe unter Minimum"], 2)
 
     def test_min_ask_size_is_settable_and_moves_the_result(self):
         d = self._json({"min_ask_size": "200"})
         self.assertEqual(d["criteria"]["min_ask_size"], 200)
         self.assertEqual(d["candidates"], 0)
-        self.assertEqual(self._gruende(d)["size below minimum"], 2)
+        self.assertEqual(self._gruende(d)["Größe unter Minimum"], 2)
 
     def test_iv_min_drops_the_low_iv_contract(self):
         d = self._json({"iv_min": "29"})                 # IVs are 28 and 30
@@ -846,8 +846,8 @@ class TestSettableCriteria(unittest.TestCase):
         # differ (page and JSON read the same list)
         d = self._json({"max_spread_abs": "0.01"})
         self.assertEqual(d["criteria"]["max_spread_abs"], 0.01)
-        self.assertEqual(self._gruende(d)["penny-spread #$ > #$ (mid #)"], 3)
-        self.assertNotIn("penny-spread 0.15$ > 0.10$ (mid 0.88)", self._gruende(d))
+        self.assertEqual(self._gruende(d)["absoluter Spread #$ > #$ (Mitte #)"], 3)
+        self.assertNotIn("absoluter Spread 0.15$ > 0.10$ (Mitte 0.88)", self._gruende(d))
 
     def test_require_oi_can_be_switched_off(self):
         # the OI-less contract only survives when the spread bounds are wide
@@ -856,12 +856,12 @@ class TestSettableCriteria(unittest.TestCase):
         an = self._json(weit)
         self.assertTrue(an["criteria"]["require_oi"])
         self.assertEqual(an["candidates"], 2)
-        self.assertEqual(self._gruende(an)["missing OI"], 1)
+        self.assertEqual(self._gruende(an)["OI fehlt"], 1)
         aus = self._json({**weit, "require_oi": "0"})
         self.assertFalse(aus["criteria"]["require_oi"])
         self.assertEqual(aus["candidates"], 3)
         self.assertIn("AAPL260116C00265000", [r["symbol"] for r in aus["results"]])
-        self.assertNotIn("missing OI", self._gruende(aus))
+        self.assertNotIn("OI fehlt", self._gruende(aus))
 
     def test_require_volume_can_be_switched_on(self):
         # make() has no contract without volume, so this test brings its own
@@ -874,7 +874,7 @@ class TestSettableCriteria(unittest.TestCase):
         an = self._json({**weit, "require_volume": "1"}, quotes=kette)
         self.assertTrue(an["criteria"]["require_volume"])
         self.assertEqual(an["candidates"], 2)
-        self.assertEqual(self._gruende(an)["missing volume"], 1)
+        self.assertEqual(self._gruende(an)["Volumen fehlt"], 1)
 
     # --- the four that change the RANKING ---------------------------------
 
@@ -994,7 +994,7 @@ class TestFutureTimestampLamp(unittest.TestCase):
     def test_the_filter_drops_a_future_timestamp_and_names_it(self):
         d = self._json(self._kette("2026-10-08 14:35:00"))
         self.assertEqual(d["candidates"], 0)
-        self.assertIn("future timestamp (+1440 min)",
+        self.assertIn("Zeitstempel in der Zukunft (+1440 Min.)",
                       [g["reason"] for g in d["dropped_reasons"]])
 
     def test_one_contract_of_seven_ahead_leaves_the_other_six_alone(self):
@@ -1003,7 +1003,7 @@ class TestFutureTimestampLamp(unittest.TestCase):
         d = self._json(k)
         self.assertEqual(d["candidates"], 1)
         self.assertEqual(d["freshness"], "red")          # raw chain: it is the youngest
-        self.assertIn("future timestamp (+1440 min)",
+        self.assertIn("Zeitstempel in der Zukunft (+1440 Min.)",
                       [g["reason"] for g in d["dropped_reasons"]])
 
     def test_half_a_minute_ahead_is_still_fresh(self):
@@ -1174,7 +1174,7 @@ class TestVerticalSpreadList(unittest.TestCase):
 
     def test_the_api_reports_why_pairs_were_dropped(self):
         self.assertEqual(self._json()["vertical_drops"],
-                         [{"reason": "strike 270.0 call: no bid/ask", "count": 1},
+                         [{"reason": "strike 270.0 call: kein Geld-/Briefkurs", "count": 1},
                           {"reason": "strike 282.5 call: OI None < 500", "count": 1}])
 
     def test_a_put_pair_never_reaches_the_list(self):
@@ -1690,7 +1690,7 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
                  quote("AAPL260116C00252500", bid=0.50, ask=0.55, iv=30.0, oi=1500, dte=10)]
         behalten, verworfen = server_module.vertical_spreads(kette)
         self.assertEqual(behalten, [])
-        self.assertEqual(verworfen[0][1], "debit 0.0 <= 0")
+        self.assertEqual(verworfen[0][1], "Debit 0.0 <= 0")
 
         class OhneVerlust:
             max_loss = 0.0
