@@ -345,6 +345,19 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
 # orchestrator
 # ---------------------------------------------------------------------- #
 
+_TREND_LABEL = {"up": "steigend", "down": "fallend", "flat": "neutral"}
+
+
+def _trend_label(direction):
+    """German label for a trend direction; unknown values pass through.
+
+    Lives here and not in server.py because the hint reasons in screen()
+    are the first consumer; the page badge imports the same words, so both
+    surfaces cannot drift apart.
+    """
+    return _TREND_LABEL.get(direction, direction)
+
+
 def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
     """Filter OptionQuote list -> List[ScreenResult], scored + sorted.
 
@@ -409,15 +422,16 @@ def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
             # side matching only for the trend's underlying symbol and
             # a real direction; 'flat'/unknown = neutral annotation
             if trend.symbol and q.asset.underlying.symbol != trend.symbol:
-                reasons.append(f"trend symbol mismatch ({trend.symbol})")
+                reasons.append(f"Trend-Symbol ({trend.symbol}) passt nicht")
             elif trend.direction == 'up' and q.asset.option_type == 'call':
-                reasons.append("trend up match (call)")
+                reasons.append("Trend steigend passt (Call)")
             elif trend.direction == 'down' and q.asset.option_type == 'put':
-                reasons.append("trend down match (put)")
+                reasons.append("Trend fallend passt (Put)")
             elif trend.direction == 'flat' or trend.direction not in ('up', 'down'):
-                reasons.append(f"trend neutral ({trend.direction})")
+                reasons.append("Trend neutral")
             else:
-                reasons.append(f"trend {trend.direction} vs {q.asset.option_type} mismatch")
+                reasons.append(f"Trend {_trend_label(trend.direction)} passt nicht "
+                               f"zu {q.asset.option_type}")
 
         results.append(ScreenResult(quote=q, score=round(score, 4),
                                     spread_pct=round(spread_p, 2), reasons=reasons))
@@ -564,8 +578,12 @@ def leg_drop_reason(leg):
     if not (leg.bid and leg.ask and leg.bid > 0 and leg.ask > 0):
         return f"strike {leg.asset.strike} {leg.asset.option_type}: kein Geld-/Briefkurs"
     oi = leg.open_interest
-    if oi is None or oi < LEG_MIN_OI:
+    if oi is None:
+        return f"strike {leg.asset.strike} {leg.asset.option_type}: OI fehlt"
+    if oi < LEG_MIN_OI:
         return f"strike {leg.asset.strike} {leg.asset.option_type}: OI {oi} < {LEG_MIN_OI}"
+    if leg.iv is None:
+        return f"strike {leg.asset.strike} {leg.asset.option_type}: iv fehlt"
     if not (leg.iv and leg.iv > 0):
         return f"strike {leg.asset.strike} {leg.asset.option_type}: iv {leg.iv}"
     return None
