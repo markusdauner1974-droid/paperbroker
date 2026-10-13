@@ -11,17 +11,28 @@
     .badge{padding:2px 10px;border-radius:999px;font-size:.8rem;border:1px solid #2c3650}
     .lamp{width:14px;height:14px;border-radius:50%;display:inline-block;vertical-align:middle}
     .green{background:#2fbf71}.yellow{background:#e6b93c}.red{background:#e0503c}.none{background:#5a6479}
-    main{padding:16px;max-width:1160px;margin:0 auto}
-    .shell{display:grid;grid-template-columns:272px minmax(0,1fr);gap:24px;align-items:start}
+    main{padding:16px;max-width:1220px;margin:0 auto}
+    .shell{display:grid;grid-template-columns:296px minmax(0,1fr);gap:32px;align-items:start}
     .results{min-width:0;display:flex;flex-direction:column;gap:16px}
     .lede{font-size:1.25rem;font-weight:600;margin:0}
     .lede span{color:#2fbf71;font-variant-numeric:tabular-nums}
-    @media (max-width:1180px){.shell{grid-template-columns:minmax(0,1fr)}}
+    @media (max-width:1212px){.shell{grid-template-columns:minmax(0,1fr)}}
     form{display:grid;grid-template-columns:1fr 1fr;gap:12px 8px;margin:0}
     form>input,form>select{width:100%;min-width:0}
     form>button,form>fieldset,form>span{grid-column:1/-1}
     .shell fieldset.crit{grid-template-columns:minmax(0,1fr)}
     .shell fieldset.crit label{flex-wrap:wrap;margin:4px 0}
+    /* D2b: die Leiste ist eine Liste aus Zeilen - Beschriftung links,
+       Feld rechtsbuendig in einer festen Spalte */
+    .shell fieldset.crit{border:0;background:none;padding:0;margin:0 0 16px}
+    .shell fieldset.crit legend{padding:0;font-size:.8rem}
+    .shell fieldset.crit>label{display:grid;grid-template-columns:minmax(0,1fr) 84px;align-items:center;gap:8px;margin:5px 0}
+    .shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;box-sizing:border-box;text-align:right;font-variant-numeric:tabular-nums;padding:6px 10px}
+    .shell form>input,.shell form>select{box-sizing:border-box}
+    .shell fieldset.crit>label>small{grid-column:1/-1;color:#e6b93c;font-weight:400;margin-top:2px}
+    .shell fieldset.crit>label:has(input[type=checkbox]){grid-template-columns:auto minmax(0,1fr);justify-items:start}
+    .shell fieldset.crit>label>input[type=checkbox]{width:16px;height:16px}
+    form>h2.rail-title{grid-column:1/-1;font-size:.8rem;font-weight:600;letter-spacing:.06em;color:#9aa3b5;margin:0 0 8px}
     input,button{font-size:1rem;padding:9px 12px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit}
     button{background:#2c6bed;border-color:#2c6bed;font-weight:600}
     button:disabled{opacity:.55}
@@ -85,6 +96,7 @@
 
   <div class="shell">
   <form method="get" action="/">
+    <h2 class="rail-title">Instrument</h2>
     <input name="ticker" id="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required autocomplete="off">
     <select name="expiration" id="expiration" {% if not dates %}disabled{% endif %}>
       {% if not dates_loaded %}

@@ -1873,9 +1873,9 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         page = self._page()
         regel = re.search(r"main\{([^}]*)\}", page).group(1)
         breite = int(re.search(r"max-width:(\d+)px", regel).group(1))
-        # D2: 1160 px, weil die Filterleiste 272 px und der Abstand 24 px
-        # kosten (1160 - 272 - 24 = 864 >= 837)
-        self.assertEqual(breite, 1160)
+        # D2b: 1220 px - die Leiste ist auf 296 px gewachsen, der Abstand
+        # auf 32 px (1220 - 296 - 32 = 892 >= 837)
+        self.assertEqual(breite, 1220)
         self.assertGreaterEqual(breite, 869)
         self.assertNotIn("max-width:760px", page)
 
@@ -1896,11 +1896,12 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # ohne diese Angabe bleiben die Kaesten Flex-Elemente des <form> und
         # schrumpfen (gemessen: 206-345 px statt voller Breite)
         self.assertEqual(page.count("flex:1 1 100%"), 1)
-        # grid-column steht im CSS, nicht am Element: genau die zwei Regeln
-        # D2: die dritte Regel setzt die Felder der Leiste ueber die ganze
-        # Formularbreite (form>button,form>fieldset,form>span)
-        self.assertEqual(re.findall(r"grid-column:([^;}]+)", page),
-                         ["1/-1", "1/-1", "1/-1"])
+        # grid-column steht im CSS, nicht am Element. Statt eine Zahl zu pflegen,
+        # die mit jedem Slice waechst, wird die BEDEUTUNG geprueft: jede
+        # Zeilenangabe spannt ueber die ganze Breite, keine Teilstuecke.
+        werte = re.findall(r"grid-column:([^;}]+)", page)
+        self.assertGreaterEqual(len(werte), 3)
+        self.assertEqual(set(werte), {"1/-1"})
 
     def test_the_fields_are_grouped_by_the_question_they_answer(self):
         # Gleichheit, nicht Teilzeichenkette: Reihenfolge der Gruppen UND der
@@ -2037,9 +2038,11 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
 
     def test_the_filters_stand_beside_the_result(self):
         page = self._page()
-        self.assertIn("max-width:1160px", page)
-        self.assertIn(".shell{display:grid;grid-template-columns:272px minmax(0,1fr)", page)
-        self.assertIn("@media (max-width:1180px){.shell{grid-template-columns:minmax(0,1fr)}}", page)
+        # D2b: die Leiste ist breiter (296 statt 272) und der Umbruchpunkt
+        # mitgerechnet (Ergebnisbreite = Fenster - 375, 837 px brauchen 1212)
+        self.assertIn("max-width:1220px", page)
+        self.assertIn(".shell{display:grid;grid-template-columns:296px minmax(0,1fr)", page)
+        self.assertIn("@media (max-width:1212px){.shell{grid-template-columns:minmax(0,1fr)}}", page)
         self.assertLess(page.index('<div class="shell">'), page.index("<form"))
         self.assertLess(page.index("<form"), page.index('<div class="results">'))
 
@@ -2108,6 +2111,82 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
         self.assertIn('class="vertical-reason"', page)
         self.assertLess(page.index('<details class="dropped-summary">'),
                         page.index('<li class="drop-reason">'))
+
+
+class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
+    """D2b: die Leiste traegt keine Kaesten mehr, und jedes Feld steht
+    rechtsbuendig auf einer gemeinsamen Kante.
+
+    Der Slice ist reine Anzeige - die Wirkung der Regeln ist im Browser
+    gemessen (14 Felder, rechte Kante x=341, Abweichung 0 px), pytest kann nur
+    die Regeln selbst festhalten. Deshalb wird hier JEDE Regel zeichengenau
+    gepinnt und zusaetzlich die Struktur, auf der sie beruht.
+    """
+
+    @staticmethod
+    def _app(quotes=None):
+        adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _page(self, params=None, quotes=None):
+        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query.update(params or {})
+        return self._app(quotes).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    def test_the_rail_groups_carry_no_boxes(self):
+        # Kaesten weg: die Gruppe ist eine Ueberschrift mit Zeilen darunter
+        page = self._page()
+        self.assertIn(".shell fieldset.crit{border:0;background:none;padding:0;margin:0 0 16px}", page)
+        # und der Rahmen der Basisregel darf die Leiste nicht mehr treffen
+        self.assertNotIn(".shell fieldset.crit{border:1px", page)
+
+    def test_each_field_is_a_row_with_the_input_on_the_right(self):
+        page = self._page()
+        self.assertIn(".shell fieldset.crit>label{display:grid;"
+                      "grid-template-columns:minmax(0,1fr) 84px;"
+                      "align-items:center;gap:8px;margin:5px 0}", page)
+        self.assertIn(".shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;"
+                      "box-sizing:border-box;text-align:right;"
+                      "font-variant-numeric:tabular-nums;padding:6px 10px}", page)
+        # ohne border-box ist das Feld 84 + 22 = 106 px breit und laeuft bei
+        # 1024 px um 6 px aus dem Fenster (gemessen)
+        self.assertIn(".shell form>input,.shell form>select{box-sizing:border-box}", page)
+
+    def test_the_warning_line_spans_the_whole_row(self):
+        # die Warnung am Alter-Feld steht in der Beschriftungszeile; ohne
+        # Zeilenspanne landet sie in der schmalen linken Spalte und bricht um
+        page = self._page()
+        self.assertIn(".shell fieldset.crit>label>small{grid-column:1/-1", page)
+
+    def test_the_checkbox_row_stays_left_aligned(self):
+        # "Alter-Grenze aus" ist kein Zahlenfeld und darf nicht in die
+        # rechte Spalte rutschen
+        page = self._page()
+        self.assertIn(".shell fieldset.crit>label:has(input[type=checkbox]){"
+                      "grid-template-columns:auto minmax(0,1fr);justify-items:start}", page)
+
+    def test_the_rail_is_titled_instrument(self):
+        page = self._page()
+        self.assertIn('<h2 class="rail-title">Instrument</h2>', page)
+        self.assertLess(page.index('<h2 class="rail-title">'),
+                        page.index('name="ticker"'))
+
+    def test_every_number_field_sits_inside_its_label(self):
+        # die Regel greift ueber >label: nur so wird die Beschriftung zur
+        # linken und das Feld zur rechten Spalte. Ein Feld ausserhalb seines
+        # <label> faellt aus dem Raster - genau davor schuetzt diese Pruefung.
+        page = self._page()
+        form = page[page.index("<form"):page.index("</form>")]
+        felder = re.findall(r'<input type="number"[^>]*>', form)
+        self.assertEqual(len(felder), 14)
+        im_label = re.findall(r"<label>(?:(?!</label>).)*?<input type=\"number\"", form, re.S)
+        self.assertEqual(len(im_label), 14)
 
 
 if __name__ == "__main__":
