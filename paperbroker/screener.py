@@ -479,7 +479,6 @@ class OptionScreener:
 # would read: long the HIGHER strike, breakeven = short strike - debit.
 # ---------------------------------------------------------------------- #
 
-LEG_MIN_OI = 500      # per-leg open-interest floor (same value the screener uses)
 
 
 @dataclass
@@ -583,45 +582,75 @@ def form_vertical_pairs(chain, option_type="call"):
     return pairs
 
 
-def leg_drop_reason(leg):
-    """First rule that rejects ONE leg, in rule order.
+def leg_drop_reason(leg, criteria, now_fn=None):
+    """First reason the SINGLE-OPTION chain rejects this leg, with the leg named.
 
-    One reason per pair, not a list - the reader sees the same shape the
-    single-option drop list already uses ("OI 7 < 500").
+    D7: the spread list and the option list above it must never disagree about
+    the same contract. So the leg runs through exactly the chain screen() runs,
+    in exactly its order, and is reported with the first reason that chain
+    produces. Before D7 this function had fixed rules of its own (OI 500, IV > 0)
+    and ignored the form entirely.
+
+    One reason per leg, not a list - the reader sees the shape the single-option
+    drop list already uses ("strike 270.0 call: OI 40 < 500").
     """
-    if not (leg.bid and leg.ask and leg.bid > 0 and leg.ask > 0):
-        return f"strike {leg.asset.strike} {leg.asset.option_type}: kein Geld-/Briefkurs"
-    oi = leg.open_interest
-    if oi is None:
-        return f"strike {leg.asset.strike} {leg.asset.option_type}: OI fehlt"
-    if oi < LEG_MIN_OI:
-        return f"strike {leg.asset.strike} {leg.asset.option_type}: OI {oi} < {LEG_MIN_OI}"
-    if leg.iv is None:
-        return f"strike {leg.asset.strike} {leg.asset.option_type}: iv fehlt"
-    if not (leg.iv and leg.iv > 0):
-        return f"strike {leg.asset.strike} {leg.asset.option_type}: iv {leg.iv}"
-    return None
+    _kept, dropped = screen([leg], criteria, now_fn=now_fn)
+    if not dropped:
+        return None
+    return f"strike {leg.asset.strike} {leg.asset.option_type}: {dropped[0][1]}"
 
 
-def vertical_spreads(chain, option_type="call"):
-    """(kept pairs, dropped pairs with reason).
+def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
+    """(kept pairs, dropped pairs with reason) under the SAME criteria as the list.
 
-    Pairs first, rules afterwards: filtering the legs before pairing would
-    break strike adjacency and change the result. Measured on the owning
-    fixture: pairs-first gives 4 pairs / 1 kept / 3 dropped, filter-first
-    gives 3 pairs / 1 kept / 2 dropped.
+    D7: the spread list used to run fixed leg rules of its own (both sides
+    quoted, OI >= 500, IV > 0) and ignored the form, so a user could read a
+    spread as the result of filters it never passed. The list and this section
+    are now filtered by one rule set, produced in this one place so the page and
+    the JSON cannot drift apart.
+
+    Pairs first, rules afterwards: filtering the legs before pairing would break
+    strike adjacency and change the result. Measured on the owning fixture:
+    pairs-first gives 4 pairs / 1 kept / 3 dropped, filter-first gives 3 pairs /
+    1 kept / 2 dropped.
+
+    The maturity window is a gate for the WHOLE section: both legs always carry
+    the same expiration, and this function is called per (underlying, expiry), so
+    an expiry outside the window must leave the section empty - and say why.
     """
     kept, dropped = [], []
+    # The maturity window is a gate for the WHOLE section: both legs of a pair
+    # always carry the same expiration. It is applied per quote (the field
+    # filter_dte reads), so a chain carrying several expiries is handled too -
+    # only quotes inside the window take part in pairing.
+    if criteria.dte_min is not None or criteria.dte_max is not None:
+        gefiltert = [q for q in chain or []
+                     if getattr(q, "days_to_expiration", None) is not None
+                     and (criteria.dte_min is None
+                          or q.days_to_expiration >= criteria.dte_min)
+                     and (criteria.dte_max is None
+                          or q.days_to_expiration <= criteria.dte_max)]
+        if (chain or []) and not gefiltert:
+            tage = sorted({q.days_to_expiration for q in chain
+                           if getattr(q, "days_to_expiration", None) is not None})
+            return [], [(None, f"Verfall: Laufzeit {tage} Tage außerhalb "
+                              f"[{criteria.dte_min}, {criteria.dte_max}]")]
+        chain = gefiltert
     for pair in form_vertical_pairs(chain, option_type=option_type):
-        reason = leg_drop_reason(pair.long) or leg_drop_reason(pair.short)
-        if reason is None and pair.net_debit <= 0:
-            # PAIR-level rule (both legs are quoted by now): a debit at or
-            # below zero means the higher strike's bid reaches the lower
-            # strike's ask. That is an incoherent quote pair, not an
-            # opportunity - and it would print a profit ABOVE the width.
-            # Measured on four live chains (2026-10-10): 0 of 560 cleanly
-            # quoted call pairs, so the rule is a guard, not a filter.
-            reason = f"Debit {pair.net_debit} <= 0"
+        if pair.net_debit <= 0 or pair.net_debit >= pair.strike_width:
+            # PAIR-level rule (both legs are quoted by now). Debit <= 0 means the
+            # higher strike's bid reaches the lower strike's ask - an incoherent
+            # quote pair. Debit >= width means the spread cannot make money at
+            # expiry at all (measured live: 6 of 54 SPY November spreads, the
+            # review's 768/769 among them): its break-even would sit ABOVE the
+            # upper strike, outside the payoff range, and a "distance to
+            # break-even" built from it is meaningless. Such a construction is
+            # not a result.
+            dropped.append((pair, f"Debit {pair.net_debit} außerhalb "
+                                  f"(0, {pair.strike_width}) - kein Gewinn möglich"))
+            continue
+        reason = (leg_drop_reason(pair.long, criteria, now_fn)
+                  or leg_drop_reason(pair.short, criteria, now_fn))
         if reason is None:
             kept.append(pair)
         else:

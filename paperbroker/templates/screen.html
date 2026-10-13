@@ -170,8 +170,9 @@
     </div>
     {% if verticals %}
       <h2>Vertikale Call-Spreads</h2>
-      <p class="note">Rohe Kette, eigene Bein-Regeln (beide Seiten gestellt, OI &ge; 500, IV &gt; 0) -
-        nicht dieselben Regeln wie die Liste oben. Debit = Kauf zum Ask, Verkauf zum Bid.</p>
+      <p class="note">Dieselben Filter wie die Liste oben, auf beide Beine angewandt - ein
+        Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer. Debit = Kauf zum Ask,
+        Verkauf zum Bid.</p>
       <table>
         <thead><tr>
           <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite</th><th>Hinweis</th>
