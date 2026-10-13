@@ -11,8 +11,17 @@
     .badge{padding:2px 10px;border-radius:999px;font-size:.8rem;border:1px solid #2c3650}
     .lamp{width:14px;height:14px;border-radius:50%;display:inline-block;vertical-align:middle}
     .green{background:#2fbf71}.yellow{background:#e6b93c}.red{background:#e0503c}.none{background:#5a6479}
-    main{padding:16px;max-width:1100px;margin:0 auto}
-    form{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px}
+    main{padding:16px;max-width:1160px;margin:0 auto}
+    .shell{display:grid;grid-template-columns:272px minmax(0,1fr);gap:24px;align-items:start}
+    .results{min-width:0;display:flex;flex-direction:column;gap:16px}
+    .lede{font-size:1.25rem;font-weight:600;margin:0}
+    .lede span{color:#2fbf71;font-variant-numeric:tabular-nums}
+    @media (max-width:1180px){.shell{grid-template-columns:minmax(0,1fr)}}
+    form{display:grid;grid-template-columns:1fr 1fr;gap:12px 8px;margin:0}
+    form>input,form>select{width:100%;min-width:0}
+    form>button,form>fieldset,form>span{grid-column:1/-1}
+    .shell fieldset.crit{grid-template-columns:minmax(0,1fr)}
+    .shell fieldset.crit label{flex-wrap:wrap;margin:4px 0}
     input,button{font-size:1rem;padding:9px 12px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit}
     button{background:#2c6bed;border-color:#2c6bed;font-weight:600}
     button:disabled{opacity:.55}
@@ -28,7 +37,7 @@
     .score{font-weight:700;color:#2fbf71}
     .mismatch{color:#e6b93c}
     .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:.9rem;color:#9aa3b5;margin-bottom:10px}
-    .dropped-summary{background:#1a2233;border:1px solid #2c3650;border-radius:8px;padding:10px 12px;margin-bottom:12px}
+
     .dropped-summary ul{margin:6px 0 0;padding-left:18px;font-size:.9rem}
     .dropped-summary li{margin:2px 0}
     .drop-count{color:#e6b93c;font-weight:700}
@@ -41,6 +50,11 @@
     fieldset.crit>span>label{display:inline-flex;align-items:center;gap:4px;margin:0}
     small.warn-min{color:#e6b93c;font-size:.78rem}
     fieldset.crit input[type=number]{width:5.5rem;font-size:.95rem;padding:6px 8px}
+    .dropped-summary{background:none;border:0;border-top:1px solid #232b3b;border-radius:0;padding:0;margin:0}
+    .dropped-summary summary{cursor:pointer;padding:10px 0;font-size:.85rem;color:#9aa3b5;list-style:none}
+    .dropped-summary summary::-webkit-details-marker{display:none}
+    .dropped-summary summary::before{content:"\25B8 ";color:#6b7689}
+    .dropped-summary[open] summary::before{content:"\25BE "}
   </style>
 </head>
 <body>
@@ -69,6 +83,7 @@
 
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
 
+  <div class="shell">
   <form method="get" action="/">
     <input name="ticker" id="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required autocomplete="off">
     <select name="expiration" id="expiration" {% if not dates %}disabled{% endif %}>
@@ -120,8 +135,13 @@
       <label>Gewicht IV <input type="number" step="0.1" name="weight_iv" min="0" value="{{ criteria.weight_iv if criteria.weight_iv is not none else '' }}"></label>
     </fieldset>
   </form>
-
+  <div class="results">
   {% if results is not none %}
+    {% if verticals %}
+      {% set beste = namespace(wert=None) %}
+      {% for v, rendite, abstand in verticals %}{% if rendite is not none and (beste.wert is none or rendite > beste.wert) %}{% set beste.wert = rendite %}{% endif %}{% endfor %}
+      <p class="lede">{{ verticals|length }} Spreads{% if beste.wert is not none %}, bester {{ '%.2f'|format(beste.wert) }} % Rendite{% endif %}</p>
+    {% endif %}
     <div class="stats">
       <span>Kette: {{ results|length + dropped_count }}</span>
       <span>Kandidaten: <b>{{ results|length }}</b></span>
@@ -129,38 +149,6 @@
       <span>Verfall {{ expiration }}</span>
       {% if dte is not none %}<span>DTE {{ dte }} (Kalendertage)</span>{% endif %}
     </div>
-    {% if dropped_reasons %}
-      <div class="dropped-summary">
-        <p class="note">Warum gestrichen? Je Kontrakt zählt der erste zutreffende Filter.</p>
-        <ul class="dropped-reasons">
-          {% for g in dropped_reasons -%}
-          <li class="drop-reason">{{ g.reason }} <span class="drop-count">{{ g.count }}</span></li>
-          {% endfor -%}
-        </ul>
-      </div>
-    {% endif %}
-    {% if results %}
-      <table>
-        <thead><tr>
-          <th>Kontrakt</th><th>Bid</th><th>Ask</th><th>Spread %</th><th>IV %</th><th>OI</th><th>Vol</th><th>Δ×100</th><th>Score</th>
-        </tr></thead>
-        <tbody>
-        {% for r in results %}
-          <tr>
-            <td title="{{ r.reasons|join('; ') }}">{{ r.quote.asset.symbol }}</td>
-            <td>{{ r.quote.bid }}</td><td>{{ r.quote.ask }}</td>
-            <td>{{ '%.1f'|format(r.spread_pct) }}</td>
-            <td>{{ '%.0f'|format(r.quote.iv) }}</td>
-            <td>{{ r.quote.open_interest }}</td><td>{{ r.quote.volume }}</td>
-            <td>{% if r.quote.delta is none %}–{% else %}{{ '%.0f'|format(r.quote.delta) }}{% endif %}</td>
-            <td class="score">{{ '%.2f'|format(r.score) }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table>
-    {% else %}
-      <p class="note">Keine Kontrakte haben die Kriterien bestanden.</p>
-    {% endif %}
     {% if verticals %}
       <h2>Vertikale Call-Spreads</h2>
       <p class="note">Rohe Kette, eigene Bein-Regeln (beide Seiten gestellt, OI &ge; 500, IV &gt; 0) -
@@ -186,21 +174,55 @@
         {% endfor %}
       </table>
     {% endif %}
+    {% if results %}
+      <table>
+        <thead><tr>
+          <th>Kontrakt</th><th>Bid</th><th>Ask</th><th>Spread %</th><th>IV %</th><th>OI</th><th>Vol</th><th>Δ×100</th><th>Score</th>
+        </tr></thead>
+        <tbody>
+        {% for r in results %}
+          <tr>
+            <td title="{{ r.reasons|join('; ') }}">{{ r.quote.asset.symbol }}</td>
+            <td>{{ r.quote.bid }}</td><td>{{ r.quote.ask }}</td>
+            <td>{{ '%.1f'|format(r.spread_pct) }}</td>
+            <td>{{ '%.0f'|format(r.quote.iv) }}</td>
+            <td>{{ r.quote.open_interest }}</td><td>{{ r.quote.volume }}</td>
+            <td>{% if r.quote.delta is none %}–{% else %}{{ '%.0f'|format(r.quote.delta) }}{% endif %}</td>
+            <td class="score">{{ '%.2f'|format(r.score) }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="note">Keine Kontrakte haben die Kriterien bestanden.</p>
+    {% endif %}
+    {% if dropped_reasons %}
+      <details class="dropped-summary">
+        <summary>Warum gestrichen? Je Kontrakt zählt der erste zutreffende Filter.</summary>
+        <ul class="dropped-reasons">
+          {% for g in dropped_reasons -%}
+          <li class="drop-reason">{{ g.reason }} <span class="drop-count">{{ g.count }}</span></li>
+          {% endfor -%}
+        </ul>
+      </details>
+    {% endif %}
     {% if vertical_drops %}
-      <div class="dropped-summary">
-        <p class="note">Warum kein Spread? Je Paar zählt das erste Bein, das eine Regel verletzt.</p>
+      <details class="dropped-summary">
+        <summary>Warum kein Spread? Je Paar zählt das erste Bein, das eine Regel verletzt.</summary>
         <ul class="dropped-reasons vertical-drops">
           {% for g in vertical_drops -%}
           <li class="vertical-reason">{{ g.reason }} <span class="vertical-count">{{ g.count }}</span></li>
           {% endfor -%}
         </ul>
-      </div>
+      </details>
     {% endif %}
   {% elif not error and ticker %}
     <p class="note">Scan laufen ... (falls dies steht, war die Ergebnisliste leer)</p>
   {% else %}
     <p class="note">Ticker eingeben - Verfallsdaten laden automatisch. Danach Verfall wählen und "Scan" drücken.</p>
   {% endif %}
+  </div>
+  </div>
 </main>
 
 <script>

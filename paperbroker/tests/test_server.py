@@ -577,7 +577,9 @@ class TestDropReasons(unittest.TestCase):
         self.assertIn("Datenalter:", html_page)          # the header stays
         # match the ELEMENT, not the bare class: the same name also lives
         # in the <style> block, so a substring check would always pass
-        self.assertNotIn('<div class="dropped-summary">', html_page)
+        # D2: der Ausschuss-Kasten ist ein <details> geworden - das ELEMENT
+        # pruefen, nicht den blanken Klassennamen (der steht auch im <style>)
+        self.assertNotIn('<details class="dropped-summary"', html_page)
         self.assertNotIn('<li class="drop-reason">', html_page)
 
     @staticmethod
@@ -1603,8 +1605,13 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     @staticmethod
     def _spread_rows(page):
-        """Nur die Spread-Tabelle: die zweite <table> der Seite."""
-        tabelle = re.findall(r"<table>(.*?)</table>", page, re.S)[-1]
+        """Nur die Spread-Tabelle - am KOPF erkannt, nicht an der Position.
+
+        Seit D2 stehen die Spreads VOR den Kontrakten; ein [-1] wie zuvor
+        griffe jetzt die Kontrakttabelle.
+        """
+        tabelle = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
+                    if "<th>Spread</th>" in t][0]
         zeilen = re.findall(r"<tr>(.*?)</tr>", tabelle, re.S)
         return [[re.sub(r"<[^>]+>", "", c).strip() for c in
                  re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)]
@@ -1866,7 +1873,9 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         page = self._page()
         regel = re.search(r"main\{([^}]*)\}", page).group(1)
         breite = int(re.search(r"max-width:(\d+)px", regel).group(1))
-        self.assertEqual(breite, 1100)
+        # D2: 1160 px, weil die Filterleiste 272 px und der Abstand 24 px
+        # kosten (1160 - 272 - 24 = 864 >= 837)
+        self.assertEqual(breite, 1160)
         self.assertGreaterEqual(breite, 869)
         self.assertNotIn("max-width:760px", page)
 
@@ -1879,12 +1888,19 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # zurueck und waere optisch der alte Zustand
         self.assertIn("fieldset.crit{display:grid", page)
         self.assertIn("grid-template-columns:repeat(auto-fill,minmax(230px,1fr))", page)
-        self.assertNotIn("form{display:grid", page)
+        # D2: das <form> traegt jetzt selbst ein Raster - fuer die Leiste
+        # (Instrument oben, Filter darunter). Die D0-Gefahr war, dass ein
+        # <fieldset> dadurch zu EINER Spalte wird; dagegen steht jetzt, dass
+        # jedes <fieldset> ueber die ganze Formularbreite spannt.
+        self.assertIn("form>button,form>fieldset,form>span{grid-column:1/-1}", page)
         # ohne diese Angabe bleiben die Kaesten Flex-Elemente des <form> und
         # schrumpfen (gemessen: 206-345 px statt voller Breite)
         self.assertEqual(page.count("flex:1 1 100%"), 1)
         # grid-column steht im CSS, nicht am Element: genau die zwei Regeln
-        self.assertEqual(re.findall(r"grid-column:([^;}]+)", page), ["1/-1", "1/-1"])
+        # D2: die dritte Regel setzt die Felder der Leiste ueber die ganze
+        # Formularbreite (form>button,form>fieldset,form>span)
+        self.assertEqual(re.findall(r"grid-column:([^;}]+)", page),
+                         ["1/-1", "1/-1", "1/-1"])
 
     def test_the_fields_are_grouped_by_the_question_they_answer(self):
         # Gleichheit, nicht Teilzeichenkette: Reihenfolge der Gruppen UND der
@@ -1959,12 +1975,139 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         self.assertEqual(len(re.findall(r"<tr[^>]*>", page)), page.count("<tr>"))
         # in der Spread-Tabelle trifft das Zellmuster der Bestandstests JEDE
         # Zelle (11 je Zeile) - dort ist kein <td class=...> erlaubt
-        spread = re.findall(r"<table>(.*?)</table>", page, re.S)[-1]
+        spread = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
+                  if "<th>Spread</th>" in t][0]
         zeilen = re.findall(r"<tr>(.*?)</tr>", spread, re.S)[1:]
         self.assertEqual(len(zeilen), 4)
         for zeile in zeilen:
             self.assertEqual(
                 len(re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)), 11)
+
+
+class TheFiltersStandBesideTheResult(unittest.TestCase):
+    """ausD2 (D2): die Filter liegen in einer linken Leiste, das Ergebnis hat die
+    Buehne - Spreads vor Kontrakten, die beiden Ausschuesse zugeklappt darunter.
+
+    Messung vor dem Bau (docs/221_ausD2_phase1_bis3.md): der erste Ergebnisblock
+    stand bei y=871 von 1446 px, weil das Formular (558 px) und der Ausschuss-
+    Kasten "Warum gestrichen?" (162 px) davor lagen. Der zweite Ausschuss-Kasten
+    stand hinter dem Ergebnis - die Erklaerung lag also einmal davor und einmal
+    dahinter.
+    """
+
+    @staticmethod
+    def _app(quotes=None):
+        # make() + make_verticals(): beide Tabellen UND beide Ausschuss-Bloecke
+        # brauchen die volle Kette. Gemessen: make() allein liefert kein
+        # <tbody> (die Kontrakttabelle fehlt), make_verticals() allein liefert
+        # keine "Warum gestrichen?"-Begruendungen.
+        adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
+        # die Fixture liegt auf ihrem eigenen Verfall; die Seite nimmt nur ein
+        # Datum an, das die Kette wirklich listet
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _page(self, params=None, quotes=None):
+        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query.update(params or {})
+        return self._app(quotes).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    @staticmethod
+    def _spread_tabelle(page):
+        """Die Spread-Tabelle - am KOPF erkannt, nicht an der Position.
+
+        Seit D2 stehen die Spreads VOR den Kontrakten; ein [-1] wie zuvor griffe
+        jetzt die Kontrakttabelle.
+        """
+        return [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
+                if "<th>Spread</th>" in t][0]
+
+    @staticmethod
+    def _erste_spread_zeile(page):
+        tabelle = TheFiltersStandBesideTheResult._spread_tabelle(page)
+        zeile = re.findall(r"<tr>(.*?)</tr>", tabelle, re.S)[1]
+        return re.sub(r"<[^>]+>", "", zeile).strip().split(" ")[0]
+
+    # --- die zwei Spalten ---
+
+    def test_the_filters_stand_beside_the_result(self):
+        page = self._page()
+        self.assertIn("max-width:1160px", page)
+        self.assertIn(".shell{display:grid;grid-template-columns:272px minmax(0,1fr)", page)
+        self.assertIn("@media (max-width:1180px){.shell{grid-template-columns:minmax(0,1fr)}}", page)
+        self.assertLess(page.index('<div class="shell">'), page.index("<form"))
+        self.assertLess(page.index("<form"), page.index('<div class="results">'))
+
+    def test_the_page_notes_stay_outside_the_shell(self):
+        # Hinweis, Warnung und Fehlermeldung gehoeren ueber beide Spalten, nicht
+        # in die Ergebnisspalte
+        page = self._page()
+        self.assertIn('<p class="note">', page)
+        self.assertLess(page.index('<p class="note">'), page.index('<div class="shell">'))
+
+    # --- die Reihenfolge im Ergebnis ---
+
+    def test_the_spreads_come_before_the_contracts(self):
+        page = self._page()
+        self.assertLess(page.index("<th>Spread</th>"), page.index("<th>Kontrakt</th>"))
+        self.assertLess(page.index("<th>Kontrakt</th>"),
+                        page.index('<details class="dropped-summary">'))
+
+    def test_the_contracts_table_keeps_the_only_tbody(self):
+        page = self._page()
+        self.assertEqual(page.count("<tbody>"), 1)
+        kontrakte = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
+                     if "<th>Kontrakt</th>" in t][0]
+        self.assertIn("<tbody>", kontrakte)
+        self.assertNotIn("<tbody>", self._spread_tabelle(page))
+
+    # --- die Fuehrzeile ---
+
+    def test_the_lead_line_names_the_best_return(self):
+        page = self._page()
+        self.assertIn('<p class="lede">4 Spreads, bester 257.14 % Rendite</p>', page)
+        self.assertLess(page.index('class="lede"'), page.index('<div class="stats">'))
+
+    def test_the_lead_line_is_the_maximum_and_not_the_first_row(self):
+        # sortiert der Nutzer nach BE-Abstand, steht ein anderer Spread oben -
+        # die Fuehrzeile darf sich nicht mitdrehen
+        nach_rendite = self._page()
+        nach_abstand = self._page({"sort": "be_asc"})
+        self.assertEqual(self._erste_spread_zeile(nach_rendite), "AMZN")
+        self.assertEqual(self._erste_spread_zeile(nach_abstand), "AAPL")
+        for page in (nach_rendite, nach_abstand):
+            self.assertIn("4 Spreads, bester 257.14 % Rendite", page)
+
+    def test_without_spreads_there_is_no_lead_line(self):
+        # ein einzelner Kontrakt hat keinen Nachbarn -> keine Spreads
+        einzeln = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
+                         oi=8000, volume=1200, dte=10)]
+        page = self._page(quotes=einzeln)
+        self.assertNotIn('class="lede"', page)
+
+    # --- die Ausschuesse ---
+
+    def test_the_rejected_blocks_are_collapsed_and_named(self):
+        page = self._page()
+        self.assertEqual(page.count('<details class="dropped-summary">'), 2)
+        # zugeklappt: kein open-Attribut (ein ' open' als Textsuche waere blind)
+        self.assertIsNone(re.search(r'<details class="dropped-summary"[^>]*\bopen\b', page))
+        self.assertIn("<summary>Warum gestrichen?", page)
+        self.assertIn("<summary>Warum kein Spread?", page)
+
+    def test_the_rejected_items_are_still_in_the_document(self):
+        # zugeklappt heisst nicht verschwunden: die Begruendungen muessen im HTML
+        # stehen, damit die Seite sie ohne Server-Runde aufklappen kann
+        page = self._page()
+        self.assertIn('<li class="drop-reason">', page)
+        self.assertIn('class="vertical-reason"', page)
+        self.assertLess(page.index('<details class="dropped-summary">'),
+                        page.index('<li class="drop-reason">'))
 
 
 if __name__ == "__main__":
