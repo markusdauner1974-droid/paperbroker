@@ -1943,9 +1943,12 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
 
     def test_the_labels_carry_their_unit(self):
         page = self._page()
+        # D3: der Standardvermerk steht seit D3 zwischen Beschriftung und Feld.
+        # Die Einheit muss weiterhin am ANFANG der Beschriftung stehen; dass
+        # unmittelbar das Feld folgt, sichert TheDefaultsAreVisible zu.
         for text in ("DTE von (Tage)", "DTE bis (Tage)", "Alter max (min)",
                      "Spread max (%)", "Spread max ($)", "IV min (%)", "IV max (%)"):
-            self.assertIn("<label>" + text + " <input", page, text)
+            self.assertIn("<label>" + text, page, text)
         for alt in ("Spread max %", "Spread max $", "Alter max min", "IV min %", "IV max %"):
             self.assertNotIn("<label>" + alt + " <input", page, alt)
         # die zwei in Slice D0 festgenagelten Texte bleiben Wort fuer Wort
@@ -2285,6 +2288,121 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
             self.assertGreaterEqual(
                 round(self._kontrast(farbe, self.SEITE), 2), 4.5,
                 f"Schriftfarbe {farbe} traegt nur {self._kontrast(farbe, self.SEITE):.2f}:1")
+
+
+class TheDefaultsAreVisible(unittest.TestCase):
+    """ausD3 (D3): jedes Feld sagt selbst, was der Standard ist.
+
+    Gemessen vor dem Bau: 10 der 14 Zahlenfelder sind vorbelegt (aus
+    ScreenerCriteria), 4 sind leer - und leer heisst "Filter abgeschaltet",
+    NICHT "Standard". Die Seite nannte den Standard bis hierher nirgends; das
+    fruehere "(leer = Standard)" war in D1 als gemessen falsch entfernt worden.
+
+    Der Vermerk steht als reiner TEXT im <label>, direkt vor dem <input>.
+    Gemessen: als eigenes Element verschiebt er die rechte Kante der Felder
+    (319 -> 227 px) und macht die Leiste 689 px hoeher; als Text aendert er
+    nichts (rechte Kante 319, Abweichung 0 px).
+    """
+
+    STANDARD = {"max_spread_pct": "10.0", "max_spread_abs": "0.1", "min_oi": "500",
+                "min_volume": "0", "dte_min": "7", "dte_max": "45",
+                "max_quote_age_min": "30", "weight_spread": "0.5", "weight_oi": "0.3",
+                "weight_iv": "0.2"}
+    AUS = ("min_bid_size", "min_ask_size", "iv_min", "iv_max")
+    AUS_TEXT = "Standard aus (leer = Filter aus)"
+
+    @staticmethod
+    def _app(quotes=None):
+        adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
+        adapter.expirations = ["2026-01-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _page(self, params=None, quotes=None):
+        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query.update(params or {})
+        return self._app(quotes).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
+    # --- Lesehilfen: das <label> und der Wert EINES Feldes ---------------
+    @staticmethod
+    def _label(page, feld):
+        for treffer in re.finditer(r"<label>(.*?)</label>", page, re.S):
+            if f'name="{feld}"' in treffer.group(1):
+                return treffer.group(1)
+        raise AssertionError(f"kein <label> fuer {feld}")
+
+    @staticmethod
+    def _wert(page, feld):
+        m = re.search(f'name="{feld}"[^>]*?value="([^"]*)"', page)
+        return m.group(1) if m else None
+
+    def _alle(self):
+        return list(self.STANDARD) + list(self.AUS)
+
+    # --- die Zusicherungen ----------------------------------------------
+    def test_every_prefilled_field_shows_the_default_of_the_code(self):
+        """Der Wahrheitsbeweis: der Standard wird AUS DEM CODE gelesen.
+
+        Nicht im HTML festgenagelt - wer den Standard in ScreenerCriteria
+        aendert, ohne das Formular nachzuziehen, faellt hier durch.
+        """
+        page = self._page()
+        std = ScreenerCriteria()
+        for feld in self.STANDARD:
+            self.assertEqual(self._wert(page, feld), str(getattr(std, feld)), feld)
+
+    def test_every_prefilled_field_names_its_default(self):
+        page = self._page()
+        for feld, wert in self.STANDARD.items():
+            label = self._label(page, feld)
+            self.assertIn(f"Standard {wert}", label, feld)
+            self.assertEqual(self._wert(page, feld), wert, feld)
+
+    def test_the_empty_fields_say_the_filter_is_off(self):
+        # die D1-Falle: leer ist "aus", nicht "Standard"
+        page = self._page()
+        for feld in self.AUS:
+            label = self._label(page, feld)
+            self.assertIn(self.AUS_TEXT, label, feld)
+            self.assertEqual(self._wert(page, feld), "", feld)
+
+    def test_all_fourteen_fields_carry_a_note(self):
+        page = self._page()
+        form = page[page.index("<form"):page.index("</form>")]
+        self.assertEqual(len(re.findall(r"\u00b7\s?Standard", form)), 14)
+
+    def test_the_reset_link_keeps_only_the_instrument(self):
+        # der Link darf kein Filter- und kein Sortierparameter tragen
+        page = self._page({"min_oi": "5000", "weight_spread": "0.9", "sort": "be_asc"})
+        m = re.search(r'<a class="reset" href="([^"]+)"', page)
+        self.assertIsNotNone(m, "kein Ruecksetz-Link")
+        ziel = html.unescape(m.group(1))
+        self.assertIn("ticker=AAPL", ziel)
+        self.assertIn("expiration=2026-01-16", ziel)
+        for verboten in ("min_oi", "max_spread_pct", "weight_spread", "iv_min", "sort"):
+            self.assertNotIn(verboten, ziel)
+
+    def test_the_note_keeps_the_default_after_a_change(self):
+        # der Vermerk nennt den STANDARD, nicht den eingetippten Wert
+        page = self._page({"max_spread_pct": "1000"})
+        # der Wert hat sich geaendert (gerendert wird "1000.0"), der Vermerk nennt
+        # weiterhin den Standard - er zeigt NICHT den eingetippten Wert
+        self.assertNotEqual(self._wert(page, "max_spread_pct"), "10.0")
+        self.assertIn("1000", self._wert(page, "max_spread_pct"))
+        self.assertIn("Standard 10.0", self._label(page, "max_spread_pct"))
+
+    def test_the_note_sits_inside_the_label_before_the_input(self):
+        # das Raster aus D2b haengt daran: Text und Feld sind EIN Rasterfeld
+        page = self._page()
+        for feld in self._alle():
+            label = self._label(page, feld)
+            self.assertIn("<input", label, feld)
+            vor_dem_feld = label[:label.index("<input")]
+            self.assertIn("Standard", vor_dem_feld, feld)
 
 
 if __name__ == "__main__":
