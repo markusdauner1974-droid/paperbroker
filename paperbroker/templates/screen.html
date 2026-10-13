@@ -6,6 +6,9 @@
   <title>Options-Screener</title>
   <style>
     body{font-family:-apple-system,system-ui,sans-serif;margin:0;background:#0f1420;color:#e6e9ef}
+    /* D2c: ohne eigene Regel nimmt der Browser sein Blau (#0000ee) - auf
+       dunklem Grund 1,96:1. Gemessen im Browser, 1280 px. */
+    a,a:visited{color:#8ab4ff}
     header{padding:14px 18px;border-bottom:1px solid #232b3b;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
     h1{font-size:1.05rem;margin:0}
     .badge{padding:2px 10px;border-radius:999px;font-size:.8rem;border:1px solid #2c3650}
@@ -33,10 +36,10 @@
     .shell fieldset.crit>label:has(input[type=checkbox]){grid-template-columns:auto minmax(0,1fr);justify-items:start}
     .shell fieldset.crit>label>input[type=checkbox]{width:16px;height:16px}
     form>h2.rail-title{grid-column:1/-1;font-size:.8rem;font-weight:600;letter-spacing:.06em;color:#9aa3b5;margin:0 0 8px}
-    input,button{font-size:1rem;padding:9px 12px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit}
-    button{background:#2c6bed;border-color:#2c6bed;font-weight:600}
+    input,button{font-size:1rem;padding:9px 12px;border-radius:8px;border:1px solid #5b6f99;background:#1a2233;color:inherit}
+    button{background:#2c6bed;border-color:#2c6bed;color:#fff;font-weight:600}
     button:disabled{opacity:.55}
-    select{font-size:1rem;padding:9px;border-radius:8px;border:1px solid #2c3650;background:#1a2233;color:inherit;max-width:220px}
+    select{font-size:1rem;padding:9px;border-radius:8px;border:1px solid #5b6f99;background:#1a2233;color:inherit;max-width:220px}
     select:disabled{opacity:.5}
     .note{font-size:.85rem;color:#9aa3b5;margin:8px 0}
     .err{background:#3a1f1f;border:1px solid #7c3a33;padding:10px 12px;border-radius:8px;margin-bottom:12px}
@@ -64,7 +67,7 @@
     .dropped-summary{background:none;border:0;border-top:1px solid #232b3b;border-radius:0;padding:0;margin:0}
     .dropped-summary summary{cursor:pointer;padding:10px 0;font-size:.85rem;color:#9aa3b5;list-style:none}
     .dropped-summary summary::-webkit-details-marker{display:none}
-    .dropped-summary summary::before{content:"\25B8 ";color:#6b7689}
+    .dropped-summary summary::before{content:"\25B8 ";color:#828da5}
     .dropped-summary[open] summary::before{content:"\25BE "}
   </style>
 </head>
