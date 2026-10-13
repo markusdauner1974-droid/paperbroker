@@ -1,4 +1,4 @@
-# Project status — frozen baseline, 2026-10-12
+# Project status — frozen baseline, 2026-10-13
 
 This is the durable summary of where the project stands. It is written in English because it lives
 in the repository; the detailed German documentation (phase documents and raw measurement evidence)
@@ -11,11 +11,11 @@ The always-current sources are `git log --merges` (history) and the CI page of t
 
 | Item | Value |
 |---|---|
-| `master` | `3b6309b90c2eda880c6fff4163b0495305bb9879` (merge of PR #33) |
-| Test suite | **320 passed** (`pytest paperbroker/tests`) |
+| `master` | `6de055e11292efb7e6c9a1be55d13b4eec675240` (merge of PR #37) |
+| Test suite | **345 passed** (`pytest paperbroker/tests`) |
 | Lint | `ruff` clean, run in the CI form over the tracked files |
 | CI on `master` | **4/4 green** — Lint ruff · Test suite pytest 3.13 · Docker image build · publish |
-| Commits | 169 |
+| Commits | 180 |
 | Runtime dependencies | `arrow`, `requests`, `flask` (`requirements.txt` and `setup.py` agree — pinned by a test) |
 | Open audit findings | **none** |
 
@@ -25,6 +25,10 @@ Everything in this table was measured on the commit above, not estimated.
 
 | PR | Merge commit | What it added |
 |---|---|---|
+| #37 | `6de055e` | Four filter groups in a grid on the fieldset, `main` 1100 px wide, seven labels with units, the sharp zero of the age field named (D1) |
+| #36 | `4b1f976` | German interface in one spelling — the project's first umlauts (D0) |
+| #35 | `bc356df` | Spread list ready to decide: return, break-even distance, plain-text trade, sorting (Slice K) |
+| #34 | `f996862` | Record the end state after slice J |
 | #33 | `3b6309b` | A timestamp after the clock fails closed; the lamp warns instead of reassuring |
 | #32 | `f8f44c6` | Record that every criterion is settable |
 | #31 | `102a940` | Make all eleven remaining criteria settable from the form; the last usability gap |
@@ -61,12 +65,24 @@ Everything in this table was measured on the commit above, not estimated.
 dropped_reasons, verticals, vertical_drops`, plus `chain_skipped` when a chain was fetched. Each
 result carries `symbol, bid, ask, iv, open_interest, volume, delta, score, spread_pct, reasons`.
 
-**Filters — all 17 `ScreenerCriteria` fields are settable**, from the form and from the query string,
-in two groups (PR #31). The ones that change the *selection*: `max_spread_pct`, `max_spread_abs` ($),
-`min_oi`, `min_volume`, `min_bid_size`, `min_ask_size`, `iv_min` (%), `iv_max` (%), `require_oi`,
-`require_volume`, `dte_min`, `dte_max`, `max_quote_age_min`. The ones that change the *ranking*:
-`iv_pref` (high/low) and the three weights `weight_spread`, `weight_oi`, `weight_iv`. `ignore_quote_age=1`
-remains the only way to disable the age guard (`0` is a sharp bound, not "off").
+**Filters — all 17 `ScreenerCriteria` fields are settable**, from the form and from the query string.
+The form shows them in **four groups** (PR #37): *Liquidität* (spread, size, OI, volume, the two
+"required" switches) · *Laufzeit und Frische* (DTE window, quote age, the age switch) ·
+*Volatilität* (IV window, IV preference) · *Bewertung* (the three weights). The groups sit in a CSS
+grid **on `fieldset.crit`**, never on the `<form>`: a grid on the form makes every `<fieldset>` a
+single grid cell, and without `flex:1 1 100%` the fieldsets shrink to their content (measured:
+206–345 px instead of full width). The page is 1100 px wide because the widest table needs 837 px —
+at 760 px the spread table overflowed its container by 77 px and the page scrolled horizontally below
+a 930 px window. Grouping is not cosmetic: before it, the heading `Volumen-Pflicht` was torn in two
+(the text ended one line, its radio buttons started the next, 40 px below the neighbouring group).
+Labels that carry a unit name it (`DTE von (Tage)`, `Alter max (min)`, `Spread max (%)`); units that
+nothing in the code proves (`Kontrakte` for OI/volume, a range for the weights — the validator checks
+`>= 0` only) were deliberately left out. The ones that change the *selection*: `max_spread_pct`,
+`max_spread_abs` ($), `min_oi`, `min_volume`, `min_bid_size`, `min_ask_size`, `iv_min` (%),
+`iv_max` (%), `require_oi`, `require_volume`, `dte_min`, `dte_max`, `max_quote_age_min`. The ones
+that change the *ranking*: `iv_pref` (high/low) and the three weights `weight_spread`, `weight_oi`,
+`weight_iv`. `ignore_quote_age=1` remains the only way to disable the age guard (`0` is a sharp
+bound, not "off") — and the field says so on the page since PR #37.
 
 Three rules the form follows, each one measured: an **empty field keeps the default** (`min_bid_size`
 empty means "off", while `0` means "size at least 0" and drops every quote of size 0); a **switch with a
@@ -100,6 +116,14 @@ whole package directory.
    table does not yet offer DTE, mid, moneyness, sorting or a CSV export.
 2. **sdist behaviour is unverified.** Wheel and install path are measured; a source distribution was
    never built or inspected in this project.
+3. **The spread sort's tie-break key is unpinned.** Slice K left one surviving mutant there: two
+   spreads with exactly equal return keep their chain order, but no test fixes which key decides that.
+4. **The old label margins survived the grid.** `fieldset.crit label` still carries
+   `margin:4px 10px 4px 0` from the inline-flow layout. Inside the grid it costs 8 px per row (the
+   form is 558 px instead of 518 px) and makes the smallest column gap 26 px instead of 16 px.
+   Removing them is a candidate for the next frontend slice (D2), not a defect.
+5. **The legend hint `(leer = Standard)` is gone** (PR #37) because it was measured to be misleading:
+   10 of the 14 number fields are pre-filled. A *correct* default marking is still open (slice D3).
 
 ## How work is done here (unchanged)
 
@@ -122,5 +146,15 @@ whole package directory.
   defect, not the single symptom.
 - Mutants that no test can catch (e.g. a precautionary `[build-system]` block) are reported as
   not-testable rather than covered by a decorative assertion.
+- **A red proof is measured, not assumed, and the expectation is corrected afterwards.** Two of the
+  ten new assertions in PR #37 already hold at the base commit (they pin the field set and the table
+  shape, i.e. exactly what the rebuild can destroy). The red run therefore shows 8 failures, not 10;
+  their effect is proven by **mutants** instead (delete a field, give a `<tr>` an attribute).
+- **The merge watch must read the body file of its own slice.** It resets the PR body before merging;
+  in PR #37 the path was still hard-wired to the previous slice's file, so the body was restored to
+  the wrong text and had to be patched back afterwards. The path is an environment variable now.
+- **A mutant that only changes appearance survives by design.** Deleting the CSS rule of the warning
+  text changes no markup, so no test can catch it — such survivors are named in the PR body as a limit
+  of the method, not hidden.
 - `docs/` stays local (git-excluded): it holds the phase documents and the raw evidence. The durable
   knowledge lives in the shared SilverBullet base under `Projects/paperbroker`.
