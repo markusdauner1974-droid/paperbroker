@@ -714,22 +714,24 @@ class TestCriteriaPanel(unittest.TestCase):
         # error texts are rendered escaped ("&lt;=") - compare the visible text
         page = html.unescape(self._page({"dte_max": "10"},
                                         criteria=ScreenerCriteria(dte_min=20)))
-        self.assertIn("dte_min <= dte_max", page)
+        self.assertIn("dte_min: muss ≤ dte_max sein (ist: 20 > 10).", page)
         self.assertNotIn("Kandidaten:", page)
 
     # --- contradictions and bad values are errors, not silence ---
 
     def test_contradicting_criteria_are_reported(self):
         page = html.unescape(self._page({"dte_min": "45", "dte_max": "7"}))
-        self.assertIn("dte_min <= dte_max", page)
+        self.assertIn("dte_min: muss ≤ dte_max sein (ist: 45 > 7).", page)
         self.assertNotIn("Kandidaten:", page)
         res = self._request({"dte_min": "45", "dte_max": "7"}, path="/api/screen")
         self.assertEqual(res.status_code, 400)
-        self.assertIn("dte_min <= dte_max", res.get_json()["error"])
+        self.assertIn("dte_min: muss ≤ dte_max sein (ist: 45 > 7).",
+                      res.get_json()["error"])
 
     def test_bad_values_are_reported_readably(self):
         for params, needle in (({"min_oi": "abc"}, "keine ganze Zahl"),
-                               ({"min_volume": "-5"}, "min_volume >= 0"),
+                               ({"min_volume": "-5"},
+                                "min_volume: muss ≥ 0 sein (ist: -5)."),
                                ({"max_spread_pct": "nan"}, "endliche Zahl")):
             page = html.unescape(self._page(params))
             self.assertIn(needle, page)
@@ -915,8 +917,10 @@ class TestSettableCriteria(unittest.TestCase):
         self.assertIn("iv_pref", res.get_json()["error"])
 
     def test_contradictory_iv_band_and_negative_weight_are_rejected(self):
-        for params, text in (({"iv_min": "60", "iv_max": "20"}, "iv_min <= iv_max"),
-                             ({"weight_spread": "-1"}, "weight_spread >= 0")):
+        for params, text in (({"iv_min": "60", "iv_max": "20"},
+                              "iv_min: muss ≤ iv_max sein (ist: 60.0 > 20.0)."),
+                             ({"weight_spread": "-1"},
+                              "weight_spread: muss ≥ 0 sein (ist: -1.0).")):
             res = self._app().test_client().get(
                 "/api/screen", query_string={"ticker": "SPY", "expiration": "2026-10-16",
                                              **params})
@@ -1501,10 +1505,26 @@ class TestTrendWiring(unittest.TestCase):
         import unittest.mock as mock
         with mock.patch.object(server_module, "_get_trend_provider", return_value=_BrokenProvider()):
             client = self._client()
-            data = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16").get_json()
+            antwort = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16")
             page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
-        self.assertNotIn("trend", json.dumps(data))
+        # D6: ein Ausfall der Trend-Quelle kostet die Trend-Anmerkung, nie das
+        # Ergebnis. Vor D6 antwortete dieser Aufruf mit HTML/500 - und die alte
+        # Zusicherung war trotzdem grün, weil get_json() für eine HTML-Seite
+        # None liefert. Genau daran ist der Fehler durchgerutscht.
+        self.assertEqual(200, antwort.status_code,
+                         "unterbrochene Trend-Quelle darf keine 500 sein")
+        self.assertEqual("application/json",
+                         antwort.headers["Content-Type"].split(";")[0])
+        data = antwort.get_json()
+        self.assertIn("trend", data, "der Schluessel fehlt ganz")
+        self.assertIsNone(data["trend"], "unterbrochene Quelle muss null melden")
+        self.assertTrue(data["results"],
+                        "kein Ergebnis, obwohl ohne Trend weiter gescreent wird")
         self.assertIn("Trend nicht verfügbar", page)
+        self.assertIn("nicht erreichbar", page,
+                      "die Seite muss die Ursache nennen")
+        self.assertNotIn("Marktdaten-Fehler", page,
+                         "ein Trend-Ausfall ist kein Marktdaten-Fehler")
 
     def test_json_and_page_agree_on_trend_reasons(self):
         import unittest.mock as mock
@@ -1519,6 +1539,12 @@ class TestTrendWiring(unittest.TestCase):
         for reason in json_reasons:
             self.assertIn(reason, page, "Seite und JSON gehen auseinander")
         self.assertIn("steigend", page)
+        # das gesunde Signal muss auch in der Schnittstelle stehen,
+        # sonst faellt nicht auf, wenn sie es verschweigt
+        self.assertIn("trend", data)
+        self.assertEqual("up", data["trend"]["direction"])
+        self.assertEqual("AAPL", data["trend"]["symbol"])
+
 
 
 
@@ -2425,6 +2451,91 @@ class TheDefaultsAreVisible(unittest.TestCase):
             vor_dem_feld = label[:label.index("<input")]
             self.assertIn("Standard", vor_dem_feld, feld)
 
+
+class TestErrorBehaviour(unittest.TestCase):
+    """D6: error text, retained form input, the sort link, escaping.
+
+    Each method is one finding of the external review (2026-10-13), measured
+    before and after the fix.
+    """
+
+    def _client(self):
+        return create_app(quote_adapter=_MockAdapter(make() + make_verticals()),
+                          now_fn=_clock()).test_client()
+
+    def _page(self, query):
+        """Die Seite, entschluesselt - Meldungen enthalten "&gt;".
+
+        Die Maskierungs-Kanarie holt sich die Antwort bewusst roh.
+        """
+        antwort = self._client().get("/?ticker=AAPL&expiration=2026-10-16&" + query)
+        return html.unescape(antwort.get_data(as_text=True))
+
+    @staticmethod
+    def _feld(html_out, name):
+        treffer = re.search(rf'name="{name}"[^>]*value="([^"]*)"', html_out)
+        return None if treffer is None else treffer.group(1)
+
+    @staticmethod
+    def _spread_reihenfolge(html_out):
+        """Die erste Zelle jeder Spread-Zeile, in Seitenreihenfolge."""
+        return re.findall(r'<td title="[^"]+ / [^"]+">([^<]+)</td>', html_out)
+
+    def test_every_violation_is_named_in_german_and_with_its_value(self):
+        page = self._page("min_oi=-5&min_volume=-1")
+        self.assertIn("min_oi: muss ≥ 0 sein (ist: -5).", page)
+        self.assertIn("min_volume: muss ≥ 0 sein (ist: -1).", page)
+        self.assertNotIn("ScreenerCriteria invalid", page)
+
+    def test_the_contradiction_names_both_values(self):
+        page = self._page("dte_min=45&dte_max=7")
+        self.assertIn("dte_min: muss ≤ dte_max sein (ist: 45 > 7).", page)
+
+    def test_the_size_filters_are_checked_like_the_rest(self):
+        # min_bid_size/min_ask_size sind int-Felder - der Parser liefert -3, nicht -3.0
+        self.assertIn("min_bid_size: muss ≥ 0 sein (ist: -3).",
+                      self._page("min_bid_size=-3"))
+
+    def test_the_form_keeps_what_was_typed(self):
+        page = self._page("min_oi=-5&dte_max=30&weight_oi=0.3")
+        self.assertEqual("-5", self._feld(page, "min_oi"))
+        self.assertEqual("30", self._feld(page, "dte_max"))
+        self.assertEqual("0.3", self._feld(page, "weight_oi"))
+
+    def test_a_cleared_field_falls_back_to_its_default(self):
+        # "leer = Standard" - ein geleertes Feld darf nicht leer stehen bleiben,
+        # sonst sucht der Bediener einen Wert, den die Pruefung gar nicht nutzt
+        self.assertEqual("500", self._feld(self._page("min_oi="), "min_oi"))
+        self.assertEqual("7", self._feld(self._page("dte_min="), "dte_min"))
+
+    def test_a_zero_is_kept_and_not_read_as_cleared(self):
+        self.assertEqual("0", self._feld(self._page("min_oi=0"), "min_oi"))
+
+    def test_the_sort_link_does_not_warn_any_more(self):
+        page = self._page("sort=rendite_desc")
+        self.assertNotIn("Unbekannte Parameter", page)
+
+    def test_a_really_unknown_parameter_is_still_named(self):
+        page = self._page("quatsch=1")
+        self.assertIn("Unbekannte Parameter ignoriert: quatsch", page)
+        # die Liste der bedienbaren Parameter muss sort nennen - sonst waere die
+        # Warnung fuer den eigenen Sortierlink nur halb behoben
+        # die Liste der bedienbaren Parameter muss sort nennen - ein blosses
+        # "sort" faende sich auch in den Sortierlinks der Seite
+        self.assertIn("ignore_quote_age, sort", page)
+
+    def test_the_sort_link_still_orders_the_rows(self):
+        nach_rendite = self._spread_reihenfolge(self._page("sort=rendite_desc"))
+        nach_be = self._spread_reihenfolge(self._page("sort=be_asc"))
+        self.assertTrue(nach_rendite, "keine Spread-Zeilen gefunden")
+        self.assertNotEqual(nach_rendite, nach_be, "sort= wirkt nicht mehr")
+
+    def test_a_script_tag_in_a_field_stays_text(self):
+        roh = self._client().get(
+            "/?ticker=AAPL&expiration=2026-10-16&"
+            "min_oi=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E").get_data(as_text=True)
+        self.assertNotIn("<script>alert(1)</script>", roh)
+        self.assertIn("&lt;script&gt;", roh, "der Wert wurde nicht maskiert")
 
 if __name__ == "__main__":
     unittest.main()

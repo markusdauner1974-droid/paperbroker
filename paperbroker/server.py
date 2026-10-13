@@ -83,7 +83,7 @@ _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
                     + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
-_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age")
+_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort")
 
 
 def _parse_criteria_value(field, raw):
@@ -275,9 +275,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             return jsonify(ticker=ticker, expiration=None,
                            listed_dates=selectable, results=[], freshness=None,
                            dropped_reasons=[], verticals=[],
-                           vertical_drops=[])
+                           vertical_drops=[], trend=None)
         quotes = broker.get_options(ticker, expiration)
-        results, dropped = screen(quotes, criteria, trend=_load_trend(ticker),
+        trend_signal = _trend_for_screener(ticker)
+        results, dropped = screen(quotes, criteria, trend=trend_signal,
                                   now_fn=now_fn)
         vertical_kept, vertical_dropped = vertical_spreads(quotes)
         return jsonify(
@@ -300,6 +301,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             # carries 102 adjacent call pairs).
             verticals=[v.as_dict() for v in vertical_kept],
             vertical_drops=_drop_reason_groups(vertical_dropped),
+            # the trend signal that really reached the screener: null when the
+            # source is down or no provider is configured - then the list is
+            # built without the trend guard instead of being withheld
+            trend=None if trend_signal is None else {
+                "direction": trend_signal.direction,
+                "symbol": trend_signal.symbol,
+            },
             results=[
                 {
                     "symbol": r.quote.asset.symbol,
@@ -330,7 +338,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         if unknown:
             hint = ("Unbekannte Parameter ignoriert: " + ", ".join(unknown)
                     + " (bedienbar sind: " + ", ".join(_CRITERIA_FIELDS)
-                    + ", ignore_quote_age)")
+                    + ", ignore_quote_age, sort)")
         if criteria_error:
             error = criteria_error
         try:
@@ -348,7 +356,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                         else:
                             quotes = broker.get_options(ticker, expiration)
                             results, dropped = screen(
-                                quotes, criteria, trend=_load_trend(ticker), now_fn=now_fn)
+                                quotes, criteria, trend=_trend_for_screener(ticker),
+                                now_fn=now_fn)
                             # the RAW chain, not the screened candidates (B)
                             vertical_kept, vertical_dropped = vertical_spreads(quotes)
         except Exception:
@@ -539,12 +548,30 @@ def _get_trend_provider():
     return _MCPTrendProvider(url, token, timeout)
 
 
+def _trend_for_screener(ticker):
+    """The signal the SCREENER may use: a real TrendSignal, never the UI snapshot.
+
+    _load_trend() answers "what should the badge show" and falls back to
+    _TrendInfo(source_ok=False) when the source is down - an object without
+    .symbol. Handing that to screen() raised AttributeError, which the page
+    turned into a "Marktdaten-Fehler" box and the API into an HTML/500 page.
+    A source outage must cost the trend annotation, not the result.
+    """
+    sig = _load_trend(ticker)
+    return sig if (sig is not None and getattr(sig, "source_ok", True)) else None
+
+
 def _trend_display(ticker):
     sig = _load_trend(ticker)
     if sig is None:
         return None
     if not getattr(sig, "source_ok", True):
-        return {"direction": "unavailable", "label": "Trend nicht verfügbar"}
+        # "source down" (signal here) and "no provider configured" (sig None,
+        # no badge at all) are different situations - only this one needs an
+        # explanation, and it must not read like a calm flat market.
+        return {"direction": "unavailable", "label": "Trend nicht verfügbar",
+                "note": ("Trend-Quelle nicht erreichbar - die Liste steht "
+                         "ohne Trend-Prüfung da.")}
     return {"direction": sig.direction, "label": _trend_label(sig.direction)}
 
 

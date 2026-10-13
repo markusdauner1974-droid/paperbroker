@@ -777,5 +777,59 @@ class TheReasonsAreGerman(unittest.TestCase):
         self.assertEqual([r for _q, r in zu_lang], ["DTE 132 > 45"])
 
 
+class TestCriteriaValidationSpeaksGerman(unittest.TestCase):
+    """D6: the criteria check reports in German - every violation, with values.
+
+    The same text reaches the page and /api/screen, so it is pinned here on the
+    exception itself; the two surfaces are covered in test_server.py.
+    """
+
+    def _text(self, **werte):
+        with self.assertRaises(ValueError) as ctx:
+            ScreenerCriteria(**werte).validate()
+        return str(ctx.exception)
+
+    def test_each_single_violation(self):
+        faelle = (
+            (dict(iv_pref="mittel"),
+             "iv_pref: einer von high, low erwartet (ist: 'mittel')."),
+            (dict(max_spread_pct=-1.0), "max_spread_pct: muss ≥ 0 sein (ist: -1.0)."),
+            (dict(max_spread_abs=-0.5), "max_spread_abs: muss ≥ 0 sein (ist: -0.5)."),
+            (dict(min_oi=-5), "min_oi: muss ≥ 0 sein (ist: -5)."),
+            (dict(min_volume=-1), "min_volume: muss ≥ 0 sein (ist: -1)."),
+            (dict(min_bid_size=-3.0), "min_bid_size: muss ≥ 0 sein (ist: -3.0)."),
+            (dict(min_ask_size=-1.5), "min_ask_size: muss ≥ 0 sein (ist: -1.5)."),
+            (dict(max_quote_age_min=-1),
+             "max_quote_age_min: muss ≥ 0 sein (ist: -1)."),
+            (dict(weight_spread=-0.5),
+             "weight_spread: muss ≥ 0 sein (ist: -0.5)."),
+            (dict(weight_oi=-0.1), "weight_oi: muss ≥ 0 sein (ist: -0.1)."),
+            (dict(weight_iv=-0.2), "weight_iv: muss ≥ 0 sein (ist: -0.2)."),
+        )
+        for werte, erwartet in faelle:
+            with self.subTest(werte=werte):
+                self.assertEqual(erwartet, self._text(**werte))
+
+    def test_the_two_contradictions(self):
+        self.assertEqual("dte_min: muss ≤ dte_max sein (ist: 45 > 7).",
+                         self._text(dte_min=45, dte_max=7))
+        self.assertEqual("iv_min: muss ≤ iv_max sein (ist: 60.0 > 20.0).",
+                         self._text(iv_min=60.0, iv_max=20.0))
+
+    def test_all_violations_are_reported_not_only_the_first(self):
+        text = self._text(min_oi=-5, min_volume=-1, dte_min=45, dte_max=7)
+        for feld in ("min_oi:", "min_volume:", "dte_min:"):
+            self.assertIn(feld, text)
+        self.assertNotIn("ScreenerCriteria invalid", text,
+                         "der englische Sammeltext ist noch da")
+        self.assertEqual(2, text.count("; "), "die Verstoesse werden nicht verbunden")
+
+    def test_the_valid_extremes_stay_valid(self):
+        for werte in (dict(max_spread_pct=0.0), dict(min_oi=0),
+                      dict(min_bid_size=0.0), dict(min_ask_size=0.0),
+                      dict(weight_iv=0.0)):
+            with self.subTest(werte=werte):
+                ScreenerCriteria(**werte).validate()
+
 if __name__ == "__main__":
     unittest.main()

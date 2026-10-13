@@ -66,29 +66,43 @@ class ScreenerCriteria:
     weight_iv: float | None = 0.2
 
     def validate(self):
+        """Reject a contradictory or unusable criteria set with a readable reason.
+
+        The text goes straight to the operator (page and API), so every message
+        names the field, the expectation and the value found - the same style
+        the request parser in server.py already uses. Every violation is
+        reported, not only the first: one round trip has to be enough.
+        """
         bad = []
         if self.iv_pref is not None and self.iv_pref not in ("high", "low"):
-            bad.append('iv_pref in ("high", "low", None)')
+            bad.append(f"iv_pref: einer von high, low erwartet (ist: '{self.iv_pref}').")
         if self.max_spread_pct is not None and self.max_spread_pct < 0:
-            bad.append("max_spread_pct >= 0")
+            bad.append(f"max_spread_pct: muss ≥ 0 sein (ist: {self.max_spread_pct}).")
         if self.max_spread_abs is not None and self.max_spread_abs < 0:
-            bad.append("max_spread_abs >= 0")
+            bad.append(f"max_spread_abs: muss ≥ 0 sein (ist: {self.max_spread_abs}).")
         if self.min_oi is not None and self.min_oi < 0:
-            bad.append("min_oi >= 0")
+            bad.append(f"min_oi: muss ≥ 0 sein (ist: {self.min_oi}).")
         if self.min_volume is not None and self.min_volume < 0:
-            bad.append("min_volume >= 0")
+            bad.append(f"min_volume: muss ≥ 0 sein (ist: {self.min_volume}).")
+        if self.min_bid_size is not None and self.min_bid_size < 0:
+            bad.append(f"min_bid_size: muss ≥ 0 sein (ist: {self.min_bid_size}).")
+        if self.min_ask_size is not None and self.min_ask_size < 0:
+            bad.append(f"min_ask_size: muss ≥ 0 sein (ist: {self.min_ask_size}).")
         if self.max_quote_age_min is not None and self.max_quote_age_min < 0:
-            bad.append("max_quote_age_min >= 0")
+            bad.append(f"max_quote_age_min: muss ≥ 0 sein "
+                       f"(ist: {self.max_quote_age_min}).")
         if self.dte_min is not None and self.dte_max is not None and self.dte_min > self.dte_max:
-            bad.append("dte_min <= dte_max")
+            bad.append(f"dte_min: muss ≤ dte_max sein "
+                       f"(ist: {self.dte_min} > {self.dte_max}).")
         if self.iv_min is not None and self.iv_max is not None and self.iv_min > self.iv_max:
-            bad.append("iv_min <= iv_max")
+            bad.append(f"iv_min: muss ≤ iv_max sein "
+                       f"(ist: {self.iv_min} > {self.iv_max}).")
         for wname in ("weight_spread", "weight_oi", "weight_iv"):
             w = getattr(self, wname)
             if w is not None and w < 0:
-                bad.append(f"{wname} >= 0")
+                bad.append(f"{wname}: muss ≥ 0 sein (ist: {w}).")
         if bad:
-            raise ValueError(f"ScreenerCriteria invalid: {'; '.join(bad)}")
+            raise ValueError("; ".join(bad))
 
 
 class TrendProvider(Protocol):
