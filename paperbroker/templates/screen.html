@@ -117,7 +117,7 @@
     <input name="ticker" id="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required autocomplete="off">
     <select name="expiration" id="expiration" {% if not dates %}disabled{% endif %}>
       {% if not dates_loaded %}
-        <option value="">Verfälle werden geladen ...</option>
+        <option value="">Verfälle: Ticker eingeben</option>
       {% elif not dates %}
         <option value="" disabled>Nicht verfügbar</option>
       {% else %}
@@ -204,7 +204,7 @@
         und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
       <table>
         <thead><tr>
-          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite</th><th>Hinweis</th>
+          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite %</th><th>Hinweis</th>
         </tr></thead>
         {% for v, rendite, abstand in verticals %}
           <tr>
@@ -220,7 +220,7 @@
             <td{% if v.max_profit == 0 %} title="kein Gewinn möglich"{% endif %}>{% if rendite is none %}-{% else %}{{ '%.2f'|format(rendite) }} %{% endif %}</td>
             <td>{{ '%.2f'|format(v.breakeven) }}</td>
             <td>{% if abstand is none %}-{% else %}{{ '%+.2f'|format(abstand) }} %{% endif %}</td>
-            <td>{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio) }}{% endif %}</td>
+            <td>{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio * 100) }} %{% endif %}</td>
             <td>{% if v.debit_ge_width %}kein Gewinn möglich{% else %}-{% endif %}</td>
           </tr>
         {% endfor %}
@@ -250,7 +250,7 @@
     {% endif %}
     {% if dropped_reasons %}
       <details class="dropped-summary">
-        <summary>Warum gestrichen? Je Kontrakt zählt der erste zutreffende Filter.</summary>
+        <summary>Warum gestrichen? Je Kontrakt zählt der erste zutreffende Filter. Je Gruppe steht ein Beispiel, die Zahl nennt alle betroffenen Kontrakte.</summary>
         <ul class="dropped-reasons">
           {% for g in dropped_reasons -%}
           <li class="drop-reason">{{ g.reason }} <span class="drop-count">{{ g.count }}</span></li>
@@ -260,7 +260,7 @@
     {% endif %}
     {% if vertical_drops %}
       <details class="dropped-summary">
-        <summary>Warum kein Spread? Je Paar zählt das erste Bein, das eine Regel verletzt.</summary>
+        <summary>Warum kein Spread? Je Paar zählt das erste Bein, das eine Regel verletzt. Je Gruppe steht ein Beispiel, die Zahl nennt alle betroffenen Paare.</summary>
         <ul class="dropped-reasons vertical-drops">
           {% for g in vertical_drops -%}
           <li class="vertical-reason">{{ g.reason }} <span class="vertical-count">{{ g.count }}</span></li>
@@ -354,7 +354,7 @@
       // invalid/no ticker: drop stale dates at once (finding 3)
       clearTimeout(debounce);
       last = '';
-      invalidateSelector('Verfälle werden geladen ...');
+      invalidateSelector('Ticker prüfen - 1-6 Buchstaben A-Z');
       return;
     }
     clearTimeout(debounce);

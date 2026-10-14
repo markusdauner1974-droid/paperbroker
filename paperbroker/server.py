@@ -83,7 +83,7 @@ _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
                     + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
-_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort")
+_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type")
 
 
 def _parse_criteria_value(field, raw):
