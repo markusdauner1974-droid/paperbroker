@@ -166,6 +166,12 @@
       <label>Gewicht IV · Standard 0.2 <input type="number" step="0.1" name="weight_iv" min="0" value="{{ request.args.get('weight_iv') or (criteria.weight_iv if criteria.weight_iv is not none else '') }}"></label>
     </fieldset>
     {# D12: position size is its own question - the pair numbers above stay per unit. #}
+    {# D14: which side of the chain - the calculation has taken option_type since D12. #}
+    <fieldset class="crit">
+      <legend>Spreads</legend>
+      <label><input type="radio" name="option_type" value="call" {% if spread_type != 'put' %}checked{% endif %}> Calls (Standard)</label>
+      <label><input type="radio" name="option_type" value="put" {% if spread_type == 'put' %}checked{% endif %}> Puts</label>
+    </fieldset>
     <fieldset class="crit">
       <legend>Position</legend>
       <label>Multiplikator (Stück je Kontrakt) · Standard 100 <input type="number" name="multiplier" min="1" value="{{ request.args.get('multiplier') or (criteria.multiplier if criteria.multiplier is not none else '') }}"></label>
@@ -190,7 +196,7 @@
       {% if feed_time %}<span>Kursdatum {{ feed_time }}</span>{% endif %}
     </div>
     {% if verticals %}
-      <h2>Vertikale Call-Spreads</h2>
+      <h2>Vertikale {{ 'Put' if spread_type == 'put' else 'Call' }}-Spreads</h2>
       <p class="note">Dieselben Filter wie die Liste oben, auf beide Beine angewandt - ein
         Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer. Debit = Kauf zum Ask,
         Verkauf zum Bid.</p>
@@ -202,7 +208,7 @@
         </tr></thead>
         {% for v, rendite, abstand in verticals %}
           <tr>
-            <td title="{{ v.long.asset.symbol }} / {{ v.short.asset.symbol }}">{{ v.long.asset.underlying.symbol }} {{ '%.2f'|format(v.long.asset.strike) }} / {{ '%.2f'|format(v.short.asset.strike) }} Call</td>
+            <td title="{{ v.long.asset.symbol }} / {{ v.short.asset.symbol }}">{{ v.long.asset.underlying.symbol }} {{ '%.2f'|format(v.long.asset.strike) }} / {{ '%.2f'|format(v.short.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }}</td>
             <td>{{ v.expiration }}</td>
             <td>{{ '%.2f'|format(v.strike_width) }}</td>
             <td>{{ '%.2f'|format(v.net_debit) }}</td>
