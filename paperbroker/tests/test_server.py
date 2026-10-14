@@ -191,8 +191,12 @@ class TestServerDisplay(unittest.TestCase):
         html = res.get_data(as_text=True)
         self.assertIn("loadDates", html)
         self.assertIn("/api/screen?ticker=", html)
-        # spinner placeholder in the untouched select
-        self.assertIn("Verfälle werden geladen", html)
+        # D17 (finding 5d): the untouched select no longer claims to be
+        # loading - its placeholder names the input it waits for, and the
+        # loader's "cannot load" state names the expected ticker format
+        self.assertIn('<option value="">Verfälle: Ticker eingeben', html)
+        self.assertIn("invalidateSelector('Ticker prüfen - 1-6 Buchstaben A-Z')",
+                      html)
 
     def test_picker_api_contract_for_auto_loader(self):
         # the exact response shape the JS loader consumes: listed_dates
@@ -386,10 +390,14 @@ class TestDteWindow(unittest.TestCase):
         self.assertNotIn('<option value="">Verfälle werden geladen', html)
         self.assertIn('<option value="" disabled>Nicht verfügbar', html)
 
-    def test_no_ticker_still_says_loading(self):
-        # the real loading state (no dates fetched yet) keeps its placeholder
+    def test_no_ticker_names_the_input_prompt(self):
+        # D17 (finding 5d): the "nothing fetched yet" state keeps its
+        # placeholder - but it now names the expected input instead of a
+        # loading operation that never started
         html = self._app().test_client().get("/").get_data(as_text=True)
-        self.assertIn('<option value="">Verfälle werden geladen', html)
+        self.assertIn('<option value="">Verfälle: Ticker eingeben', html)
+        self.assertNotIn('<option value="">Verfälle werden geladen', html)
+        self.assertNotIn("Verfälle werden geladen", html)
 
     def test_unlisted_date_never_reaches_the_picker(self):
         # the union guard: only dates that are really in the chain may be
@@ -1471,7 +1479,42 @@ class TestVerticalSpreadList(unittest.TestCase):
             for field in ("strike_width", "net_debit", "max_loss",
                           "max_profit", "breakeven"):
                 self.assertIn(f"{v[field]:.2f}", page)
-            self.assertIn(f"{v['debit_width_ratio']:.2f}", page)
+            # D17 (finding 5b): the column is percent now - the cell carries
+            # the ratio scaled by 100
+            self.assertIn(f"{v['debit_width_ratio'] * 100:.2f}", page)
+
+    @staticmethod
+    def _ratio_cell(page, long_symbol, short_symbol):
+        """The Debit/Breite cell of one pair's row - found by its title,
+        not by a table position."""
+        zeile = re.search(rf'<td title="{long_symbol} / {short_symbol}">.*?</tr>',
+                          page, re.S)
+        zellen = re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile.group(0), re.S)
+        return zellen[10].strip()
+
+    def test_the_ratio_is_a_percentage_with_two_decimals(self):
+        """D17 (finding 5b): the ratio read as "0.00" at two decimals because
+        0.002 truncated to nothing. The cell scales it now: debit 0.01 over a
+        width of 5.00 is a ratio of 0.002 and must render as "0.20 %", not "0.00".
+
+        The percent sign sits in the header AND in the cell, the way the Rendite
+        and BE-Abstand columns already do it - the first D17 artefact had it in the
+        header only, which made this column the odd one out.
+        """
+        kette = [
+            quote("SPY261016C00100000", bid=1.00, ask=1.01,
+                  iv=30.0, oi=1500, volume=300),
+            quote("SPY261016C00105000", bid=1.00, ask=1.05,
+                  iv=30.0, oi=1500, volume=300),
+        ]
+        v = self._json(quotes=kette)["verticals"][0]
+        self.assertEqual((v["strike_width"], v["net_debit"]), (5.00, 0.01))
+        self.assertEqual(v["debit_width_ratio"], 0.002)
+        page = self._page(quotes=kette)
+        self.assertIn("<th>Debit/Breite %</th>", page)
+        zelle = self._ratio_cell(page, v["long_symbol"], v["short_symbol"])
+        self.assertEqual(zelle, "0.20 %")
+        self.assertNotEqual(zelle, "0.00 %")
 
     def test_the_first_table_is_untouched(self):
         criteria = ScreenerCriteria(max_quote_age_min=None)
@@ -2210,6 +2253,21 @@ class TheSpreadSectionFollowsTheCallPutSwitch(unittest.TestCase):
         for zeile in put_rows:
             self.assertTrue(zeile[0].endswith(" Put"), zeile[0])
 
+    def test_the_switch_moves_the_heading_and_the_row_labels_together(self):
+        """D17 (finding 5b partner): ONE request flips the heading AND the
+        per-row label - the choice reaches the whole table, not one of the two.
+        """
+        page = self._page({"option_type": "put"})
+        self.assertEqual(self._heading(page), "Vertikale Put-Spreads")
+        put_rows = self._spread_rows(page)
+        self.assertTrue(put_rows, "no put rows found")
+        for zeile in put_rows:
+            self.assertTrue(zeile[0].endswith(" Put"), zeile[0])
+        call_rows = self._spread_rows(self._page())
+        self.assertTrue(call_rows, "no call rows found")
+        for zeile in call_rows:
+            self.assertTrue(zeile[0].endswith(" Call"), zeile[0])
+
     # --- ein unbekannter Wert: Fehlerbox, dann weiter mit Calls ---
 
     def test_an_unknown_side_shows_the_error_box_and_keeps_computing_calls(self):
@@ -2291,9 +2349,14 @@ class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
 
     def test_the_page_renders_the_correct_spellings(self):
         page = self._pages()["volle Seite"]
-        for wort in ("Verfälle werden geladen", "kein Gewinn möglich", "zählt",
+        for wort in ("kein Gewinn möglich", "zählt",
                      "Geld-Größe min", "Brief-Größe min"):
             self.assertIn(wort, page, f"{wort!r} fehlt auf der Seite")
+        # D17 (finding 5d): the old loading text is gone; the placeholder of
+        # the page WITHOUT dates still spells "Verfälle" with the umlaut
+        leer = self._pages()["leere Startseite"]
+        self.assertIn("Verfälle: Ticker eingeben", leer)
+        self.assertNotIn("Verfälle werden geladen", leer)
 
     def test_the_trend_badge_is_german_when_the_source_fails(self):
         # server.py:546 - der einzige deutsche Text, der aus dem Server in die
@@ -2733,6 +2796,20 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
         self.assertIn("<summary>Warum gestrichen?", page)
         self.assertIn("<summary>Warum kein Spread?", page)
 
+    def test_both_collapse_summaries_name_the_example(self):
+        """D17 (finding 5e): each group shows ONE example while the number
+        beside it counts ALL cases - that was written nowhere. Both collapse
+        lines say it now, each EXACTLY once (a page-wide search would also
+        pass if one line carried the sentence twice).
+        """
+        page = self._page()
+        zeilen = re.findall(r"<summary>(.*?)</summary>", page, re.S)
+        self.assertEqual(len(zeilen), 2)
+        for zeile in zeilen:
+            self.assertEqual(zeile.count("Je Gruppe steht ein Beispiel"), 1, zeile)
+        self.assertIn("alle betroffenen Kontrakte", zeilen[0])
+        self.assertIn("alle betroffenen Paare", zeilen[1])
+
     def test_the_rejected_items_are_still_in_the_document(self):
         # zugeklappt heisst nicht verschwunden: die Begruendungen muessen im HTML
         # stehen, damit die Seite sie ohne Server-Runde aufklappen kann
@@ -3138,6 +3215,19 @@ class TestErrorBehaviour(unittest.TestCase):
     def test_the_sort_link_does_not_warn_any_more(self):
         page = self._page("sort=rendite_desc")
         self.assertNotIn("Unbekannte Parameter", page)
+
+    def test_the_spread_switch_does_not_warn_any_more(self):
+        """D17 (finding 4): every scan submits `option_type`, and the page
+        reported it as an unknown parameter even though `_spread_type` reads
+        it - `option_type` is a route argument like ticker/sort. Measured on
+        BOTH sides: no warning. The exemption list must not become too wide,
+        so a truly unknown NAME is still named (`quatsch`).
+        """
+        for seite in ("call", "put"):
+            self.assertNotIn("Unbekannte Parameter",
+                             self._page(f"option_type={seite}"), seite)
+        self.assertIn("Unbekannte Parameter ignoriert: quatsch",
+                      self._page("quatsch=1"))
 
     def test_a_really_unknown_parameter_is_still_named(self):
         page = self._page("quatsch=1")
