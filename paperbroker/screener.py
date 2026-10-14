@@ -407,6 +407,17 @@ def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
     quotes, d = filter_dte(quotes, criteria, now_fn=now_fn); dropped_all += d
     quotes, d = filter_sizes(quotes, criteria);         dropped_all += d
 
+    # D10: the IV component is a RANK inside the scored set, not a position inside an
+    # optional band. Measured: with iv_pref set but no band every quote scored 0.5, so
+    # 10 % IV and 60 % IV tied even at weight_iv = 1 - the preference did nothing. The
+    # band (iv_min/iv_max) keeps its job as a filter; it no longer doubles as the scale.
+    ivs = sorted({q.iv for q in quotes if q.iv is not None})
+
+    def _iv_rank(value):
+        if len(ivs) < 2:
+            return 0.5      # one value (or none) carries no ranking information
+        return ivs.index(value) / (len(ivs) - 1)
+
     results = []
     for q in quotes:
         sp = _spread_pct(q)
@@ -420,19 +431,17 @@ def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
         if criteria.min_oi:
             oi_score = min(1.0, oi / (criteria.min_oi * 4)) if oi > 0 else 0.0
         iv = q.iv
-        # IV stays NEUTRAL in the score: a band (iv_min/iv_max) passed as
-        # filter says nothing about preference. High-IV-vs-low-IV ranking
-        # is a strategy decision; inject strategy via iv_pref:
-        #   'high' -> higher IV scores better (premium selling)
-        #   'low'  -> lower IV scores better (debit strategies)
-        # None (default) -> IV does not influence ranking.
+        # D10: IV stays NEUTRAL unless a preference is set (None -> no influence on the
+        # ranking, as before). With a preference the score is the rank inside the scored
+        # set - always effective, no band required:
+        #   'high' -> higher IV ranks better (premium selling)
+        #   'low'  -> lower IV ranks better (debit strategies)
+        # The band (iv_min/iv_max) remains a FILTER and no longer sets the scale.
         iv_score = 0.5
         if criteria.iv_pref in ("high", "low") and iv is not None:
-            if criteria.iv_min is not None and criteria.iv_max is not None and criteria.iv_max > criteria.iv_min:
-                iv_score = (iv - criteria.iv_min) / (criteria.iv_max - criteria.iv_min)
-                iv_score = min(1.0, max(0.0, iv_score))
-                if criteria.iv_pref == "low":
-                    iv_score = 1.0 - iv_score
+            iv_score = _iv_rank(iv)
+            if criteria.iv_pref == "low":
+                iv_score = 1.0 - iv_score
         w_sp = criteria.weight_spread if criteria.weight_spread is not None else 0
         w_oi = criteria.weight_oi if criteria.weight_oi is not None else 0
         w_iv = criteria.weight_iv if criteria.weight_iv is not None else 0
