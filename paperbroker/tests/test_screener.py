@@ -954,6 +954,167 @@ class TestVerticalCallSpreads(unittest.TestCase):
                 self.assertEqual(dazwischen, [], paar.symbol)
 
 
+class PutPairsCarryTheirOwnDirection(unittest.TestCase):
+    """D12: the pair order IS the trade direction, and every derived number
+    follows it.
+
+    Measured on the live SPY chain (20.11.2026, first put pair):
+      long SPY261120P00305000 (strike 305.0) / short SPY261120P00300000 (300.0)
+      debit 0.01 | width 5.00 | break-even 304.99 | max profit 4.99
+    Before the fix the code bought the LOWER put for every option type and
+    printed the CALL break-even: the same pair came out with debit 0.01 at a
+    break-even of -1.00 instead of 304.99.
+
+    The fixtures below reuse the two measured strikes on the put side and the
+    same two strikes on the call side, so both directions are read off ONE
+    chain with real OCC symbols.
+    """
+
+    @staticmethod
+    def _api():
+        from paperbroker import screener as module
+        return module.form_vertical_pairs, module.vertical_spreads
+
+    @staticmethod
+    def _kette():
+        # the put pair of the measurement, both sides quoted, plus the same two
+        # strikes as calls: ask(P305) 0.21 - bid(P300) 0.20 = 0.01 debit
+        return [
+            quote("SPY261120P00300000", bid=0.20, ask=0.30, iv=30.0,
+                  oi=1500, volume=100),
+            quote("SPY261120P00305000", bid=0.19, ask=0.21, iv=30.0,
+                  oi=1500, volume=100),
+            quote("SPY261120C00300000", bid=1.00, ask=1.10, iv=30.0,
+                  oi=1500, volume=100),
+            quote("SPY261120C00305000", bid=0.90, ask=0.95, iv=30.0,
+                  oi=1500, volume=100),
+        ]
+
+    @staticmethod
+    def _fernes_paar():
+        # a second put pair on a later expiry, 0.34 $ per unit - the same shape,
+        # a position 34 times as large as the near one (0.01 debit x 100). Both
+        # legs quote 0.09 $ wide: the default ABSOLUTE bound (0.10 $) must let
+        # them through, otherwise the pair would fall for the leg rule and not
+        # for the budget.
+        return [
+            quote("SPY261218P00300000", bid=0.10, ask=0.19, iv=30.0,
+                  oi=1500, volume=100),
+            quote("SPY261218P00305000", bid=0.35, ask=0.44, iv=30.0,
+                  oi=1500, volume=100),
+        ]
+
+    # --- die Richtung ------------------------------------------------------
+
+    def test_a_put_pair_buys_the_higher_strike_and_a_call_pair_the_lower(self):
+        form_vertical_pairs, _vs = self._api()
+        put = form_vertical_pairs(self._kette(), option_type="put")[0]
+        call = form_vertical_pairs(self._kette(), option_type="call")[0]
+        # a put debit spread is long the HIGHER strike (the measurement)
+        self.assertEqual(put.long.asset.symbol, "SPY261120P00305000")
+        self.assertEqual(put.short.asset.symbol, "SPY261120P00300000")
+        self.assertEqual((put.long.asset.strike, put.short.asset.strike),
+                         (305.0, 300.0))
+        # ... a call debit spread keeps the direction it always had
+        self.assertEqual(call.long.asset.symbol, "SPY261120C00300000")
+        self.assertEqual(call.short.asset.symbol, "SPY261120C00305000")
+        self.assertEqual((call.long.asset.strike, call.short.asset.strike),
+                         (300.0, 305.0))
+        # the direction comes from the OPTION TYPE, not from the strike order:
+        # both pairs carry the same two strikes in the opposite order
+        self.assertEqual(put.long.asset.option_type, "put")
+        self.assertEqual(call.long.asset.option_type, "call")
+
+    # --- der Break-even ----------------------------------------------------
+
+    def test_the_break_even_of_a_put_pair_subtracts_the_debit(self):
+        form_vertical_pairs, _vs = self._api()
+        put = form_vertical_pairs(self._kette(), option_type="put")[0]
+        call = form_vertical_pairs(self._kette(), option_type="call")[0]
+        self.assertEqual(put.net_debit, 0.01)      # ask(P305) .21 - bid(P300) .20
+        self.assertEqual(put.breakeven, 304.99)    # 305.0 - 0.01
+        self.assertEqual(put.breakeven, put.long.asset.strike - put.net_debit)
+        self.assertEqual(call.net_debit, 0.2)      # ask(C300) 1.10 - bid(C305) .90
+        self.assertEqual(call.breakeven, 300.2)    # 300.0 + 0.2
+        self.assertEqual(call.breakeven, call.long.asset.strike + call.net_debit)
+
+    # --- die Breite ist eine Distanz ---------------------------------------
+
+    def test_the_width_is_a_distance_for_both_directions(self):
+        """Vor der Korrektur las strike_width short - long und kam fuer JEDES
+        Put-Paar auf -5.00 - die Paar-Regel 0 < Debit < Breite haette alle Puts
+        verworfen.
+        """
+        form_vertical_pairs, vertical_spreads = self._api()
+        put = form_vertical_pairs(self._kette(), option_type="put")[0]
+        call = form_vertical_pairs(self._kette(), option_type="call")[0]
+        self.assertEqual(put.strike_width, 5.0)
+        self.assertEqual(call.strike_width, 5.0)
+        self.assertGreater(put.strike_width, 0)
+        self.assertGreater(call.strike_width, 0)
+        # und die Paar-Regel behaelt das Put-Paar: 0.01 liegt echt in (0, 5.0)
+        kept, dropped = vertical_spreads(self._kette(), _LOOSE, option_type="put",
+                                         now_fn=_NOW)
+        self.assertEqual([p.symbol for p in kept], [put.symbol])
+        self.assertEqual(dropped, [])
+        self.assertEqual(kept[0].max_profit, 4.99)
+
+    # --- die Positionsgroesse ---------------------------------------------
+
+    def test_the_position_debit_is_the_debit_times_the_position_size(self):
+        """D12: multiplier x quantity x debit + fees - abgelesen an
+        as_dict(criteria), nicht nachgebaut.
+        """
+        form_vertical_pairs, _vs = self._api()
+        put = form_vertical_pairs(self._kette(), option_type="put")[0]
+        criteria = ScreenerCriteria(max_spread_pct=100.0, multiplier=100,
+                                    quantity=3, fees=1.3)
+        d = put.as_dict(criteria)
+        self.assertEqual(d["position_debit"],
+                         criteria.multiplier * criteria.quantity * d["net_debit"]
+                         + criteria.fees)
+        self.assertEqual(d["position_debit"], 4.3)     # 100 * 3 * 0.01 + 1.30
+        self.assertEqual(d["currency"], "USD")         # benannt, nicht umgerechnet
+        # die Zahlen des PAARES bleiben je Einheit - die Position ist eine
+        # eigene Zahl daneben, keine Skalierung
+        self.assertEqual(d["net_debit"], 0.01)
+        self.assertEqual(d["max_profit"], 4.99)
+        self.assertEqual(d["breakeven"], 304.99)
+
+    def test_a_missing_position_size_has_no_position_debit(self):
+        # eine fehlende Groesse darf nicht still als Null gelesen werden
+        form_vertical_pairs, _vs = self._api()
+        put = form_vertical_pairs(self._kette(), option_type="put")[0]
+        self.assertIsNone(put.position_debit())
+        self.assertIsNone(put.as_dict()["position_debit"])
+
+    # --- die Budgetgrenze --------------------------------------------------
+
+    def test_the_budget_bound_drops_exactly_the_pair_above_it(self):
+        """D12: budget ist die harte Obergrenze der Position. Ohne Budget bleiben
+        beide Put-Paare stehen; mit einem Budget ZWISCHEN ihren Positionen faellt
+        genau das teurere heraus - mit dem Grund, der beide Zahlen nennt.
+        """
+        form_vertical_pairs, vertical_spreads = self._api()
+        kette = self._kette() + self._fernes_paar()
+        nah, fern = form_vertical_pairs(kette, option_type="put")
+        self.assertEqual((nah.symbol, fern.symbol),
+                         ("SPY261120P00305000/SPY261120P00300000",
+                          "SPY261218P00305000/SPY261218P00300000"))
+        # the near pair costs 1.00 USD, the far one 34.00 USD (standard size)
+        ohne = ScreenerCriteria(max_spread_pct=100.0, dte_max=None)
+        kept, dropped = vertical_spreads(kette, ohne, option_type="put", now_fn=_NOW)
+        self.assertEqual([p.symbol for p in kept], [nah.symbol, fern.symbol])
+        self.assertEqual(dropped, [])
+        mit = ScreenerCriteria(max_spread_pct=100.0, dte_max=None, budget=5.0)
+        kept, dropped = vertical_spreads(kette, mit, option_type="put", now_fn=_NOW)
+        self.assertEqual([p.symbol for p in kept], [nah.symbol])
+        self.assertEqual([(p.symbol, r) for p, r in dropped],
+                         [(fern.symbol, "Position 34.00 USD > Budget 5.00 USD")])
+        self.assertEqual(nah.position_debit(mit), 1.0)
+        self.assertEqual(fern.position_debit(mit), 34.0)
+
+
 class TheReasonsAreGerman(unittest.TestCase):
     """Slice D4: die Ausschuss-Gruende sind deutsch.
 
