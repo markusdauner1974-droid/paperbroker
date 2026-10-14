@@ -2282,9 +2282,13 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         # GEMESSEN: die Bein-Regel sortiert `debit <= 0` schon aus, ein Spread
         # ohne Verlust kann die Seite also gar nicht erreichen. Der Schutz in
         # der Anzeige wird deshalb direkt geprueft - nicht ueber die Seite.
+        # D19: der Vorfilter liest die Laufzeit jetzt ueber die Uhr, ein
+        # fehlender Aufruf (`_clock` statt `_clock()`) waere bis dahin nie
+        # ausgewertet worden. Der Clock-Wert ist hier derselbe wie der
+        # gespeicherte (9 Tage) - die Aussage bleibt unveraendert.
         kette = [quote("AAPL261016C00250000", bid=0.45, ask=0.50, iv=30.0, oi=1500),
                  quote("AAPL261016C00252500", bid=0.50, ask=0.55, iv=30.0, oi=1500)]
-        behalten, verworfen = server_module.vertical_spreads(kette, _LOOSE, now_fn=_clock)
+        behalten, verworfen = server_module.vertical_spreads(kette, _LOOSE, now_fn=_clock())
         self.assertEqual(behalten, [])
         self.assertEqual(verworfen[0][1], "Debit 0.0 außerhalb (0, 2.5) - kein Gewinn möglich")
 
