@@ -22,6 +22,7 @@ from paperbroker.screener import (
     filter_spread,
     filter_stale,
     filter_volume,
+    form_vertical_pairs,
     screen,
 )
 
@@ -1229,6 +1230,71 @@ class TestCriteriaValidationSpeaksGerman(unittest.TestCase):
                       dict(weight_iv=0.0)):
             with self.subTest(werte=werte):
                 ScreenerCriteria(**werte).validate()
+
+
+class TestThePositionFieldsAreValidated(unittest.TestCase):
+    """D16: the position size is checked server-side, like every other field.
+
+    measured before this slice: ScreenerCriteria(multiplier=0), (quantity=-1),
+    (fees=-5.0) and (budget=-10.0) all passed validate() with None. The
+    browser's min="1"/min="0" are convenience, not a check - the server takes
+    the values from the request and from the API. multiplier/quantity are
+    positive integers, fees/budget are non-negative. None stays allowed and
+    means explicitly "no position is computed".
+    """
+
+    def _text(self, **werte):
+        with self.assertRaises(ValueError) as ctx:
+            ScreenerCriteria(**werte).validate()
+        return str(ctx.exception)
+
+    def test_each_invalid_position_value_names_its_field_and_value(self):
+        faelle = (
+            (dict(multiplier=0),
+             "multiplier: muss eine positive ganze Zahl sein (ist: 0)."),
+            (dict(quantity=-1),
+             "quantity: muss eine positive ganze Zahl sein (ist: -1)."),
+            (dict(fees=-5.0), "fees: darf nicht negativ sein (ist: -5.0)."),
+            (dict(budget=-10.0),
+             "budget: darf nicht negativ sein (ist: -10.0)."),
+            (dict(multiplier=2.5),
+             "multiplier: muss eine positive ganze Zahl sein (ist: 2.5)."),
+            (dict(quantity=0),
+             "quantity: muss eine positive ganze Zahl sein (ist: 0)."),
+        )
+        for werte, erwartet in faelle:
+            with self.subTest(werte=werte):
+                self.assertEqual(erwartet, self._text(**werte))
+
+    def test_every_field_is_named_exactly_once_in_one_message(self):
+        # one round trip joins all violations into ONE text: a message built
+        # twice would name a field twice. All four at once, counted.
+        text = self._text(multiplier=0, quantity=-1, fees=-5.0, budget=-10.0)
+        for feld in ("multiplier:", "quantity:", "fees:", "budget:"):
+            self.assertEqual(1, text.count(feld), feld)
+        self.assertEqual(3, text.count("; "), "the violations are not joined")
+
+    def test_the_set_and_the_unset_boundaries_stay_valid(self):
+        # a set value has to be usable, and None (all four unset) has to stay
+        # allowed - a switch that rejects the "no position" state is no switch.
+        for werte in (dict(multiplier=100, quantity=1, fees=0.0, budget=0.0),
+                      dict(multiplier=None, quantity=None, fees=None,
+                           budget=None),
+                      dict()):
+            with self.subTest(werte=werte):
+                ScreenerCriteria(**werte).validate()
+
+    def test_none_means_no_position_not_a_zero(self):
+        # None -> position_debit is None, so the page can show a dash instead
+        # of a silent 0 (the display side is pinned in test_server.py). A set
+        # size still computes - the new check did not switch the field off.
+        pair = form_vertical_pairs(make_verticals(), option_type="call")[0]
+        ohne = ScreenerCriteria(max_spread_pct=100.0, multiplier=None)
+        self.assertIsNone(pair.position_debit(ohne))
+        mit = ScreenerCriteria(max_spread_pct=100.0, multiplier=100, quantity=1,
+                               fees=0.0)
+        self.assertIsInstance(pair.position_debit(mit), float)
+
 
 if __name__ == "__main__":
     unittest.main()

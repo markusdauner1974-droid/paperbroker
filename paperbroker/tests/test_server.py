@@ -882,6 +882,83 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertNotIn("Unbekannte Parameter", self._page(werte))
 
 
+class TestThePositionFieldsInTheRequestPath(unittest.TestCase):
+    """D16 request path: the position size is checked where it enters.
+
+    The browser bounds (min="1"/min="0") are convenience, not a check - the
+    criteria check in validate() is the one that decides, and it must be
+    reachable from both surfaces (page and /api/screen). The JSON status and
+    body below are measured, not guessed: multiplier=0 is a client error (400)
+    whose body carries the same text the page shows.
+    """
+
+    def _app(self, quotes=None, criteria=None):
+        app = create_app(
+            quote_adapter=_MockAdapter(make() if quotes is None else quotes),
+            screener=None if criteria is None else OptionScreener(criteria),
+            now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _request(self, params, quotes=None, criteria=None, path="/"):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params)
+        return self._app(quotes, criteria).test_client().get(path,
+                                                             query_string=query)
+
+    def _page(self, params, quotes=None, criteria=None):
+        return self._request(params, quotes, criteria).get_data(as_text=True)
+
+    @staticmethod
+    def _vertical_rows(body):
+        start = body.index("<th>Position ($)</th>")
+        end = body.index("</table>", start)
+        rows = re.findall(r"<tr>(.*?)</tr>", body[start:end], re.S)
+        return [re.findall(r"<td[^>]*>(.*?)</td>", row, re.S) for row in rows]
+
+    def test_the_page_reports_multiplier_zero_not_the_browser_bound(self):
+        # the request really carries multiplier=0: the form's min="1" is not a
+        # check, so the value reaches validate() and is reported there
+        page = html.unescape(self._page({"multiplier": "0"}))
+        self.assertIn("multiplier: muss eine positive ganze Zahl sein (ist: 0).",
+                      page)
+        self.assertNotIn("Kandidaten:", page)
+
+    def test_the_json_route_reports_multiplier_zero_with_status_and_body(self):
+        # measured: 400, body {"error": "multiplier: ... (ist: 0)."} - abort()
+        # runs through the JSON error handler, not into the HTML page
+        res = self._request({"multiplier": "0"}, path="/api/screen")
+        self.assertEqual(res.status_code, 400)
+        self.assertEqual(res.get_json(),
+                         {"error": "multiplier: muss eine positive ganze "
+                                   "Zahl sein (ist: 0)."})
+
+    def test_multiplier_100_runs_normally_on_both_surfaces(self):
+        page = self._page({"multiplier": "100"})
+        self.assertIn("Kandidaten:", page)
+        self.assertNotIn("multiplier: muss eine positive ganze Zahl sein", page)
+        res = self._request({"multiplier": "100"}, path="/api/screen")
+        self.assertEqual(res.status_code, 200)
+        self.assertEqual(res.get_json()["criteria"]["multiplier"], 100)
+
+    def test_the_page_shows_a_dash_when_no_position_is_computed(self):
+        # multiplier=None means "no position is computed": the position column
+        # shows a dash, not a silent 0. The unset state only comes from the
+        # injected criteria - an empty request field keeps the default 100.
+        ohne = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                multiplier=None, quantity=None)
+        rows = self._vertical_rows(self._page({}, quotes=make_verticals(),
+                                              criteria=ohne))
+        self.assertTrue(rows)
+        for row in rows:
+            self.assertEqual("-", row[4], row)   # the Position ($) cell
+        # ... and with a real size the same column carries the number
+        mit = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                               multiplier=100, quantity=1)
+        rows = self._vertical_rows(self._page({}, quotes=make_verticals(),
+                                              criteria=mit))
+        self.assertEqual(["70", "70"], [row[4] for row in rows])
+
 
 class TestSettableCriteria(unittest.TestCase):
     """Slice I: the eleven criteria that had no form field are settable now.
