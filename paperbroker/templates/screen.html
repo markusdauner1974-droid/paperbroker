@@ -165,7 +165,15 @@
       <label>Gewicht OI · Standard 0.3 <input type="number" step="0.1" name="weight_oi" min="0" value="{{ request.args.get('weight_oi') or (criteria.weight_oi if criteria.weight_oi is not none else '') }}"></label>
       <label>Gewicht IV · Standard 0.2 <input type="number" step="0.1" name="weight_iv" min="0" value="{{ request.args.get('weight_iv') or (criteria.weight_iv if criteria.weight_iv is not none else '') }}"></label>
     </fieldset>
-  </form>
+    {# D12: position size is its own question - the pair numbers above stay per unit. #}
+    <fieldset class="crit">
+      <legend>Position</legend>
+      <label>Multiplikator (Stück je Kontrakt) · Standard 100 <input type="number" name="multiplier" min="1" value="{{ request.args.get('multiplier') or (criteria.multiplier if criteria.multiplier is not none else '') }}"></label>
+      <label>Stückzahl (Kontrakte) · Standard 1 <input type="number" name="quantity" min="1" value="{{ request.args.get('quantity') or (criteria.quantity if criteria.quantity is not none else '') }}"></label>
+      <label>Gebühren gesamt (USD) · Standard 0 <input type="number" step="0.01" name="fees" min="0" value="{{ request.args.get('fees') or (criteria.fees if criteria.fees is not none else '') }}"></label>
+      <label>Budget (USD) · Standard aus (leer = keine Grenze) <input type="number" step="1" name="budget" min="0" value="{{ request.args.get('budget') or (criteria.budget if criteria.budget is not none else '') }}"></label>
+    </fieldset>
+</form>
   <div class="results">
   {% if results is not none %}
     {% if verticals %}
@@ -186,9 +194,11 @@
       <p class="note">Dieselben Filter wie die Liste oben, auf beide Beine angewandt - ein
         Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer. Debit = Kauf zum Ask,
         Verkauf zum Bid.</p>
+      <p class="note">Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl
+        und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
       <table>
         <thead><tr>
-          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite</th><th>Hinweis</th>
+          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite</th><th>Hinweis</th>
         </tr></thead>
         {% for v, rendite, abstand in verticals %}
           <tr>
@@ -196,6 +206,9 @@
             <td>{{ v.expiration }}</td>
             <td>{{ '%.2f'|format(v.strike_width) }}</td>
             <td>{{ '%.2f'|format(v.net_debit) }}</td>
+            {# D13: was die Position kostet - Multiplikator, Stueckzahl und Gebuehren
+               stehen im Formular. Ohne Groesse ein Strich, keine stille Null. #}
+            <td>{% if v.position_debit(criteria) is none %}-{% else %}{{ '%.0f'|format(v.position_debit(criteria)) }}{% endif %}</td>
             <td>{{ '%.2f'|format(v.max_loss) }}</td>
             <td>{{ '%.2f'|format(v.max_profit) }}</td>
             <td{% if v.max_profit == 0 %} title="kein Gewinn möglich"{% endif %}>{% if rendite is none %}-{% else %}{{ '%.2f'|format(rendite) }} %{% endif %}</td>
