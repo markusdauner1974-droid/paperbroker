@@ -22,7 +22,7 @@ from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
     CboeRequestError,
 )
 from paperbroker.assets import asset_factory
-from paperbroker.screener import OptionScreener, ScreenerCriteria, TrendSignal
+from paperbroker.screener import OptionScreener, ScreenerCriteria, TrendSignal, VerticalPair
 from paperbroker.server import _freshness_lamp, create_app
 from paperbroker.tests.test_screener import make, make_verticals, quote
 
@@ -2142,7 +2142,100 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
     def test_the_page_shows_the_distance_to_the_break_even(self):
         zeilen = self._spread_rows(self._page())
         # D13: BE-Abstand moved from 8 to 9 (Position ($) is index 4 now).
-        self.assertEqual([z[9] for z in zeilen], ["+4.28 %", "+16.28 %"])
+        # D20: the cell shows a DISTANCE with a direction arrow in front of it,
+        # not a signed gap - the sign is gone. Both fixture pairs are calls
+        # (break-even above the spot), so both carry the up arrow.
+        self.assertEqual([z[9] for z in zeilen], ["↑ 4.28 %", "↑ 16.28 %"])
+
+    # --- D20: der BE-Abstand ist eine Distanz MIT Richtungspfeil ------------
+
+    @staticmethod
+    def _distance_fixture():
+        """D20 fixture: one call pair and one put pair per underlying, spot 500.
+
+        Measured on the tree: the SPY call 500/505 costs 1.50 -> break-even
+        501.50 -> distance 0.30 (up arrow); the SPY put 480/475 costs 0.01 ->
+        break-even 479.99, i.e. BELOW the spot -> distance 4.002 (down arrow).
+        QQQ adds a second pair per side so the sort has to move something:
+        call 520/525 -> 4.42, put 490/485 -> 2.10.
+        """
+        return [
+            quote("SPY261016C00500000", bid=2.40, ask=2.50, oi=5000, volume=500,
+                  underlying_price=500.0),
+            quote("SPY261016C00505000", bid=1.00, ask=1.10, oi=5000, volume=500,
+                  underlying_price=500.0),
+            quote("SPY261016P00480000", bid=0.02, ask=0.02, oi=5000, volume=500,
+                  underlying_price=500.0),
+            quote("SPY261016P00475000", bid=0.01, ask=0.01, oi=5000, volume=500,
+                  underlying_price=500.0),
+            quote("QQQ261016C00520000", bid=3.00, ask=3.10, oi=5000, volume=500,
+                  underlying_price=500.0),
+            quote("QQQ261016C00525000", bid=1.00, ask=1.10, oi=5000, volume=500,
+                  underlying_price=500.0),
+            quote("QQQ261016P00490000", bid=0.60, ask=0.60, oi=5000, volume=500,
+                  underlying_price=500.0),
+            quote("QQQ261016P00485000", bid=0.10, ask=0.10, oi=5000, volume=500,
+                  underlying_price=500.0),
+        ]
+
+    def test_the_distance_to_the_break_even_is_always_positive(self):
+        """D20: the BE-Abstand is a DISTANCE, never a signed call gap.
+
+        The put pair breaks even BELOW the spot (479.99 against 500.00) and
+        still reads positive; the same pair used to come out as -4.002. The
+        cell dropped the sign with it.
+        """
+        put = VerticalPair(long=quote("SPY261016P00480000", bid=0.02, ask=0.02,
+                                      underlying_price=500.0),
+                           short=quote("SPY261016P00475000", bid=0.01, ask=0.01,
+                                       underlying_price=500.0))
+        call = VerticalPair(long=quote("SPY261016C00500000", bid=2.40, ask=2.50,
+                                       underlying_price=500.0),
+                            short=quote("SPY261016C00505000", bid=1.00, ask=1.10,
+                                        underlying_price=500.0))
+        # Gleitkomma: 4.001999999999998 ist 4.002.
+        self.assertAlmostEqual(server_module._spread_be_gap_pct(put), 4.002, places=3)
+        self.assertAlmostEqual(server_module._spread_be_gap_pct(call), 0.30, places=3)
+        self.assertGreater(server_module._spread_be_gap_pct(put), 0)
+        self.assertGreater(server_module._spread_be_gap_pct(call), 0)
+
+        zellen = {z[0]: z[9] for z in
+                  self._spread_rows(self._page(quotes=self._distance_fixture()))
+                  + self._spread_rows(self._page({"option_type": "put"},
+                                                 quotes=self._distance_fixture()))}
+        self.assertEqual(zellen["SPY 480.00 / 475.00 Put"], "↓ 4.00 %")
+        self.assertEqual(zellen["SPY 500.00 / 505.00 Call"], "↑ 0.30 %")
+        for zelle in zellen.values():
+            self.assertNotIn("+", zelle)
+            self.assertNotIn("-", zelle)
+
+    def test_the_arrow_names_the_direction_for_puts_and_calls(self):
+        """D20: the arrow in front of the distance is the direction the
+        underlying has to move - up for a call (break-even above the spot),
+        down for a put (break-even below it). Both carry two decimals and a
+        percent sign.
+        """
+        put_zeilen = self._spread_rows(
+            self._page({"option_type": "put"}, quotes=self._distance_fixture()))
+        call_zeilen = self._spread_rows(self._page(quotes=self._distance_fixture()))
+        self.assertTrue(put_zeilen, "keine Put-Zeilen")
+        self.assertTrue(call_zeilen, "keine Call-Zeilen")
+        for zeile in put_zeilen:
+            self.assertRegex(zeile[9], r"^↓ \d+\.\d{2} %$", zeile[0])
+        for zeile in call_zeilen:
+            self.assertRegex(zeile[9], r"^↑ \d+\.\d{2} %$", zeile[0])
+
+    def test_the_note_above_the_table_explains_the_arrow(self):
+        """D20: a reader who does not know what the arrow means cannot read the
+        column - the note over the table says the value is a distance and names
+        both directions."""
+        page = self._page(quotes=self._distance_fixture())
+        hinweis = "Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung"
+        self.assertIn(hinweis, page)
+        self.assertIn("↑ steigen für Calls", page)
+        self.assertIn("↓ fallen für Puts", page)
+        self.assertLess(page.index(hinweis), page.index("<th>Spread</th>"),
+                        "der Hinweis muss ueber der Tabelle stehen")
 
     def test_the_spread_cell_names_the_trade_and_keeps_the_codes_in_the_tooltip(self):
         html = self._page()
@@ -2249,7 +2342,31 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     def test_the_page_can_sort_by_distance_to_break_even(self):
         zeilen = self._spread_rows(self._page({"sort": "be_asc"}))
-        self.assertEqual([z[9] for z in zeilen], ["+4.28 %", "+16.28 %"])
+        # D20: the cell carries the direction arrow now; ascending still means
+        # nearest first. Both fixture pairs are calls, so both arrows point up.
+        self.assertEqual([z[9] for z in zeilen], ["↑ 4.28 %", "↑ 16.28 %"])
+
+    def test_the_ascending_sort_puts_the_smallest_gap_on_top_for_calls_and_puts(self):
+        """D20: `sort=be_asc` means nearest break-even first - for calls AND for
+        puts. The put list is the real test: while the gap was signed, its two
+        distances came out as -4.002 and -2.10, so the LARGER move stood on top.
+        The numbers compared here are the ones the page itself renders.
+        """
+        for params in ({"option_type": "call"}, {"option_type": "put"}):
+            zeilen = self._spread_rows(
+                self._page(dict(params, sort="be_asc"), quotes=self._distance_fixture()))
+            self.assertGreaterEqual(len(zeilen), 2, params)
+            zahlen = [float(zeile[9].split()[1]) for zeile in zeilen]  # "↓ 4.00 %" -> 4.00
+            self.assertEqual(zahlen, sorted(zahlen), params)
+            self.assertEqual(zahlen[0], min(zahlen), params)
+
+        # der Put ist der Beleg: "naechster zuerst" ist das ANDERE Ende als die
+        # Rendite-Reihenfolge, die die groesste Bewegung nach oben stellt
+        vorher = [z[0] for z in self._spread_rows(
+            self._page({"option_type": "put"}, quotes=self._distance_fixture()))]
+        nachher = [z[0] for z in self._spread_rows(
+            self._page({"option_type": "put", "sort": "be_asc"}, quotes=self._distance_fixture()))]
+        self.assertEqual(nachher, list(reversed(vorher)))
 
     def test_the_page_can_keep_the_chain_order(self):
         self.assertEqual([z[0] for z in self._spread_rows(self._page({"sort": "none"}))],
@@ -2313,6 +2430,24 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         self.assertEqual(self._spread_rows(self._page(quotes=kette))[0][9], "-")
         # ... und nur dort: die Rendite ist rechenbar und bleibt eine Zahl
         self.assertNotEqual(self._spread_rows(self._page(quotes=kette))[0][7], "-")
+
+    def test_a_put_without_a_spot_shows_a_dash_and_never_a_zero(self):
+        """D20: without a spot there is nothing to measure - the distance cell
+        is exactly `-`, also for a put, and it carries neither a zero nor an
+        arrow. A silent 0 would read as "sits on the break-even"."""
+        ohne_spot = [
+            quote("SPY261016P00480000", bid=0.02, ask=0.02, oi=5000, volume=500,
+                  underlying_price=None),
+            quote("SPY261016P00475000", bid=0.01, ask=0.01, oi=5000, volume=500,
+                  underlying_price=None),
+        ]
+        zellen = [z[9] for z in self._spread_rows(
+            self._page({"option_type": "put"}, quotes=ohne_spot))]
+        self.assertEqual(zellen, ["-"])
+        for zelle in zellen:
+            self.assertNotIn("0", zelle)
+            self.assertNotIn("↑", zelle)
+            self.assertNotIn("↓", zelle)
 
 
 class TheSpreadSectionFollowsTheCallPutSwitch(unittest.TestCase):
