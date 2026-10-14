@@ -270,6 +270,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
     @app.get("/api/screen")
     def api_screen():
         ticker, expiration, dates, selectable, criteria, unknown = _parse_args()
+        spread_type, spread_error = _spread_type(request.args)
+        if spread_error:
+            return jsonify(error="unknown spread type", allowed=list(_SPREAD_TYPES)), 400
         if not expiration:
             # picker stage: offer only the dates that can still hit. No
             # screening happened, so the drop list is empty - but the key
@@ -293,11 +296,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         results, dropped = screen(quotes, criteria, trend=trend_signal,
                                   now_fn=now_fn)
         vertical_kept, vertical_dropped = vertical_spreads(quotes, criteria,
+                                                            option_type=spread_type,
                                                             now_fn=now_fn)
         return jsonify(
             ticker=ticker,
             expiration=expiration,
             chain_size=len(quotes),
+            spread_type=spread_type,
             # B-16: rows the adapter had to skip (list subclass carries
             # the count); the key is always present so a consumer never
             # needs a key check
@@ -353,6 +358,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         vertical_kept = vertical_dropped = None
         criteria, criteria_error, unknown = _criteria_from_request(
             screener.criteria, request.args)
+        spread_type, spread_error = _spread_type(request.args)
+        if spread_error:
+            error = spread_error
+            spread_type = "call"
         if unknown:
             hint = ("Unbekannte Parameter ignoriert: " + ", ".join(unknown)
                     + " (bedienbar sind: " + ", ".join(_CRITERIA_FIELDS)
@@ -378,7 +387,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                                 now_fn=now_fn)
                             # the RAW chain, not the screened candidates (B)
                             vertical_kept, vertical_dropped = vertical_spreads(
-                                quotes, criteria, now_fn=now_fn)
+                                quotes, criteria, option_type=spread_type, now_fn=now_fn)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,
@@ -428,6 +437,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             dates=offered, dates_loaded=dates is not None,
             results=results, dropped_count=len(dropped) if dropped else 0,
             dropped_reasons=_drop_reason_groups(dropped),
+            spread_type=spread_type,
             verticals=vertical_rows,
             sort_links=_sort_links(request.args),
             vertical_drops=_drop_reason_groups(vertical_dropped),
@@ -676,6 +686,24 @@ def _vertical_sort_key(mode):
         return (-(rendite if rendite is not None else -1.0),
                 abstand if abstand is not None else 9e9, v.symbol)
     return key
+
+
+_SPREAD_TYPES = ("call", "put")
+
+
+def _spread_type(args):
+    """D14: which side of the chain the spread section trades.
+
+    Returns (value, None) or (None, message) for an unknown value - the page shows the
+    message and keeps computing calls, the JSON endpoint answers 400. Default is calls,
+    exactly as before.
+    """
+    wert = (args.get("option_type") or "").strip().lower()
+    if not wert:
+        return "call", None
+    if wert not in _SPREAD_TYPES:
+        return None, "Ungültige Spread-Art - erlaubt sind Calls oder Puts."
+    return wert, None
 
 
 def _sort_links(args):
