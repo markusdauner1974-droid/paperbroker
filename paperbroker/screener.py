@@ -779,20 +779,29 @@ def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
     an expiry outside the window must leave the section empty - and say why.
     """
     kept, dropped = [], []
-    # The maturity window is a gate for the WHOLE section: both legs of a pair
-    # always carry the same expiration. It is applied per quote (the field
-    # filter_dte reads), so a chain carrying several expiries is handled too -
-    # only quotes inside the window take part in pairing.
+    # D19: the maturity window is a gate for the WHOLE section - both legs of a pair always
+    # carry the same expiration - and it must read the SAME date basis as filter_dte: the
+    # clock of this scan, not the day the feed stamped the quote. Measured before this fix:
+    # a chain stamped 13.10. 23:55 scanned at 14.10. 00:05 carried 38 stored days against 37
+    # real ones, so a window of exactly 37..37 emptied the section while screen() kept both
+    # legs - no error, no line, just an empty list.
     if criteria.dte_min is not None or criteria.dte_max is not None:
+        import arrow
+
+        uhr = (now_fn or arrow.get)()
+
+        def _laufzeit(q):
+            asset = getattr(q, "asset", None)
+            if asset is not None:
+                return asset.get_days_to_expiration(uhr)
+            return getattr(q, "days_to_expiration", None)
+
         gefiltert = [q for q in chain or []
-                     if getattr(q, "days_to_expiration", None) is not None
-                     and (criteria.dte_min is None
-                          or q.days_to_expiration >= criteria.dte_min)
-                     and (criteria.dte_max is None
-                          or q.days_to_expiration <= criteria.dte_max)]
+                     if _laufzeit(q) is not None
+                     and (criteria.dte_min is None or _laufzeit(q) >= criteria.dte_min)
+                     and (criteria.dte_max is None or _laufzeit(q) <= criteria.dte_max)]
         if (chain or []) and not gefiltert:
-            tage = sorted({q.days_to_expiration for q in chain
-                           if getattr(q, "days_to_expiration", None) is not None})
+            tage = sorted({_laufzeit(q) for q in chain if _laufzeit(q) is not None})
             return [], [(None, f"Verfall: Laufzeit {tage} Tage außerhalb "
                               f"[{criteria.dte_min}, {criteria.dte_max}]")]
         chain = gefiltert
