@@ -63,7 +63,7 @@ class OptionQuote(Quote):
             # use them as-is (percent/x100 convention), no model recompute.
             for name in ('delta', 'iv', 'gamma', 'vega', 'theta', 'rho'):
                 val = locals()[name]
-                setattr(self, name, None if val is None or (isinstance(val, float) and math.isnan(val)) else float(val))
+                setattr(self, name, None if val is None or (isinstance(val, float) and not math.isfinite(val)) else float(val))
         elif self.is_priceable() and self.underlying_price is not None:
             greeks = get_option_greeks(
                 self.asset.option_type, self.asset.strike, self.underlying_price,

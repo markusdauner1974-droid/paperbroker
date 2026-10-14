@@ -49,7 +49,10 @@ def _num(value, scale=1.0):
         v = float(value)
     except (TypeError, ValueError):
         return None
-    if isinstance(v, float) and math.isnan(v):
+    if isinstance(v, float) and not math.isfinite(v):
+        # D8: NaN AND +-inf are not data. A non-finite price used to slip
+        # through and reached the JSON body as Infinity/NaN, which strict
+        # JSON (RFC 8259) cannot parse. Missing stays None, zero stays zero.
         return None
     return v * scale
 
