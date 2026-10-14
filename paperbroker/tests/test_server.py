@@ -496,6 +496,17 @@ class TestDropReasons(unittest.TestCase):
             query_string={"ticker": "SPY", "expiration": "2026-10-16"}
         ).get_json()
 
+    def _page_with(self, quotes, **params):
+        """The page for a request that carries the criteria fields itself.
+
+        `_page` injects a criteria OBJECT; the switch `ignore_quote_age` only
+        exists as a request parameter, so the new tests need this path.
+        """
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params)
+        return self._app(quotes).test_client().get(
+            "/", query_string=query).get_data(as_text=True)
+
     # --- the empty case: the whole chain fails the age guard ---
 
     def test_the_page_names_the_reasons_when_nothing_hits(self):
@@ -527,17 +538,44 @@ class TestDropReasons(unittest.TestCase):
         html = self._page(self._mixed_chain())
         self.assertIn("Kandidaten: <b>1</b>", html)
         # ties (both count 2) keep the order the filters produced them in:
-        # data-complete (iv=0) runs before oi; the spread group is last
+        # data-complete (iv=0) runs before oi; the spread group is last.
+        # D9a/E7: the group names ONE real example out of its family of
+        # bounds (the numbers-masked pattern is gone) - sorted() picks the
+        # stable member, so the label is reproducible.
         self.assertEqual(self._pairs(html),
-                         [("iv=0 illiquide", 2), ("OI # < #", 2),
+                         [("iv=0 illiquide", 2), ("OI 200 < 500", 2),
                           ("Spread 28.6% > 10.0%", 1)])
 
     def test_two_numbers_of_one_family_collapse_into_one_group(self):
         pairs = dict((r, c) for r, c in self._pairs(self._page(self._mixed_chain())))
-        # 5 and 200 are different bounds - one family, one line
-        self.assertEqual(pairs.get("OI # < #"), 2)
-        self.assertNotIn("OI 5 < 500", pairs)
-        self.assertNotIn("OI 200 < 500", pairs)
+        # 5 and 200 are different bounds - one family, one line. The family is
+        # identified by ONE real member text now (D9a/E7), not by the pattern.
+        self.assertEqual(pairs.get("OI 200 < 500"), 2)
+        self.assertNotIn("OI 5 < 500", pairs)      # the other member is no line of its own
+        self.assertNotIn("OI # < #", pairs)       # and the masked pattern is gone
+
+    def test_two_bounds_of_one_family_share_one_real_example(self):
+        """D9a/E7 (a): the grouping still collapses a family - now it names a
+        real member as the example instead of the numbers-masked pattern."""
+        chain = [
+            quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0, oi=8000),  # candidate
+            quote("AAPL261016C00270000", bid=1.20, ask=1.30, iv=30.0, oi=200),  # OI 200 < 500
+            quote("AAPL261016C00271000", bid=1.20, ask=1.30, iv=30.0, oi=40),   # OI 40 < 500
+        ]
+        labels = [r for r, _ in self._pairs(self._page(chain))]
+        self.assertEqual(labels, ["OI 200 < 500"])       # ONE line for the family
+        self.assertIn(labels[0], {"OI 200 < 500", "OI 40 < 500"})   # a real member ...
+        self.assertNotIn("#", labels[0])                 # ... not the pattern
+        self.assertEqual(self._json(chain)["dropped_reasons"],
+                         [{"reason": "OI 200 < 500", "count": 2}])
+
+    def test_the_summary_shows_a_real_bound_not_the_masked_pattern(self):
+        """D9a/E7 (a): the page names the concrete bounds of the group."""
+        html_page = self._page(self._mixed_chain())
+        # the relative-spread group carries the real limit; autoescaping turns
+        # '>' into an entity, which is what the browser shows as a bound
+        self.assertIn("&gt; 10.0%", html_page)
+        self.assertNotIn("Spread #%", html_page)
 
     def test_a_single_raw_text_keeps_its_measured_value(self):
         # a group with exactly one text shows it (with its number)
@@ -553,7 +591,7 @@ class TestDropReasons(unittest.TestCase):
         self.assertEqual(d["dropped"], 5)
         self.assertEqual(d["dropped_reasons"],
                          [{"reason": "iv=0 illiquide", "count": 2},
-                          {"reason": "OI # < #", "count": 2},
+                          {"reason": "OI 200 < 500", "count": 2},
                           {"reason": "Spread 28.6% > 10.0%", "count": 1}])
         counts = [g["count"] for g in d["dropped_reasons"]]
         self.assertEqual(counts, sorted(counts, reverse=True))
@@ -622,11 +660,40 @@ class TestDropReasons(unittest.TestCase):
         self.assertIn("lamp green", html_page)
         self.assertIn("(5 min, Grenze 30 min)", html_page)
 
+    # --- D9a/E3 (b): the operator's own limit next to the general lamp ---
+
+    def test_the_header_names_the_limit_question_separately_from_the_lamp(self):
+        """D9a/E3 (b): the traffic light answers the general freshness class
+        (30/120 min, unchanged); the operator's OWN limit gets its own named
+        line, so 'frisch' can never again stand next to a violated limit."""
+        inside = self._page(self._mixed_chain())          # 5 min vs limit 30
+        self.assertIn("lamp green", inside)               # the general statement ...
+        self.assertIn("(5 min, Grenze 30 min)", inside)
+        self.assertRegex(inside, r"innerhalb deiner Altersgrenze:\s*ja")
+        # the exact feed stamp the chain carries (D8 already names it)
+        self.assertIn("Kursdatum 2026-10-07 14:30:00", inside)
+
+        # a limit the present quotes violate: the limit line answers 'nein',
+        # the general lamp may stay green - the two statements are separate
+        violated = self._page_with(self._mixed_chain(), max_quote_age_min="1")
+        self.assertIn("lamp green", violated)
+        self.assertRegex(violated, r"innerhalb deiner Altersgrenze:\s*nein")
+        self.assertIn("(Grenze 1 min)", violated)
+
+    def test_the_header_announces_a_switched_off_age_limit(self):
+        """D9a/E3 (b): with ignore_quote_age=1 the header says so instead of
+        naming a limit that is not enforced."""
+        html_page = self._page_with(self._mixed_chain(), ignore_quote_age="1")
+        self.assertIn("Altersgrenze aus", html_page)
+        self.assertIn("(5 min, Grenze aus)", html_page)   # the lamp line, unchanged
+
     def test_a_reason_text_cannot_inject_markup(self):
         # the reasons are free text from the screener; they are rendered
-        # escaped, so a '<' stays text (measured: '&lt;' in the HTML)
+        # escaped, so a '<' stays text (measured: '&lt;' in the HTML). D9a/D7
+        # made the shown text a REAL example, so the escaped bound is the one
+        # the group picked - and it still must not become markup.
         html_page = self._page(self._mixed_chain())
-        self.assertIn("OI # &lt; #", html_page)
+        self.assertIn("OI 200 &lt; 500", html_page)
         self.assertIn('<span class="drop-count">2</span>', html_page)
 
 
@@ -834,29 +901,44 @@ class TestSettableCriteria(unittest.TestCase):
         self.assertEqual(d["candidates"], 0)
         self.assertEqual(self._gruende(d)["Größe unter Minimum"], 2)
 
+    def test_the_penny_zone_and_the_volume_bound_are_named(self):
+        """D9a/E6+E9 (a/b): the two field labels name the rule they enforce -
+        the $ bound only bites in the penny zone, the volume bound is strict."""
+        html_page = self._page({})
+        self.assertIn("Spread max ($) · Standard 0.1 · greift nur bei Kursmitte "
+                      "≤ 1 $ (Penny-Zone)", html_page)
+        self.assertIn("Volumen min · Standard 0 · schließt Werte ≤ Grenze aus "
+                      "(strikt größer)", html_page)
+
     def test_iv_min_drops_the_low_iv_contract(self):
         d = self._json({"iv_min": "29"})                 # IVs are 28 and 30
         self.assertEqual(d["criteria"]["iv_min"], 29.0)
         self.assertEqual(d["candidates"], 1)
         self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL261016C00245000"])
-        self.assertEqual(self._gruende(d)["IV # < #"], 2)
+        # two different IVs fall under the same bound; D9a/E7 shows ONE real
+        # example (26, the contract beyond dte_max) instead of "IV # < #"
+        self.assertEqual(self._gruende(d)["IV 26 < 29.0"], 2)
 
     def test_iv_max_drops_the_high_iv_contract(self):
         d = self._json({"iv_max": "29"})
         self.assertEqual(d["criteria"]["iv_max"], 29.0)
         self.assertEqual(d["candidates"], 1)
         self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL261016C00240000"])
-        self.assertEqual(self._gruende(d)["IV # > #"], 2)
+        self.assertEqual(self._gruende(d)["IV 30 > 29.0"], 2)
 
     def test_max_spread_abs_tightens_the_penny_zone(self):
         # the default bound is 0.10 and lets one penny contract through the
-        # relative filter; at 0.01 the same filter catches three of them, and
-        # the reasons are printed with the digits masked because their numbers
-        # differ (page and JSON read the same list)
+        # relative filter; at 0.01 the same filter catches three of them.
+        # D9a/E7: their texts differ in the numbers, so the family collapses
+        # into ONE line that shows a REAL example with the bound the request
+        # set - no numbers-masked pattern any more (page and JSON read the
+        # same list)
         d = self._json({"max_spread_abs": "0.01"})
         self.assertEqual(d["criteria"]["max_spread_abs"], 0.01)
-        self.assertEqual(self._gruende(d)["absoluter Spread #$ > #$ (Mitte #)"], 3)
-        self.assertNotIn("absoluter Spread 0.15$ > 0.10$ (Mitte 0.88)", self._gruende(d))
+        self.assertEqual(self._gruende(d)["absoluter Spread 0.02$ > 0.01$ (Mitte 0.31)"], 3)
+        self.assertNotIn("absoluter Spread #$ > #$ (Mitte #)", self._gruende(d))
+        # the other two members are the same ONE line, not a line of their own
+        self.assertNotIn("absoluter Spread 0.15$ > 0.01$ (Mitte 0.88)", self._gruende(d))
 
     def test_require_oi_can_be_switched_off(self):
         # the OI-less contract only survives when the spread bounds are wide
