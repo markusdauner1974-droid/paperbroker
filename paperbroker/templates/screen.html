@@ -194,9 +194,11 @@
       <p class="note">Dieselben Filter wie die Liste oben, auf beide Beine angewandt - ein
         Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer. Debit = Kauf zum Ask,
         Verkauf zum Bid.</p>
+      <p class="note">Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl
+        und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
       <table>
         <thead><tr>
-          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite</th><th>Hinweis</th>
+          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite</th><th>Hinweis</th>
         </tr></thead>
         {% for v, rendite, abstand in verticals %}
           <tr>
@@ -204,6 +206,9 @@
             <td>{{ v.expiration }}</td>
             <td>{{ '%.2f'|format(v.strike_width) }}</td>
             <td>{{ '%.2f'|format(v.net_debit) }}</td>
+            {# D13: was die Position kostet - Multiplikator, Stueckzahl und Gebuehren
+               stehen im Formular. Ohne Groesse ein Strich, keine stille Null. #}
+            <td>{% if v.position_debit(criteria) is none %}-{% else %}{{ '%.0f'|format(v.position_debit(criteria)) }}{% endif %}</td>
             <td>{{ '%.2f'|format(v.max_loss) }}</td>
             <td>{{ '%.2f'|format(v.max_profit) }}</td>
             <td{% if v.max_profit == 0 %} title="kein Gewinn möglich"{% endif %}>{% if rendite is none %}-{% else %}{{ '%.2f'|format(rendite) }} %{% endif %}</td>
