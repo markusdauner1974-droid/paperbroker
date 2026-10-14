@@ -838,7 +838,10 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertEqual(d["criteria"]["dte_min"], 45)          # int, not "045"
         self.assertEqual(d["criteria"]["max_quote_age_min"], 30)
         self.assertIsNone(d["criteria"]["iv_min"])
-        self.assertEqual(len(d["criteria"]), 17)
+        # D11: pair_max_width is the 18th criterion. Unset it stays None - the
+        # adjacency of before - so the echo names the fast mode as the default.
+        self.assertIsNone(d["criteria"]["pair_max_width"])
+        self.assertEqual(len(d["criteria"]), 18)
         picker = self._app().test_client().get(
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertNotIn("criteria", picker)                     # no picker echo
@@ -913,6 +916,17 @@ class TestSettableCriteria(unittest.TestCase):
                       "≤ 1 $ (Penny-Zone)", html_page)
         self.assertIn("Volumen min · Standard 0 · schließt Werte ≤ Grenze aus "
                       "(strikt größer)", html_page)
+        # D11: the pair-width field sits DIRECTLY behind the volume field, and its
+        # own text says what its empty state means (adjacent strikes only). Were it
+        # anywhere else - or silent about "leer" - the reader would read the empty
+        # field as "filter off", which is exactly the D1 trap.
+        naechstes = re.search(
+            r'<label>Volumen min[^<]*<input[^>]*name="min_volume"[^>]*></label>\s*'
+            r'<label>Paar-Breite max \(\$\)[^<]*'
+            r'<input[^>]*name="pair_max_width"', html_page)
+        self.assertIsNotNone(
+            naechstes,
+            "das Paar-Breiten-Feld steht nicht direkt hinter dem Volumenfeld")
 
     def test_iv_min_drops_the_low_iv_contract(self):
         d = self._json({"iv_min": "29"})                 # IVs are 28 and 30
@@ -1024,9 +1038,9 @@ class TestSettableCriteria(unittest.TestCase):
 
     def test_the_form_offers_every_criterion_and_names_no_unknown_parameter(self):
         html = self._page({})
-        for feld in ("max_spread_abs", "min_bid_size", "min_ask_size", "iv_min", "iv_max",
-                     "iv_pref", "require_oi", "require_volume", "weight_spread",
-                     "weight_oi", "weight_iv"):
+        for feld in ("max_spread_abs", "pair_max_width", "min_bid_size", "min_ask_size",
+                     "iv_min", "iv_max", "iv_pref", "require_oi", "require_volume",
+                     "weight_spread", "weight_oi", "weight_iv"):
             self.assertIn(f'name="{feld}"', html, feld)
         self.assertNotIn("Unbekannte Parameter", html)
         # a real typo is still named (the old guard is untouched)
@@ -1040,6 +1054,55 @@ class TestSettableCriteria(unittest.TestCase):
         self.assertIsNone(d["criteria"]["iv_min"])
         self.assertTrue(d["criteria"]["require_oi"])
         self.assertEqual(d["candidates"], 2)
+
+    # --- D11 (review finding 4): the width decides the SEARCH, not the rules ---
+
+    @staticmethod
+    def _drei_strikes():
+        """The reviewer's chain: 780 / 785 (OI 1) / 790, as real OCC symbols.
+
+        SPY 2026-10-16, DTE 9 against the pinned clock. The middle strike is
+        quoted like a good leg except for its OI - it fails the OI floor and so
+        tears BOTH of its adjacent pairs with it (measured below: kept 0, the
+        same drop reason twice). Deliberately separate from make(): that chain is
+        pinned by the existing drop and display counts.
+        """
+        return [
+            quote("SPY261016C00780000", bid=4.90, ask=5.00, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016C00785000", bid=3.00, ask=3.20, iv=30.0, oi=1, volume=300),
+            quote("SPY261016C00790000", bid=1.50, ask=1.55, iv=30.0, oi=1500, volume=300),
+        ]
+
+    def test_the_illiquid_middle_strike_hides_the_wider_pair_until_the_width_is_set(self):
+        """Review finding 4, reproduced through the whole call path.
+
+        The chain alone yields NO spread: adjacency builds 780/785 and 785/790
+        only, and the illiquid 785 falls out of both. The pair 780/790 - two good
+        legs - is never formed. Only when the width is named does it appear, and
+        then it runs through the same leg and pair checks as every other pair.
+        Every number below is measured on this chain, not assumed.
+        """
+        kette = self._drei_strikes()
+        eng = self._json({}, quotes=kette)
+        self.assertIsNone(eng["criteria"]["pair_max_width"])     # default = fast mode
+        self.assertEqual([v["symbol"] for v in eng["verticals"]], [])
+        self.assertEqual(eng["vertical_drops"],
+                         [{"reason": "strike 785.0 call: OI 1 < 500", "count": 2}])
+        weit = self._json({"pair_max_width": "10.0"}, quotes=kette)
+        self.assertEqual(weit["criteria"]["pair_max_width"], 10.0)
+        self.assertEqual([v["symbol"] for v in weit["verticals"]],
+                         ["SPY261016C00780000/SPY261016C00790000"])
+        v = weit["verticals"][0]
+        # debit = ask(780) - bid(790) = 5.00 - 1.50, width = 790 - 780,
+        # profit = width - debit, break-even = 780 + debit
+        self.assertEqual((v["long_symbol"], v["short_symbol"]),
+                         ("SPY261016C00780000", "SPY261016C00790000"))
+        self.assertEqual((v["net_debit"], v["strike_width"], v["max_profit"],
+                          v["breakeven"]), (3.5, 10.0, 6.5, 783.5))
+        # one dollar narrower than the gap and the adjacency is alone again
+        knapp = self._json({"pair_max_width": "9.0"}, quotes=kette)
+        self.assertEqual([v["symbol"] for v in knapp["verticals"]], [])
+        self.assertEqual(knapp["criteria"]["pair_max_width"], 9.0)
 
 
 class TestFutureTimestampLamp(unittest.TestCase):
@@ -2045,18 +2108,23 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
     #: ist der Inhalt dieses Slices: sie folgt der Frage des Nutzers, nicht der
     #: Reihenfolge der Kriterien im Rechenmodul.
     GRUPPEN = (
+        # D11: pair_max_width stands directly behind min_volume - the order of
+        # the criteria in the module, not appended at the end of the group.
         ("Liquidit\u00e4t", ("max_spread_pct", "max_spread_abs", "min_oi", "min_volume",
-                             "min_bid_size", "min_ask_size", "require_oi", "require_volume")),
+                             "pair_max_width", "min_bid_size", "min_ask_size",
+                             "require_oi", "require_volume")),
         ("Laufzeit und Frische", ("dte_min", "dte_max", "max_quote_age_min",
                                   "ignore_quote_age")),
         ("Volatilit\u00e4t", ("iv_min", "iv_max", "iv_pref")),
         ("Bewertung", ("weight_spread", "weight_oi", "weight_iv")),
     )
 
-    #: Die 14 Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
+    #: Die 15 Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
+    #: D11: pair_max_width kam dazu; min_volume BLEIBT (beide sind Kriterien).
     ZAHLENFELDER = ("dte_min", "dte_max", "max_spread_pct", "max_spread_abs", "min_oi",
-                    "min_volume", "min_bid_size", "min_ask_size", "iv_min", "iv_max",
-                    "max_quote_age_min", "weight_spread", "weight_oi", "weight_iv")
+                    "min_volume", "pair_max_width", "min_bid_size", "min_ask_size",
+                    "iv_min", "iv_max", "max_quote_age_min", "weight_spread",
+                    "weight_oi", "weight_iv")
 
     @staticmethod
     def _page():
@@ -2160,7 +2228,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
 
     def test_no_control_is_added_or_lost(self):
         page = self._page()
-        self.assertEqual(page.count("<input"), 23)
+        self.assertEqual(page.count("<input"), 24)   # D11: + Paar-Breite max ($)
         self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
         self.assertEqual(page.count("<button"), 1)
         self.assertEqual(page.count("<fieldset"), 4)
@@ -2431,9 +2499,9 @@ class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
         page = self._page()
         form = page[page.index("<form"):page.index("</form>")]
         felder = re.findall(r'<input type="number"[^>]*>', form)
-        self.assertEqual(len(felder), 14)
+        self.assertEqual(len(felder), 15)      # D11: + pair_max_width
         im_label = re.findall(r"<label>(?:(?!</label>).)*?<input type=\"number\"", form, re.S)
-        self.assertEqual(len(im_label), 14)
+        self.assertEqual(len(im_label), 15)
 
 
 class TheColoursCarryEnoughContrast(unittest.TestCase):
@@ -2554,6 +2622,12 @@ class TheDefaultsAreVisible(unittest.TestCase):
                 "weight_iv": "0.2"}
     AUS = ("min_bid_size", "min_ask_size", "iv_min", "iv_max")
     AUS_TEXT = "Standard aus (leer = Filter aus)"
+    #: D11: das neue Feld ist ebenfalls leer, heisst aber nicht "Filter aus":
+    #: eine leere Breite ist die Nachbarschaft - der schnelle Modus von vorher.
+    #: Es sagt seinen Standard also selbst, und mit eigenem Wortlaut.
+    BREITE = "pair_max_width"
+    BREITE_TEXT = ("Standard aus (leer = nur benachbarte Strikes; "
+                   "gesetzt = alle Paare innerhalb dieser Breite)")
 
     @staticmethod
     def _app(quotes=None):
@@ -2585,7 +2659,7 @@ class TheDefaultsAreVisible(unittest.TestCase):
         return m.group(1) if m else None
 
     def _alle(self):
-        return list(self.STANDARD) + list(self.AUS)
+        return list(self.STANDARD) + list(self.AUS) + [self.BREITE]
 
     # --- die Zusicherungen ----------------------------------------------
     def test_every_prefilled_field_shows_the_default_of_the_code(self):
@@ -2598,6 +2672,15 @@ class TheDefaultsAreVisible(unittest.TestCase):
         std = ScreenerCriteria()
         for feld in self.STANDARD:
             self.assertEqual(self._wert(page, feld), str(getattr(std, feld)), feld)
+        # D11: das neue Feld zeigt den Standard AUS DEM CODE. pair_max_width ist
+        # None (Nachbarschaft); das Formular schreibt dann nicht "None", sondern
+        # die leere Zeichenkette - genau der Standard von vorher.
+        self.assertIsNone(std.pair_max_width)
+        self.assertEqual(self._wert(page, self.BREITE), "", self.BREITE)
+        # ... und ein gesetzter Wert kommt am Feld an (eine Quelle fuer Formular
+        # und Rechenmodul - kein zweiter Standard im HTML)
+        self.assertEqual(self._wert(self._page({"pair_max_width": "10.0"}), self.BREITE),
+                         "10.0")
 
     def test_every_prefilled_field_names_its_default(self):
         page = self._page()
@@ -2605,6 +2688,10 @@ class TheDefaultsAreVisible(unittest.TestCase):
             label = self._label(page, feld)
             self.assertIn(f"Standard {wert}", label, feld)
             self.assertEqual(self._wert(page, feld), wert, feld)
+        # D11: auch das neue, nicht vorbelegte Feld nennt seinen Standard - der
+        # Vermerk steht am Feld, das er beschreibt (jetzt 15 Felder).
+        self.assertIn(self.BREITE_TEXT, self._label(page, self.BREITE), self.BREITE)
+        self.assertEqual(self._wert(page, self.BREITE), "", self.BREITE)
 
     def test_the_empty_fields_say_the_filter_is_off(self):
         # die D1-Falle: leer ist "aus", nicht "Standard"
@@ -2614,10 +2701,13 @@ class TheDefaultsAreVisible(unittest.TestCase):
             self.assertIn(self.AUS_TEXT, label, feld)
             self.assertEqual(self._wert(page, feld), "", feld)
 
-    def test_all_fourteen_fields_carry_a_note(self):
+    def test_every_field_carries_a_note(self):
+        # D11: "jedes Feld" statt "vierzehn Felder" - mit dem neuen Feld waere die
+        # Zahl im Namen falsch geworden. Geprueft wird weiter dieselbe Aussage:
+        # jedes Feld des Formulars nennt seinen Standard.
         page = self._page()
         form = page[page.index("<form"):page.index("</form>")]
-        self.assertEqual(len(re.findall(r"\u00b7\s?Standard", form)), 14)
+        self.assertEqual(len(re.findall(r"\u00b7\s?Standard", form)), 15)
 
     def test_the_reset_link_keeps_only_the_instrument(self):
         # der Link darf kein Filter- und kein Sortierparameter tragen
@@ -2647,6 +2737,26 @@ class TheDefaultsAreVisible(unittest.TestCase):
             self.assertIn("<input", label, feld)
             vor_dem_feld = label[:label.index("<input")]
             self.assertIn("Standard", vor_dem_feld, feld)
+
+    # --- D11: das neue Feld traegt seinen Namen und erklaert den leeren Zustand ---
+
+    def test_the_width_field_is_named_and_explains_its_empty_state(self):
+        """Das Formularfeld heisst `pair_max_width` und sagt in seinem Text, dass
+        leer "nur benachbarte Strikes" bedeutet.
+
+        Beides zusammen ist die Aussage: der Name allein liesse offen, was leer
+        heisst, und der Text allein haenge an keinem Feld. Ohne den Zusatz waere
+        die leere Breite als "Filter aus" zu lesen - sie IST aber der schnelle
+        Modus von vorher (Nachbarschaft).
+        """
+        page = self._page()
+        form = page[page.index("<form"):page.index("</form>")]
+        treffer = re.findall(r'<input[^>]*name="pair_max_width"[^>]*>', form)
+        self.assertEqual(len(treffer), 1)
+        self.assertIn('type="number"', treffer[0])
+        label = self._label(page, self.BREITE)
+        self.assertIn("leer = nur benachbarte Strikes", label)
+        self.assertIn("gesetzt = alle Paare innerhalb dieser Breite", label)
 
 
 class TestErrorBehaviour(unittest.TestCase):

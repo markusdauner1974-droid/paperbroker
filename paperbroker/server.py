@@ -76,7 +76,7 @@ _REASON_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 # as 0: min_bid_size=0 demands a size >= 0 and drops every quote with size 0.
 _CRITERIA_INT_FIELDS = ("dte_min", "dte_max", "min_oi", "min_volume", "max_quote_age_min",
                         "min_bid_size", "min_ask_size")
-_CRITERIA_FLOAT_FIELDS = ("max_spread_pct", "max_spread_abs", "iv_min", "iv_max",
+_CRITERIA_FLOAT_FIELDS = ("max_spread_pct", "max_spread_abs", "pair_max_width", "iv_min", "iv_max",
                           "weight_spread", "weight_oi", "weight_iv")
 _CRITERIA_BOOL_FIELDS = ("require_oi", "require_volume")
 _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}

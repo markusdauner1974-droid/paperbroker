@@ -40,6 +40,8 @@ class ScreenerCriteria:
     max_spread_abs: float | None = 0.10        # ask-bid bound in $ (penny zone only)
     min_oi: int | None = 500                   # open interest floor
     min_volume: int | None = 0                 # volume floor (0 = only require > 0)
+    pair_max_width: float | None = None        # D11: widest strike distance for a spread pair;
+                                               # None = adjacent strikes only (fast mode)
     min_bid_size: float | None = None          # disabled by default (data verified present)
     min_ask_size: float | None = None          # but configurable on demand
 
@@ -81,6 +83,8 @@ class ScreenerCriteria:
             bad.append(f"max_spread_pct: muss ≥ 0 sein (ist: {self.max_spread_pct}).")
         if self.max_spread_abs is not None and self.max_spread_abs < 0:
             bad.append(f"max_spread_abs: muss ≥ 0 sein (ist: {self.max_spread_abs}).")
+        if self.pair_max_width is not None and self.pair_max_width < 0:
+            bad.append(f"pair_max_width: muss ≥ 0 sein (ist: {self.pair_max_width}).")
         if self.min_oi is not None and self.min_oi < 0:
             bad.append(f"min_oi: muss ≥ 0 sein (ist: {self.min_oi}).")
         if self.min_volume is not None and self.min_volume < 0:
@@ -580,7 +584,7 @@ class VerticalPair:
         }
 
 
-def form_vertical_pairs(chain, option_type="call"):
+def form_vertical_pairs(chain, option_type="call", max_width=None):
     """Adjacent-strike pairs per (underlying, expiration) from the RAW chain.
 
     The iteration order IS the output order: groups ascending by
@@ -600,8 +604,23 @@ def form_vertical_pairs(chain, option_type="call"):
     pairs = []
     for key in sorted(groups):
         legs = sorted(groups[key], key=lambda q: q.asset.strike)
-        pairs.extend(VerticalPair(long=lower, short=upper)
-                     for lower, upper in zip(legs, legs[1:], strict=False))
+        if max_width is None:
+            # fast mode (default): adjacent strikes only
+            pairs.extend(VerticalPair(long=lower, short=upper)
+                         for lower, upper in zip(legs, legs[1:], strict=False))
+            continue
+        # D11: every pair inside an explicitly bounded width. Measured on a live chain
+        # (442 contracts): 220 adjacent pairs, 2880 inside 25 $ - both under 1 ms, so
+        # the wider search costs nothing. What grows is the NUMBER of results, which is
+        # why this is opt-in: an illiquid contract between two good legs no longer hides
+        # the wider spread (review finding 4). Every pair still runs through the same
+        # leg and pair checks as the list.
+        for i, lower in enumerate(legs):
+            for upper in legs[i + 1:]:
+                breite = float(upper.asset.strike) - float(lower.asset.strike)
+                if breite > max_width:
+                    break
+                pairs.append(VerticalPair(long=lower, short=upper))
     return pairs
 
 
@@ -659,7 +678,8 @@ def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
             return [], [(None, f"Verfall: Laufzeit {tage} Tage außerhalb "
                               f"[{criteria.dte_min}, {criteria.dte_max}]")]
         chain = gefiltert
-    for pair in form_vertical_pairs(chain, option_type=option_type):
+    for pair in form_vertical_pairs(chain, option_type=option_type,
+                                   max_width=criteria.pair_max_width):
         if pair.net_debit <= 0 or pair.net_debit >= pair.strike_width:
             # PAIR-level rule (both legs are quoted by now). Debit <= 0 means the
             # higher strike's bid reaches the lower strike's ask - an incoherent

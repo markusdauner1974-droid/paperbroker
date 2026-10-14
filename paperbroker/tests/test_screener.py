@@ -889,6 +889,70 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(form_vertical_pairs([]), [])
         self.assertEqual(vertical_spreads([], _LOOSE, now_fn=_NOW), ([], []))
 
+    # --- D11: der Standard bleibt die Nachbarschaft ------------------------
+
+    @staticmethod
+    def _nachbarpaare(chain):
+        """Die Nachbarschafts-Paare unabhaengig nachgebaut.
+
+        Gruppen getrennt, Strikes sortiert, OCC-Symbole als Namen. Die Erwartung
+        kommt NICHT aus der Funktion, die sie prueft.
+        """
+        gruppen = {}
+        for q in chain:
+            if q.asset.option_type != "call":
+                continue
+            gruppen.setdefault((q.asset.underlying.symbol, q.asset.expiration_date),
+                               []).append(q)
+        paare = []
+        for key in sorted(gruppen):
+            legs = sorted(gruppen[key], key=lambda q: q.asset.strike)
+            paare += [f"{a.asset.symbol}/{b.asset.symbol}"
+                      for a, b in zip(legs, legs[1:], strict=False)]
+        return paare
+
+    def test_the_default_width_leaves_the_adjacency_unchanged(self):
+        """D11-Aequivalenz: ohne Breite genau die Paare von vorher.
+
+        `max_width=None` ist der Standard, und der Standard ist die Nachbarschaft
+        (ScreenerCriteria.pair_max_width ist None - das ist der Wert, den ein
+        leeres Formularfeld hinterlaesst). Geprueft an beiden Fixtures und an
+        ihrer Vereinigung; die Erwartung ist aus den Rohnummern nachgebaut.
+        """
+        form_vertical_pairs, _leg, _vs = self._api()
+        self.assertIsNone(ScreenerCriteria().pair_max_width)      # leer = Nachbarschaft
+        self.assertIsNone(_LOOSE.pair_max_width)
+        for kette in (make(), make_verticals(), make() + make_verticals()):
+            erwartet = self._nachbarpaare(kette)
+            self.assertEqual([p.symbol for p in form_vertical_pairs(kette)], erwartet)
+            # die Breite ausdruecklich auf None: dieselbe Liste, kein zweiter Weg
+            self.assertEqual([p.symbol for p in form_vertical_pairs(kette, max_width=None)],
+                             erwartet)
+
+    def test_the_fast_mode_forms_adjacent_pairs_only(self):
+        """D11-Gestalt: die Zahl der Paare ist Legs minus Gruppen, und kein Paar
+        ueberspringt einen Strike.
+
+        Eine Gestaltaussage, keine Laufzeitmessung: festgehalten wird, WAS der
+        schnelle Modus liefert (Nachbarn), nicht wie lange er braucht.
+        """
+        form_vertical_pairs, _leg, _vs = self._api()
+        for kette in (make(), make_verticals(), make() + make_verticals()):
+            paare = form_vertical_pairs(kette, max_width=None)
+            legs = [q for q in kette if q.asset.option_type == "call"]
+            gruppen = {(q.asset.underlying.symbol, q.asset.expiration_date)
+                       for q in legs}
+            self.assertEqual(len(paare), len(legs) - len(gruppen))
+            # Nachbarn: zwischen den beiden Strikes eines Paares liegt kein
+            # weiterer Kontrakt derselben Gruppe
+            for paar in paare:
+                dazwischen = [
+                    q.asset.symbol for q in legs
+                    if q.asset.underlying.symbol == paar.long.asset.underlying.symbol
+                    and q.asset.expiration_date == paar.long.asset.expiration_date
+                    and paar.long.asset.strike < q.asset.strike < paar.short.asset.strike]
+                self.assertEqual(dazwischen, [], paar.symbol)
+
 
 class TheReasonsAreGerman(unittest.TestCase):
     """Slice D4: die Ausschuss-Gruende sind deutsch.
