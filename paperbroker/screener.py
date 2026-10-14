@@ -18,6 +18,7 @@
     Units follow the adapter conventions: prices in dollars, IV/greeks
     stored as percentages (CBOE decimal 0.25 -> stored 25).
 """
+import math
 from dataclasses import dataclass, field, fields
 from typing import Optional, Protocol
 
@@ -140,7 +141,11 @@ class ScreenResult:
 
 def _spread_pct(q: OptionQuote):
     bid, ask = q.bid, q.ask
-    if bid is None or ask is None or ask <= 0 or bid <= 0:
+    if bid is None or ask is None:
+        return None
+    if not (math.isfinite(bid) and math.isfinite(ask)):
+        return None  # D8: infinity is not a price
+    if ask <= 0 or bid <= 0:
         return None
     if bid > ask:
         return None  # crossed market: nonsensical quote, not a candidate
@@ -246,10 +251,19 @@ def filter_iv(quotes, criteria: ScreenerCriteria):
     return kept, dropped
 
 
-def filter_dte(quotes, criteria: ScreenerCriteria):
+def filter_dte(quotes, criteria: ScreenerCriteria, now_fn=None):
     kept, dropped = [], []
+    # D8: the window is measured against the clock of THIS scan, not against the day
+    # the feed stamped the quote. The stored field keeps the data's own maturity (the
+    # Greeks are priced with it); filter, expiration picker and header now share ONE
+    # basis - the app passes its clock, exactly like the picker already did.
+    # imported here on purpose: the module keeps arrow a local import (see filter_stale).
+    import arrow
+
+    clock = now_fn or arrow.get
     for q in quotes:
-        d = q.days_to_expiration
+        asset = getattr(q, "asset", None)
+        d = asset.get_days_to_expiration(clock()) if asset is not None else q.days_to_expiration
         if d is None:
             dropped.append((q, "DTE fehlt"))
             continue
@@ -390,7 +404,7 @@ def screen(quotes, criteria: ScreenerCriteria, trend=None, now_fn=None):
     quotes, d = filter_oi(quotes, criteria);            dropped_all += d
     quotes, d = filter_volume(quotes, criteria);        dropped_all += d
     quotes, d = filter_iv(quotes, criteria);            dropped_all += d
-    quotes, d = filter_dte(quotes, criteria);           dropped_all += d
+    quotes, d = filter_dte(quotes, criteria, now_fn=now_fn); dropped_all += d
     quotes, d = filter_sizes(quotes, criteria);         dropped_all += d
 
     results = []

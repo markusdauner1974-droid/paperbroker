@@ -466,18 +466,12 @@ class TestDropReasons(unittest.TestCase):
         # group (two identical "iv=0 illiquide"), a PATTERN group (two
         # different OI bounds) and a single raw group (one wide spread).
         return [
-            quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0, oi=8000,
-                  dte=10),                                   # candidate
-            quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=0.0, oi=1500,
-                  dte=10),                                   # iv=0 illiquide
-            quote("AAPL260116C00260000", bid=2.40, ask=2.50, iv=0.0, oi=1500,
-                  dte=10),                                   # iv=0 illiquide
-            quote("AAPL260116C00270000", bid=1.20, ask=1.30, iv=30.0, oi=5,
-                  dte=10),                                   # OI 5 < 500
-            quote("AAPL260116C00275000", bid=1.20, ask=1.30, iv=30.0, oi=200,
-                  dte=10),                                   # OI 200 < 500
-            quote("AAPL260116C00280000", bid=1.50, ask=2.00, iv=45.0, oi=9000,
-                  dte=10),                                   # spread 28.6 %
+            quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0, oi=8000),                                   # candidate
+            quote("AAPL261016C00245000", bid=2.40, ask=2.50, iv=0.0, oi=1500),                                   # iv=0 illiquide
+            quote("AAPL261016C00260000", bid=2.40, ask=2.50, iv=0.0, oi=1500),                                   # iv=0 illiquide
+            quote("AAPL261016C00270000", bid=1.20, ask=1.30, iv=30.0, oi=5),                                   # OI 5 < 500
+            quote("AAPL261016C00275000", bid=1.20, ask=1.30, iv=30.0, oi=200),                                   # OI 200 < 500
+            quote("AAPL261016C00280000", bid=1.50, ask=2.00, iv=45.0, oi=9000),                                   # spread 28.6 %
         ]
 
     @staticmethod
@@ -577,16 +571,16 @@ class TestDropReasons(unittest.TestCase):
         picker = self._app(self._stale_chain()).test_client().get(
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertEqual(picker["dropped_reasons"], [])
-        clean = self._json([quote("AAPL260116C00240000", bid=5.00, ask=5.10,
-                                  iv=28.0, oi=8000, dte=10)])
+        clean = self._json([quote("AAPL261016C00240000", bid=5.00, ask=5.10,
+                                  iv=28.0, oi=8000)])
         self.assertEqual(clean["dropped_reasons"], [])
         self.assertEqual(clean["dropped"], 0)
 
     # --- edge case: nothing dropped at all ---
 
     def test_no_drops_render_no_block(self):
-        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
-                       oi=8000, dte=10)]
+        chain = [quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
+                       oi=8000)]
         html_page = self._page(chain)
         self.assertIn("Kandidaten: <b>1</b>", html_page)
         self.assertIn("Datenalter:", html_page)          # the header stays
@@ -599,8 +593,8 @@ class TestDropReasons(unittest.TestCase):
 
     @staticmethod
     def _one(ts):
-        return [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
-                      oi=8000, dte=10, quote_timestamp=ts)]
+        return [quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
+                      oi=8000, quote_timestamp=ts)]
 
     def test_the_lamp_bands_and_the_missing_value(self):
         # pin: measured before this slice - green < 30, yellow < 120, red
@@ -621,10 +615,8 @@ class TestDropReasons(unittest.TestCase):
         # newest governs; the lamp reads the FETCHED chain (CodeRabbit), not
         # the results - here the fresh contract is the DROPPED one
         mixed = [
-            quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=0.0, oi=8000,
-                  dte=10, quote_timestamp="2026-10-07 14:30:00"),   # fresh, dropped
-            quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=28.0, oi=1500,
-                  dte=10, quote_timestamp="2026-10-07 10:00:00"),   # old, stale
+            quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=0.0, oi=8000, quote_timestamp="2026-10-07 14:30:00"),   # fresh, dropped
+            quote("AAPL261016C00245000", bid=2.40, ask=2.50, iv=28.0, oi=1500, quote_timestamp="2026-10-07 10:00:00"),   # old, stale
         ]
         html_page = self._page(mixed)
         self.assertIn("lamp green", html_page)
@@ -846,14 +838,14 @@ class TestSettableCriteria(unittest.TestCase):
         d = self._json({"iv_min": "29"})                 # IVs are 28 and 30
         self.assertEqual(d["criteria"]["iv_min"], 29.0)
         self.assertEqual(d["candidates"], 1)
-        self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL260116C00245000"])
+        self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL261016C00245000"])
         self.assertEqual(self._gruende(d)["IV # < #"], 2)
 
     def test_iv_max_drops_the_high_iv_contract(self):
         d = self._json({"iv_max": "29"})
         self.assertEqual(d["criteria"]["iv_max"], 29.0)
         self.assertEqual(d["candidates"], 1)
-        self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL260116C00240000"])
+        self.assertEqual([r["symbol"] for r in d["results"]], ["AAPL261016C00240000"])
         self.assertEqual(self._gruende(d)["IV # > #"], 2)
 
     def test_max_spread_abs_tightens_the_penny_zone(self):
@@ -877,13 +869,13 @@ class TestSettableCriteria(unittest.TestCase):
         aus = self._json({**weit, "require_oi": "0"})
         self.assertFalse(aus["criteria"]["require_oi"])
         self.assertEqual(aus["candidates"], 3)
-        self.assertIn("AAPL260116C00265000", [r["symbol"] for r in aus["results"]])
+        self.assertIn("AAPL261016C00265000", [r["symbol"] for r in aus["results"]])
         self.assertNotIn("OI fehlt", self._gruende(aus))
 
     def test_require_volume_can_be_switched_on(self):
         # make() has no contract without volume, so this test brings its own
-        kette = make() + [quote("AAPL260116C00270000", bid=1.00, ask=1.05, iv=27.0,
-                                oi=3000, volume=None, dte=10)]
+        kette = make() + [quote("AAPL261016C00270000", bid=1.00, ask=1.05, iv=27.0,
+                                oi=3000, volume=None)]
         weit = {"max_spread_pct": "50", "max_spread_abs": "1"}
         aus = self._json(weit, quotes=kette)
         self.assertFalse(aus["criteria"]["require_volume"])
@@ -1079,8 +1071,8 @@ class TestResultList(unittest.TestCase):
     def test_the_reasons_come_from_the_contract(self):
         # a chain with different numbers: a fixed text in the template cannot
         # satisfy this one
-        chain = [quote("AAPL260116C00240000", bid=1.00, ask=1.10, iv=21.0,
-                       oi=4242, volume=7, dte=10)]
+        chain = [quote("AAPL261016C00240000", bid=1.00, ask=1.10, iv=21.0,
+                       oi=4242, volume=7)]
         self.assertIn('title="spread 9.5%; OI 4242; IV 21"', self._page({}, chain))
 
     def test_the_delta_column_states_its_unit(self):
@@ -1088,15 +1080,34 @@ class TestResultList(unittest.TestCase):
         self.assertIn("<th>Δ×100</th>", page)
         self.assertNotIn("<th>Δ</th>", page)
 
-    def test_the_header_shows_the_expiration_and_the_dte(self):
+    def test_the_header_names_the_dte_basis(self):
+        # D8: the single "DTE 38 (Kalendertage)" line read like the DATA's own
+        # maturity. The honest maturity is expiry minus the SCAN clock
+        # (2026-10-16 - 2026-10-07 = 9), and the label now says so.
         stats = self._stats(self._page({}))
         self.assertIn("Verfall 2026-10-16", stats)
-        self.assertIn("DTE 10", stats)
+        self.assertIn("DTE 9 (Tage ab heute)", stats)
+        self.assertNotIn("(Kalendertage)", stats)
+
+    def test_the_header_names_the_feed_stamp_as_well(self):
+        # D8 (E1 = c) requires the header to name BOTH numbers: the scan's
+        # maturity AND the data's own stamp. The template asks for the second
+        # one (screen.html:170 `{% if feed_time %}<span>Kursdatum ...`), but the
+        # delivered server computes feed_time at server.py:407 and never hands
+        # it to render_template (screen.html never receives it, ruff F841 on
+        # exactly that line). RED ON PURPOSE - this is a REAL defect of the D8
+        # artifact, not a fixture contradiction, so it is named rather than
+        # papered over. It goes green the moment render_template gets
+        # `feed_time=feed_time`.
+        stats = self._stats(self._page({}))
+        self.assertIn("Kursdatum 2026-10-07 14:30:00", stats)
 
     def test_the_header_dte_follows_the_contracts(self):
-        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
-                       oi=8000, volume=1200, dte=23)]
-        self.assertIn("DTE 23", self._stats(self._page({}, chain)))
+        # a chain on its OWN expiry: 2026-10-30 - 2026-10-07 = 23. A hardcoded
+        # "DTE 9" in the template cannot satisfy this one.
+        chain = [quote("AAPL261030C00240000", bid=5.00, ask=5.10, iv=28.0,
+                       oi=8000, volume=1200)]
+        self.assertIn("DTE 23 (Tage ab heute)", self._stats(self._page({}, chain)))
 
     def test_the_header_shows_no_dte_without_results(self):
         stats = self._stats(self._page({"min_oi": "999999"}))
@@ -1107,17 +1118,71 @@ class TestResultList(unittest.TestCase):
     # --- in which order (pin: green before and after) ---
 
     def test_the_rows_are_ordered_by_score_and_ties_are_kept(self):
-        tie_a = quote("AAPL260116C00240000", bid=2.40, ask=2.50, iv=30.0,
-                      oi=1500, volume=300, dte=10)
-        best = quote("AAPL260116C00245000", bid=5.00, ask=5.10, iv=28.0,
-                      oi=8000, volume=1200, dte=10)
-        tie_b = quote("AAPL260116C00261000", bid=2.40, ask=2.50, iv=30.0,
-                      oi=1500, volume=300, dte=10)
+        tie_a = quote("AAPL261016C00240000", bid=2.40, ask=2.50, iv=30.0,
+                      oi=1500, volume=300)
+        best = quote("AAPL261016C00245000", bid=5.00, ask=5.10, iv=28.0,
+                      oi=8000, volume=1200)
+        tie_b = quote("AAPL261016C00261000", bid=2.40, ask=2.50, iv=30.0,
+                      oi=1500, volume=300)
         page = self._page({}, [tie_a, best, tie_b])
         self.assertEqual(self._symbols(page),
-                         ["AAPL260116C00245000", "AAPL260116C00261000",
-                          "AAPL260116C00240000"])
+                         ["AAPL261016C00245000", "AAPL261016C00261000",
+                          "AAPL261016C00240000"])
 
+
+
+class TestNonFiniteJsonBody(unittest.TestCase):
+    """D8 (E2 = a): the body of /api/screen is STRICT JSON.
+
+    Flask's encoder writes float('inf') as the bare token ``Infinity`` and a
+    NaN as ``NaN``. Neither is valid JSON (RFC 8259), so one non-finite price
+    made the WHOLE response unreadable for a strict consumer (the Phase 6
+    bot). Measured before D8: the ``ask=inf`` contract passed the spread
+    filter - mid became inf, the relative spread NaN, and ``NaN > bound`` is
+    False - so it stood in ``results`` with an Infinity ask.
+    """
+
+    DATE = "2026-10-16"
+
+    def _body(self):
+        chain = [
+            quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
+                  oi=8000, volume=1200),                    # clean candidate
+            quote("AAPL261016C00245000", bid=2.40, ask=float("inf"), iv=30.0,
+                  oi=1500, volume=300),                     # ask = +inf
+            quote("AAPL261016C00260000", bid=float("nan"), ask=float("inf"),
+                  iv=30.0, oi=1500, volume=300),            # bid NaN, ask inf
+        ]
+        app = create_app(quote_adapter=_MockAdapter(chain), screener=None,
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app.test_client().get(
+            "/api/screen",
+            query_string={"ticker": "AAPL", "expiration": self.DATE}
+        ).get_data(as_text=True)
+
+    def test_the_body_carries_no_non_finite_token(self):
+        body = self._body()
+        self.assertNotIn("Infinity", body)
+        self.assertNotIn("-Infinity", body)
+        self.assertNotIn("NaN", body)
+
+    def test_the_body_parses_with_a_strict_parser_and_drops_them(self):
+        # json.loads calls parse_constant ONLY for the three literals
+        # Infinity/-Infinity/NaN; the raising lambda makes a leak a failure
+        def _reject(token):
+            raise ValueError(f"non-finite JSON token: {token}")
+
+        data = json.loads(self._body(), parse_constant=_reject)
+        symbols = [r["symbol"] for r in data["results"]]
+        self.assertNotIn("AAPL261016C00245000", symbols)
+        self.assertNotIn("AAPL261016C00260000", symbols)
+        self.assertIn("AAPL261016C00240000", symbols)
+        self.assertEqual(data["candidates"], 1)
+        self.assertEqual(data["chain_size"], 3)
+        # the two non-finite contracts are named as rejected, not silently gone
+        self.assertEqual(data["dropped_reasons"],
+                         [{"reason": "Spread: kein Geld-/Briefkurs", "count": 2}])
 
 
 class TestVerticalSpreadList(unittest.TestCase):
@@ -1132,7 +1197,7 @@ class TestVerticalSpreadList(unittest.TestCase):
         adapter = _MockAdapter(make_verticals() if quotes is None else quotes)
         # the fixture lives on its own date; /api/screen only accepts a date
         # the chain really lists
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(
             quote_adapter=adapter,
             screener=OptionScreener(criteria or _WIDE),
@@ -1141,13 +1206,13 @@ class TestVerticalSpreadList(unittest.TestCase):
         return app
 
     def _json(self, quotes=None, criteria=None, params=None):
-        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
         query.update(params or {})
         return self._app(quotes, criteria).test_client().get(
             "/api/screen", query_string=query).get_json()
 
     def _page(self, quotes=None, criteria=None, params=None):
-        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
         query.update(params or {})
         return self._app(quotes, criteria).test_client().get(
             "/", query_string=query).get_data(as_text=True)
@@ -1157,14 +1222,14 @@ class TestVerticalSpreadList(unittest.TestCase):
         # rule; AMZN and TSLA survive the leg chain under the wide criteria.
         data = self._json()
         self.assertEqual([v["symbol"] for v in data["verticals"]],
-                         ["AMZN260116C00260000/AMZN260116C00262500",
-                          "TSLA260116C00290000/TSLA260116C00292500"])
+                         ["AMZN261016C00260000/AMZN261016C00262500",
+                          "TSLA261016C00290000/TSLA261016C00292500"])
 
     def test_a_pair_carries_the_four_numbers_and_the_ratio(self):
         v = self._json()["verticals"][0]          # AMZN 260/262.5
-        self.assertEqual(v["long_symbol"], "AMZN260116C00260000")
-        self.assertEqual(v["short_symbol"], "AMZN260116C00262500")
-        self.assertEqual(v["expiration"], "2026-01-16")
+        self.assertEqual(v["long_symbol"], "AMZN261016C00260000")
+        self.assertEqual(v["short_symbol"], "AMZN261016C00262500")
+        self.assertEqual(v["expiration"], "2026-10-16")
         self.assertEqual(v["strike_width"], 2.5)
         self.assertEqual(v["net_debit"], 0.7)     # 1.20 - 0.50
         self.assertEqual(v["max_loss"], 0.7)
@@ -1181,7 +1246,7 @@ class TestVerticalSpreadList(unittest.TestCase):
         range. Now the pair rule drops it and names the reason.
         """
         data = self._json()
-        self.assertNotIn("AAPL260116C00250000/AAPL260116C00252500",
+        self.assertNotIn("AAPL261016C00250000/AAPL261016C00252500",
                          [v["symbol"] for v in data["verticals"]])
         self.assertEqual([v["symbol"] for v in data["verticals"]
                           if v["debit_ge_width"]], [])
@@ -1241,7 +1306,7 @@ class TestVerticalSpreadList(unittest.TestCase):
         body = page.split("<tbody>")[-1].split("</tbody>")[0]
         symbols = [re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', row, re.S)[0].strip()
                    for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
-        self.assertEqual(symbols, ["AAPL260116C00240000", "AAPL260116C00245000"])
+        self.assertEqual(symbols, ["AAPL261016C00240000", "AAPL261016C00245000"])
         self.assertEqual(page.count("<tbody>"), 1)
         self.assertIn("<th>\u0394\u00d7100</th>", page)
         self.assertNotIn("<th>\u0394</th>", page)
@@ -1256,7 +1321,7 @@ class TestVerticalSpreadList(unittest.TestCase):
         werden (Basisstand gemessen: laengster Tooltip 51 Zeichen).
         """
         client = self._app().test_client()
-        html_page = client.get("/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True)
+        html_page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
         self.assertIn("CBOE-Kursdaten zeitversetzt", html_page)
         self.assertIn("ca. 15 Minuten hinter Echtzeit", html_page)
         self.assertNotIn("delayed feed", html_page)
@@ -1268,8 +1333,8 @@ class TestVerticalSpreadList(unittest.TestCase):
 
 
     def test_a_chain_without_neighbours_reports_two_empty_lists(self):
-        data = self._json(quotes=[quote("AAPL260116C00240000", bid=5.00, ask=5.10,
-                                       iv=28.0, oi=8000, volume=1200, dte=10)])
+        data = self._json(quotes=[quote("AAPL261016C00240000", bid=5.00, ask=5.10,
+                                       iv=28.0, oi=8000, volume=1200)])
         self.assertEqual(data["verticals"], [])
         self.assertEqual(data["vertical_drops"], [])
 
@@ -1668,7 +1733,7 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         adapter = _MockAdapter(make_verticals() if quotes is None else quotes)
         # die Fixture liegt auf ihrem eigenen Verfall; /api/screen und die Seite
         # nehmen nur ein Datum an, das die Kette wirklich listet
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(quote_adapter=adapter,
                          screener=OptionScreener(criteria or _WIDE),
                          now_fn=_clock())
@@ -1676,13 +1741,13 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         return app
 
     def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
         query.update(params or {})
         return self._app(quotes).test_client().get("/", query_string=query).get_data(as_text=True)
 
     def _json(self, quotes=None):
         return self._app(quotes).test_client().get(
-            "/api/screen", query_string={"ticker": "AAPL", "expiration": "2026-01-16"}).get_json()
+            "/api/screen", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}).get_json()
 
     @staticmethod
     def _spread_rows(page):
@@ -1719,7 +1784,7 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     def test_the_spread_cell_names_the_trade_and_keeps_the_codes_in_the_tooltip(self):
         html = self._page()
-        self.assertIn('title="AMZN260116C00260000 / AMZN260116C00262500"', html)
+        self.assertIn('title="AMZN261016C00260000 / AMZN261016C00262500"', html)
         self.assertIn(">AMZN 260.00 / 262.50 Call<", html)
 
     def test_the_spread_row_keeps_the_shape_the_other_tests_parse(self):
@@ -1729,7 +1794,7 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
                                  max_spread_abs=None, min_oi=None,
                                  dte_min=None, dte_max=None)
         page = self._app(criteria=loose).test_client().get(
-            "/", query_string={"ticker": "AAPL", "expiration": "2026-01-16"}).get_data(as_text=True)
+            "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}).get_data(as_text=True)
         for zeile in self._spread_rows(page):
             self.assertEqual(len(zeile), 11)
         self.assertEqual(page.count("<tbody>"), 1)
@@ -1776,8 +1841,8 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         # GEMESSEN: die Bein-Regel sortiert `debit <= 0` schon aus, ein Spread
         # ohne Verlust kann die Seite also gar nicht erreichen. Der Schutz in
         # der Anzeige wird deshalb direkt geprueft - nicht ueber die Seite.
-        kette = [quote("AAPL260116C00250000", bid=0.45, ask=0.50, iv=30.0, oi=1500, dte=10),
-                 quote("AAPL260116C00252500", bid=0.50, ask=0.55, iv=30.0, oi=1500, dte=10)]
+        kette = [quote("AAPL261016C00250000", bid=0.45, ask=0.50, iv=30.0, oi=1500),
+                 quote("AAPL261016C00252500", bid=0.50, ask=0.55, iv=30.0, oi=1500)]
         behalten, verworfen = server_module.vertical_spreads(kette, _LOOSE, now_fn=_clock)
         self.assertEqual(behalten, [])
         self.assertEqual(verworfen[0][1], "Debit 0.0 außerhalb (0, 2.5) - kein Gewinn möglich")
@@ -1794,9 +1859,9 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         self.assertEqual(server_module._spread_return_pct(MitVerlust()), 50.0)
 
     def test_a_spread_without_spot_shows_a_dash(self):
-        kette = [quote("AAPL260116C00250000", bid=1.10, ask=1.20, iv=30.0, oi=1500, dte=10,
+        kette = [quote("AAPL261016C00250000", bid=1.10, ask=1.20, iv=30.0, oi=1500,
                        underlying_price=None),
-                 quote("AAPL260116C00252500", bid=0.45, ask=0.50, iv=30.0, oi=1500, dte=10,
+                 quote("AAPL261016C00252500", bid=0.45, ask=0.50, iv=30.0, oi=1500,
                        underlying_price=None)]
         self.assertEqual(self._spread_rows(self._page(quotes=kette))[0][8], "-")
         # ... und nur dort: die Rendite ist rechenbar und bleibt eine Zahl
@@ -1824,7 +1889,7 @@ class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
         # make() + make_verticals(): die VOLLE Seite braucht beide Ketten,
         # sonst faellt die Einzelkontrakt-Tabelle weg (gemessen)
         adapter = _MockAdapter(make() + make_verticals())
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(quote_adapter=adapter,
                          screener=OptionScreener(criteria if criteria is not None
                                                  else ScreenerCriteria()),
@@ -1847,11 +1912,11 @@ class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
             "leere Startseite": gruen.get("/").get_data(as_text=True),
             "Alter-Grenze aus": aus.get("/").get_data(as_text=True),
             "Ticker ohne Verfall": gruen.get("/?ticker=AAPL").get_data(as_text=True),
-            "volle Seite": gruen.get("/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True),
-            "ungueltiger Ticker": gruen.get("/?ticker=../etc&expiration=2026-01-16").get_data(as_text=True),
+            "volle Seite": gruen.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True),
+            "ungueltiger Ticker": gruen.get("/?ticker=../etc&expiration=2026-10-16").get_data(as_text=True),
             "ungueltiges Datumsformat": gruen.get("/?ticker=AAPL&expiration=quatsch").get_data(as_text=True),
             "Verfall nicht gelistet": gruen.get("/?ticker=AAPL&expiration=2019-01-01").get_data(as_text=True),
-            "gelbe Lampe": gelb.get("/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True),
+            "gelbe Lampe": gelb.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True),
         }
 
     def test_no_page_carries_an_old_spelling(self):
@@ -1873,7 +1938,7 @@ class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
         with mock.patch.object(server_module, "_get_trend_provider",
                                return_value=_BrokenProvider()):
             page = self._client().get(
-                "/?ticker=AAPL&expiration=2026-01-16").get_data(as_text=True)
+                "/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
         self.assertIn("Trend nicht verfügbar", page)
         self.assertNotIn("verfuegbar", page)
 
@@ -1910,13 +1975,13 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
     @staticmethod
     def _page():
         adapter = _MockAdapter(make() + make_verticals())
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(quote_adapter=adapter,
                          screener=OptionScreener(_WIDE),
                          now_fn=_clock())
         app.config["TESTING"] = True
         return app.test_client().get(
-            "/", query_string={"ticker": "AAPL", "expiration": "2026-01-16"}
+            "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}
         ).get_data(as_text=True)
 
     @staticmethod
@@ -2100,7 +2165,7 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
         adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
         # die Fixture liegt auf ihrem eigenen Verfall; die Seite nimmt nur ein
         # Datum an, das die Kette wirklich listet
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(quote_adapter=adapter,
                          screener=OptionScreener(_WIDE),
                          now_fn=_clock())
@@ -2108,7 +2173,7 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
         return app
 
     def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
         query.update(params or {})
         return self._app(quotes).test_client().get(
             "/", query_string=query).get_data(as_text=True)
@@ -2184,8 +2249,8 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
 
     def test_without_spreads_there_is_no_lead_line(self):
         # ein einzelner Kontrakt hat keinen Nachbarn -> keine Spreads
-        einzeln = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0,
-                         oi=8000, volume=1200, dte=10)]
+        einzeln = [quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
+                         oi=8000, volume=1200)]
         page = self._page(quotes=einzeln)
         self.assertNotIn('class="lede"', page)
 
@@ -2222,7 +2287,7 @@ class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
     @staticmethod
     def _app(quotes=None):
         adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(quote_adapter=adapter,
                          screener=OptionScreener(ScreenerCriteria()),
                          now_fn=_clock())
@@ -2230,7 +2295,7 @@ class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
         return app
 
     def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
         query.update(params or {})
         return self._app(quotes).test_client().get(
             "/", query_string=query).get_data(as_text=True)
@@ -2304,7 +2369,7 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
     @staticmethod
     def _app(quotes=None):
         adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(quote_adapter=adapter,
                          screener=OptionScreener(ScreenerCriteria()),
                          now_fn=_clock())
@@ -2312,7 +2377,7 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
         return app
 
     def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
         query.update(params or {})
         return self._app(quotes).test_client().get(
             "/", query_string=query).get_data(as_text=True)
@@ -2407,7 +2472,7 @@ class TheDefaultsAreVisible(unittest.TestCase):
     @staticmethod
     def _app(quotes=None):
         adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
-        adapter.expirations = ["2026-01-16"]
+        adapter.expirations = ["2026-10-16"]
         app = create_app(quote_adapter=adapter,
                          screener=OptionScreener(ScreenerCriteria()),
                          now_fn=_clock())
@@ -2415,7 +2480,7 @@ class TheDefaultsAreVisible(unittest.TestCase):
         return app
 
     def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-01-16"}
+        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
         query.update(params or {})
         return self._app(quotes).test_client().get(
             "/", query_string=query).get_data(as_text=True)
@@ -2475,7 +2540,7 @@ class TheDefaultsAreVisible(unittest.TestCase):
         self.assertIsNotNone(m, "kein Ruecksetz-Link")
         ziel = html.unescape(m.group(1))
         self.assertIn("ticker=AAPL", ziel)
-        self.assertIn("expiration=2026-01-16", ziel)
+        self.assertIn("expiration=2026-10-16", ziel)
         for verboten in ("min_oi", "max_spread_pct", "weight_spread", "iv_min", "sort"):
             self.assertNotIn(verboten, ziel)
 

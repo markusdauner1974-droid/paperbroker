@@ -166,7 +166,8 @@
       <span>Kandidaten: <b>{{ results|length }}</b></span>
       <span>Gefiltert: {{ dropped_count }}</span>
       <span>Verfall {{ expiration }}</span>
-      {% if dte is not none %}<span>DTE {{ dte }} (Kalendertage)</span>{% endif %}
+      {% if dte is not none %}<span>DTE {{ dte }} (Tage ab heute)</span>{% endif %}
+      {% if feed_time %}<span>Kursdatum {{ feed_time }}</span>{% endif %}
     </div>
     {% if verticals %}
       <h2>Vertikale Call-Spreads</h2>

@@ -399,9 +399,15 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         # the header shows the DTE the DTE filter used (screener.filter_dte
         # reads quote.days_to_expiration) - the same field, not a second
         # computation. No rows -> no DTE claim.
-        dte = results[0].quote.days_to_expiration if results else None
+        # D8: two numbers, both named. The feed stamp is what the data says, the DTE
+        # is what this scan sees - they used to disagree silently (the picker offered a
+        # date the filter then dropped).
+        top = results[0].quote if results else None
+        dte = top.asset.get_days_to_expiration(now_fn()) if top is not None else None
+        feed_time = getattr(top, "quote_timestamp", None) if top is not None else None
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
+            feed_time=feed_time,
             dates=offered, dates_loaded=dates is not None,
             results=results, dropped_count=len(dropped) if dropped else 0,
             dropped_reasons=_drop_reason_groups(dropped),
