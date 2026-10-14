@@ -2124,6 +2124,114 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         self.assertNotEqual(self._spread_rows(self._page(quotes=kette))[0][7], "-")
 
 
+class TheSpreadSectionFollowsTheCallPutSwitch(unittest.TestCase):
+    """D14: der Spread-Abschnitt handelt die Seite, die der Bediener waehlt.
+
+    Seit D12 nimmt die Rechnung `option_type`; beide Routen gaben aber nur den
+    Standard weiter, der Abschnitt war also auf Calls festgelegt. Der Umschalter
+    "Spreads" speist ihn jetzt, und Ueberschrift, Zell-Label je Zeile und das
+    `spread_type` des JSON folgen alle derselben Wahl.
+
+    Die Kette traegt BEIDE Seiten und MEHR Put- als Call-Paare (ein benachbartes
+    Call-Paar, drei benachbarte Put-Paare) - der Zeilenvergleich ist damit ein
+    echter Vergleich und keine abgeschriebene Zahl.
+    """
+
+    @staticmethod
+    def _quotes():
+        return [
+            # Calls: ein benachbartes Paar (100 / 105)
+            quote("SPY261016C00100000", bid=2.40, ask=2.50, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016C00105000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=300),
+            # Puts: drei benachbarte Paare (100/105, 105/110, 110/115). Bei Puts ist
+            # der HOEHERE Strike die lange Seite, der Debit ask(oben) - bid(unten)
+            # liegt also je Paar in (0, 5) und passiert die Paar-Regel.
+            quote("SPY261016P00100000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016P00105000", bid=2.40, ask=2.60, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016P00110000", bid=3.50, ask=3.70, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016P00115000", bid=4.50, ask=4.70, iv=30.0, oi=1500, volume=300),
+        ]
+
+    def _client(self):
+        adapter = _MockAdapter(self._quotes())
+        adapter.expirations = ["2026-10-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(_WIDE), now_fn=_clock())
+        app.config["TESTING"] = True
+        return app.test_client()
+
+    def _query(self, params=None):
+        query = {"ticker": "SPY", "expiration": "2026-10-16"}
+        query.update(params or {})
+        return query
+
+    def _page(self, params=None):
+        return self._client().get(
+            "/", query_string=self._query(params)).get_data(as_text=True)
+
+    def _json(self, params=None):
+        return self._client().get(
+            "/api/screen", query_string=self._query(params)).get_json()
+
+    @staticmethod
+    def _heading(page):
+        """Der Spread-Abschnitt nennt seine Seite in EINER <h2>."""
+        return re.search(r"<h2>(.*?)</h2>", page, re.S).group(1)
+
+    @staticmethod
+    def _spread_rows(page):
+        """Die Zeilen der Spread-Tabelle - am Kopf erkannt, nicht an der Position."""
+        tables = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
+                  if "<th>Spread</th>" in t]
+        if not tables:
+            return []
+        zeilen = re.findall(r"<tr>(.*?)</tr>", tables[0], re.S)
+        return [[re.sub(r"<[^>]+>", "", c).strip() for c in
+                 re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', z, re.S)]
+                for z in zeilen[1:]]
+
+    # --- die Ueberschrift folgt der Wahl ---
+
+    def test_the_heading_names_the_side_the_operator_picked(self):
+        self.assertEqual(self._heading(self._page()), "Vertikale Call-Spreads")
+        self.assertEqual(self._heading(self._page({"option_type": "put"})),
+                         "Vertikale Put-Spreads")
+
+    # --- die Zeilen folgen der Wahl ---
+
+    def test_the_rows_follow_the_choice_and_the_puts_outnumber_the_calls(self):
+        call_rows = self._spread_rows(self._page())
+        put_rows = self._spread_rows(self._page({"option_type": "put"}))
+        # ein echter Vergleich, keine abgeschriebene Zahl: dieselbe Kette, beide Seiten
+        self.assertGreater(len(put_rows), len(call_rows))
+        self.assertGreater(len(call_rows), 0)
+        for zeile in call_rows:
+            self.assertTrue(zeile[0].endswith(" Call"), zeile[0])
+        for zeile in put_rows:
+            self.assertTrue(zeile[0].endswith(" Put"), zeile[0])
+
+    # --- ein unbekannter Wert: Fehlerbox, dann weiter mit Calls ---
+
+    def test_an_unknown_side_shows_the_error_box_and_keeps_computing_calls(self):
+        page = self._page({"option_type": "bogus"})
+        self.assertIn(
+            '<div class="err">Ungültige Spread-Art - erlaubt sind Calls oder Puts.</div>',
+            page)
+        # kein stiller Rueckfall: die Seite rechnet weiter mit Calls, die
+        # Ueberschrift bleibt Call-Spreads und die Zeilenzahl ist die der Calls
+        self.assertEqual(self._heading(page), "Vertikale Call-Spreads")
+        self.assertEqual(len(self._spread_rows(page)),
+                         len(self._spread_rows(self._page())))
+
+    # --- das JSON nennt die Seite, die es benutzt hat ---
+
+    def test_the_json_names_the_side_it_used(self):
+        """`spread_type` folgt DERSELBEN Anfrage wie die Ueberschrift."""
+        for params, erwartet in ((None, "call"), ({"option_type": "put"}, "put")):
+            self.assertEqual(self._json(params)["spread_type"], erwartet, params)
+            self.assertEqual(self._heading(self._page(params)),
+                             f"Vertikale {erwartet.capitalize()}-Spreads", params)
+
 
 class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
     """Slice D0: die Oberflaeche schreibt deutsch MIT Umlauten, in EINER Schreibweise.
@@ -2200,9 +2308,13 @@ class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
 
 
 class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
-    """ausD1 (D1): die Filter liegen in vier Gruppen in einem Raster, die Seite
+    """ausD1 (D1): die Filter liegen in Gruppen in einem Raster, die Seite
     ist breiter als ihre breiteste Tabelle, und das Feld mit der scharfen Null
     traegt seinen Hinweis.
+
+    Sechs Gruppen in Dokumentreihenfolge: die vier Filter (Liquiditaet, Laufzeit
+    und Frische, Volatilitaet, Bewertung), dazu der Spread-Umschalter (D14) und
+    die Positionsgroesse (D12).
 
     Zahlen aus der Messung (docs/210_ausD1_phase1_bis3.md): die Spread-Tabelle
     ist 837 px breit, der Inhaltsbereich war 760 px, der Leerraum betrug 37,4 %
@@ -2224,16 +2336,22 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
                                   "ignore_quote_age")),
         ("Volatilit\u00e4t", ("iv_min", "iv_max", "iv_pref")),
         ("Bewertung", ("weight_spread", "weight_oi", "weight_iv")),
+        # D14: which side of the chain the spread section trades. It does not
+        # filter the chain - it picks the side for the table below, so it has
+        # its own group and stands BETWEEN the four filters and the position.
+        ("Spreads", ("option_type",)),
         # D12: the position size is its own question and stands AFTER the four
         # filter groups. It does not filter the chain: it turns the pair numbers
         # above (per unit) into the position the operator would really hold.
         ("Position", ("multiplier", "quantity", "fees", "budget")),
     )
 
-    #: Die 19 Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
+    #: Die Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
     #: D11: pair_max_width kam dazu; min_volume BLEIBT (beide sind Kriterien).
     #: D12: die vier Felder der Gruppe Position (multiplier, quantity, fees,
     #: budget) sind ebenfalls <input type="number"> und zaehlen hier mit.
+    #: D14: der Umschalter (option_type) ist ein FUNKKNOPF, kein Zahlenfeld -
+    #: er wird in test_every_field_survives_the_regrouping als Paar geprueft.
     ZAHLENFELDER = ("dte_min", "dte_max", "max_spread_pct", "max_spread_abs", "min_oi",
                     "min_volume", "pair_max_width", "min_bid_size", "min_ask_size",
                     "iv_min", "iv_max", "max_quote_age_min", "weight_spread",
@@ -2343,18 +2461,21 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # die schaerfste Zusicherung: ein beim Umbau verlorenes oder doppeltes
         # Feld laesst sich nicht durch Textsuche finden
         erwartet = {"ticker": 1, "expiration": 1, "require_oi": 2,
-                    "require_volume": 2, "iv_pref": 3, "ignore_quote_age": 1}
+                    "require_volume": 2, "iv_pref": 3, "ignore_quote_age": 1,
+                    # D14: die zwei Funkknoepfe tragen denselben Namen - eine
+                    # EINZELNE Anzeige mit zwei Werten, nicht zwei Felder
+                    "option_type": 2}
         for name in self.ZAHLENFELDER:
             erwartet[name] = 1
         self.assertEqual(self._namen(self._page()), erwartet)
 
     def test_no_control_is_added_or_lost(self):
         page = self._page()
-        self.assertEqual(page.count("<input"), 28)   # D12: + 4 Positionsfelder
+        self.assertEqual(page.count("<input"), 30)   # D12 +4 Position, D14 +2 Funkknoepfe
         self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
         self.assertEqual(page.count("<button"), 1)
-        self.assertEqual(page.count("<fieldset"), 5)  # D12: + Gruppe Position
-        self.assertEqual(page.count("<legend>"), 5)
+        self.assertEqual(page.count("<fieldset"), 6)  # D12 + Position, D14 + Spreads
+        self.assertEqual(page.count("<legend>"), 6)
 
     def test_the_controls_stay_outside_the_groups(self):
         # Ticker, Verfallsauswahl und der Scan-Knopf gehoeren NICHT in eine
@@ -2367,8 +2488,8 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # ... und die Gruppen stehen alle im Formular (sonst werden die Filter
         # nicht mitgesendet)
         form = re.search(r"<form.*?</form>", page, re.S).group(0)
-        self.assertEqual(form.count('<fieldset class="crit">'), 5)  # D12: + Position
-        self.assertEqual(form.count("</fieldset>"), 5)
+        self.assertEqual(form.count('<fieldset class="crit">'), 6)  # D12 + Position, D14 + Spreads
+        self.assertEqual(form.count("</fieldset>"), 6)
 
     # --- D12: die Gruppe Position -------------------------------------------
 
@@ -2395,6 +2516,52 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
             label = self._label(page, feld)
             self.assertIn("<input", label, feld)                 # inside the row
             self.assertIn("Standard", label[:label.index("<input")], feld)
+
+    # --- D14: der Umschalter Calls / Puts ---------------------------------
+
+    def test_the_spreads_group_holds_the_call_put_switch(self):
+        """D14: der Umschalter sitzt in der Gruppe "Spreads", bietet genau die
+        Werte call und put an, und calls ist ohne Parameter vorausgewaehlt.
+
+        Knoepfe UND Vorauswahl werden aus DEMSELBEN Gruppenblock gelesen: ein
+        aus der Gruppe gerutschtes oder ein zweites danebengesetztes Bedienelement
+        faellt so auf, waehrend das blosse Wort "option_type" es nicht verriete.
+        """
+        page = self._page()
+        block = re.search(r'<fieldset class="crit">\s*<legend>Spreads</legend>(.*?)</fieldset>',
+                          page, re.S).group(1)
+        knoepfe = re.findall(r'<input[^>]*name="option_type"[^>]*>', block)
+        self.assertEqual(len(knoepfe), 2)
+        for knopf, wert in zip(knoepfe, ("call", "put"), strict=True):
+            self.assertIn('type="radio"', knopf)
+            self.assertIn(f'value="{wert}"', knopf)
+        # ohne Parameter ist calls vorausgewaehlt - und genau EINES von beiden
+        self.assertIn("checked", knoepfe[0])
+        self.assertNotIn("checked", knoepfe[1])
+        # die Beschriftungen nennen Vorauswahl und Gegenstueck
+        labels = re.findall(r"<label>(.*?)</label>", block, re.S)
+        self.assertIn("Calls (Standard)", labels[0])
+        self.assertIn("Puts", labels[1])
+        # die Gruppe zaehlt vollstaendig mit (siehe die vier Struktur-Tests oben)
+        self.assertEqual(dict(self._gruppen(page))["Spreads"], ("option_type",))
+
+    def test_the_switch_preselects_puts_when_the_put_side_is_asked_for(self):
+        # die Vorauswahl folgt der Wahl: mit option_type=put ist der Put-Knopf
+        # angehakt und der Call-Knopf nicht - sonst waere der Umschalter nur
+        # eine Anzeige ohne Wirkung
+        query = {"ticker": "AAPL", "expiration": "2026-10-16", "option_type": "put"}
+        adapter = _MockAdapter(make() + make_verticals())
+        adapter.expirations = ["2026-10-16"]
+        app = create_app(quote_adapter=adapter, screener=OptionScreener(_WIDE), now_fn=_clock())
+        app.config["TESTING"] = True
+        put_page = app.test_client().get("/", query_string=query).get_data(as_text=True)
+        block = re.search(r'<fieldset class="crit">\s*<legend>Spreads</legend>(.*?)</fieldset>',
+                          put_page, re.S).group(1)
+        knoepfe = re.findall(r'<input[^>]*name="option_type"[^>]*>', block)
+        self.assertIn('value="call"', knoepfe[0])
+        self.assertNotIn("checked", knoepfe[0])
+        self.assertIn('value="put"', knoepfe[1])
+        self.assertIn("checked", knoepfe[1])
 
     # --- die Beschriftungen ---
 
@@ -3056,6 +3223,27 @@ class TestApiErrorContract(unittest.TestCase):
     def test_a_feed_outage_answers_503_json_with_market_data_unavailable(self):
         self._assert_json_error(self._FeedDown(), 503,
                                 "market data unavailable")
+
+    def test_an_unknown_spread_type_answers_400_json(self):
+        """D14: ein unbekanntes `option_type` ist der Fehler des Aufrufers.
+
+        Wie der D9b-Vertrag werden Status UND Inhaltstyp UND der Koerperschluessel
+        ZUSAMMEN gepinnt: ein HTML-Koerper bestuende eine blosse get_json()-Pruefung
+        still (sie liefert None), genau so blieb der alte Fehler unsichtbar.
+        """
+        app = server_module.create_app(quote_adapter=_MockAdapter(make_verticals()),
+                                       screener=OptionScreener(_LOOSE), now_fn=_clock())
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        res = app.test_client().get(
+            "/api/screen?ticker=AAPL&expiration=2026-10-16&option_type=bogus")
+        self.assertEqual(res.status_code, 400, res.get_data(as_text=True)[:200])
+        self.assertTrue(res.content_type.startswith("application/json"),
+                        res.content_type)
+        body = res.get_json()
+        self.assertIsNotNone(body, "body is not JSON: "
+                             f"{res.get_data(as_text=True)[:200]!r}")
+        self.assertEqual(body["error"], "unknown spread type")
+        self.assertEqual(body["allowed"], ["call", "put"])
 
 
 if __name__ == "__main__":
