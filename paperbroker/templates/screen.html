@@ -185,7 +185,7 @@
     {% if verticals %}
       {% set beste = namespace(wert=None) %}
       {% for v, rendite, abstand in verticals %}{% if rendite is not none and (beste.wert is none or rendite > beste.wert) %}{% set beste.wert = rendite %}{% endif %}{% endfor %}
-      <p class="lede">{{ verticals|length }} Spreads{% if beste.wert is not none %}, bester {{ '%.2f'|format(beste.wert) }} % Rendite{% endif %}</p>
+      <p class="lede">{{ verticals|length }} Spreads{% if beste.wert is not none %}, bester {{ '%.2f'|format(beste.wert) }} % Rendite (brutto){% endif %}</p>
     {% endif %}
     <div class="stats">
       <span>Kette: {{ results|length + dropped_count }}</span>
@@ -200,11 +200,12 @@
       <p class="note">Dieselben Filter wie die Liste oben, auf beide Beine angewandt - ein
         Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer. Debit = Kauf zum Ask,
         Verkauf zum Bid.</p>
+      <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads. Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert.</p>
       <p class="note">Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl
         und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
       <table>
         <thead><tr>
-          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust</th><th>max Gewinn</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite</a></th><th>Breakeven</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite %</th><th>Hinweis</th>
+          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust<br>(je Einheit, brutto)</th><th>max Gewinn<br>(je Einheit, brutto)</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite<br>(brutto)</a></th><th>Breakeven<br>(brutto)</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite %</th><th>Hinweis</th>
         </tr></thead>
         {% for v, rendite, abstand in verticals %}
           <tr>

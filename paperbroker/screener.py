@@ -599,6 +599,55 @@ class VerticalPair:
         instead of being filtered away."""
         return self.net_debit >= self.strike_width
 
+    def _kosten(self, criteria):
+        """D18: the cost assumption in one place - fees scale with the position, so the
+        per-unit view needs them divided by multiplier x quantity."""
+        if criteria is None or criteria.multiplier is None or criteria.quantity is None:
+            return None
+        return criteria.multiplier * criteria.quantity, (criteria.fees or 0.0)
+
+    def net_max_loss(self, criteria=None):
+        """What the position can lose: the debit paid plus the fees, in money."""
+        d = self.position_debit(criteria)
+        return None if d is None else round(d, 2)
+
+    def net_max_profit(self, criteria=None):
+        """What is left at expiry in the best case, after the fees.
+
+        Gross profit is width - debit per unit; the fees are charged once for the
+        position, so they come off the whole amount, not off each share.
+        """
+        k = self._kosten(criteria)
+        if k is None:
+            return None
+        menge, gebuehren = k
+        return round((self.strike_width - self.net_debit) * menge - gebuehren, 2)
+
+    def net_breakeven(self, criteria=None):
+        """The break-even once the fees are paid for - the per-unit break-even moves by
+        the fees divided by the position size, in the direction of the trade."""
+        k = self._kosten(criteria)
+        if k is None:
+            return None
+        menge, gebuehren = k
+        je_einheit = gebuehren / menge
+        if getattr(self.long.asset, "option_type", "call") == "put":
+            return round(self.long.asset.strike - self.net_debit - je_einheit, 2)
+        return round(self.long.asset.strike + self.net_debit + je_einheit, 2)
+
+    def net_return_pct(self, criteria=None):
+        """Net profit over what the position costs - the number a decision needs."""
+        gewinn = self.net_max_profit(criteria)
+        einsatz = self.position_debit(criteria)
+        if gewinn is None or not einsatz:
+            return None
+        return round(gewinn / einsatz * 100, 2)
+
+    def profitable_after_costs(self, criteria=None):
+        """False when the best case still loses money. None when no size is set."""
+        gewinn = self.net_max_profit(criteria)
+        return None if gewinn is None else gewinn > 0
+
     def position_debit(self, criteria=None):
         """D12: what this position costs - multiplier x quantity x debit, plus fees.
 
@@ -630,6 +679,12 @@ class VerticalPair:
             "budget": None if criteria is None else criteria.budget,
             "currency": "USD",
             "position_debit": self.position_debit(criteria),
+            # D18: the same position, seen after the costs
+            "net_max_loss": self.net_max_loss(criteria),
+            "net_max_profit": self.net_max_profit(criteria),
+            "net_breakeven": self.net_breakeven(criteria),
+            "net_return_pct": self.net_return_pct(criteria),
+            "profitable_after_costs": self.profitable_after_costs(criteria),
             "net_debit": self.net_debit,
             "max_loss": self.max_loss,
             "max_profit": self.max_profit,
@@ -743,6 +798,14 @@ def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
         chain = gefiltert
     for pair in form_vertical_pairs(chain, option_type=option_type,
                                    max_width=criteria.pair_max_width):
+        # D18: a construction that can only lose after the costs is not a hit. Only with
+        # fees does this say more than the pair rule below - at fees 0 the two agree, and
+        # the older, more precise reason ("kein Gewinn möglich") should keep the field.
+        if (criteria.fees or 0.0) > 0 and pair.profitable_after_costs(criteria) is False:
+            dropped.append((pair, f"Nach Kosten nicht gewinnfähig: "
+                                 f"netto {pair.net_max_profit(criteria):.2f} USD "
+                                 f"(Einsatz {pair.position_debit(criteria):.2f} USD)"))
+            continue
         if criteria.budget is not None:
             groesse = pair.position_debit(criteria)
             if groesse is not None and groesse > criteria.budget:
