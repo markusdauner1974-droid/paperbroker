@@ -17,6 +17,10 @@ import pytest
 from flask import Flask
 
 from paperbroker import server as server_module
+from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
+    CboeNotFoundError,
+    CboeRequestError,
+)
 from paperbroker.assets import asset_factory
 from paperbroker.screener import OptionScreener, ScreenerCriteria, TrendSignal
 from paperbroker.server import _freshness_lamp, create_app
@@ -2731,6 +2735,70 @@ class TestErrorBehaviour(unittest.TestCase):
             "min_oi=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E").get_data(as_text=True)
         self.assertNotIn("<script>alert(1)</script>", roh)
         self.assertIn("&lt;script&gt;", roh, "der Wert wurde nicht maskiert")
+
+class TestApiErrorContract(unittest.TestCase):
+    """D9b: /api/screen answers JSON for its two failure modes.
+
+    Before the fix the route called the broker with no net: a valid but
+    unknown symbol reached the adapter's 404, CboeNotFoundError escaped, and
+    the framework answered HTTP 500 with an HTML page - measured live against
+    the real CBOE adapter. Every consumer that parses the body broke.
+
+    The contract: an unknown symbol is the caller's mistake (404), a feed
+    outage is nobody's (503), both JSON with the key "error". Status, content
+    type and the body key are pinned TOGETHER on purpose: an assertion on the
+    absence of a word is green on a broken body (get_json() returns None for an
+    HTML page), which is exactly how the old failure stayed invisible.
+    """
+
+    class _UnknownSymbol:
+        """Lists a real date, then fails the chain lookup: symbol unknown."""
+
+        def get_expiration_dates(self, underlying_asset=None):
+            return ["2026-10-16"]
+
+        def get_options(self, underlying_asset=None, expiration_date=None):
+            raise CboeNotFoundError("No asset for ZZZZZZ")
+
+    class _FeedDown:
+        """The provider is unreachable: nobody traded, so this is a 503."""
+
+        def get_expiration_dates(self, underlying_asset=None):
+            return ["2026-10-16"]
+
+        def get_options(self, underlying_asset=None, expiration_date=None):
+            raise CboeRequestError("CBOE feed unreachable")
+
+    def _screen(self, adapter):
+        app = server_module.create_app(quote_adapter=adapter,
+                                       screener=OptionScreener(_LOOSE),
+                                       now_fn=_clock())
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        return app.test_client().get(
+            "/api/screen?ticker=ZZZZZZ&expiration=2026-10-16")
+
+    def _assert_json_error(self, adapter, status, message):
+        """Pin status AND content type AND the body key - never one alone."""
+        res = self._screen(adapter)
+        self.assertEqual(res.status_code, status,
+                         res.get_data(as_text=True)[:200])
+        self.assertTrue(res.content_type.startswith("application/json"),
+                        res.content_type)
+        body = res.get_json()
+        self.assertIsNotNone(body, "body is not JSON: "
+                             f"{res.get_data(as_text=True)[:200]!r}")
+        self.assertEqual(body["error"], message)
+        return body
+
+    def test_an_unknown_symbol_answers_404_json_with_unknown_symbol(self):
+        body = self._assert_json_error(self._UnknownSymbol(), 404,
+                                       "unknown symbol")
+        self.assertEqual(body["ticker"], "ZZZZZZ")
+
+    def test_a_feed_outage_answers_503_json_with_market_data_unavailable(self):
+        self._assert_json_error(self._FeedDown(), 503,
+                                "market data unavailable")
+
 
 if __name__ == "__main__":
     unittest.main()
