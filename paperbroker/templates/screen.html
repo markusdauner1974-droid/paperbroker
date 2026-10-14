@@ -200,7 +200,7 @@
       <p class="note">Dieselben Filter wie die Liste oben, auf beide Beine angewandt - ein
         Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer. Debit = Kauf zum Ask,
         Verkauf zum Bid.</p>
-      <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads. Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert.</p>
+      <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads. Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert. Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung, in die der Basiswert laufen muss (↑ steigen für Calls, ↓ fallen für Puts).</p>
       <p class="note">Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl
         und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
       <table>
@@ -220,7 +220,7 @@
             <td>{{ '%.2f'|format(v.max_profit) }}</td>
             <td{% if v.max_profit == 0 %} title="kein Gewinn möglich"{% endif %}>{% if rendite is none %}-{% else %}{{ '%.2f'|format(rendite) }} %{% endif %}</td>
             <td>{{ '%.2f'|format(v.breakeven) }}</td>
-            <td>{% if abstand is none %}-{% else %}{{ '%+.2f'|format(abstand) }} %{% endif %}</td>
+            <td>{% if abstand is none %}-{% else %}{{ '↑' if v.breakeven > v.long.underlying_price else '↓' }} {{ '%.2f'|format(abstand) }} %{% endif %}</td>
             <td>{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio * 100) }} %{% endif %}</td>
             <td>{% if v.debit_ge_width %}kein Gewinn möglich{% else %}-{% endif %}</td>
           </tr>

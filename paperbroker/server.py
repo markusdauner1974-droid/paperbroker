@@ -661,11 +661,18 @@ def _spread_return_pct(v):
 def _spread_be_gap_pct(v):
     """Abstand des Kurses zum Break-even in Prozent - None, wenn kein Kurs.
 
-    Positiv heisst: der Kurs muss steigen, um den Break-even zu erreichen.
-    `underlying_price` ist optional; ohne Kurs wird nicht gerechnet.
+    D20: this is a DISTANCE, always positive, and the direction is shown next to it. It used
+    to be signed like a call - "positive means the underlying has to rise" - but a put spread
+    breaks even BELOW the spot, so its value came out negative, and the ascending sort
+    ("BE-Abstand", nearest first) put the LARGEST required move upward on top, which for a
+    put is the least favourable position in the list.
+
+    `underlying_price` is optional; without a price nothing is computed.
     """
     spot = v.long.underlying_price
-    return (v.breakeven - spot) / spot * 100.0 if spot else None
+    if not spot:
+        return None
+    return abs(v.breakeven - spot) / spot * 100.0
 
 
 def _vertical_sort_key(mode):
