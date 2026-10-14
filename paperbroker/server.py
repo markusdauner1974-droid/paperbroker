@@ -278,7 +278,17 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                            listed_dates=selectable, results=[], freshness=None,
                            dropped_reasons=[], verticals=[],
                            vertical_drops=[], trend=None)
-        quotes = broker.get_options(ticker, expiration)
+        # D9b: the JSON endpoint must answer JSON. An unknown symbol is the caller
+        # mistake (404), a feed outage is nobodys (503) - the HTML error page the
+        # framework produced broke every consumer that parses the body.
+        try:
+            quotes = broker.get_options(ticker, expiration)
+        except Exception as exc:                        # noqa: BLE001 - classified below
+            from paperbroker.adapters.quotes.CBOEQuoteAdapter import CboeNotFoundError
+            if isinstance(exc, CboeNotFoundError):
+                return jsonify(error="unknown symbol", ticker=ticker), 404
+            app.logger.exception("api_screen: market data failed for %s %s", ticker, expiration)
+            return jsonify(error="market data unavailable"), 503
         trend_signal = _trend_for_screener(ticker)
         results, dropped = screen(quotes, criteria, trend=trend_signal,
                                   now_fn=now_fn)
