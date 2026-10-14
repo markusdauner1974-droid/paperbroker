@@ -26,19 +26,27 @@ from paperbroker.screener import (
 )
 
 
-def option(symbol="AAPL260116C00245000", option_type="call", strike=245.0,
+def option(symbol="AAPL261016C00245000", option_type="call", strike=245.0,
            underlying="AAPL"):
     """Build a parsed Option asset from an OCC symbol via asset_factory."""
     return asset_factory(symbol)
 
 
 _LOOSE = ScreenerCriteria(max_spread_pct=100.0)
-# Fixture-Zeitstempel sind fest - dieselbe Uhr wie in den Proben.
+# The pinned scan clock. It is deliberately BEFORE every fixture expiry: D8
+# measures the maturity window on THIS clock (expiration minus now), so a
+# clock after the expiries would make every contract honestly expired and the
+# whole chain would fall with "DTE -264 < 7". The fixture comments name the
+# DTE this clock yields; the timestamp matches the hardcoded quote_date below.
 _NOW = lambda: arrow.get('2026-10-07T14:35:00')  # noqa: E731
 
 
 def quote(occ, bid=2.40, ask=2.50, iv=30.0, oi=1500, volume=300,
-          underlying_price=250.0, dte=None, greeks_source='adapter', **kw):
+          underlying_price=250.0, greeks_source='adapter', **kw):
+    # days_to_expiration is NOT settable here: it is derived from the real
+    # OCC expiry and the quote_date, exactly as the live flow derives it. The
+    # old `dte=` override was the blind spot - it crossed the filter's clock
+    # with a stored number the filter never sees.
     asset = asset_factory(occ)
     q = OptionQuote(
         quote_date="2026-10-07 14:30:00", asset=asset, price=(bid + ask) / 2,
@@ -48,9 +56,6 @@ def quote(occ, bid=2.40, ask=2.50, iv=30.0, oi=1500, volume=300,
         vega=kw.get("vega", 5.0), theta=kw.get("theta", -3.0),
         rho=kw.get("rho", 0.5), underlying_price=underlying_price,
         open_interest=oi, volume=volume, greeks_source=greeks_source)
-    if dte is not None:
-        # dte is derived from asset/quote_date in real flow; mock override
-        q.days_to_expiration = dte
     # adapter-flow attribute: set fresh by default so the staleness guard
     # (enabled by default) does not fail-closed-drop the whole chain
     q.quote_timestamp = kw.get("quote_timestamp", FRESH)
@@ -61,22 +66,29 @@ FRESH = "2026-10-07 14:30:00"
 
 
 def make(fresh_ts=FRESH):
-    """Standard small mock chain (call side)."""
+    """Standard small mock chain (call side).
+
+    Every expiry is a real OCC date; the DTE a test sees is that expiry minus
+    the pinned scan clock (_NOW = 2026-10-07), never a stored number.
+    """
     return [
-        quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=28.0, oi=8000, volume=1200,
-              dte=10),                                              # winner
-        quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=30.0, oi=1500, volume=300,
-              dte=10),                                              # mid
-        quote("AAPL260116C00261000", bid=0.05, ask=0.15, iv=45.0, oi=40, volume=10,
-              dte=10),                                              # wide spread + low oi
-        quote("AAPL260116C00263000", bid=1.00, ask=1.20, iv=0.0, oi=900, volume=100,
-              dte=10),                                              # illiquide (iv=0)
-        quote("AAPL260116C00265000", bid=0.80, ask=0.95, iv=33.0, oi=None, volume=100,
-              dte=10),                                              # OI fehlt
-        quote("AAPL260216C00270000", bid=1.50, ask=1.55, iv=26.0, oi=2200, volume=500,
-              dte=132),                                             # beyond dte_max 45
-        quote("AAPL260108C00240000", bid=0.30, ask=0.32, iv=52.0, oi=5000, volume=2000,
-              dte=1),                                               # 0dte exclusion (dte < 7)
+        # DTE 9 (2026-10-16 - 2026-10-07), inside the default window [7, 45]
+        quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
+              oi=8000, volume=1200),                              # winner
+        quote("AAPL261016C00245000", bid=2.40, ask=2.50, iv=30.0,
+              oi=1500, volume=300),                               # mid
+        quote("AAPL261016C00261000", bid=0.05, ask=0.15, iv=45.0,
+              oi=40, volume=10),                   # wide spread + low oi
+        quote("AAPL261016C00263000", bid=1.00, ask=1.20, iv=0.0,
+              oi=900, volume=100),                        # illiquide (iv=0)
+        quote("AAPL261016C00265000", bid=0.80, ask=0.95, iv=33.0,
+              oi=None, volume=100),                              # OI fehlt
+        # DTE 132 (2027-02-16 - 2026-10-07) -> beyond dte_max 45
+        quote("AAPL270216C00270000", bid=1.50, ask=1.55, iv=26.0,
+              oi=2200, volume=500),                      # beyond dte_max 45
+        # DTE 2 (2026-10-09 - 2026-10-07) -> below dte_min 7
+        quote("AAPL261009C00240000", bid=0.30, ask=0.32, iv=52.0,
+              oi=5000, volume=2000),               # below dte_min (dte < 7)
     ]
 
 
@@ -97,8 +109,8 @@ class TestPure(unittest.TestCase):
         kept, _ = filter_spread(qs, c)
         syms = [q.asset.symbol for q in kept]
         # penny option (0.05/0.15) is wide relative (200 %) -> dropped
-        self.assertNotIn("AAPL260116C00261000", syms)
-        self.assertIn("AAPL260116C00240000", syms)
+        self.assertNotIn("AAPL261016C00261000", syms)
+        self.assertIn("AAPL261016C00240000", syms)
 
     def test_spread_absolute_floor_stabilizes_pennies(self):
         qs = make()
@@ -109,7 +121,7 @@ class TestPure(unittest.TestCase):
                              min_oi=None, dte_min=None, dte_max=None,
                              max_quote_age_min=None)
         kept, _ = filter_spread(qs, c)
-        self.assertNotIn("AAPL260116C00261000", [q.asset.symbol for q in kept])
+        self.assertNotIn("AAPL261016C00261000", [q.asset.symbol for q in kept])
 
     def test_oi_filter_with_missing(self):
         qs = make()
@@ -118,7 +130,7 @@ class TestPure(unittest.TestCase):
                              min_oi=500, dte_min=None, dte_max=None,
                              max_quote_age_min=None, require_oi=True)
         kept, dropped = filter_oi(qs, c)
-        self.assertNotIn("AAPL260116C00265000", [q.asset.symbol for q in kept])
+        self.assertNotIn("AAPL261016C00265000", [q.asset.symbol for q in kept])
 
     def test_oi_filter_tolerant_mode(self):
         qs = make()
@@ -127,7 +139,7 @@ class TestPure(unittest.TestCase):
                              min_oi=500, dte_min=None, dte_max=None,
                              max_quote_age_min=None, require_oi=False)
         kept, _ = filter_oi(qs, c)
-        self.assertIn("AAPL260116C00265000", [q.asset.symbol for q in kept])
+        self.assertIn("AAPL261016C00265000", [q.asset.symbol for q in kept])
 
     def test_iv_band(self):
         qs = make()
@@ -138,8 +150,8 @@ class TestPure(unittest.TestCase):
                              iv_min=20, iv_max=40)
         kept, _ = filter_iv(qs, c)
         syms = [q.asset.symbol for q in kept]
-        self.assertNotIn("AAPL260108C00240000", syms)   # IV 52 > 40
-        self.assertIn("AAPL260116C00240000", syms)      # IV 28 in band
+        self.assertNotIn("AAPL261009C00240000", syms)   # IV 52 > 40
+        self.assertIn("AAPL261016C00240000", syms)      # IV 28 in band
 
     def test_dte_window(self):
         qs = make()
@@ -147,10 +159,95 @@ class TestPure(unittest.TestCase):
         c = ScreenerCriteria(max_spread_pct=None, max_spread_abs=None,
                              min_oi=None, dte_min=7, dte_max=45,
                              max_quote_age_min=None)
-        kept, _ = filter_dte(qs, c)
+        # D8: the window is measured against the SCAN clock, so the clock is
+        # injected. A bare filter_dte() call would read the wall clock and the
+        # expectation would drift with the day the suite runs.
+        kept, _ = filter_dte(qs, c, now_fn=_NOW)
         syms = [q.asset.symbol for q in kept]
-        self.assertNotIn("AAPL260108C00240000", syms)   # DTE 1 < 7
-        self.assertNotIn("AAPL260216C00270000", syms)   # DTE 132 > 45
+        # honestly computed from the OCC expiry minus _NOW - not the stored
+        # days_to_expiration field
+        self.assertEqual(
+            asset_factory("AAPL261009C00240000").get_days_to_expiration(_NOW()), 2)
+        self.assertEqual(
+            asset_factory("AAPL270216C00270000").get_days_to_expiration(_NOW()), 132)
+        self.assertNotIn("AAPL261009C00240000", syms)   # DTE 2 < 7
+        self.assertNotIn("AAPL270216C00270000", syms)   # DTE 132 > 45
+
+
+class TestTheWindowIsMeasuredOnTheScanClock(unittest.TestCase):
+    """D8 (E1 = c): the SAME contract flips with the clock of the scan.
+
+    The stored days_to_expiration keeps the DATA's own maturity (it is the
+    basis of the Greeks); the window is expiry minus the clock of THIS scan.
+    Both numbers below are read from the asset via get_days_to_expiration(),
+    never from the stored field, so the assertion cannot drift with a mocked
+    value - that mock is exactly what hid the bug this slice fixes.
+    """
+
+    def test_a_past_expiry_drops_and_a_future_one_keeps(self):
+        q = quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
+                  oi=8000, volume=1200)
+        # a deliberately WRONG stored value: a filter that read the field
+        # would call this contract 999 days out and keep it either way
+        q.days_to_expiration = 999
+        fenster = ScreenerCriteria(dte_min=7, dte_max=45)
+        # clock AFTER the expiry -> honestly expired by four days
+        nach = lambda: arrow.get("2026-10-20T14:35:00")  # noqa: E731
+        self.assertEqual(q.asset.get_days_to_expiration(nach()), -4)
+        kept, dropped = filter_dte([q], fenster, now_fn=nach)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _q, r in dropped], ["DTE -4 < 7"])
+        # the SAME contract, clock BEFORE the expiry -> inside the window
+        self.assertEqual(q.asset.get_days_to_expiration(_NOW()), 9)
+        kept2, dropped2 = filter_dte([q], fenster, now_fn=_NOW)
+        self.assertEqual(dropped2, [])
+        self.assertEqual([x.asset.symbol for x in kept2], ["AAPL261016C00240000"])
+
+
+class TestNonFinitePricesAreNotCandidates(unittest.TestCase):
+    """D8 (E2 = a): NaN and +-inf are rejected at both boundaries.
+
+    A non-finite quote is not a cheap option, it is no data. Measured before
+    D8: an ``ask=inf`` contract divided to a NaN spread, NaN compares False
+    against every bound, so the contract was KEPT and its bid/ask reached the
+    JSON body as the bare tokens Infinity/NaN - which no strict parser reads.
+    """
+
+    def test_a_non_finite_ask_is_rejected_not_ranked(self):
+        q = quote("AAPL261016C00240000", bid=2.40, ask=float("inf"), iv=30.0,
+                  oi=1500, volume=300)
+        kept, dropped = filter_spread([q], ScreenerCriteria(max_spread_abs=None))
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _q, r in dropped],
+                         ["Spread: kein Geld-/Briefkurs"])
+        # and it never becomes a candidate of the whole pipeline either
+        results, dropped_all = screen([q], ScreenerCriteria(), now_fn=_NOW)
+        self.assertEqual(results, [])
+        self.assertEqual([r for _q, r in dropped_all],
+                         ["Spread: kein Geld-/Briefkurs"])
+
+    def test_a_non_finite_bid_is_rejected_too(self):
+        for bid in (float("nan"), float("inf")):
+            with self.subTest(bid=bid):
+                q = quote("AAPL261016C00240000", bid=bid, ask=3.00, iv=30.0,
+                          oi=1500, volume=300)
+                kept, dropped = filter_spread(
+                    [q], ScreenerCriteria(max_spread_abs=None))
+                self.assertEqual(kept, [])
+                self.assertEqual([r for _q, r in dropped],
+                                 ["Spread: kein Geld-/Briefkurs"])
+
+    def test_the_adapter_turns_a_non_finite_feed_value_into_missing(self):
+        from paperbroker.adapters.quotes.CBOEQuoteAdapter import _num
+        for value in (float("inf"), float("-inf"), float("nan")):
+            with self.subTest(value=value):
+                self.assertIsNone(_num(value))
+        # the guard is not a wipe: missing stays missing, zero and a real
+        # number keep their value
+        self.assertIsNone(_num(None))
+        self.assertEqual(_num(0.0), 0.0)
+        self.assertEqual(_num(2.5), 2.5)
+        self.assertEqual(_num("3.5", scale=100.0), 350.0)
 
 
 class TestScreenOrchestrator(unittest.TestCase):
@@ -365,6 +462,10 @@ class TestClockErrorLabel(unittest.TestCase):
 def make_verticals():
     """Vertical-spread fixture (Ausbau-Slice B).
 
+    One single expiry for every leg - 2026-10-16, DTE 9 against the pinned scan
+    clock (2026-10-07) - so the section's maturity gate keeps the whole chain
+    (a second expiry would split the groups and change the pair count).
+
     Deliberately separate from make(): that chain is pinned by the existing
     drop counts and by the display tests, so it must not change. One
     adjacent CALL pair per underlying, each carrying exactly ONE edge case,
@@ -389,18 +490,18 @@ def make_verticals():
     the chain, and every strike pair is adjacent, so the pair count is exact.
     """
     return [
-        quote("AAPL260116C00250000", bid=2.60, ask=3.00, iv=30.0, oi=1200, volume=100, dte=10),
-        quote("AAPL260116C00252500", bid=0.50, ask=0.60, iv=30.0, oi=1200, volume=100, dte=10),
-        quote("AAPL260116P00250000", bid=2.60, ask=3.00, iv=30.0, oi=1200, volume=100, dte=10),
-        quote("AAPL260116P00252500", bid=0.50, ask=0.60, iv=30.0, oi=1200, volume=100, dte=10),
-        quote("AMZN260116C00260000", bid=1.00, ask=1.20, iv=30.0, oi=500, volume=100, dte=10),
-        quote("AMZN260116C00262500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100, dte=10),
-        quote("MSFT260116C00270000", bid=0.0, ask=1.00, iv=30.0, oi=1500, volume=100, dte=10),
-        quote("MSFT260116C00272500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100, dte=10),
-        quote("NVDA260116C00280000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=100, dte=10),
-        quote("NVDA260116C00282500", bid=0.50, ask=0.70, iv=30.0, oi=None, volume=100, dte=10),
-        quote("TSLA260116C00290000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=100, dte=10),
-        quote("TSLA260116C00292500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100, dte=10),
+        quote("AAPL261016C00250000", bid=2.60, ask=3.00, iv=30.0, oi=1200, volume=100),
+        quote("AAPL261016C00252500", bid=0.50, ask=0.60, iv=30.0, oi=1200, volume=100),
+        quote("AAPL261016P00250000", bid=2.60, ask=3.00, iv=30.0, oi=1200, volume=100),
+        quote("AAPL261016P00252500", bid=0.50, ask=0.60, iv=30.0, oi=1200, volume=100),
+        quote("AMZN261016C00260000", bid=1.00, ask=1.20, iv=30.0, oi=500, volume=100),
+        quote("AMZN261016C00262500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100),
+        quote("MSFT261016C00270000", bid=0.0, ask=1.00, iv=30.0, oi=1500, volume=100),
+        quote("MSFT261016C00272500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100),
+        quote("NVDA261016C00280000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=100),
+        quote("NVDA261016C00282500", bid=0.50, ask=0.70, iv=30.0, oi=None, volume=100),
+        quote("TSLA261016C00290000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=100),
+        quote("TSLA261016C00292500", bid=0.50, ask=0.70, iv=30.0, oi=1500, volume=100),
     ]
 
 
@@ -416,7 +517,7 @@ class TestFutureTimestamps(unittest.TestCase):
     JETZT = "2026-10-07T14:35:00"
 
     def _q(self, ts):
-        return quote("AAPL260116C00240000", quote_timestamp=ts)
+        return quote("AAPL261016C00240000", quote_timestamp=ts)
 
     def _lauf(self, ts, max_age=30):
         c = ScreenerCriteria(max_quote_age_min=max_age)
@@ -482,10 +583,10 @@ class TestVerticalCallSpreads(unittest.TestCase):
         form_vertical_pairs, _leg, _vs = self._api()
         pairs = form_vertical_pairs(make())
         self.assertEqual([p.symbol for p in pairs],
-                         ["AAPL260116C00240000/AAPL260116C00245000",
-                          "AAPL260116C00245000/AAPL260116C00261000",
-                          "AAPL260116C00261000/AAPL260116C00263000",
-                          "AAPL260116C00263000/AAPL260116C00265000"])
+                         ["AAPL261016C00240000/AAPL261016C00245000",
+                          "AAPL261016C00245000/AAPL261016C00261000",
+                          "AAPL261016C00261000/AAPL261016C00263000",
+                          "AAPL261016C00263000/AAPL261016C00265000"])
 
     def test_the_strikes_are_sorted_before_pairing(self):
         # the input order is deliberately REVERSED - without the strike sort
@@ -497,13 +598,13 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(pair.strike_width, 5.0)
 
     def test_two_expirations_never_pair_with_each_other(self):
-        # the group key carries the expiration: 240 (Jan) and 270 (Feb) are
-        # not adjacent legs of one spread
+        # the group key carries the expiration: 240 (Oct 2026) and 270
+        # (Feb 2027) are not adjacent legs of one spread
         form_vertical_pairs, _leg, _vs = self._api()
         pairs = form_vertical_pairs(make())
-        self.assertNotIn("AAPL260116C00265000/AAPL260216C00270000",
+        self.assertNotIn("AAPL261016C00265000/AAPL270216C00270000",
                          [p.symbol for p in pairs])
-        self.assertEqual([p.expiration for p in pairs], ["2026-01-16"] * 4)
+        self.assertEqual([p.expiration for p in pairs], ["2026-10-16"] * 4)
 
     def test_the_lower_strike_is_the_long_leg(self):
         form_vertical_pairs, _leg, _vs = self._api()
@@ -533,10 +634,10 @@ class TestVerticalCallSpreads(unittest.TestCase):
         # The literals are taken FROM those break points, not from the next
         # plausible example: a pair one step off would stay green.
         form_vertical_pairs, _leg, _vs = self._api()
-        chain = [quote("XYZ260116C00050000", bid=4.00, ask=4.12, iv=30.0,
-                       oi=1500, volume=100, dte=10),
-                 quote("XYZ260116C00055000", bid=0.10, ask=0.30, iv=30.0,
-                       oi=1500, volume=100, dte=10)]
+        chain = [quote("XYZ261016C00050000", bid=4.00, ask=4.12, iv=30.0,
+                       oi=1500, volume=100),
+                 quote("XYZ261016C00055000", bid=0.10, ask=0.30, iv=30.0,
+                       oi=1500, volume=100)]
         pair = form_vertical_pairs(chain)[0]
         self.assertEqual(pair.strike_width, 5.0)
         self.assertEqual(pair.net_debit, 4.02)
@@ -558,7 +659,7 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(len(kept), 1)
         self.assertEqual(len(dropped), 3)
         self.assertEqual(kept[0].symbol,
-                         "AAPL260116C00240000/AAPL260116C00245000")
+                         "AAPL261016C00240000/AAPL261016C00245000")
         # conservation: no pair may vanish silently - every raw pair is either
         # listed or carries a reason
         self.assertEqual(len(kept) + len(dropped), len(form_vertical_pairs(make())))
@@ -601,16 +702,16 @@ class TestVerticalCallSpreads(unittest.TestCase):
         amzn = [q for q in chain if q.asset.strike == 260.0][0]
         self.assertEqual(amzn.open_interest, 500)
         self.assertIsNone(leg_drop_reason(amzn, _LOOSE, _NOW))
-        below = quote("AMZN260116C00257500", bid=0.60, ask=0.80, iv=30.0,
-                      oi=499, volume=100, dte=10)
+        below = quote("AMZN261016C00257500", bid=0.60, ask=0.80, iv=30.0,
+                      oi=499, volume=100)
         # the leg still falls - but the chain names the FIRST rule it violates,
         # and that is the absolute spread bound of the penny zone, not the floor
         self.assertEqual(leg_drop_reason(below, _LOOSE, _NOW),
                          "strike 257.5 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.70)")
         # the floor itself stays pinned on a leg the spread rules let through
         # ("OI 40 < 500" in test_one_reason_per_dropped_pair_...)
-        eng = quote("AMZN260116C00257500", bid=0.68, ask=0.72, iv=30.0,
-                    oi=499, volume=100, dte=10)
+        eng = quote("AMZN261016C00257500", bid=0.68, ask=0.72, iv=30.0,
+                    oi=499, volume=100)
         self.assertEqual(leg_drop_reason(eng, _LOOSE, _NOW), "strike 257.5 call: OI 499 < 500")
 
     def test_missing_open_interest_is_not_treated_as_liquid(self):
@@ -660,8 +761,8 @@ class TestVerticalCallSpreads(unittest.TestCase):
         Spread bewusst eng (1.00/1.05), sonst faellt er durch max_spread_pct.
         """
         now_fn = lambda: arrow.get("2026-10-07T14:35:00")  # noqa: E731
-        puts = [quote("AAPL260116P00260000", bid=1.00, ask=1.05, iv=28.0,
-                      oi=8000, volume=100, dte=10)]
+        puts = [quote("AAPL261016P00260000", bid=1.00, ask=1.05, iv=28.0,
+                      oi=8000, volume=100)]
         results, _ = screen(puts, ScreenerCriteria(),
                             trend=TrendSignal(symbol="AAPL", direction="down"),
                             now_fn=now_fn)
@@ -677,17 +778,17 @@ class TestVerticalCallSpreads(unittest.TestCase):
         the reader can tell the two cases apart.
         """
         _fp, leg_drop_reason, _vs = self._api()
-        ohne = quote("AAPL260116C00270000", bid=0.60, ask=0.80, iv=None,
-                     oi=900, volume=100, dte=10)
+        ohne = quote("AAPL261016C00270000", bid=0.60, ask=0.80, iv=None,
+                     oi=900, volume=100)
         self.assertIsNone(ohne.iv)
         self.assertEqual(leg_drop_reason(ohne, _LOOSE, _NOW),
                          "strike 270.0 call: absoluter Spread 0.20$ > 0.10$ (Mitte 0.70)")
-        null = quote("AAPL260116C00270000", bid=0.60, ask=0.80, iv=0.0,
-                     oi=900, volume=100, dte=10)
+        null = quote("AAPL261016C00270000", bid=0.60, ask=0.80, iv=0.0,
+                     oi=900, volume=100)
         self.assertEqual(leg_drop_reason(null, _LOOSE, _NOW), "strike 270.0 call: iv=0 illiquide")
         # with a narrow penny leg the iv rule is reached and keeps its own text
-        eng = quote("AAPL260116C00270000", bid=0.68, ask=0.72, iv=None,
-                    oi=900, volume=100, dte=10)
+        eng = quote("AAPL261016C00270000", bid=0.68, ask=0.72, iv=None,
+                    oi=900, volume=100)
         self.assertEqual(leg_drop_reason(eng, _LOOSE, _NOW), "strike 270.0 call: IV fehlt")
 
     def test_a_put_pair_is_never_built(self):
@@ -706,7 +807,7 @@ class TestVerticalCallSpreads(unittest.TestCase):
         chain = make_verticals()
         kept, dropped = vertical_spreads(chain, _LOOSE, now_fn=_NOW)
         degenerate = [p for p, _r in dropped
-                      if p.symbol == "AAPL260116C00250000/AAPL260116C00252500"]
+                      if p.symbol == "AAPL261016C00250000/AAPL261016C00252500"]
         self.assertEqual(len(degenerate), 1)
         pair = degenerate[0]
         self.assertEqual(pair.strike_width, 2.5)
@@ -726,12 +827,12 @@ class TestVerticalCallSpreads(unittest.TestCase):
         # (0 of 688 pairs), but the case must stay defined: width 0 gives no
         # ratio (None) and flags, and nothing vanishes silently.
         form_vertical_pairs, _leg, vertical_spreads = self._api()
-        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=30.0,
-                       oi=1500, volume=100, dte=10),
-                 quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=30.0,
-                       oi=1500, volume=100, dte=10),
-                 quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=30.0,
-                       oi=1500, volume=100, dte=10)]
+        chain = [quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100),
+                 quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100),
+                 quote("AAPL261016C00245000", bid=2.40, ask=2.50, iv=30.0,
+                       oi=1500, volume=100)]
         pairs = form_vertical_pairs(chain)
         self.assertEqual(len(pairs), 2)
         self.assertEqual(pairs[0].strike_width, 0.0)
@@ -745,27 +846,27 @@ class TestVerticalCallSpreads(unittest.TestCase):
         # the group key carries the underlying: same expiration and same
         # strikes on two tickers are still two spreads, never one
         form_vertical_pairs, _leg, _vs = self._api()
-        chain = [quote("AAPL260116C00240000", bid=5.00, ask=5.10, iv=30.0,
-                       oi=1500, volume=100, dte=10),
-                 quote("AAPL260116C00245000", bid=2.40, ask=2.50, iv=30.0,
-                       oi=1500, volume=100, dte=10),
-                 quote("MSFT260116C00240000", bid=5.00, ask=5.10, iv=30.0,
-                       oi=1500, volume=100, dte=10),
-                 quote("MSFT260116C00245000", bid=2.40, ask=2.50, iv=30.0,
-                       oi=1500, volume=100, dte=10)]
+        chain = [quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100),
+                 quote("AAPL261016C00245000", bid=2.40, ask=2.50, iv=30.0,
+                       oi=1500, volume=100),
+                 quote("MSFT261016C00240000", bid=5.00, ask=5.10, iv=30.0,
+                       oi=1500, volume=100),
+                 quote("MSFT261016C00245000", bid=2.40, ask=2.50, iv=30.0,
+                       oi=1500, volume=100)]
         self.assertEqual([p.symbol for p in form_vertical_pairs(chain)],
-                         ["AAPL260116C00240000/AAPL260116C00245000",
-                          "MSFT260116C00240000/MSFT260116C00245000"])
+                         ["AAPL261016C00240000/AAPL261016C00245000",
+                          "MSFT261016C00240000/MSFT261016C00245000"])
 
     def test_a_non_positive_debit_is_dropped(self):
         # pair rule: with BOTH legs quoted, the higher strike's bid reaching
         # the lower strike's ask (debit <= 0) is incoherent data - it would
         # print a profit above the width. Measured: 0 of 560 live pairs.
         form_vertical_pairs, _leg, vertical_spreads = self._api()
-        chain = [quote("AAPL260116C00240000", bid=1.90, ask=2.00, iv=30.0,
-                       oi=1500, volume=100, dte=10),
-                 quote("AAPL260116C00245000", bid=2.50, ask=2.70, iv=30.0,
-                       oi=1500, volume=100, dte=10)]
+        chain = [quote("AAPL261016C00240000", bid=1.90, ask=2.00, iv=30.0,
+                       oi=1500, volume=100),
+                 quote("AAPL261016C00245000", bid=2.50, ask=2.70, iv=30.0,
+                       oi=1500, volume=100)]
         kept, dropped = vertical_spreads(chain, _LOOSE, now_fn=_NOW)
         self.assertEqual(kept, [])
         self.assertEqual([reason for _pair, reason in dropped],
@@ -773,10 +874,10 @@ class TestVerticalCallSpreads(unittest.TestCase):
         self.assertEqual(form_vertical_pairs(chain)[0].max_profit, 5.5)
         # BOTH sides of the boundary: exactly zero is outside (0, width) too,
         # otherwise a shift to `debit < 0` stays green
-        boundary = [quote("AAPL260116C00240000", bid=2.40, ask=2.50, iv=30.0,
-                          oi=1500, volume=100, dte=10),
-                    quote("AAPL260116C00245000", bid=2.50, ask=2.70, iv=30.0,
-                          oi=1500, volume=100, dte=10)]
+        boundary = [quote("AAPL261016C00240000", bid=2.40, ask=2.50, iv=30.0,
+                          oi=1500, volume=100),
+                    quote("AAPL261016C00245000", bid=2.50, ask=2.70, iv=30.0,
+                          oi=1500, volume=100)]
         kept_zero, dropped_zero = vertical_spreads(boundary, _LOOSE, now_fn=_NOW)
         self.assertEqual(form_vertical_pairs(boundary)[0].net_debit, 0.0)
         self.assertEqual(kept_zero, [])
@@ -799,12 +900,12 @@ class TheReasonsAreGerman(unittest.TestCase):
     """
 
     def test_the_illiquid_reason_names_the_zero_open_interest(self):
-        kept, dropped = filter_data_complete([quote("AAPL260116C00265000", oi=0)])
+        kept, dropped = filter_data_complete([quote("AAPL261016C00265000", oi=0)])
         self.assertEqual(kept, [])
         self.assertEqual([r for _q, r in dropped], ["oi=0 illiquide"])
 
     def test_the_spread_reason_without_a_quote(self):
-        ohne = quote("AAPL260116C00245000")
+        ohne = quote("AAPL261016C00245000")
         # kein Geld- und kein Briefkurs: der Grund entsteht VOR jeder Rechnung
         ohne.bid, ohne.ask = None, None
         kept, dropped = filter_spread([ohne], ScreenerCriteria(max_spread_abs=None))
@@ -812,24 +913,41 @@ class TheReasonsAreGerman(unittest.TestCase):
         self.assertEqual([r for _q, r in dropped], ["Spread: kein Geld-/Briefkurs"])
 
     def test_the_volume_reason(self):
-        kept, dropped = filter_volume([quote("AAPL260116C00245000", volume=50)],
+        kept, dropped = filter_volume([quote("AAPL261016C00245000", volume=50)],
                                      ScreenerCriteria(min_volume=300))
         self.assertEqual(kept, [])
         self.assertEqual([r for _q, r in dropped], ["Volumen 50 <= 300"])
 
     def test_the_missing_data_reasons(self):
-        _k, iv = filter_iv([quote("AAPL260116C00245000", iv=None)], ScreenerCriteria())
+        _k, iv = filter_iv([quote("AAPL261016C00245000", iv=None)], ScreenerCriteria())
         self.assertEqual([r for _q, r in iv], ["IV fehlt"])
-        ohne = quote("AAPL260116C00245000")
+        # D8 REPLACEMENT: the old assertion cleared the STORED days_to_expiration
+        # field and expected "DTE fehlt". The filter no longer reads that field -
+        # it asks the asset for the honest maturity - so the old setup would now
+        # keep the contract and the assertion would be silently meaningless.
+        # The two statements below keep the full meaning, split in two:
+        ohne = quote("AAPL261016C00245000")
         ohne.days_to_expiration = None
-        _k, dte = filter_dte([ohne], ScreenerCriteria())
-        self.assertEqual([r for _q, r in dte], ["DTE fehlt"])
+        kept, dte = filter_dte([ohne], ScreenerCriteria(dte_min=7, dte_max=45),
+                               now_fn=_NOW)
+        # (1) a missing STORED field is not a missing maturity: the contract
+        #     stays, judged on its real expiry (2026-10-16 -> 9 days)
+        self.assertEqual([q.asset.symbol for q in kept], ["AAPL261016C00245000"])
+        self.assertEqual(dte, [])
+        # (2) "DTE fehlt" is still the wording when no asset can be asked at all
+        class _NoAsset:
+            days_to_expiration = None
+
+        _k, leer = filter_dte([_NoAsset()], ScreenerCriteria(), now_fn=_NOW)
+        self.assertEqual([r for _q, r in leer], ["DTE fehlt"])
 
     def test_the_dte_reasons_keep_names_and_numbers(self):
         fenster = ScreenerCriteria(dte_min=7, dte_max=45)
-        _k, zu_kurz = filter_dte([quote("AAPL260108C00240000", dte=1)], fenster)
-        self.assertEqual([r for _q, r in zu_kurz], ["DTE 1 < 7"])
-        _k, zu_lang = filter_dte([quote("AAPL260216C00270000", dte=132)], fenster)
+        _k, zu_kurz = filter_dte([quote("AAPL261009C00240000")], fenster,
+                                 now_fn=_NOW)
+        self.assertEqual([r for _q, r in zu_kurz], ["DTE 2 < 7"])
+        _k, zu_lang = filter_dte([quote("AAPL270216C00270000")], fenster,
+                                 now_fn=_NOW)
         self.assertEqual([r for _q, r in zu_lang], ["DTE 132 > 45"])
 
 
