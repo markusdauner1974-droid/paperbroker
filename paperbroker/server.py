@@ -217,9 +217,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             entry = groups.setdefault(pattern, {"count": 0, "raw": set()})
             entry["count"] += 1
             entry["raw"].add(raw)
-        out = [{"reason": next(iter(e["raw"])) if len(e["raw"]) == 1 else pattern,
-                "count": e["count"]}
-               for pattern, e in groups.items()]
+        # E7: instead of blanking the numbers out (the pattern "Spread #% > #%" was
+        # what the page showed) the summary names one real example WITH its bounds;
+        # the pattern stays only the grouping key. sorted() keeps the example stable.
+        out = [{"reason": sorted(e["raw"])[0], "count": e["count"]}
+               for _pattern, e in groups.items()]
         out.sort(key=lambda g: -g["count"])   # stable: ties keep pipeline order
         return out
 
@@ -295,6 +297,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             dropped_reasons=_drop_reason_groups(dropped),
             criteria=_criteria_echo(criteria),
             freshness=_freshness_lamp(quotes, now_fn=now_fn),
+            # E3: the operator own limit gets its own named line.
+            freshness_age=_newest_quote_age_min(quotes, now_fn=now_fn),
+            freshness_limit=criteria.max_quote_age_min,
+            age_within_limit=_age_within_limit(quotes, criteria, now_fn=now_fn),
+            feed_stamp=_feed_stamp(quotes),
             # B (Ausbau-Slice B): vertical CALL spreads from the RAW chain.
             # They are deliberately not built from `results` - the eight
             # single-option filters do not preserve strike adjacency
@@ -417,6 +424,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             criteria=criteria, age_off=criteria.max_quote_age_min is None,
             hint=hint,
             error=error, freshness=_lamp_state(age_min),
+            # E3: die Seite braucht dieselben zwei Antworten wie das JSON - die
+            # allgemeine Lampe oben und die Nutzergrenze, getrennt benannt.
+            age_within_limit=_age_within_limit(lamp_source, criteria, now_fn=now_fn),
+            feed_stamp=_feed_stamp(lamp_source),
             freshness_age=None if age_min is None else int(round(age_min)),
             # the limit shown in the header is the EFFECTIVE one (A): it is the
             # value the operator picked, not the app default
@@ -669,6 +680,31 @@ def _sort_links(args):
         paar.append(("sort", mode))
         links[mode] = urlencode(paar)
     return links
+
+
+def _age_within_limit(quotes, criteria, now_fn=None):
+    """E3: is the newest quote inside the operator OWN age limit?
+
+    The traffic light beside it answers a different question (general feed freshness,
+    30/120 minutes by design - the CBOE feed is ~15 minutes behind by nature). With the
+    limit switched off there is nothing to be inside of, hence None.
+    """
+    if criteria is None or criteria.max_quote_age_min is None:
+        return None
+    age = _newest_quote_age_min(quotes, now_fn=now_fn)
+    if age is None:
+        return None
+    return age <= criteria.max_quote_age_min
+
+
+def _feed_stamp(quotes):
+    """E3: the exact feed timestamp of the newest quote (what the data says).
+
+    Compared as text: the adapter stores ISO-ish stamps, which sort correctly.
+    """
+    stamps = [str(q.quote_timestamp) for q in quotes or []
+              if getattr(q, "quote_timestamp", None) is not None]
+    return max(stamps) if stamps else None
 
 
 def _lamp_state(age_min):
