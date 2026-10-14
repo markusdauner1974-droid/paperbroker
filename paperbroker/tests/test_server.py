@@ -841,7 +841,14 @@ class TestCriteriaPanel(unittest.TestCase):
         # D11: pair_max_width is the 18th criterion. Unset it stays None - the
         # adjacency of before - so the echo names the fast mode as the default.
         self.assertIsNone(d["criteria"]["pair_max_width"])
-        self.assertEqual(len(d["criteria"]), 18)
+        # D12: the four position keys are the 19th..22nd criterion. The echo stays
+        # one serialisation for every field of the object that computed - the
+        # position size came along with the object, not into the template.
+        self.assertEqual(d["criteria"]["multiplier"], 100)
+        self.assertEqual(d["criteria"]["quantity"], 1)
+        self.assertEqual(d["criteria"]["fees"], 0.0)
+        self.assertIsNone(d["criteria"]["budget"])
+        self.assertEqual(len(d["criteria"]), 22)
         picker = self._app().test_client().get(
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertNotIn("criteria", picker)                     # no picker echo
@@ -857,6 +864,22 @@ class TestCriteriaPanel(unittest.TestCase):
             "/", query_string={"ticker": "SPY", "dte_min": "45"}).get_data(as_text=True)
         options = re.findall(r'<option value="(\d{4}-\d{2}-\d{2})"', page)
         self.assertEqual(options, ["2026-11-21"])
+
+    def test_the_position_fields_are_settable_through_the_request(self):
+        """D12: die vier Positionsfelder stehen in den Kriterien-Feldlisten des
+        Servers (`_CRITERIA_FIELDS`). Fehlten sie dort, meldete das Formular sie
+        als UNBEKANNTE Parameter und der Wert verpuffte - der Nutzer stellt eine
+        Positionsgroesse ein, die die Rechnung nie sieht.
+        """
+        werte = {"multiplier": "10", "quantity": "3", "fees": "1.5",
+                 "budget": "500"}
+        d = self._json(werte)
+        self.assertEqual(d["criteria"]["multiplier"], 10)
+        self.assertEqual(d["criteria"]["quantity"], 3)
+        self.assertEqual(d["criteria"]["fees"], 1.5)
+        self.assertEqual(d["criteria"]["budget"], 500.0)
+        # ... und die Seite meldet sie nicht als unbekannt
+        self.assertNotIn("Unbekannte Parameter", self._page(werte))
 
 
 
@@ -1386,6 +1409,14 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertEqual(v["breakeven"], 260.7)   # 260.0 + 0.7
         self.assertEqual(v["debit_width_ratio"], 0.28)
         self.assertIs(v["debit_ge_width"], False)
+        # D12: the pair now also carries the POSITION it would be. The report
+        # names its currency instead of leaving the unit open (USD, not
+        # converted), and the position follows from the size of the request's
+        # criteria: the standard 100 x 1 x 0.7 + 0.0 fees = 70.0 USD.
+        self.assertEqual(v["currency"], "USD")
+        self.assertEqual((v["multiplier"], v["quantity"], v["fees"]), (100, 1, 0.0))
+        self.assertIsNone(v["budget"])
+        self.assertEqual(v["position_debit"], 70.0)
 
     def test_a_pair_without_profit_is_dropped_with_a_reason(self):
         """D7 (NEU 1 of the review): no pair with debit >= width is a result.
@@ -1916,6 +1947,23 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
                  re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)]
                 for zeile in zeilen[1:]]
 
+    @staticmethod
+    def _spread_header(page):
+        """Die Kopfzellen der Spread-Tabelle in Dokumentreihenfolge (D13: 12).
+
+        Am <thead> gelesen, nicht gezaehlt: nur so lässt sich die neue Spalte an
+        ihrer STELLE pruefen (zwischen Breite und max Verlust) statt nur als
+        Zahl. Ein Link im <th> (Rendite, BE-Abstand) wird auf seinen Text
+        reduziert.
+        """
+        tabellen = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
+                    if "<th>Spread</th>" in t]
+        if not tabellen:
+            raise AssertionError("keine Spread-Tabelle auf der Seite")
+        kopf = tabellen[0].split("<thead><tr>")[1].split("</tr></thead>")[0]
+        return [re.sub(r"<[^>]+>", "", th).strip()
+                for th in re.findall(r"<th[^>]*>(.*?)</th>", kopf, re.S)]
+
     # --- die neuen Spalten tragen gerechnete Zahlen ---
 
     def test_the_page_shows_the_return_of_every_spread(self):
@@ -1925,16 +1973,73 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         self.assertEqual([z[0] for z in zeilen],
                          ["AMZN 260.00 / 262.50 Call",
                           "TSLA 290.00 / 292.50 Call"])
-        self.assertEqual([z[6] for z in zeilen], ["257.14 %", "257.14 %"])
+        # D13: the Position ($) cell slides in at index 4, so the return column
+        # moved from 6 to 7 - same value, one cell further right.
+        self.assertEqual([z[7] for z in zeilen], ["257.14 %", "257.14 %"])
 
     def test_the_page_shows_the_distance_to_the_break_even(self):
         zeilen = self._spread_rows(self._page())
-        self.assertEqual([z[8] for z in zeilen], ["+4.28 %", "+16.28 %"])
+        # D13: BE-Abstand moved from 8 to 9 (Position ($) is index 4 now).
+        self.assertEqual([z[9] for z in zeilen], ["+4.28 %", "+16.28 %"])
 
     def test_the_spread_cell_names_the_trade_and_keeps_the_codes_in_the_tooltip(self):
         html = self._page()
         self.assertIn('title="AMZN261016C00260000 / AMZN261016C00262500"', html)
         self.assertIn(">AMZN 260.00 / 262.50 Call<", html)
+
+    # --- D13: die Spalte Position ($) ---------------------------------------
+
+    def test_the_header_carries_the_position_column_between_width_and_loss(self):
+        """D13: the spread header has 12 columns, and `Debit (je Einheit)` and
+        `Position ($)` stand DIRECTLY beside each other between `Breite` and
+        `max Verlust` - the basis first, then what the account really pays."""
+        kopf = self._spread_header(self._page())
+        self.assertEqual(len(kopf), 12)
+        self.assertEqual(kopf[2:6], ["Breite", "Debit (je Einheit)",
+                                     "Position ($)", "max Verlust"])
+
+    def test_the_position_cell_shows_what_the_row_costs(self):
+        """D13: with a size from the form (multiplier 10, quantity 3, fees 1.5)
+        the Position ($) cell is the row's OWN debit x 10 x 3 + 1.5, rounded to
+        whole dollars. The debit is read out of the same rendered row, so the
+        check measures the page instead of rebuilding the number by hand."""
+        zeilen = self._spread_rows(
+            self._page({"multiplier": "10", "quantity": "3", "fees": "1.5"}))
+        self.assertEqual(len(zeilen), 2)  # the fixture still lists both spreads
+        for zeile in zeilen:
+            debit = float(zeile[3])
+            self.assertEqual(zeile[4], f"{round(debit * 10 * 3 + 1.5, 2):.0f}",
+                             f"Position von {zeile[0]!r} passt nicht zum Debit")
+
+    def test_the_position_cell_shows_a_dash_without_a_size(self):
+        """D13: a missing position size must not read as a silent 0. Without a
+        multiplier OR without a quantity the cell is exactly `-`, never a zero."""
+        for multiplier, quantity in ((None, 3), (10, None)):
+            criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                        multiplier=multiplier, quantity=quantity)
+            page = self._app(criteria=criteria).test_client().get(
+                "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}
+            ).get_data(as_text=True)
+            positionen = [z[4] for z in self._spread_rows(page)]
+            self.assertEqual(positionen, ["-", "-"], (multiplier, quantity))
+            for zelle in positionen:
+                self.assertNotIn("0", zelle, (multiplier, quantity))
+
+    def test_the_debit_stays_the_value_per_unit_and_the_note_explains_it(self):
+        """D13: the new column supplements, never replaces, the per-unit debit -
+        the same row still shows the debit with two decimals - and the note
+        ABOVE the table names `Position ($)` and says the debit keeps being the
+        value per unit."""
+        page = self._page({"multiplier": "10", "quantity": "3", "fees": "1.5"})
+        zeilen = self._spread_rows(page)
+        self.assertEqual(len(zeilen), 2)
+        for zeile in zeilen:
+            self.assertRegex(zeile[3], r"^\d+\.\d{2}$")
+        self.assertIn("Position ($)", page)
+        hinweis = "der Debit bleibt der Wert je Einheit"
+        self.assertIn(hinweis, page)
+        self.assertLess(page.index(hinweis), page.index("<th>Spread</th>"),
+                        "der Hinweis muss ueber der Tabelle stehen")
 
     def test_the_spread_row_keeps_the_shape_the_other_tests_parse(self):
         # die Muster der uebrigen Tests duerfen nicht brechen: <tr> ohne
@@ -1945,7 +2050,7 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         page = self._app(criteria=loose).test_client().get(
             "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}).get_data(as_text=True)
         for zeile in self._spread_rows(page):
-            self.assertEqual(len(zeile), 11)
+            self.assertEqual(len(zeile), 12)  # D13: + Position ($)
         self.assertEqual(page.count("<tbody>"), 1)
         self.assertEqual(page.count("<table>"), 2)
 
@@ -1957,7 +2062,7 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     def test_the_page_can_sort_by_distance_to_break_even(self):
         zeilen = self._spread_rows(self._page({"sort": "be_asc"}))
-        self.assertEqual([z[8] for z in zeilen], ["+4.28 %", "+16.28 %"])
+        self.assertEqual([z[9] for z in zeilen], ["+4.28 %", "+16.28 %"])
 
     def test_the_page_can_keep_the_chain_order(self):
         self.assertEqual([z[0] for z in self._spread_rows(self._page({"sort": "none"}))],
@@ -2012,9 +2117,11 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
                        underlying_price=None),
                  quote("AAPL261016C00252500", bid=0.45, ask=0.50, iv=30.0, oi=1500,
                        underlying_price=None)]
-        self.assertEqual(self._spread_rows(self._page(quotes=kette))[0][8], "-")
+        # D13: BE-Abstand is index 9 now (was 8); the return column is index 7
+        # (was 6). Same two cells, one step to the right of the Position ($).
+        self.assertEqual(self._spread_rows(self._page(quotes=kette))[0][9], "-")
         # ... und nur dort: die Rendite ist rechenbar und bleibt eine Zahl
-        self.assertNotEqual(self._spread_rows(self._page(quotes=kette))[0][6], "-")
+        self.assertNotEqual(self._spread_rows(self._page(quotes=kette))[0][7], "-")
 
 
 
@@ -2117,14 +2224,21 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
                                   "ignore_quote_age")),
         ("Volatilit\u00e4t", ("iv_min", "iv_max", "iv_pref")),
         ("Bewertung", ("weight_spread", "weight_oi", "weight_iv")),
+        # D12: the position size is its own question and stands AFTER the four
+        # filter groups. It does not filter the chain: it turns the pair numbers
+        # above (per unit) into the position the operator would really hold.
+        ("Position", ("multiplier", "quantity", "fees", "budget")),
     )
 
-    #: Die 15 Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
+    #: Die 19 Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
     #: D11: pair_max_width kam dazu; min_volume BLEIBT (beide sind Kriterien).
+    #: D12: die vier Felder der Gruppe Position (multiplier, quantity, fees,
+    #: budget) sind ebenfalls <input type="number"> und zaehlen hier mit.
     ZAHLENFELDER = ("dte_min", "dte_max", "max_spread_pct", "max_spread_abs", "min_oi",
                     "min_volume", "pair_max_width", "min_bid_size", "min_ask_size",
                     "iv_min", "iv_max", "max_quote_age_min", "weight_spread",
-                    "weight_oi", "weight_iv")
+                    "weight_oi", "weight_iv", "multiplier", "quantity", "fees",
+                    "budget")
 
     @staticmethod
     def _page():
@@ -2171,6 +2285,14 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         for name in re.findall(r'name="([^"]+)"', form):
             gezaehlt[name] = gezaehlt.get(name, 0) + 1
         return gezaehlt
+
+    @staticmethod
+    def _label(page, feld):
+        """Das <label>, das dieses Feld traegt (D12: die Positionsfelder)."""
+        for treffer in re.finditer(r"<label>(.*?)</label>", page, re.S):
+            if f'name="{feld}"' in treffer.group(1):
+                return treffer.group(1)
+        raise AssertionError(f"kein <label> fuer {feld}")
 
     # --- die Breite ---
 
@@ -2228,11 +2350,11 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
 
     def test_no_control_is_added_or_lost(self):
         page = self._page()
-        self.assertEqual(page.count("<input"), 24)   # D11: + Paar-Breite max ($)
+        self.assertEqual(page.count("<input"), 28)   # D12: + 4 Positionsfelder
         self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
         self.assertEqual(page.count("<button"), 1)
-        self.assertEqual(page.count("<fieldset"), 4)
-        self.assertEqual(page.count("<legend>"), 4)
+        self.assertEqual(page.count("<fieldset"), 5)  # D12: + Gruppe Position
+        self.assertEqual(page.count("<legend>"), 5)
 
     def test_the_controls_stay_outside_the_groups(self):
         # Ticker, Verfallsauswahl und der Scan-Knopf gehoeren NICHT in eine
@@ -2245,8 +2367,34 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # ... und die Gruppen stehen alle im Formular (sonst werden die Filter
         # nicht mitgesendet)
         form = re.search(r"<form.*?</form>", page, re.S).group(0)
-        self.assertEqual(form.count('<fieldset class="crit">'), 4)
-        self.assertEqual(form.count("</fieldset>"), 4)
+        self.assertEqual(form.count('<fieldset class="crit">'), 5)  # D12: + Position
+        self.assertEqual(form.count("</fieldset>"), 5)
+
+    # --- D12: die Gruppe Position -------------------------------------------
+
+    def test_the_position_group_holds_the_four_position_fields(self):
+        """D12: Multiplikator, Stueckzahl, Gebuehren und Budget sitzen im
+        Formular UND in der Gruppe "Position" - und jedes nennt seinen Standard.
+
+        Die vier Zahlen sind die Positionsgroesse: sie stehen in einer eigenen
+        Gruppe, damit der Bediener die Groesse einstellt, ohne die Filter zu
+        beruehren. Geprueft wird die Zugehoerigkeit UEBER die Gruppe, nicht per
+        Textsuche - ein Feld ausserhalb der Gruppe waere im Formular, aber nicht
+        als Position auffindbar.
+        """
+        page = self._page()
+        self.assertEqual(dict(self._gruppen(page))["Position"],
+                         ("multiplier", "quantity", "fees", "budget"))
+        form = re.search(r"<form.*?</form>", page, re.S).group(0)
+        for feld, wert in (("multiplier", "100"), ("quantity", "1"),
+                           ("fees", "0.0"), ("budget", "")):
+            treffer = re.findall(f'<input[^>]*name="{feld}"[^>]*>', form)
+            self.assertEqual(len(treffer), 1, feld)
+            self.assertIn('type="number"', treffer[0], feld)     # a number field
+            self.assertIn(f'value="{wert}"', treffer[0], feld)   # its standard
+            label = self._label(page, feld)
+            self.assertIn("<input", label, feld)                 # inside the row
+            self.assertIn("Standard", label[:label.index("<input")], feld)
 
     # --- die Beschriftungen ---
 
@@ -2287,7 +2435,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # <tr> ohne Attribute: jede Zeile wird mit r"<tr>(.*?)</tr>" zerlegt
         self.assertEqual(len(re.findall(r"<tr[^>]*>", page)), page.count("<tr>"))
         # in der Spread-Tabelle trifft das Zellmuster der Bestandstests JEDE
-        # Zelle (11 je Zeile) - dort ist kein <td class=...> erlaubt
+        # Zelle (12 je Zeile) - dort ist kein <td class=...> erlaubt
         spread = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
                   if "<th>Spread</th>" in t][0]
         zeilen = re.findall(r"<tr>(.*?)</tr>", spread, re.S)[1:]
@@ -2296,7 +2444,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         self.assertEqual(len(zeilen), 3)
         for zeile in zeilen:
             self.assertEqual(
-                len(re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)), 11)
+                len(re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)), 12)
 
 
 class TheFiltersStandBesideTheResult(unittest.TestCase):
@@ -2499,9 +2647,9 @@ class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
         page = self._page()
         form = page[page.index("<form"):page.index("</form>")]
         felder = re.findall(r'<input type="number"[^>]*>', form)
-        self.assertEqual(len(felder), 15)      # D11: + pair_max_width
+        self.assertEqual(len(felder), 19)      # D12: + 4 Positionsfelder
         im_label = re.findall(r"<label>(?:(?!</label>).)*?<input type=\"number\"", form, re.S)
-        self.assertEqual(len(im_label), 15)
+        self.assertEqual(len(im_label), 19)
 
 
 class TheColoursCarryEnoughContrast(unittest.TestCase):
@@ -2702,12 +2850,12 @@ class TheDefaultsAreVisible(unittest.TestCase):
             self.assertEqual(self._wert(page, feld), "", feld)
 
     def test_every_field_carries_a_note(self):
-        # D11: "jedes Feld" statt "vierzehn Felder" - mit dem neuen Feld waere die
-        # Zahl im Namen falsch geworden. Geprueft wird weiter dieselbe Aussage:
-        # jedes Feld des Formulars nennt seinen Standard.
+        # D12: die vier Positionsfelder kommen dazu - mit ihnen sind es
+        # neunzehn. Geprueft wird weiter dieselbe Aussage: jedes Feld des
+        # Formulars nennt seinen Standard.
         page = self._page()
         form = page[page.index("<form"):page.index("</form>")]
-        self.assertEqual(len(re.findall(r"\u00b7\s?Standard", form)), 15)
+        self.assertEqual(len(re.findall(r"\u00b7\s?Standard", form)), 19)
 
     def test_the_reset_link_keeps_only_the_instrument(self):
         # der Link darf kein Filter- und kein Sortierparameter tragen
