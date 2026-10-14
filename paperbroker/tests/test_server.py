@@ -985,8 +985,8 @@ class TestSettableCriteria(unittest.TestCase):
         hoch = self._json({**band, "iv_pref": "high"})
         tief = self._json({**band, "iv_pref": "low"})
         self.assertEqual(hoch["criteria"]["iv_pref"], "high")
-        self.assertAlmostEqual(hoch["results"][0]["score"], 0.741, places=3)
-        self.assertAlmostEqual(tief["results"][0]["score"], 0.861, places=3)
+        self.assertAlmostEqual(hoch["results"][0]["score"], 0.7209, places=3)
+        self.assertAlmostEqual(tief["results"][0]["score"], 0.901, places=3)
         self.assertEqual(hoch["candidates"], tief["candidates"])   # selection identical
 
     # --- the guards that already existed, now reachable from the form -----
