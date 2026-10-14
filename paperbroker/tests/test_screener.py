@@ -24,6 +24,7 @@ from paperbroker.screener import (
     filter_volume,
     form_vertical_pairs,
     screen,
+    vertical_spreads,
 )
 
 
@@ -203,6 +204,131 @@ class TestTheWindowIsMeasuredOnTheScanClock(unittest.TestCase):
         kept2, dropped2 = filter_dte([q], fenster, now_fn=_NOW)
         self.assertEqual(dropped2, [])
         self.assertEqual([x.asset.symbol for x in kept2], ["AAPL261016C00240000"])
+
+
+# D19: the reviewer's day change. The quotes were stamped by the feed at
+# 2026-10-13 23:55; the scan clock runs ten minutes later, at 2026-10-14 00:05.
+_D19_FEED = "2026-10-13 23:55:00"
+_DAY_CHANGE = lambda: arrow.get("2026-10-14T00:05:00")  # noqa: E731
+
+
+class TheSpreadSectionSharesTheClockBasis(unittest.TestCase):
+    """D19 (finding 3 of the review): the spread section's maturity gate reads
+    the SCAN clock - the same basis filter_dte has used since D8 - and NOT the
+    day the feed stamped the quotes.
+
+    Measured before the fix: a chain stamped 2026-10-13 23:55 and scanned at
+    2026-10-14 00:05 carried 38 STORED days against 37 real ones, so a window
+    of exactly [37, 37] emptied the section while screen() still kept both legs
+    - no error, no line, just an empty list. The stored field keeps its value;
+    the filter only stops reading it as the window basis.
+    """
+
+    @staticmethod
+    def _leg(occ, bid, ask, feed=_D19_FEED):
+        """One real OCC contract, stamped by the feed at `feed`.
+
+        Built through OptionQuote so days_to_expiration is derived from the OCC
+        expiry and the FEED day, exactly as the live flow derives it - the same
+        reason the `quote()` fixture refuses a settable dte.
+        """
+        asset = asset_factory(occ)
+        q = OptionQuote(
+            quote_date=feed, asset=asset, price=(bid + ask) / 2, bid=bid,
+            ask=ask, bid_size=100, ask_size=100, delta=50, iv=30.0, gamma=0.5,
+            vega=5.0, theta=-3.0, rho=0.5, underlying_price=250.0,
+            open_interest=1500, volume=300, greeks_source="adapter")
+        q.quote_timestamp = feed
+        return q
+
+    @classmethod
+    def _reviewer_chain(cls):
+        # two adjacent, valid CALL legs of the 2026-11-20 expiry (37 clock days)
+        return [cls._leg("AAPL261120C00250000", 1.00, 1.10),
+                cls._leg("AAPL261120C00252500", 0.45, 0.55)]
+
+    @staticmethod
+    def _window(dte_min, dte_max, max_quote_age_min=None):
+        return ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                dte_min=dte_min, dte_max=dte_max,
+                                max_quote_age_min=max_quote_age_min)
+
+    def test_the_day_change_keeps_both_legs_and_the_pair(self):
+        """(a) the reviewer's reproduction through screen() and
+        vertical_spreads(), real OCC symbols, pinned clock. Window exactly
+        [37, 37] - the value the CLOCK yields. Before D19 the section answered
+        0 pairs while screen() answered 2 legs."""
+        kette = self._reviewer_chain()
+        fenster = self._window(37, 37)
+        res, dropped = screen(kette, fenster, now_fn=_DAY_CHANGE)
+        self.assertEqual(len(res), 2)
+        self.assertEqual([r for _q, r in dropped], [])
+        kept, dropped_pairs = vertical_spreads(kette, fenster, now_fn=_DAY_CHANGE)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual([r for _p, r in dropped_pairs], [])
+
+    def test_the_stored_value_survives_the_new_basis(self):
+        """(b) the core of the finding: the stored field keeps the FEED day's
+        maturity (38) - the filter simply no longer reads it. The clock value
+        (37) is what the window sees."""
+        kette = self._reviewer_chain()
+        self.assertEqual(kette[0].days_to_expiration, 38)
+        self.assertEqual(kette[1].days_to_expiration, 38)
+        self.assertEqual(kette[0].asset.get_days_to_expiration(_DAY_CHANGE()), 37)
+        self.assertEqual(kette[1].asset.get_days_to_expiration(_DAY_CHANGE()), 37)
+
+    def test_the_window_follows_the_clock_not_the_stored_field(self):
+        """(c) the same state against the STORED value (window [38, 38]): the
+        section is empty and names the clock's 37 - never a stored 38. The
+        window really follows the clock."""
+        kette = self._reviewer_chain()
+        fenster = self._window(38, 38)
+        res, dropped = screen(kette, fenster, now_fn=_DAY_CHANGE)
+        self.assertEqual(res, [])
+        # screen() names the CLOCK's 37 against the 38 floor - not a stored 38
+        self.assertEqual([r for _q, r in dropped], ["DTE 37 < 38"] * 2)
+        kept, dropped_pairs = vertical_spreads(kette, fenster, now_fn=_DAY_CHANGE)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped_pairs],
+                         ["Verfall: Laufzeit [37] Tage außerhalb [38, 38]"])
+
+    def test_a_real_exclusion_names_the_clock_age(self):
+        """(d) an expiry genuinely outside the window (60 clock days against
+        [7, 45]) still empties the section - and the reason names the clock's
+        60, never the stored 61."""
+        weit = [self._leg("AAPL261213C00250000", 1.00, 1.10),
+                self._leg("AAPL261213C00252500", 0.45, 0.55)]
+        self.assertEqual(weit[0].days_to_expiration, 61)   # from the feed day
+        self.assertEqual(weit[0].asset.get_days_to_expiration(_DAY_CHANGE()), 60)
+        breit = self._window(7, 45)
+        kept, dropped = vertical_spreads(weit, breit, now_fn=_DAY_CHANGE)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Verfall: Laufzeit [60] Tage außerhalb [7, 45]"])
+
+    def test_the_age_limit_is_part_of_the_situation(self):
+        """(e) the feed stamp is 10 minutes old at the scan clock. With the age
+        guard switched off the chain stands; tightened below those 10 minutes it
+        hangs at the age check instead. The DEFAULT 30 min does not trip on a
+        10-minute gap - so the reproduction switches the guard off explicitly,
+        it does not rely on the default."""
+        kette = self._reviewer_chain()
+        locker = self._window(37, 37)
+        res, dropped = screen(kette, locker, now_fn=_DAY_CHANGE)
+        self.assertEqual(len(res), 2)
+        self.assertEqual([r for _q, r in dropped], [])
+        # the default guard (30 min) keeps the 10-minute-old chain too
+        default = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                   dte_min=37, dte_max=37)
+        self.assertEqual(default.max_quote_age_min, 30)
+        res_d, dr_d = screen(kette, default, now_fn=_DAY_CHANGE)
+        self.assertEqual(len(res_d), 2)
+        self.assertEqual([r for _q, r in dr_d], [])
+        # ... but a limit BELOW the gap does - the age check really is engaged
+        streng = self._window(37, 37, max_quote_age_min=5)
+        res_s, dr_s = screen(kette, streng, now_fn=_DAY_CHANGE)
+        self.assertEqual(res_s, [])
+        self.assertEqual([r for _q, r in dr_s], ["veraltet: 10 Min."] * 2)
 
 
 class TestNonFinitePricesAreNotCandidates(unittest.TestCase):
