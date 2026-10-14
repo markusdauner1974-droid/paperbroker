@@ -75,9 +75,9 @@ _REASON_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
 # field keeps the dataclass default - that is why "unset" must not be spelled
 # as 0: min_bid_size=0 demands a size >= 0 and drops every quote with size 0.
 _CRITERIA_INT_FIELDS = ("dte_min", "dte_max", "min_oi", "min_volume", "max_quote_age_min",
-                        "min_bid_size", "min_ask_size")
+                        "min_bid_size", "min_ask_size", "multiplier", "quantity")
 _CRITERIA_FLOAT_FIELDS = ("max_spread_pct", "max_spread_abs", "pair_max_width", "iv_min", "iv_max",
-                          "weight_spread", "weight_oi", "weight_iv")
+                          "weight_spread", "weight_oi", "weight_iv", "fees", "budget")
 _CRITERIA_BOOL_FIELDS = ("require_oi", "require_volume")
 _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
@@ -154,7 +154,7 @@ def _criteria_from_request(base_criteria, args):
 
 
 def _criteria_echo(criteria):
-    """All 17 effective criteria as a JSON-able dict (None -> null).
+    """All effective criteria as a JSON-able dict (None -> null).
 
     One serialisation for every field - a whitelist would drift.
     """
@@ -317,7 +317,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             # single-option filters do not preserve strike adjacency
             # (measured: 0 candidates -> 0 pairs on a live chain that
             # carries 102 adjacent call pairs).
-            verticals=[v.as_dict() for v in vertical_kept],
+            verticals=[v.as_dict(criteria) for v in vertical_kept],
             vertical_drops=_drop_reason_groups(vertical_dropped),
             # the trend signal that really reached the screener: null when the
             # source is down or no provider is configured - then the list is

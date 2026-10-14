@@ -40,6 +40,13 @@ class ScreenerCriteria:
     max_spread_abs: float | None = 0.10        # ask-bid bound in $ (penny zone only)
     min_oi: int | None = 500                   # open interest floor
     min_volume: int | None = 0                 # volume floor (0 = only require > 0)
+    # D12: position size. The pair numbers above stay PER UNIT (per share); these
+    # turn them into a position. fees is the TOTAL for the position, as the broker
+    # charges it; currency is reported, not converted (no exchange rate here).
+    multiplier: int | None = 100               # 100 shares per US equity option contract
+    quantity: int | None = 1                   # contracts
+    fees: float | None = 0.0                   # total fees for the position, in USD
+    budget: float | None = None                # hard upper bound for the position debit
     pair_max_width: float | None = None        # D11: widest strike distance for a spread pair;
                                                # None = adjacent strikes only (fast mode)
     min_bid_size: float | None = None          # disabled by default (data verified present)
@@ -510,7 +517,10 @@ class OptionScreener:
 
 @dataclass
 class VerticalPair:
-    """One vertical call spread: long the lower strike, short the higher.
+    """One vertical spread in its trade direction: long is the leg that is bought.
+
+    A call debit spread buys the LOWER strike, a put debit spread buys the HIGHER one;
+    the builder decides which leg lands in `long`, and every derived number follows it.
 
     Every derived number comes from ONE rounded debit, so the page and the
     JSON cannot drift apart: 5.1 - 2.4 is 2.6999999999999997 in binary
@@ -530,7 +540,11 @@ class VerticalPair:
 
     @property
     def strike_width(self):
-        return round(self.short.asset.strike - self.long.asset.strike, 2)
+        # D12: a distance, not a signed difference. For a call spread the short leg is
+        # the higher one, for a put spread the long leg is - without abs() the width of
+        # every put pair came out negative and the pair rule (0 < debit < width) would
+        # have dropped them all.
+        return round(abs(self.short.asset.strike - self.long.asset.strike), 2)
 
     @property
     def net_debit(self):
@@ -550,6 +564,10 @@ class VerticalPair:
 
     @property
     def breakeven(self):
+        # D12: a call debit spread breaks even at lower + debit, a put debit spread at
+        # higher - debit. The long leg carries the direction, the sign follows from it.
+        if getattr(self.long.asset, "option_type", "call") == "put":
+            return round(self.long.asset.strike - self.net_debit, 2)
         return round(self.long.asset.strike + self.net_debit, 2)
 
     @property
@@ -565,7 +583,20 @@ class VerticalPair:
         instead of being filtered away."""
         return self.net_debit >= self.strike_width
 
-    def as_dict(self):
+    def position_debit(self, criteria=None):
+        """D12: what this position costs - multiplier x quantity x debit, plus fees.
+
+        None when the position size is not set (or the debit is not a number): a missing
+        size must not silently read as zero.
+        """
+        if criteria is None or criteria.multiplier is None or criteria.quantity is None:
+            return None
+        debit = self.net_debit
+        if debit is None:
+            return None
+        return round(criteria.multiplier * criteria.quantity * debit + (criteria.fees or 0.0), 2)
+
+    def as_dict(self, criteria=None):
         """The JSON shape - built from the same attributes the page reads."""
         return {
             "symbol": self.symbol,
@@ -575,6 +606,14 @@ class VerticalPair:
             "long_strike": self.long.asset.strike,
             "short_strike": self.short.asset.strike,
             "strike_width": self.strike_width,
+            # D12: per-unit value AND the position it would be. The criteria come in as
+            # an argument: a pair is built from two legs and does not own the settings.
+            "multiplier": None if criteria is None else criteria.multiplier,
+            "quantity": None if criteria is None else criteria.quantity,
+            "fees": None if criteria is None else criteria.fees,
+            "budget": None if criteria is None else criteria.budget,
+            "currency": "USD",
+            "position_debit": self.position_debit(criteria),
             "net_debit": self.net_debit,
             "max_loss": self.max_loss,
             "max_profit": self.max_profit,
@@ -601,12 +640,20 @@ def form_vertical_pairs(chain, option_type="call", max_width=None):
                getattr(asset, "expiration_date", None),
                option_type)
         groups.setdefault(key, []).append(quote)
+    def _paar(lower, upper):
+        # D12: the pair order IS the trade direction. A call debit spread buys the LOWER
+        # strike, a put debit spread buys the HIGHER one - the comment above has said so
+        # all along, the code did not do it.
+        if option_type == "put":
+            return VerticalPair(long=upper, short=lower)
+        return VerticalPair(long=lower, short=upper)
+
     pairs = []
     for key in sorted(groups):
         legs = sorted(groups[key], key=lambda q: q.asset.strike)
         if max_width is None:
             # fast mode (default): adjacent strikes only
-            pairs.extend(VerticalPair(long=lower, short=upper)
+            pairs.extend(_paar(lower, upper)
                          for lower, upper in zip(legs, legs[1:], strict=False))
             continue
         # D11: every pair inside an explicitly bounded width. Measured on a live chain
@@ -620,7 +667,7 @@ def form_vertical_pairs(chain, option_type="call", max_width=None):
                 breite = float(upper.asset.strike) - float(lower.asset.strike)
                 if breite > max_width:
                     break
-                pairs.append(VerticalPair(long=lower, short=upper))
+                pairs.append(_paar(lower, upper))
     return pairs
 
 
@@ -680,6 +727,11 @@ def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
         chain = gefiltert
     for pair in form_vertical_pairs(chain, option_type=option_type,
                                    max_width=criteria.pair_max_width):
+        if criteria.budget is not None:
+            groesse = pair.position_debit(criteria)
+            if groesse is not None and groesse > criteria.budget:
+                dropped.append((pair, f"Position {groesse:.2f} USD > Budget {criteria.budget:.2f} USD"))
+                continue
         if pair.net_debit <= 0 or pair.net_debit >= pair.strike_width:
             # PAIR-level rule (both legs are quoted by now). Debit <= 0 means the
             # higher strike's bid reaches the lower strike's ask - an incoherent
