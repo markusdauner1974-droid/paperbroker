@@ -1116,6 +1116,172 @@ class PutPairsCarryTheirOwnDirection(unittest.TestCase):
         self.assertEqual(fern.position_debit(mit), 34.0)
 
 
+class TheNetNumbersFollowOneCostAssumption(unittest.TestCase):
+    """D18: fees used to stand ONLY in position_debit - max loss, max profit,
+    return and break-even stayed GROSS and per unit, while the table labelled
+    just the debit as per unit. The five net numbers below all come from ONE
+    cost assumption (multiplier x quantity x debit + fees); the gross numbers
+    stay gross and serve as the comparison basis.
+
+    Every expected value is MEASURED on this tree (the class methods), never
+    re-derived by hand. The two pairs are the two examples of the review
+    report: a call 835/840 debit 0.05 at 100 x 1 with 500 fees, and a put
+    480/475 debit 0.01 at 100 x 2 with 4 fees.
+    """
+
+    @staticmethod
+    def _pairs():
+        from paperbroker import screener as module
+        return module.form_vertical_pairs
+
+    @staticmethod
+    def _call():
+        chain = [
+            quote("SPY261120C00835000", bid=0.05, ask=0.05, iv=30.0,
+                  oi=5000, volume=100),
+            quote("SPY261120C00840000", bid=0.00, ask=0.00, iv=30.0,
+                  oi=5000, volume=100),
+        ]
+        return TheNetNumbersFollowOneCostAssumption._pairs()(chain,
+                                                            option_type="call")[0]
+
+    @staticmethod
+    def _put():
+        chain = [
+            quote("SPY261120P00480000", bid=0.02, ask=0.02, iv=30.0,
+                  oi=5000, volume=100),
+            quote("SPY261120P00475000", bid=0.01, ask=0.01, iv=30.0,
+                  oi=5000, volume=100),
+        ]
+        return TheNetNumbersFollowOneCostAssumption._pairs()(chain,
+                                                            option_type="put")[0]
+
+    # --- die Netto-Arithmetik an der echten Klasse -------------------------
+
+    def test_the_call_example_names_all_five_net_numbers(self):
+        call = self._call()
+        c = ScreenerCriteria(multiplier=100, quantity=1, fees=500.0)
+        self.assertEqual(call.net_debit, 0.05)           # ask(835) .05 - bid(840) .00
+        self.assertEqual(call.position_debit(c), 505.0)  # 100 * 1 * .05 + 500
+        self.assertEqual(call.net_max_loss(c), 505.0)    # the debit paid, in money
+        self.assertEqual(call.net_max_profit(c), -5.0)   # 4.95 * 100 - 500
+        self.assertEqual(call.net_breakeven(c), 840.05)  # 835 + .05 + 500 / 100
+        self.assertEqual(call.net_return_pct(c), -0.99)  # -5 / 505 * 100
+        self.assertIs(call.profitable_after_costs(c), False)
+
+    def test_the_put_example_names_all_five_net_numbers(self):
+        put = self._put()
+        c = ScreenerCriteria(multiplier=100, quantity=2, fees=4.0)
+        self.assertEqual(put.net_debit, 0.01)              # ask(480) .02 - bid(475) .01
+        self.assertEqual(put.position_debit(c), 6.0)       # 100 * 2 * .01 + 4
+        self.assertEqual(put.net_max_loss(c), 6.0)
+        self.assertEqual(put.net_max_profit(c), 994.0)     # 4.99 * 200 - 4
+        self.assertEqual(put.net_breakeven(c), 479.97)     # 480 - .01 - 4 / 200
+        self.assertEqual(put.net_return_pct(c), 16566.67)  # 994 / 6 * 100
+        self.assertIs(put.profitable_after_costs(c), True)
+
+    # --- brutto bleibt brutto ----------------------------------------------
+
+    def test_the_gross_numbers_do_not_move_with_the_fees(self):
+        """The net numbers use the cost assumption; max profit, max loss and
+        break-even are the GROSS per-unit values and carry no criteria at all,
+        so the SAME pair reports the same three numbers at fees 0 and 500."""
+        call = self._call()
+        ohne = ScreenerCriteria(multiplier=100, quantity=1, fees=0.0)
+        mit = ScreenerCriteria(multiplier=100, quantity=1, fees=500.0)
+        self.assertEqual((call.max_profit, call.max_loss, call.breakeven),
+                         (4.95, 0.05, 835.05))
+        d_ohne, d_mit = call.as_dict(ohne), call.as_dict(mit)
+        for key in ("max_profit", "max_loss", "breakeven", "net_debit"):
+            self.assertEqual(d_ohne[key], d_mit[key], key)
+        # the net numbers, in contrast, follow the fees honestly
+        self.assertEqual((d_ohne["position_debit"], d_mit["position_debit"]),
+                         (5.0, 505.0))
+        self.assertEqual(d_ohne["net_max_profit"], 495.0)   # 4.95 * 100 - 0
+        self.assertEqual(d_mit["net_max_profit"], -5.0)     # 4.95 * 100 - 500
+
+    # --- der kostenbewusste Ausschluss -------------------------------------
+
+    @staticmethod
+    def _verticals(chain, criteria):
+        from paperbroker import screener as module
+        return module.vertical_spreads(chain, criteria, now_fn=_NOW)
+
+    def test_a_pair_that_loses_after_costs_is_dropped_with_its_reason(self):
+        """A pair that CAN win grossly (debit 0.50 < width 5.00, 4.50 per unit)
+        is a result at fees 0 - with 500 fees its best case is -50 USD and it
+        must leave the list with the cost reason, not stand there as a hit."""
+        chain = [
+            quote("SPY261016C00300000", bid=1.00, ask=1.00, iv=30.0,
+                  oi=1500, volume=100),
+            quote("SPY261016C00305000", bid=0.50, ask=0.50, iv=30.0,
+                  oi=1500, volume=100),
+        ]
+        frei = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None)
+        kept, dropped = TheNetNumbersFollowOneCostAssumption._verticals(
+            chain, frei)
+        self.assertEqual([p.symbol for p in kept],
+                         ["SPY261016C00300000/SPY261016C00305000"])
+        self.assertEqual(dropped, [])
+        mit = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                               multiplier=100, quantity=1, fees=500.0)
+        kept, dropped = TheNetNumbersFollowOneCostAssumption._verticals(
+            chain, mit)
+        self.assertEqual(kept, [])
+        self.assertEqual([(p.symbol, r) for p, r in dropped],
+                         [("SPY261016C00300000/SPY261016C00305000",
+                           "Nach Kosten nicht gewinnfähig: netto -50.00 USD "
+                           "(Einsatz 550.00 USD)")])
+
+    def test_a_pair_that_cannot_win_grossly_keeps_the_old_reason_without_fees(self):
+        """The cost rule needs fees to say more than the pair rule: at fees 0
+        the same construction falls for the older, more precise reason. With
+        fees the cost rule acts FIRST and names the money instead."""
+        chain = [
+            quote("SPY261016C00300000", bid=6.00, ask=6.00, iv=30.0,
+                  oi=1500, volume=100),
+            quote("SPY261016C00305000", bid=0.10, ask=0.10, iv=30.0,
+                  oi=1500, volume=100),
+        ]
+        frei = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None)
+        kept, dropped = TheNetNumbersFollowOneCostAssumption._verticals(
+            chain, frei)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Debit 5.9 außerhalb (0, 5.0) - kein Gewinn möglich"])
+        mit = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                               multiplier=100, quantity=1, fees=10.0)
+        kept, dropped = TheNetNumbersFollowOneCostAssumption._verticals(
+            chain, mit)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Nach Kosten nicht gewinnfähig: netto -100.00 USD "
+                          "(Einsatz 600.00 USD)"])
+
+    # --- ohne Groesse bleibt es None ---------------------------------------
+
+    def test_without_a_size_the_net_numbers_are_none_not_zero(self):
+        """multiplier=None (or quantity=None) means "no position": the net
+        numbers are None - a dash on the page - never 0 and never a silent
+        False from the comparison against zero."""
+        call = self._call()
+        ohne = ScreenerCriteria(max_spread_pct=100.0, multiplier=None)
+        self.assertIsNone(call.net_max_profit(ohne))
+        self.assertIsNone(call.net_max_loss(ohne))
+        self.assertIsNone(call.net_breakeven(ohne))
+        self.assertIsNone(call.net_return_pct(ohne))
+        self.assertIsNone(call.profitable_after_costs(ohne))
+        d = call.as_dict(ohne)
+        for key in ("net_max_loss", "net_max_profit", "net_breakeven",
+                    "net_return_pct", "profitable_after_costs"):
+            self.assertIsNone(d[key], key)
+        # quantity=None must behave exactly like multiplier=None
+        halb = ScreenerCriteria(max_spread_pct=100.0, multiplier=100,
+                                quantity=None)
+        self.assertIsNone(call.net_max_profit(halb))
+        self.assertIsNone(call.profitable_after_costs(halb))
+
+
 class TheReasonsAreGerman(unittest.TestCase):
     """Slice D4: die Ausschuss-Gruende sind deutsch.
 

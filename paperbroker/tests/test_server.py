@@ -1503,6 +1503,48 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertIsNone(v["budget"])
         self.assertEqual(v["position_debit"], 70.0)
 
+    def test_the_api_carries_the_net_fields_for_every_vertical_row(self):
+        """D18: every vertical row of the API names the five net numbers, all
+        from the SAME cost assumption (multiplier x quantity x debit + fees).
+        With a size set (the default 100 x 1) none of them may be None - a
+        None here would read as "no costs" instead of "not computed"."""
+        data = self._json()
+        self.assertEqual([v["symbol"] for v in data["verticals"]],
+                         ["AMZN261016C00260000/AMZN261016C00262500",
+                          "TSLA261016C00290000/TSLA261016C00292500"])
+        for v in data["verticals"]:
+            for key in ("net_max_loss", "net_max_profit", "net_breakeven",
+                        "net_return_pct", "profitable_after_costs"):
+                self.assertIn(key, v, v["symbol"])
+                self.assertIsNotNone(v[key], (v["symbol"], key))
+        # AMZN 260/262.5 at the default 100 x 1 with 0.0 fees, measured on the
+        # built tree: the same position the position_debit names, after costs
+        v = data["verticals"][0]
+        self.assertEqual(v["position_debit"], 70.0)
+        self.assertEqual(v["net_max_loss"], 70.0)
+        self.assertEqual(v["net_max_profit"], 180.0)    # (2.5 - 0.7) * 100 - 0
+        self.assertEqual(v["net_breakeven"], 260.7)     # 260.0 + 0.7 + 0 / 100
+        self.assertEqual(v["net_return_pct"], 257.14)   # 180.0 / 70.0 * 100
+        self.assertIs(v["profitable_after_costs"], True)
+
+    def test_a_pair_that_loses_after_costs_leaves_the_list_with_its_reason(self):
+        """D18 end to end: with 500.00 USD fees every fixture pair's best case
+        turns negative, so `verticals` empties and the drop list carries the
+        cost reason. The five pairs share ONE normalized reason key, so they
+        arrive as a single group; its example is the lexicographically smallest
+        raw text (the one-sided MSFT pair: debit 0.50 x 100 + 500 = 550 paid,
+        -300 left). Every entry of the group must name the cost, never a leg
+        rule."""
+        data = self._json(params={"multiplier": "100", "quantity": "1",
+                                  "fees": "500"})
+        self.assertEqual(data["verticals"], [])
+        self.assertEqual(data["criteria"]["fees"], 500.0)
+        self.assertEqual(len(data["vertical_drops"]), 1)
+        gruppe = data["vertical_drops"][0]
+        self.assertEqual(gruppe["count"], 5)
+        self.assertEqual(gruppe["reason"], "Nach Kosten nicht gewinnfähig: "
+                                           "netto -300.00 USD (Einsatz 550.00 USD)")
+
     def test_a_pair_without_profit_is_dropped_with_a_reason(self):
         """D7 (NEU 1 of the review): no pair with debit >= width is a result.
 
@@ -2112,11 +2154,36 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
     def test_the_header_carries_the_position_column_between_width_and_loss(self):
         """D13: the spread header has 12 columns, and `Debit (je Einheit)` and
         `Position ($)` stand DIRECTLY beside each other between `Breite` and
-        `max Verlust` - the basis first, then what the account really pays."""
+        the loss column - the basis first, then what the account really pays.
+
+        D18: the loss/gain column now says out loud that it is per unit and
+        gross, so the neighbour of `Position ($)` carries that label. The
+        statement stays: the header names the position column in that place.
+        """
         kopf = self._spread_header(self._page())
         self.assertEqual(len(kopf), 12)
         self.assertEqual(kopf[2:6], ["Breite", "Debit (je Einheit)",
-                                     "Position ($)", "max Verlust"])
+                                     "Position ($)",
+                                     "max Verlust(je Einheit, brutto)"])
+
+    def test_the_gross_columns_say_gross_and_the_note_explains_net(self):
+        """D18: the four columns that stay per unit and before costs say so -
+        `max Verlust`/`max Gewinn` carry `je Einheit, brutto`, return and
+        break-even carry `brutto` - and the note under the heading says the
+        gross columns are the comparison basis while the net numbers live in
+        the JSON. The lede names its return gross, too.
+        """
+        page = self._page()
+        kopf = self._spread_header(page)
+        self.assertEqual(kopf[5], "max Verlust(je Einheit, brutto)")
+        self.assertEqual(kopf[6], "max Gewinn(je Einheit, brutto)")
+        self.assertEqual(kopf[7], "Rendite(brutto)")
+        self.assertEqual(kopf[8], "Breakeven(brutto)")
+        self.assertIn("Die Bruttospalten gelten <strong>je Einheit und vor "
+                      "Kosten</strong>", page)
+        self.assertIn("Nettowerte nach Multiplikator, Stückzahl und Gebühren "
+                      "stehen im JSON", page)
+        self.assertIn("Rendite (brutto)", page)
 
     def test_the_position_cell_shows_what_the_row_costs(self):
         """D13: with a size from the form (multiplier 10, quantity 3, fees 1.5)
@@ -2843,7 +2910,9 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
     def test_the_lead_line_names_the_best_return(self):
         page = self._page()
         # D7: 3 Spreads - the degenerated AAPL pair is no longer a result
-        self.assertIn('<p class="lede">3 Spreads, bester 257.14 % Rendite</p>', page)
+        # D18: the lede names its number gross, like the column it summarises
+        self.assertIn('<p class="lede">3 Spreads, bester 257.14 % Rendite '
+                      '(brutto)</p>', page)
         self.assertLess(page.index('class="lede"'), page.index('<div class="stats">'))
 
     def test_the_lead_line_is_the_maximum_and_not_the_first_row(self):
