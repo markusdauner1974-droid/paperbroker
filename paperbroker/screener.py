@@ -109,6 +109,22 @@ class ScreenerCriteria:
         if self.iv_min is not None and self.iv_max is not None and self.iv_min > self.iv_max:
             bad.append(f"iv_min: muss ≤ iv_max sein "
                        f"(ist: {self.iv_min} > {self.iv_max}).")
+        # D16: the position size is real money, so it gets the same treatment as every
+        # other field. None stays allowed and means "no position is computed" - a SET
+        # value has to be usable. The browser's min="1"/min="0" are convenience, not a
+        # check: the server takes the values from the request and from the API.
+        if self.multiplier is not None and (not isinstance(self.multiplier, int)
+                                            or self.multiplier < 1):
+            bad.append(f"multiplier: muss eine positive ganze Zahl sein "
+                       f"(ist: {self.multiplier}).")
+        if self.quantity is not None and (not isinstance(self.quantity, int)
+                                          or self.quantity < 1):
+            bad.append(f"quantity: muss eine positive ganze Zahl sein "
+                       f"(ist: {self.quantity}).")
+        if self.fees is not None and self.fees < 0:
+            bad.append(f"fees: darf nicht negativ sein (ist: {self.fees}).")
+        if self.budget is not None and self.budget < 0:
+            bad.append(f"budget: darf nicht negativ sein (ist: {self.budget}).")
         for wname in ("weight_spread", "weight_oi", "weight_iv"):
             w = getattr(self, wname)
             if w is not None and w < 0:
