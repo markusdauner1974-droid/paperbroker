@@ -4,6 +4,51 @@ This is the durable summary of where the project stands. It is written in Englis
 in the repository; the detailed German documentation (phase documents and raw measurement evidence)
 stays local in `docs/` and is **not** part of the repository.
 
+## Since the baseline (snapshot, 2026-10-14)
+
+The baseline below stays untouched - it is the reference point this file was frozen at. This
+section records what happened afterwards. It is itself a snapshot, not a live view: the
+always-current sources remain `git log --merges` and the CI page of the repository.
+
+| Item | At the freeze (2026-10-13) | Now (2026-10-14) |
+|---|---|---|
+| `master` | `6de055e` (merge of PR #37) | `98a0d8f` (merge of PR #55) |
+| Test suite | 345 passed | **433 passed** |
+| Pull requests merged | up to #37 | up to **#55** |
+| Slices delivered after the freeze | - | **D2 ... D14** |
+| Commits | 180 | **230** |
+
+The freeze happened right after D1 (#37); D0 (#36) and D1 are therefore part of the baseline
+table below. Everything after it was delivered the same way: a deterministic build from the
+base commit with counted replacements, tests first and red before green, a mutation run that
+has to kill the assertions it claims, an independent re-check on a freshly unpacked base, and a
+merge only when both check sources - check runs and commit statuses - were green.
+
+### The slices after the freeze
+
+| Slice | What changed | PR |
+|---|---|---|
+| D2, D2b, D2c | filters into a rail with the result first, without boxes, four contrast values raised | #39, #40, #41 |
+| D3 | every field names its default, plus a reset link | #42 |
+| D4, D5 | the drop reasons speak German; the last English is gone and no Python `None` reaches the page | #43, #44 |
+| D6 | the error path tells the truth | #45 |
+| D7 | the spread section uses the same filter world as the list | #46 |
+| D8 | maturity is measured on the scan clock; non-finite data is rejected | #47 |
+| D9a, D9b | honest labels and an age-limit line; the JSON endpoint answers JSON when the feed fails | #48, #50 |
+| D10 | the IV preference scores by rank instead of by an optional band | #49 |
+| D11 | an optional width for spread pairs, adjacency stays the default | #51 |
+| D12 | put spreads trade their own direction; positions carry their own size | #52 |
+| D13 | the spread table shows what the position costs | #54 |
+| D14 | the page can show put spreads, not only calls | #55 |
+
+### Open after D14
+
+* **No mobile view yet.** The spread table carries twelve columns and has no overflow
+  container, so on a phone it is not readable. This is the next real slice.
+* An earlier attempt at the D13 branch (#53) was closed unmerged: it had been cut from a stale
+  local `master` and was missing the D12 change it depended on. Rebuilt from the remote ref as
+  #54; the base is checked explicitly before every build now.
+
 ## Baseline (frozen)
 
 **This file is a snapshot, not a live view.** It is refreshed when the state is deliberately frozen.
