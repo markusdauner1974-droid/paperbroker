@@ -330,6 +330,34 @@ class CBOEQuoteAdapter(QuoteAdapter):
                 f"all {len(chain['options'])} contracts of {underlying} unusable")
         return ChainResult(out, skipped=skipped)
 
+    def get_option_chain_snapshot(self, underlying_symbol):
+        """Raw, unfiltered view of the cached feed entry for one underlying.
+
+        The returned dict carries the source rows exactly as the feed delivered
+        them - missing bid/ask stays missing instead of becoming 0, and a row
+        whose option symbol cannot be interpreted is still present. Nothing is
+        mapped through OptionQuote, so no value is scaled or substituted here.
+
+        Deliberately NOT applied: expiration window, open-interest or volume
+        minimums, spread bounds, IV bands, trend, score, budget, costs and the
+        age limit. Choosing an underlying is a data request, not a quality
+        filter - the caller decides.
+
+        Failures keep the existing contract unchanged: CboeNotFoundError for a
+        symbol the source does not know, CboeRequestError for a timeout, an
+        outage, HTTP throttling or an unreadable payload.
+        """
+        entry = self._fetch(underlying_symbol)
+        records = entry.get("options")
+        return {
+            "underlying_symbol": underlying_symbol,
+            "source_timestamp_raw": entry.get("timestamp"),
+            "current_price": entry.get("current_price"),
+            # A copy of the list: the cache keeps its own order and length even
+            # if a caller reorders or slices what it got.
+            "records": list(records) if isinstance(records, list) else [],
+            "fetched_at": entry.get("fetched_at"),
+        }
     def get_expiration_dates(self, underlying_asset=None):
         """Sorted 'YYYY-MM-DD' strings available for an underlying."""
         underlying = underlying_asset.upper() if isinstance(underlying_asset, str) \

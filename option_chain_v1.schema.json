@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/markusdauner1974-droid/paperbroker/option_chain_v1.schema.json",
+  "title": "Paperbroker unfiltered option chain, version 1",
+  "description": "Response body of GET /api/v1/option-chain. A data request: no filtering, no scoring, no decision. Missing values are null and never 0; a real 0 stays 0.",
+  "type": "object",
+  "required": ["schema_version", "ticker", "source", "snapshot", "underlying", "listed_expirations", "contracts"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "ticker": { "type": "string" },
+    "requested_expiration": { "type": ["string", "null"], "format": "date" },
+    "source": {
+      "type": "object",
+      "required": ["name", "delayed", "nominal_delay_minutes"],
+      "properties": {
+        "name": { "type": "string" },
+        "delayed": { "type": "boolean" },
+        "nominal_delay_minutes": { "type": "integer" }
+      }
+    },
+    "snapshot": {
+      "type": "object",
+      "description": "counts must add up: returned + unassigned + invalid + outside_requested_expiration == source_record_count",
+      "required": [
+        "source_record_count", "returned_record_count", "unassigned_record_count",
+        "invalid_record_count", "outside_requested_expiration_count", "completeness", "warnings"
+      ],
+      "properties": {
+        "source_timestamp_raw": { "type": ["string", "null"], "description": "verbatim feed value; the feed carries no timezone" },
+        "source_timestamp_utc": { "type": ["string", "null"], "description": "null while the source timezone is unverified" },
+        "source_timestamp_timezone": { "type": ["string", "null"] },
+        "fetched_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "served_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "source_age_seconds": { "type": ["number", "null"], "description": "null while the source timezone is unverified" },
+        "cache_age_seconds": { "type": ["number", "null"] },
+        "source_record_count": { "type": "integer", "minimum": 0 },
+        "returned_record_count": { "type": "integer", "minimum": 0 },
+        "unassigned_record_count": { "type": "integer", "minimum": 0 },
+        "invalid_record_count": { "type": "integer", "minimum": 0 },
+        "outside_requested_expiration_count": { "type": "integer", "minimum": 0 },
+        "completeness": { "enum": ["complete", "partial", "unknown"], "description": "processing of THIS snapshot, not an exchange-coverage guarantee" },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "underlying": {
+      "type": "object",
+      "properties": {
+        "price": { "type": ["number", "null"] },
+        "currency": { "type": ["null"], "description": "the source names no currency; never guessed" },
+        "currency_source": { "type": ["string", "null"] }
+      }
+    },
+    "listed_expirations": { "type": "array", "items": { "type": "string", "format": "date" } },
+    "contracts": { "type": "array", "items": { "$ref": "#/$defs/contract" } },
+    "unassigned_records": { "type": "array", "items": { "$ref": "#/$defs/unassigned" } },
+    "invalid_records": { "type": "array", "items": { "$ref": "#/$defs/unassigned" } },
+    "quality_flags": { "type": "array", "items": { "type": "string" } }
+  },
+  "$defs": {
+    "contract": {
+      "type": "object",
+      "required": ["symbol", "parse_status", "quality_flags", "source_record"],
+      "properties": {
+        "symbol": { "type": "string", "description": "verbatim source symbol" },
+        "underlying_symbol": { "type": ["string", "null"], "description": "root parsed from the symbol, not the requested ticker" },
+        "option_type": { "enum": ["call", "put", null] },
+        "strike": { "type": ["number", "null"] },
+        "expiration": { "type": ["string", "null"], "format": "date" },
+        "bid": { "type": ["number", "null"] },
+        "ask": { "type": ["number", "null"] },
+        "bid_size": { "type": ["integer", "null"], "description": "contract count as delivered by the source" },
+        "ask_size": { "type": ["integer", "null"] },
+        "last_trade_price": { "type": ["number", "null"], "description": "never replaced by a midpoint" },
+        "last_trade_time_raw": { "type": ["string", "null"] },
+        "last_trade_time_utc": { "type": ["string", "null"], "description": "null while the timezone is unverified" },
+        "open_interest": { "type": ["integer", "null"] },
+        "volume": { "type": ["integer", "null"] },
+        "iv_decimal": { "type": ["number", "null"], "description": "decimal: 0.25 means 25 %" },
+        "delta": { "type": ["number", "null"] },
+        "gamma": { "type": ["number", "null"], "description": "source-native, unit unverified" },
+        "theta": { "type": ["number", "null"], "description": "source-native, unit unverified" },
+        "vega": { "type": ["number", "null"], "description": "source-native, unit unverified" },
+        "rho": { "type": ["number", "null"], "description": "source-native, unit unverified" },
+        "theoretical_price": { "type": ["number", "null"], "description": "model value from the source" },
+        "multiplier": { "type": ["null"], "description": "never inferred from the option symbol" },
+        "deliverable": { "type": ["null"] },
+        "currency": { "type": ["null"] },
+        "exercise_style": { "type": ["null"] },
+        "settlement_type": { "type": ["null"] },
+        "contract_metadata_status": { "enum": ["verified", "assumed", "unknown"] },
+        "parse_status": { "enum": ["ok", "unsupported_symbol", "invalid"] },
+        "quality_flags": { "type": "array", "items": { "type": "string" } },
+        "source_record": { "type": "object", "description": "original feed row, JSON-safe" }
+      }
+    },
+    "unassigned": {
+      "type": "object",
+      "required": ["parse_status", "reason", "source_record"],
+      "properties": {
+        "symbol": { "type": ["string", "null"] },
+        "parse_status": { "type": "string" },
+        "reason": { "type": "string" },
+        "quality_flags": { "type": "array", "items": { "type": "string" } },
+        "source_record": { "type": "object" }
+      }
+    }
+  }
+}
