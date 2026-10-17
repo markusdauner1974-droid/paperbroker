@@ -348,6 +348,109 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             ],
         )
 
+    # Unfiltered, read-only option-chain view for Hermes. Deliberately NOT a
+    # screener: no criteria object, no trend provider, no spread engine. The
+    # route validates its arguments, fetches the raw snapshot through the
+    # facade and hands it to a pure serializer.
+    @app.get("/api/v1/option-chain")
+    def api_option_chain():
+        from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
+            CboeNotFoundError,
+            CboeRequestError,
+        )
+        from paperbroker.option_chain_api import (
+            SCHEMA_VERSION,
+            listed_expirations,
+            serialise_snapshot,
+        )
+
+        def _chain_error(status, code, message):
+            # Own envelope: schema_version plus a stable error.code, so a JSON
+            # client never has to parse an HTML page or a free-text string.
+            return (
+                jsonify(
+                    schema_version=SCHEMA_VERSION,
+                    error={"code": code, "message": message},
+                ),
+                status,
+            )
+
+        erlaubt = ("ticker", "expiration")
+        unbekannt = sorted(set(request.args) - set(erlaubt))
+        if unbekannt:
+            return _chain_error(
+                400,
+                "unknown_parameter",
+                f"unknown parameter(s): {', '.join(unbekannt)}. Allowed: ticker, expiration",
+            )
+        doppelt = sorted(name for name in set(request.args) if len(request.args.getlist(name)) > 1)
+        if doppelt:
+            return _chain_error(
+                400,
+                "duplicate_parameter",
+                f"duplicate parameter(s): {', '.join(doppelt)}",
+            )
+
+        ticker = (request.args.get("ticker") or "").strip().upper()
+        if not ticker:
+            return _chain_error(400, "ticker_required", "ticker is required")
+        if not _TICKER_RE.match(ticker):
+            return _chain_error(
+                400, "invalid_ticker", "invalid ticker (1-6 letters A-Z expected)"
+            )
+        expiration = (request.args.get("expiration") or "").strip()
+        if expiration:
+            if not _DATE_RE.match(expiration):
+                return _chain_error(
+                    400, "invalid_expiration", "invalid expiration (YYYY-MM-DD expected)"
+                )
+            # The pattern only checks the shape: 2026-13-99 passes it. An
+            # impossible date is a client error, not "not listed".
+            from datetime import date as _date
+
+            try:
+                _date.fromisoformat(expiration)
+            except ValueError:
+                return _chain_error(
+                    400, "invalid_expiration", "invalid expiration (not a real calendar date)"
+                )
+
+        # One fetch. The snapshot comes from the existing cache; this route
+        # adds no refresh mechanism and never truncates silently.
+        try:
+            snapshot = broker.get_option_chain_snapshot(ticker)
+        except CboeNotFoundError:
+            return _chain_error(404, "unknown_symbol", "the source does not know this symbol")
+        except CboeRequestError:
+            app.logger.warning("api_option_chain: market data failed for %s", ticker)
+            return _chain_error(
+                503, "market_data_unavailable", "the market data source is unreachable right now"
+            )
+
+        # A selected expiration must be one the snapshot itself lists - this
+        # keeps the answer honest instead of returning an empty chain for a
+        # date nobody offered.
+        verfaelle = set(listed_expirations(snapshot))
+        if expiration and expiration not in verfaelle:
+            return _chain_error(
+                400,
+                "expiration_not_listed",
+                f"expiration {expiration} is not a listed expiration for this ticker",
+            )
+
+        try:
+            koerper = serialise_snapshot(
+                snapshot,
+                ticker=ticker,
+                requested_expiration=expiration or None,
+                now_fn=lambda: now_fn().to("utc").datetime,
+            )
+        except Exception:                                    # noqa: BLE001 - classified below
+            app.logger.exception("api_option_chain: serialisation failed for %s", ticker)
+            return _chain_error(
+                503, "market_data_unavailable", "the snapshot could not be processed"
+            )
+        return jsonify(koerper)
     @app.get("/")
     def index():
         ticker = request.args.get("ticker", "").upper().strip()

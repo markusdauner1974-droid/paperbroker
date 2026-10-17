@@ -146,3 +146,46 @@ suite pytest 3.13** · **Docker image build** (+ a `/healthz` smoke test), and o
   text verbatim.
 - Dependencies stay minimal (`arrow`, `requests`, `flask`); no simulation code is reintroduced —
   history carries everything that was removed.
+
+## Unfiltered option chains for Hermes (`GET /api/v1/option-chain`)
+
+The screener endpoints (`/` and `/api/screen`) stay filtered and unchanged.
+This endpoint is a **data request**, not a quality filter: it returns every
+contract the source delivered, including rows a screener would drop.
+
+```
+GET /api/v1/option-chain?ticker=AAPL
+GET /api/v1/option-chain?ticker=AAPL&expiration=2027-01-15
+```
+
+**How Hermes should use it**
+
+1. Fetch the whole chain first and read `listed_expirations` - do not assume a
+   45-day window; the source lists expirations years out.
+2. Check `snapshot.completeness`, `snapshot.warnings` and the per-contract
+   `quality_flags` before computing anything.
+3. Check `contract_metadata_status`. It is `unknown` for every contract today,
+   because the source names no multiplier, deliverable, exercise style,
+   settlement type or currency. **Do not treat such a contract as a standard
+   100-share contract without checking** - adjusted series can differ.
+4. Check the timestamp block. The feed carries no timezone, so
+   `source_timestamp_utc` and `source_age_seconds` stay `null` and
+   `SOURCE_TIMEZONE_UNKNOWN` is reported. Only `fetched_at_utc` and
+   `cache_age_seconds` are real clocks.
+5. Only then compute selection, liquidity and chance/risk. This endpoint
+   decides nothing: it contains no `buyable`, `recommended` or freshness
+   verdict.
+
+**Units** (measured against the live feed on 2026-10-17)
+
+- `iv_decimal` is decimal: `0.25` means 25 %. The screener's `OptionQuote`
+  multiplies by 100; this endpoint never does.
+- `delta` is the source value (`0.40` = 0.40).
+- `gamma`, `theta`, `vega`, `rho` are **source-native with unverified
+  units** - the feed gives no time base or volatility/rate step. Treat them as
+  unusable for calculations until that is settled; they are carried for
+  transparency, not for pricing.
+- `bid_size`/`ask_size` are contract counts as delivered by the source.
+
+A missing value is `null` and never `0`; a real `0` stays `0`. A last trade is
+never replaced by the bid/ask midpoint.

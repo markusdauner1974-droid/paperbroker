@@ -34,5 +34,15 @@ class PaperBroker:
     def get_option_quotes(self, underlying_asset=None, expiration_date=None):
         return self.get_options(underlying_asset=underlying_asset, expiration_date=expiration_date)
 
+    def get_option_chain_snapshot(self, underlying_asset=None):
+        """Raw, unfiltered chain snapshot for one underlying (read-only).
+
+        Thin delegation to the adapter: the facade adds no filtering, no
+        scaling and no interpretation of the source data.
+        """
+        symbol = underlying_asset
+        if not isinstance(underlying_asset, str) and hasattr(underlying_asset, "symbol"):
+            symbol = underlying_asset.symbol
+        return self.quote_adapter.get_option_chain_snapshot(symbol)
     def get_expiration_dates(self, underlying_asset=None):
         return self.quote_adapter.get_expiration_dates(underlying_asset)
