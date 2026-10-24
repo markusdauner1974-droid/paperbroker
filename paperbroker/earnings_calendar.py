@@ -396,8 +396,10 @@ def is_us_trading_day(day):
     if day in _SPECIAL_CLOSURES:
         return False
     # The observed date of 1 Jan can fall into the previous year, so the
-    # neighbouring years are consulted as well.
-    return all(day not in us_market_holidays(jahr) for jahr in (day.year - 1, day.year, day.year + 1))
+    # neighbouring years are consulted as well - but only those that exist.
+    # Without the guard, 31 Dec 9999 makes us_market_holidays(10000) raise.
+    jahre = [jahr for jahr in (day.year - 1, day.year, day.year + 1) if 1 <= jahr <= 9999]
+    return all(day not in us_market_holidays(jahr) for jahr in jahre)
 
 
 def last_trading_day_before(day, max_lookback_days=10):
@@ -418,13 +420,19 @@ def last_trading_day_before(day, max_lookback_days=10):
     return None
 
 
-def remaining_trading_days(today, exit_day):
+def remaining_trading_days(today, exit_day, max_calendar_days=400):
     """Trading days from ``today`` (exclusive) to ``exit_day`` (inclusive).
 
     ``None`` when either side is not a real date - an unknown "today" must not
     be replaced by the system clock, and an exit day that could not be resolved
     cannot be counted. An exit day already behind us counts 0; whether that also
     blocks the window is the caller's decision, not this function's.
+
+    The walk is bounded to ``max_calendar_days`` (400, a bit over a trading
+    year). A range wider than that is not a calendar question we can answer, and
+    an unbounded loop is reachable: the source accepts any four-digit year, so a
+    bogus ``01/01/9999`` would otherwise walk ~2.9 million days and rebuild the
+    holiday sets on every one of them.
 
     The count walks the calendar day by day and asks ``is_us_trading_day``, so
     weekends, the ten NYSE holidays and the documented special closures are all
@@ -435,12 +443,14 @@ def remaining_trading_days(today, exit_day):
         return None
     if exit_day < today:
         return 0
+    if (exit_day - today).days > max_calendar_days:
+        return None
     anzahl = 0
-    tag = today + timedelta(days=1)
-    while tag <= exit_day:
-        if is_us_trading_day(tag):
+    # Offsets, not `tag += 1`: after the last day that addition would compute
+    # exit_day + 1, which overflows for an exit day at date.max.
+    for versatz in range(1, (exit_day - today).days + 1):
+        if is_us_trading_day(today + timedelta(days=versatz)):
             anzahl += 1
-        tag += timedelta(days=1)
     return anzahl
 
 
