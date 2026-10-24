@@ -209,7 +209,8 @@
       </div>
       <div class="earn-stats">
         <span>Verfall nach Earnings:
-          {% if earnings.after %}<b>{{ earnings.after|join(', ') }}</b>
+          {% if not earnings.date %}<b>nicht bestimmbar</b> (kein Termin)
+          {% elif earnings.after %}<b>{{ earnings.after|join(', ') }}</b>
           {% elif earnings.selected %}<b>{{ earnings.selected }}</b> (außerhalb des Laufzeitfensters)
           {% else %}<b>KEINER</b>{% endif %}
         </span>

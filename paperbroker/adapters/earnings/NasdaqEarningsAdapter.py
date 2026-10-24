@@ -44,9 +44,11 @@ A failed live query never turns an old proof into a new one: ``source_checked_at
 keeps the time of the last REAL check and the record carries ``live_query_failed``.
 """
 
+import fcntl
 import json
 import os
 import tempfile
+import threading
 import urllib.error
 import urllib.request
 from datetime import UTC, datetime
@@ -54,6 +56,7 @@ from datetime import UTC, datetime
 from ...earnings_calendar import (
     CONFIRMATION_UNKNOWN,
     CONFIRMATIONS,
+    FLAG_CACHE_TIMESTAMP_FUTURE,
     FLAG_CACHE_USED,
     FLAG_DATE_IN_PAST,
     FLAG_ESTIMATED,
@@ -85,7 +88,15 @@ _HEADERS = {
 DEFAULT_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_FRESHNESS_LIMIT_SECONDS = 48 * 60 * 60
 DEFAULT_TIMEOUT_SECONDS = 6.0
+DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS = 3.0
 DEFAULT_CACHE_PATH = ".cache/earnings.json"
+# One entry per ticker; the route accepts any 1-6 letter symbol, so an
+# unthrottled public caller could otherwise grow the file without bound.
+MAX_CACHE_ENTRIES = 512
+# Serialises the read-modify-write inside one process (threads) - flock alone
+# would not help two threads of the same process, because the lock is per open
+# file description and both would take it.
+_CACHE_LOCK = threading.Lock()
 
 
 class EarningsSourceError(Exception):
@@ -130,8 +141,9 @@ class EarningsCache:
     cache may cost a live query, it may not take the screener down.
     """
 
-    def __init__(self, path=None):
+    def __init__(self, path=None, max_entries=MAX_CACHE_ENTRIES):
         self.path = path or DEFAULT_CACHE_PATH
+        self.max_entries = max(1, int(max_entries))
 
     def _read_all(self):
         try:
@@ -170,31 +182,65 @@ class EarningsCache:
         return True
 
     def put(self, ticker, entry):
-        """Read-modify-write with os.replace: a reader sees old or new, never half."""
-        eintraege = dict(self._read_all())
-        eintraege[ticker] = entry
-        nutzlast = {"schema_version": SCHEMA_VERSION, "entries": eintraege}
+        """Read-modify-write, serialised and atomic.
+
+        Two writers must not lose each other's entry: the read, the bounding and
+        the replace happen under one lock (threads) plus an exclusive ``flock``
+        on a sibling lock file (other processes). ``os.replace`` keeps readers
+        seeing either the old or the new file - never half of one.
+        """
         verzeichnis = os.path.dirname(os.path.abspath(self.path)) or "."
         try:
             os.makedirs(verzeichnis, exist_ok=True)
-            fd, tmp = tempfile.mkstemp(prefix=".earnings-", suffix=".tmp", dir=verzeichnis)
-            try:
-                with os.fdopen(fd, "w", encoding="utf-8") as fh:
-                    json.dump(nutzlast, fh, ensure_ascii=False, sort_keys=True)
-                    fh.flush()
-                    os.fsync(fh.fileno())
-                os.replace(tmp, self.path)
-            except BaseException:
+        except OSError:
+            return False
+        sperre = self.path + ".lock"
+        try:
+            with _CACHE_LOCK, open(sperre, "a", encoding="utf-8") as sperr_datei:
+                fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_EX)
                 try:
-                    os.unlink(tmp)
-                except OSError:
-                    pass
-                raise
+                    self._write_locked(ticker, entry, verzeichnis)
+                finally:
+                    fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_UN)
         except OSError:
             # An unwritable cache must not fail the request; the answer is still
             # correct, it just cannot be reused.
             return False
         return True
+
+    def _write_locked(self, ticker, entry, verzeichnis):
+        eintraege = dict(self._read_all())
+        eintraege[ticker] = entry
+        eintraege = self._bounded(eintraege)
+        nutzlast = {"schema_version": SCHEMA_VERSION, "entries": eintraege}
+        fd, tmp = tempfile.mkstemp(prefix=".earnings-", suffix=".tmp", dir=verzeichnis)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(nutzlast, fh, ensure_ascii=False, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _bounded(self, eintraege):
+        """Keep the most recently CHECKED entries; drop the oldest beyond the cap.
+
+        Oldest by ``source_checked_at_utc`` (the only timestamp every valid
+        entry must carry), so a cap hit costs the least useful proof first.
+        """
+        if len(eintraege) <= self.max_entries:
+            return eintraege
+        geordnet = sorted(
+            eintraege.items(),
+            key=lambda kv: str((kv[1] or {}).get("source_checked_at_utc") or ""),
+            reverse=True,
+        )
+        return dict(geordnet[: self.max_entries])
 
 
 class NullEarningsAdapter:
@@ -239,6 +285,7 @@ class NasdaqEarningsAdapter:
         freshness_limit_seconds=DEFAULT_FRESHNESS_LIMIT_SECONDS,
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
         cross_check=True,
+        cross_check_timeout_seconds=DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS,
     ):
         self._transport = transport or urllib_transport
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
@@ -247,11 +294,14 @@ class NasdaqEarningsAdapter:
         self.freshness_limit_seconds = int(freshness_limit_seconds)
         self.timeout_seconds = float(timeout_seconds)
         self.cross_check = bool(cross_check)
+        # The cross-check is optional (a failure is tolerated), so it must not
+        # be able to double the cold-path latency: it gets its own, shorter cap.
+        self.cross_check_timeout_seconds = float(cross_check_timeout_seconds)
 
     # -- source access ---------------------------------------------------- #
-    def _get_json(self, url):
+    def _get_json(self, url, timeout=None):
         try:
-            status, body = self._transport(url, dict(_HEADERS), self.timeout_seconds)
+            status, body = self._transport(url, dict(_HEADERS), self.timeout_seconds if timeout is None else timeout)
         except Exception as exc:  # noqa: BLE001 - every transport failure is one class here
             raise EarningsSourceError("source_unreachable", f"{type(exc).__name__}: {exc}") from exc
         if status != 200:
@@ -372,7 +422,10 @@ class NasdaqEarningsAdapter:
 
         if self.cross_check:
             try:
-                kalender = self._get_json(CALENDAR_URL.format(date=record["next_earnings_date"]))
+                kalender = self._get_json(
+                    CALENDAR_URL.format(date=record["next_earnings_date"]),
+                    timeout=self.cross_check_timeout_seconds,
+                )
                 pruefung = parse_nasdaq_calendar_row(kalender, symbol, record["next_earnings_date"])
             except EarningsSourceError:
                 pruefung = None
@@ -389,7 +442,16 @@ class NasdaqEarningsAdapter:
         flags.append(FLAG_CACHE_USED)
         if live_error is not None:
             flags.append(FLAG_LIVE_FAILED)
-        status = STATUS_FRESH if alter <= self.freshness_limit_seconds else STATUS_STALE
+        # Two-sided on purpose: a negative age means the clock moved backwards
+        # (or the file was tampered with). Such a proof is not fresh - it must
+        # not authorise, and the live query already failed by the time we are here.
+        if alter < 0:
+            status = STATUS_STALE
+            flags.append(FLAG_CACHE_TIMESTAMP_FUTURE)
+        elif alter <= self.freshness_limit_seconds:
+            status = STATUS_FRESH
+        else:
+            status = STATUS_STALE
         cache_block = {
             "state": state,
             "stored_at_utc": eintrag.get("source_checked_at_utc"),

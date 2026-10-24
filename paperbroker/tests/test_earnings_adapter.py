@@ -290,11 +290,71 @@ class TestCache(_Basis):
         adapter = self._adapter()
         adapter.get_earnings("AAPL")
         dateien = os.listdir(self._tmp.name)
-        self.assertEqual(dateien, ["earnings.json"])
+        self.assertIn("earnings.json", dateien)
+        self.assertEqual([d for d in dateien if d.startswith(".earnings-")], [])
         with open(self.cache_path, encoding="utf-8") as fh:
             gespeichert = json.load(fh)
         self.assertEqual(gespeichert["schema_version"], "1.0")
         self.assertEqual(gespeichert["entries"]["AAPL"]["next_earnings_date"], "2026-11-02")
+
+    def test_two_tickers_do_not_lose_each_other(self):
+        adapter = self._adapter()
+        adapter.get_earnings("AAPL")
+        adapter.get_earnings("MSFT")
+        gespeichert = json.load(open(self.cache_path, encoding="utf-8"))
+        self.assertEqual(sorted(gespeichert["entries"]), ["AAPL", "MSFT"])
+
+    def test_parallel_writes_keep_every_entry(self):
+        import threading
+
+        adapter = self._adapter()
+        fehler = []
+
+        def schreiben(ticker):
+            try:
+                adapter.get_earnings(ticker)
+            except Exception as exc:      # noqa: BLE001 - collected, then asserted
+                fehler.append(exc)
+
+        threads = [threading.Thread(target=schreiben, args=(t,))
+                   for t in ("AAPL", "MSFT", "NVDA", "AMZN", "KO", "JPM", "TSLA", "META")]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        self.assertEqual(fehler, [])
+        gespeichert = json.load(open(self.cache_path, encoding="utf-8"))
+        self.assertEqual(len(gespeichert["entries"]), 8)
+
+    def test_the_cache_is_bounded(self):
+        cache = EarningsCache(self.cache_path, max_entries=2)
+        for i, ticker in enumerate(("AAPL", "MSFT", "NVDA")):
+            cache.put(ticker, {
+                "next_earnings_date": "2026-11-02",
+                "release_session": "after_market",
+                "date_confirmation": "estimated",
+                "source": "nasdaq_earnings_date",
+                "source_checked_at_utc": f"2026-10-2{i}T06:00:00Z",
+                "quality_flags": [],
+            })
+        gespeichert = json.load(open(self.cache_path, encoding="utf-8"))
+        self.assertEqual(sorted(gespeichert["entries"]), ["MSFT", "NVDA"])
+
+    def test_a_future_proof_never_authorises_after_a_failed_live_query(self):
+        adapter = self._adapter()
+        EarningsCache(self.cache_path).put("AAPL", {
+            "next_earnings_date": "2026-11-02",
+            "release_session": "after_market",
+            "date_confirmation": "estimated",
+            "source": "nasdaq_earnings_date",
+            "source_checked_at_utc": "2026-10-25T06:00:00Z",   # one day ahead
+            "quality_flags": [],
+        })
+        self.source.fail = True
+        body = adapter.get_earnings("AAPL")
+        self.assertEqual(body["cache"]["state"], "stale_fallback")
+        self.assertEqual(body["earnings"]["status"], STATUS_STALE)
+        self.assertIn("cache_timestamp_in_future", body["earnings"]["quality_flags"])
 
     def test_an_unwritable_cache_does_not_fail_the_request(self):
         adapter = NasdaqEarningsAdapter(

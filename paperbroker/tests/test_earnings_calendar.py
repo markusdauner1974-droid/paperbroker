@@ -287,6 +287,11 @@ class TestWindowRule(unittest.TestCase):
         self.assertFalse(ergebnis["decision"]["eligible"])
         self.assertIn("earnings_date_unknown", _codes(ergebnis))
         self.assertIsNone(ergebnis["exit"]["planned_last_exit_date"])
+        # Without a date nothing can be "after" it - a selected expiry here was
+        # the one field a caller would have acted on.
+        self.assertIsNone(ergebnis["expirations"]["selected"])
+        self.assertEqual(ergebnis["expirations"]["after_earnings"], [])
+        self.assertEqual(ergebnis["expirations"]["listed"], ["2026-11-20"])
 
     def test_unavailable_source_blocks(self):
         ergebnis = combine_earnings_and_expirations(

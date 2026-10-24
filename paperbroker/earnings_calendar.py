@@ -63,6 +63,7 @@ FLAG_SESSION_CONFLICT = "session_conflict_between_sources"
 FLAG_DATE_CONFLICT = "date_conflict_between_sources"
 FLAG_SOURCE_NOT_CONFIGURED = "earnings_source_not_configured"
 FLAG_DATE_IN_PAST = "earnings_date_in_past"
+FLAG_CACHE_TIMESTAMP_FUTURE = "cache_timestamp_in_future"
 
 # --- decision reasons (stable codes for machines, text for humans) -------- #
 REASON_TEXT = {
@@ -500,9 +501,11 @@ def combine_earnings_and_expirations(earnings, expirations, *, today):
 
     nach_earnings, davor, ausgeschlossen = [], [], []
     for verfall in verfaelle:
+        # Without an earnings date NOTHING can lie "after" it. Classifying the
+        # expirations anyway produced a "selected" date for a ticker whose
+        # earnings date is unknown - the one field a caller would act on.
         if termin is None:
-            nach_earnings.append(verfall)
-            continue
+            break
         if verfall > termin:
             nach_earnings.append(verfall)
         else:
