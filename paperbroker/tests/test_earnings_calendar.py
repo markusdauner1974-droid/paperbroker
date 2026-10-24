@@ -11,7 +11,7 @@ is never upgraded.
 """
 
 import unittest
-from datetime import date
+from datetime import date, timedelta
 
 from paperbroker.earnings_calendar import (
     CONFIRMATION_CONFIRMED,
@@ -605,6 +605,21 @@ class TestRemainingTradingDays(unittest.TestCase):
                     )
                 self.assertEqual(ergebnis["exit"]["remaining_trading_days"], 5)
                 self.assertEqual(ergebnis["decision"]["eligible"], status == STATUS_FRESH)
+
+    def test_the_walk_is_bounded(self):
+        # Kody's finding: the source accepts any four-digit year, so an
+        # unvalidated exit day must not turn the loop into a 2.9M-day walk.
+        self.assertIsNotNone(remaining_trading_days(TODAY, TODAY + timedelta(days=400)))
+        self.assertIsNone(remaining_trading_days(TODAY, TODAY + timedelta(days=401)))
+        self.assertIsNone(remaining_trading_days(TODAY, date(9999, 12, 31)))
+
+    def test_a_date_at_the_calendar_edge_does_not_raise(self):
+        # 31 Dec 9999 used to raise ValueError inside us_market_holidays(10000).
+        self.assertIsInstance(is_us_trading_day(date(9999, 12, 31)), bool)
+        ergebnis = combine_earnings_and_expirations(
+            _record(datum="9999-12-31"), ["2026-11-20"], today=TODAY
+        )
+        self.assertIsNone(ergebnis["exit"]["remaining_trading_days"])
 
     def test_the_field_is_json_ready(self):
         import json
