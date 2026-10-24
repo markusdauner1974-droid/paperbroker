@@ -1,0 +1,109 @@
+# Additional regression workflow: Astral uv + pytest.
+#
+# Deliberately SEPARATE from tests.yml (pip + setup-python) and from
+# docker-publish.yml: nothing here modifies or replaces them, and the Kodus
+# review is untouched. This workflow answers one question - "does the whole
+# suite still pass with exactly pinned dependencies?" - on every push and every
+# pull request against master.
+#
+# Why uv and not the existing pip job: the lock-free pip install resolves
+# whatever PyPI offers that day. This job installs requirements-ci.txt, a
+# measured freeze of the development venv, so a green run tomorrow means the
+# same thing as a green run today.
+#
+# No external market data: PAPERBROKER_EARNINGS_SOURCE is empty, which is the
+# documented fail-closed default (Null adapter -> UNKNOWN). A guard step asserts
+# that before the suite runs; the tests themselves use fixtures and mocks.
+
+name: Regression (uv)
+
+on:
+  push:
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: regression-uv-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  regression:
+    name: Regression pytest (uv)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Isolation, not convenience: an empty value means "no source", and the
+      # Null adapter then answers UNKNOWN. Nothing in this job may reach Nasdaq,
+      # CBOE or the trend provider.
+      PAPERBROKER_EARNINGS_SOURCE: ""
+      PAPERBROKER_TREND_MCP_URL: ""
+      PAPERBROKER_TREND_TOKEN: ""
+      PAPERBROKER_TREND_TIMEOUT_S: ""
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHON_VERSION_REPORT: "3.13.5"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Set up uv and Python
+        uses: astral-sh/setup-uv@07a047e608db84b3d8c06cd9a7c7dcc9c355c18e # v10.3.2
+        with:
+          version: "0.13.5"
+          python-version: "3.13.5"
+          activate-environment: true
+          # pyproject.toml carries build-system and ruff only - there is no
+          # [project] table, so uv must not try to treat the repo as a project.
+          no-project: true
+          enable-cache: true
+          cache-dependency-glob: requirements-ci.txt
+
+      - name: Install pinned dependencies
+        run: |
+          set -euo pipefail
+          uv --version
+          python --version
+          uv pip install -r requirements-ci.txt
+          python -c "import flask, arrow, requests, pytest; print('imports ok')"
+
+      - name: Guard - no live source is configured
+        run: |
+          python - <<'PY'
+          import os
+          from paperbroker.adapters.earnings.NasdaqEarningsAdapter import NullEarningsAdapter
+          from paperbroker.server import create_app
+
+          quelle = os.environ.get("PAPERBROKER_EARNINGS_SOURCE", "")
+          assert quelle == "", f"PAPERBROKER_EARNINGS_SOURCE must be empty in CI, is {quelle!r}"
+
+          # Building the app proves the wiring: with an empty source the factory
+          # must pick the Null adapter, not the Nasdaq one.
+          app = create_app()
+          assert app is not None
+          print("earnings source: leer -> Null-Adapter (fail-closed)")
+          print("NullEarningsAdapter:", NullEarningsAdapter.__name__)
+          PY
+
+      - name: Run the full pytest suite
+        run: |
+          set -o pipefail
+          mkdir -p artifacts
+          python -m pytest paperbroker/tests -q --tb=short -ra \
+            -p no:cacheprovider --junitxml=artifacts/junit.xml 2>&1 | tee artifacts/pytest.log
+
+      - name: Publish result in the run and the pull request
+        if: always()
+        run: python scripts/ci/pytest_summary.py artifacts/junit.xml
+
+      - name: Upload the report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: artifacts/
+          if-no-files-found: warn
+          retention-days: 14
