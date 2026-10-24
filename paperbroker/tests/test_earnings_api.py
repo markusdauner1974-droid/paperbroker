@@ -152,6 +152,22 @@ class TestEarningsWindowRoute(unittest.TestCase):
         self.assertEqual(koerper["exit"]["planned_last_exit_date"], "2026-10-30")
         self.assertTrue(koerper["decision"]["eligible"])
 
+    def test_the_window_reports_the_remaining_trading_days(self):
+        # 24 Oct 2026 is a Saturday; the exit is Fri 30 Oct -> Mon..Fri = 5.
+        koerper = _client().get("/api/v1/earnings-window?ticker=AAPL").get_json()
+        self.assertEqual(koerper["exit"]["planned_last_exit_date"], "2026-10-30")
+        self.assertEqual(koerper["exit"]["remaining_trading_days"], 5)
+
+    def test_the_count_is_reported_even_when_the_window_is_blocked(self):
+        # Informational, not a verdict: a blocked window still tells the caller
+        # how much time the calendar leaves.
+        earnings = _FakeEarnings(_earnings_body(status=STATUS_UNKNOWN))
+        koerper = _client(earnings=earnings).get(
+            "/api/v1/earnings-window?ticker=AAPL"
+        ).get_json()
+        self.assertFalse(koerper["decision"]["eligible"])
+        self.assertEqual(koerper["exit"]["remaining_trading_days"], 5)
+
     def test_an_unproven_status_never_reaches_the_route_as_eligible(self):
         # The route is what a caller reads. A valid date and a listed expiry are
         # not enough: when the adapter says the proof is unknown, the answer has
