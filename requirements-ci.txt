@@ -32,6 +32,9 @@ werkzeug==3.1.9
 
 # --- test tooling ---------------------------------------------------------
 pytest==9.1.1
+# pytest's own install dependency (source highlighting); without the pin uv
+# would resolve it fresh on every run, which defeats the freeze.
+pygments==2.21.0
 iniconfig==2.3.1
 packaging==26.3
 pluggy==1.6.0
