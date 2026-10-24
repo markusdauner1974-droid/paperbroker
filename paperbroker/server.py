@@ -25,8 +25,16 @@ from urllib.parse import urlencode
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
 
+from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
+from .earnings_calendar import (
+    CONFIRMATION_CONFIRMED,
+    CONFIRMATION_ESTIMATED,
+    SESSION_AFTER,
+    SESSION_BEFORE,
+    combine_earnings_and_expirations,
+)
 from .PaperBroker import PaperBroker
 from .screener import (
     FUTURE_TOLERANCE_S,
@@ -161,7 +169,27 @@ def _criteria_echo(criteria):
     return {name: getattr(criteria, name) for name in _CRITERIA_ECHO_FIELDS}
 
 
-def create_app(quote_adapter=None, screener=None, now_fn=None):
+_SESSION_TEXT = {SESSION_BEFORE: "vorbörslich", SESSION_AFTER: "nachbörslich"}
+_CONFIRMATION_TEXT = {CONFIRMATION_CONFIRMED: "bestätigt", CONFIRMATION_ESTIMATED: "geschätzt"}
+
+
+def _earnings_source_from_env():
+    """Which earnings source create_app wires when none is injected.
+
+    Default is OFF (fail-closed): deploying the code must not silently start
+    calling a new external service. The compose stack sets
+    PAPERBROKER_EARNINGS_SOURCE=nasdaq; tests and a bare `flask run` keep the
+    Null adapter and say so on the page.
+    """
+    return (os.environ.get("PAPERBROKER_EARNINGS_SOURCE") or "").strip().lower()
+
+
+def _us_today(now_fn):
+    """The trading date in New York - a UTC date is a day ahead after 19:00 ET."""
+    return arrow.get(now_fn()).to("America/New_York").date()
+
+
+def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=None):
     """now_fn: injectable clock for tests (default: real arrow.get).
 
     The screener's 30-min-stale guard compares quote_timestamp against
@@ -176,6 +204,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         quote_adapter = CBOEQuoteAdapter()
     if screener is None:
         screener = OptionScreener(ScreenerCriteria())
+    if earnings_adapter is None:
+        # Fail-closed default: no source configured -> UNKNOWN, never a guess.
+        if _earnings_source_from_env() == "nasdaq":
+            earnings_adapter = NasdaqEarningsAdapter(now_fn=now_fn)
+        else:
+            earnings_adapter = NullEarningsAdapter(now_fn=now_fn)
     broker = PaperBroker(quote_adapter=quote_adapter)
 
     # JSON error contract for the API (CodeRabbit finding): abort() would
@@ -451,6 +485,149 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
                 503, "market_data_unavailable", "the snapshot could not be processed"
             )
         return jsonify(koerper)
+
+    # ------------------------------------------------------------------ #
+    # Earnings calendar (read-only, fail-closed).                        #
+    #                                                                    #
+    # Two routes, one contract: /api/v1/earnings answers "what does the   #
+    # source say about this ticker", /api/v1/earnings-window adds the     #
+    # expirations this chain really lists and the deterministic decision. #
+    # Neither route places an order, and neither invents a date.          #
+    # ------------------------------------------------------------------ #
+    def _earnings_error(status, code, message):
+        from paperbroker.earnings_calendar import SCHEMA_VERSION as _EARNINGS_SCHEMA
+
+        return (
+            jsonify(schema_version=_EARNINGS_SCHEMA, error={"code": code, "message": message}),
+            status,
+        )
+
+    def _earnings_args():
+        """ticker-only argument validation, same envelope as the chain route."""
+        erlaubt = ("ticker",)
+        unbekannt = sorted(set(request.args) - set(erlaubt))
+        if unbekannt:
+            return None, _earnings_error(
+                400, "unknown_parameter",
+                f"unknown parameter(s): {', '.join(unbekannt)}. Allowed: ticker",
+            )
+        doppelt = sorted(name for name in set(request.args) if len(request.args.getlist(name)) > 1)
+        if doppelt:
+            return None, _earnings_error(
+                400, "duplicate_parameter", f"duplicate parameter(s): {', '.join(doppelt)}"
+            )
+        ticker = (request.args.get("ticker") or "").strip().upper()
+        if not ticker:
+            return None, _earnings_error(400, "ticker_required", "ticker is required")
+        if not _TICKER_RE.match(ticker):
+            return None, _earnings_error(
+                400, "invalid_ticker", "invalid ticker (1-6 letters A-Z expected)"
+            )
+        return ticker, None
+
+    def _earnings_snapshot(ticker):
+        """Adapter call with one place that turns a crash into a JSON error."""
+        try:
+            return earnings_adapter.get_earnings(ticker), None
+        except Exception:                                    # noqa: BLE001 - classified below
+            app.logger.exception("earnings lookup failed for %s", ticker)
+            return None, _earnings_error(
+                503, "earnings_source_failed", "the earnings source could not be read"
+            )
+
+    @app.get("/api/v1/earnings")
+    def api_earnings():
+        ticker, fehler = _earnings_args()
+        if fehler is not None:
+            return fehler
+        koerper, fehler = _earnings_snapshot(ticker)
+        if fehler is not None:
+            return fehler
+        return jsonify(koerper)
+
+    @app.get("/api/v1/earnings-window")
+    def api_earnings_window():
+        from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
+            CboeNotFoundError,
+            CboeRequestError,
+        )
+        from paperbroker.option_chain_api import listed_expirations
+
+        ticker, fehler = _earnings_args()
+        if fehler is not None:
+            return fehler
+        koerper, fehler = _earnings_snapshot(ticker)
+        if fehler is not None or koerper is None:
+            return fehler
+
+        # The expirations come from the SAME snapshot the option-chain route
+        # serves. A chain that cannot be read is reported as such: expirations
+        # stay unknown and the decision blocks - it never falls back to a
+        # guessed date.
+        verfaelle, ketten_status = None, "ok"
+        try:
+            snapshot = broker.get_option_chain_snapshot(ticker)
+            verfaelle = listed_expirations(snapshot)
+        except CboeNotFoundError:
+            ketten_status = "unknown_symbol"
+        except CboeRequestError:
+            ketten_status = "market_data_unavailable"
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("earnings window: chain failed for %s", ticker)
+            ketten_status = "market_data_unavailable"
+
+        fenster = combine_earnings_and_expirations(
+            koerper["earnings"], verfaelle, today=_us_today(now_fn)
+        )
+        antwort = dict(fenster)
+        antwort["ticker"] = ticker
+        antwort["chain"] = {
+            "status": ketten_status,
+            "expirations_read": verfaelle is not None,
+        }
+        return jsonify(antwort)
+
+    def _earnings_view(ticker, expirations, offered):
+        """What the page shows - derived from the same calls the API makes.
+
+        ``offered`` is the DTE-filtered list the expiration picker shows. Only
+        dates from that list are printed: the page has a standing promise not to
+        name a date outside the screener window (the picker test pins it), while
+        the API still returns the full list. What is left out is named as a
+        count, not silently dropped.
+        """
+        try:
+            koerper = earnings_adapter.get_earnings(ticker)
+            fenster = combine_earnings_and_expirations(
+                koerper["earnings"], expirations, today=_us_today(now_fn)
+            )
+        except Exception:                                    # noqa: BLE001 - page must render
+            app.logger.exception("earnings view failed for %s", ticker)
+            return {"failed": True}
+        eintrag = koerper["earnings"]
+        cache = koerper.get("cache") or {}
+        sichtbar = [d for d in fenster["expirations"]["after_earnings"] if d in set(offered or [])]
+        return {
+            "failed": False,
+            "date": eintrag.get("next_earnings_date"),
+            "session": _SESSION_TEXT.get(eintrag.get("release_session"), "UNBEKANNT"),
+            "confirmation": _CONFIRMATION_TEXT.get(eintrag.get("date_confirmation"), "unbekannt"),
+            "status": eintrag.get("status"),
+            "source": eintrag.get("source"),
+            "checked": eintrag.get("source_checked_at_utc"),
+            "flags": eintrag.get("quality_flags") or [],
+            "exit": fenster["exit"]["planned_last_exit_date"],
+            "after": sichtbar,
+            "after_hidden": len(fenster["expirations"]["after_earnings"]) - len(sichtbar),
+            "selected": fenster["expirations"]["selected"],
+            "eligible": fenster["decision"]["eligible"],
+            "reasons": [grund["message"] for grund in fenster["decision"]["reasons"]],
+            "notes": fenster["decision"]["notes"],
+            "cache_state": cache.get("state"),
+            "age_seconds": cache.get("age_seconds"),
+            "checked_live": cache.get("state") == "live",
+        }
+
     @app.get("/")
     def index():
         ticker = request.args.get("ticker", "").upper().strip()
@@ -534,6 +711,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
         top = results[0].quote if results else None
         dte = top.asset.get_days_to_expiration(now_fn()) if top is not None else None
         feed_time = getattr(top, "quote_timestamp", None) if top is not None else None
+        # Earnings-Termin und Verfallsfenster. Only when the chain was read, so
+        # the panel never claims "no expiration after earnings" for a ticker
+        # whose chain was not loaded. A failure here degrades the panel, never
+        # the page.
+        earnings_view = None
+        if ticker and dates is not None:
+            earnings_view = _earnings_view(ticker, dates, offered)
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
             feed_time=feed_time,
@@ -557,6 +741,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None):
             freshness_limit=criteria.max_quote_age_min,
             dte=dte,
             trend=_trend_display(ticker) if ticker else None,
+            earnings=earnings_view,
             feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit")
 
     return app

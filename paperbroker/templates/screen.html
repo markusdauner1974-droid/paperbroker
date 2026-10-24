@@ -72,6 +72,15 @@
     .dropped-summary summary::-webkit-details-marker{display:none}
     .dropped-summary summary::before{content:"\25B8 ";color:#828da5}
     .dropped-summary[open] summary::before{content:"\25BE "}
+    /* Earnings-Panel: eigene Karte, damit der Termin nicht mit den Kursdaten
+       verwechselt wird (er kommt aus einer ANDEREN Quelle als CBOE). */
+    .earn{background:#151d2c;border:1px solid #2c3650;border-radius:8px;padding:12px 14px;margin-bottom:12px}
+    .earn h3{font-size:.95rem;margin:0 0 8px}
+    .earn-stats{display:flex;gap:14px;flex-wrap:wrap;font-size:.9rem;color:#9aa3b5;margin-bottom:6px}
+    .earn .ok{color:#2fbf71;font-weight:600}
+    .earn .blocked{color:#e0503c;font-weight:600}
+    .earn .unknown{color:#e6b93c;font-weight:600}
+    .earn ul{margin:4px 0 0;padding-left:18px;font-size:.85rem;color:#9aa3b5}
   </style>
 </head>
 <body>
@@ -181,6 +190,52 @@
     </fieldset>
 </form>
   <div class="results">
+    {# Das Earnings-Panel haengt am Ticker, nicht an der Ergebnisliste: der Termin
+       ist auch dann sichtbar, wenn noch kein Verfall gewaehlt wurde. #}
+    {% if earnings %}
+    <div class="earn">
+      <h3>Earnings-Termin</h3>
+      {% if earnings.failed %}
+        <p class="note">Die Earnings-Daten konnten für diesen Ticker nicht gelesen werden. Es wird kein Termin angenommen.</p>
+      {% else %}
+      <div class="earn-stats">
+        <span>Nächster Termin: <b>{{ earnings.date or 'UNBEKANNT' }}</b></span>
+        <span>Veröffentlichung: <b>{{ earnings.session }}</b></span>
+        <span>Beleg: {{ earnings.confirmation }}</span>
+        <span>Status: {{ earnings.status }}</span>
+        {% if earnings.source %}<span>Quelle: {{ earnings.source }}</span>{% endif %}
+        {% if earnings.checked %}<span>Quellenprüfung: {{ earnings.checked }}{% if earnings.cache_state and earnings.cache_state != 'live' %} (aus Cache){% endif %}</span>{% endif %}
+        <span>Geplanter Ausstieg: <b>{{ earnings.exit or 'UNBEKANNT' }}</b></span>
+      </div>
+      <div class="earn-stats">
+        <span>Verfall nach Earnings:
+          {% if not earnings.date %}<b>nicht bestimmbar</b> (kein Termin)
+          {% elif earnings.after %}<b>{{ earnings.after|join(', ') }}</b>
+          {% elif earnings.selected %}<b>{{ earnings.selected }}</b> (außerhalb des Laufzeitfensters)
+          {% else %}<b>KEINER</b>{% endif %}
+        </span>
+        {% if earnings.after_hidden %}<span>+{{ earnings.after_hidden }} weitere Verfälle außerhalb des Laufzeitfensters</span>{% endif %}
+        {% if earnings.selected and earnings.selected in earnings.after %}<span>Ausgewählt: <b>{{ earnings.selected }}</b> (erster gelisteter Verfall danach)</span>{% endif %}
+        <span>Fenster:
+          {% if earnings.eligible %}<span class="ok">erfüllt</span>
+          {% elif earnings.status in ('unknown', 'unavailable', 'invalid') %}<span class="unknown">nicht entscheidbar</span>
+          {% else %}<span class="blocked">nicht erfüllt</span>{% endif %}
+        </span>
+      </div>
+      {% if earnings.reasons %}
+      <ul>
+        {% for grund in earnings.reasons %}<li>{{ grund }}</li>{% endfor %}
+      </ul>
+      {% endif %}
+      {% if earnings.notes %}
+      <p class="note">{{ earnings.notes|join(' ') }}</p>
+      {% endif %}
+      <p class="note">Der Ausstiegstag ist ein PLAN, keine Order. Er ist der letzte US-Handelstag
+        vor dem Termin - unabhängig davon, ob vorbörslich oder nachbörslich berichtet wird.
+        Ein Verfall nach Earnings allein macht einen Trade nicht geeignet.</p>
+      {% endif %}
+    </div>
+    {% endif %}
   {% if results is not none %}
     {% if verticals %}
       {% set beste = namespace(wert=None) %}
