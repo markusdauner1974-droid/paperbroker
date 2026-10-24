@@ -426,5 +426,93 @@ class TestWindowRule(unittest.TestCase):
         self.assertEqual(ergebnis["as_of"], "2026-10-24")
 
 
+
+class TestFailClosedOnEveryStatus(unittest.TestCase):
+    """Only a fresh proof may authorise a window.
+
+    Every other status - including a missing one and a value nobody defined -
+    has to block, even when the date parses, the confirmation is known and a
+    listed expiry lies after the earnings date. Otherwise "we do not know"
+    silently becomes "trade it": the caller reads ``selected`` and ``eligible``,
+    not the reasons.
+    """
+
+    LISTED = ["2026-10-30", "2026-11-20"]
+
+    def _combine(self, **kwargs):
+        parameter = {"confirmation": CONFIRMATION_CONFIRMED}
+        parameter.update(kwargs)
+        return combine_earnings_and_expirations(_record(**parameter), self.LISTED, today=TODAY)
+
+    def _assert_blocked(self, ergebnis, code, entscheidung="blocked"):
+        self.assertFalse(ergebnis["decision"]["eligible"])
+        self.assertIn(code, _codes(ergebnis))
+        self.assertEqual(ergebnis["decision"]["status"], entscheidung)
+
+    def test_fresh_with_every_other_rule_met_is_eligible(self):
+        ergebnis = self._combine(status=STATUS_FRESH)
+        self.assertTrue(ergebnis["decision"]["eligible"])
+        self.assertEqual(ergebnis["decision"]["status"], "ok")
+        self.assertEqual(ergebnis["expirations"]["selected"], "2026-11-20")
+
+    def test_unknown_status_blocks(self):
+        self._assert_blocked(
+            self._combine(status=STATUS_UNKNOWN), "earnings_status_unknown", "unknown"
+        )
+
+    def test_invalid_status_blocks(self):
+        self._assert_blocked(
+            self._combine(status=STATUS_INVALID), "earnings_data_invalid", "unknown"
+        )
+
+    def test_stale_status_blocks(self):
+        # The label stays "blocked": a proof that is merely too old is a known
+        # "no", and the existing contract pins that. Only the verdict matters.
+        self._assert_blocked(
+            self._combine(status=STATUS_STALE), "earnings_data_stale", "blocked"
+        )
+
+    def test_unavailable_status_blocks(self):
+        self._assert_blocked(
+            self._combine(status=STATUS_UNAVAILABLE), "earnings_source_unavailable", "unknown"
+        )
+
+    def test_missing_status_blocks(self):
+        ohne_status = _record(confirmation=CONFIRMATION_CONFIRMED)
+        del ohne_status["status"]
+        ergebnis = combine_earnings_and_expirations(ohne_status, self.LISTED, today=TODAY)
+        self._assert_blocked(ergebnis, "earnings_status_unknown", "unknown")
+
+    def test_empty_status_blocks(self):
+        self._assert_blocked(
+            self._combine(status=""), "earnings_status_unknown", "unknown"
+        )
+
+    def test_unexpected_status_value_blocks_and_is_named(self):
+        ergebnis = self._combine(status="half-fresh")
+        self._assert_blocked(ergebnis, "earnings_status_unrecognised", "unknown")
+        # The value is echoed, not silently rewritten into a known one.
+        self.assertEqual(ergebnis["earnings"]["status"], "half-fresh")
+
+    def test_no_other_status_ever_reaches_ok(self):
+        # Table form of the rule: fresh authorises, everything else does not -
+        # including a value the contract never defined.
+        for status in ("unknown", "invalid", "stale", "unavailable", "", "half-fresh"):
+            with self.subTest(status=status):
+                ergebnis = self._combine(status=status)
+                self.assertFalse(ergebnis["decision"]["eligible"])
+                self.assertNotEqual(ergebnis["decision"]["status"], "ok")
+                self.assertTrue(ergebnis["decision"]["reasons"])
+
+    def test_unknown_confirmation_still_blocks_a_fresh_record(self):
+        ergebnis = self._combine(status=STATUS_FRESH, confirmation=CONFIRMATION_UNKNOWN)
+        self._assert_blocked(ergebnis, "date_confirmation_unknown", "unknown")
+
+    def test_an_estimate_is_never_promoted_to_confirmed(self):
+        ergebnis = self._combine(status=STATUS_FRESH, confirmation=CONFIRMATION_ESTIMATED)
+        self.assertTrue(ergebnis["decision"]["eligible"])
+        self.assertEqual(ergebnis["earnings"]["date_confirmation"], CONFIRMATION_ESTIMATED)
+        self.assertNotEqual(ergebnis["earnings"]["date_confirmation"], CONFIRMATION_CONFIRMED)
+
 if __name__ == "__main__":
     unittest.main()

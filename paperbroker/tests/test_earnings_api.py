@@ -15,6 +15,9 @@ from paperbroker.earnings_calendar import (
     FLAG_SOURCE_NOT_CONFIGURED,
     SESSION_AFTER,
     STATUS_FRESH,
+    STATUS_INVALID,
+    STATUS_STALE,
+    STATUS_UNAVAILABLE,
     STATUS_UNKNOWN,
 )
 from paperbroker.server import create_app
@@ -148,6 +151,26 @@ class TestEarningsWindowRoute(unittest.TestCase):
         self.assertEqual(koerper["expirations"]["selected"], "2026-11-20")
         self.assertEqual(koerper["exit"]["planned_last_exit_date"], "2026-10-30")
         self.assertTrue(koerper["decision"]["eligible"])
+
+    def test_an_unproven_status_never_reaches_the_route_as_eligible(self):
+        # The route is what a caller reads. A valid date and a listed expiry are
+        # not enough: when the adapter says the proof is unknown, the answer has
+        # to say so - all the way through to ``eligible``.
+        for status, code in (
+            (STATUS_UNKNOWN, "earnings_status_unknown"),
+            (STATUS_INVALID, "earnings_data_invalid"),
+            (STATUS_UNAVAILABLE, "earnings_source_unavailable"),
+            (STATUS_STALE, "earnings_data_stale"),
+        ):
+            with self.subTest(status=status):
+                earnings = _FakeEarnings(_earnings_body(status=status))
+                koerper = _client(earnings=earnings).get(
+                    "/api/v1/earnings-window?ticker=AAPL"
+                ).get_json()
+                self.assertFalse(koerper["decision"]["eligible"])
+                self.assertNotEqual(koerper["decision"]["status"], "ok")
+                self.assertIn(code, [g["code"] for g in koerper["decision"]["reasons"]])
+                self.assertEqual(koerper["earnings"]["status"], status)
 
     def test_no_listed_expiry_after_earnings_blocks_instead_of_guessing(self):
         earnings = _FakeEarnings(_earnings_body(datum="2026-11-25"))
