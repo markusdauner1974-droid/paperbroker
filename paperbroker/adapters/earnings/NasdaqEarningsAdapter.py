@@ -44,7 +44,10 @@ A failed live query never turns an old proof into a new one: ``source_checked_at
 keeps the time of the last REAL check and the record carries ``live_query_failed``.
 """
 
-import fcntl
+try:
+    import fcntl  # POSIX only; the deployed image is Linux
+except ImportError:       # pragma: no cover - exercised by patching fcntl to None
+    fcntl = None          # Windows: the in-process lock still serialises threads
 import json
 import os
 import tempfile
@@ -197,11 +200,13 @@ class EarningsCache:
         sperre = self.path + ".lock"
         try:
             with _CACHE_LOCK, open(sperre, "a", encoding="utf-8") as sperr_datei:
-                fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_EX)
+                if fcntl is not None:
+                    fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_EX)
                 try:
                     self._write_locked(ticker, entry, verzeichnis)
                 finally:
-                    fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_UN)
+                    if fcntl is not None:
+                        fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_UN)
         except OSError:
             # An unwritable cache must not fail the request; the answer is still
             # correct, it just cannot be reused.

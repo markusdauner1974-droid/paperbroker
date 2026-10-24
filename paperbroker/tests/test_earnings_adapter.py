@@ -326,6 +326,31 @@ class TestCache(_Basis):
         gespeichert = json.load(open(self.cache_path, encoding="utf-8"))
         self.assertEqual(len(gespeichert["entries"]), 8)
 
+    def test_the_cache_works_without_fcntl(self):
+        # Windows has no flock. The in-process lock must still serialise, and
+        # the adapter must import at all - an unconditional import would break
+        # the whole module there.
+        from paperbroker.adapters.earnings import NasdaqEarningsAdapter as modul
+
+        alt = modul.fcntl
+        modul.fcntl = None
+        try:
+            cache = EarningsCache(self.cache_path)
+            cache.put("AAPL", {
+                "next_earnings_date": "2026-11-02", "release_session": "after_market",
+                "date_confirmation": "estimated", "source": "nasdaq_earnings_date",
+                "source_checked_at_utc": "2026-10-24T06:00:00Z", "quality_flags": [],
+            })
+            cache.put("MSFT", {
+                "next_earnings_date": "2026-10-28", "release_session": "after_market",
+                "date_confirmation": "estimated", "source": "nasdaq_earnings_date",
+                "source_checked_at_utc": "2026-10-24T06:00:00Z", "quality_flags": [],
+            })
+        finally:
+            modul.fcntl = alt
+        gespeichert = json.load(open(self.cache_path, encoding="utf-8"))
+        self.assertEqual(sorted(gespeichert["entries"]), ["AAPL", "MSFT"])
+
     def test_the_cache_is_bounded(self):
         cache = EarningsCache(self.cache_path, max_entries=2)
         for i, ticker in enumerate(("AAPL", "MSFT", "NVDA")):
