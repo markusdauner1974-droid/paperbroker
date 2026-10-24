@@ -1,0 +1,124 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/markusdauner1974-droid/paperbroker/earnings_v1.schema.json",
+  "title": "Paperbroker earnings calendar, version 1",
+  "description": "Response bodies of GET /api/v1/earnings and GET /api/v1/earnings-window. A calendar answer and a deterministic deadline check: no order, no recommendation. A missing date is null and never estimated; an UNKNOWN confirmation is never promoted.",
+  "type": "object",
+  "required": ["schema_version", "ticker", "earnings"],
+  "properties": {
+    "schema_version": { "const": "1.0" },
+    "ticker": { "type": "string", "pattern": "^[A-Z]{1,6}$" },
+    "earnings": {
+      "type": "object",
+      "description": "status is the QUERY state; date_confirmation is the DOMAIN state. They are deliberately separate fields.",
+      "required": ["next_earnings_date", "release_session", "date_confirmation", "source", "source_checked_at_utc", "retrieved_at_utc", "status", "quality_flags"],
+      "properties": {
+        "next_earnings_date": { "type": ["string", "null"], "format": "date", "description": "null when the source names no date - never computed, never rolled forward by three months" },
+        "release_session": { "enum": ["before_market", "after_market", "unknown"] },
+        "date_confirmation": {
+          "enum": ["confirmed", "estimated", "unknown"],
+          "description": "confirmed only when the source states the date without an estimate marker; a calendar cross-check never upgrades this field"
+        },
+        "source": { "type": ["string", "null"], "description": "null means no source is configured" },
+        "source_checked_at_utc": { "type": ["string", "null"], "format": "date-time", "description": "time of the last REAL source check; a failed live query never refreshes it" },
+        "retrieved_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "status": { "enum": ["fresh", "stale", "unknown", "invalid", "unavailable"] },
+        "quality_flags": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "cache": {
+      "type": "object",
+      "properties": {
+        "state": { "enum": ["live", "live_unpersisted", "hit", "stale_fallback", "miss", "none"] },
+        "stored_at_utc": { "type": ["string", "null"], "format": "date-time" },
+        "age_seconds": { "type": ["integer", "null"] },
+        "ttl_seconds": { "type": ["integer", "null"], "description": "re-query threshold (6 h)" },
+        "freshness_limit_seconds": { "type": ["integer", "null"], "description": "authorisation threshold (48 h); older records are stale and block" },
+        "error": {
+          "type": "object",
+          "properties": {
+            "code": { "enum": ["source_unreachable", "http_error", "invalid_json"] },
+            "message": { "type": "string" },
+            "http_status": { "type": ["integer", "null"] }
+          }
+        }
+      }
+    },
+    "exit": {
+      "type": "object",
+      "description": "Present in /api/v1/earnings-window only.",
+      "required": ["planned_last_exit_date", "rule", "is_trading_day"],
+      "properties": {
+        "planned_last_exit_date": { "type": ["string", "null"], "format": "date" },
+        "rule": { "type": "string" },
+        "is_trading_day": { "type": "boolean" }
+      }
+    },
+    "expirations": {
+      "type": "object",
+      "description": "Only expirations the chain itself lists. No date is ever synthesised.",
+      "required": ["listed", "after_earnings", "on_or_before_earnings", "selected", "excluded", "unparseable"],
+      "properties": {
+        "listed": { "type": "array", "items": { "type": "string", "format": "date" } },
+        "after_earnings": { "type": "array", "items": { "type": "string", "format": "date" } },
+        "on_or_before_earnings": { "type": "array", "items": { "type": "string", "format": "date" } },
+        "selected": { "type": ["string", "null"], "description": "earliest listed expiration strictly after the earnings date" },
+        "excluded": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["date", "reason"],
+            "properties": {
+              "date": { "type": "string", "format": "date" },
+              "reason": { "const": "expiration_on_or_before_earnings" }
+            }
+          }
+        },
+        "unparseable": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "decision": {
+      "type": "object",
+      "required": ["eligible", "status", "reasons", "notes"],
+      "properties": {
+        "eligible": { "type": "boolean", "description": "true only when every hard rule holds; a listed expiry after earnings is necessary, not sufficient" },
+        "status": { "enum": ["ok", "blocked", "unknown"] },
+        "reasons": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["code", "message"],
+            "properties": {
+              "code": {
+                "enum": [
+                  "earnings_source_not_configured", "earnings_date_unknown", "earnings_source_unavailable",
+                  "earnings_data_invalid", "earnings_data_stale", "earnings_date_in_past",
+                  "date_confirmation_unknown", "expirations_unavailable", "no_expirations_listed",
+                  "no_listed_expiration_after_earnings", "exit_day_not_resolvable", "exit_day_in_past"
+                ]
+              },
+              "message": { "type": "string" }
+            }
+          }
+        },
+        "notes": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "chain": {
+      "type": "object",
+      "description": "Present in /api/v1/earnings-window only: whether the expirations could be read at all.",
+      "required": ["status", "expirations_read"],
+      "properties": {
+        "status": { "enum": ["ok", "unknown_symbol", "market_data_unavailable"] },
+        "expirations_read": { "type": "boolean" }
+      }
+    },
+    "as_of": { "type": ["string", "null"], "format": "date", "description": "US/Eastern trading date the decision was made for" },
+    "error": {
+      "type": "object",
+      "description": "HTTP 4xx/5xx envelope instead of the body above.",
+      "required": ["code", "message"],
+      "properties": { "code": { "type": "string" }, "message": { "type": "string" } }
+    }
+  }
+}

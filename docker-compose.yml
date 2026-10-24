@@ -36,6 +36,11 @@ services:
       - PAPERBROKER_TREND_MCP_URL=${PAPERBROKER_TREND_MCP_URL:-}
       - PAPERBROKER_TREND_TOKEN=${PAPERBROKER_TREND_TOKEN:-}
       - PAPERBROKER_TREND_TIMEOUT_S=${PAPERBROKER_TREND_TIMEOUT_S:-}
+      # Earnings source. "nasdaq" wires the key-free Nasdaq calendar; empty or
+      # "off" leaves the Null adapter, which reports UNKNOWN and invents nothing.
+      # The code default is OFF on purpose (a deploy must not silently start
+      # calling an external service); this stack is the place that switches it on.
+      - PAPERBROKER_EARNINGS_SOURCE=${PAPERBROKER_EARNINGS_SOURCE:-nasdaq}
 
 volumes:
   cboe_cache:

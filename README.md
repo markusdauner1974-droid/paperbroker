@@ -189,3 +189,82 @@ GET /api/v1/option-chain?ticker=AAPL&expiration=2027-01-15
 
 A missing value is `null` and never `0`; a real `0` stays `0`. A last trade is
 never replaced by the bid/ask midpoint.
+
+## Earnings date and the expiry deadline (`GET /api/v1/earnings`)
+
+The spread strategy needs one thing the chain cannot answer: **when does the
+company report?** The options expiry must lie after the numbers, the position is
+meant to be closed before them. Two read-only routes answer that, and they
+decide nothing else.
+
+```
+GET /api/v1/earnings?ticker=AAPL         # date, session, confirmation, freshness
+GET /api/v1/earnings-window?ticker=AAPL  # + listed expirations + planned exit day
+```
+
+The full contract is `earnings_v1.schema.json` (draft 2020-12).
+
+**Source.** Nasdaq's key-free public JSON endpoints (`api.nasdaq.com`), no
+account, no API key, no cookie:
+
+- `/api/analyst/<SYMBOL>/earnings-date?assetclass=stocks` - the date, the session
+  in plain text, and the estimate marker,
+- `/api/calendar/earnings?date=YYYY-MM-DD` - a structured row per reporting
+  company, used **only** as a cross-check for the date the first endpoint named.
+
+Yahoo was measured and rejected for this deployment: `querySummary` answered
+HTTP 429 on the crumb handshake, i.e. it needs a session dance.
+
+**What the source really delivers** (measured 2026-10-24, AAPL/MSFT/NVDA/TSLA)
+
+- `date_confirmation` is `estimated` for every future date Nasdaq names
+  ("is expected* to report", or "derived from an algorithm"). `confirmed` stays
+  reserved for a date the source states without an estimate marker; a calendar
+  cross-check never upgrades it.
+- `release_session` comes from the text ("before market open" / "after market
+  close"); NVDA's algorithm-derived date carries no session, so it stays
+  `unknown`.
+- TSLA returned no date at all - the answer is `next_earnings_date: null`,
+  `status: unknown`. Nothing is rolled forward by three months.
+- No timezone and no clock time is read from anywhere.
+
+**Two limits, two jobs**
+
+- `ttl_seconds` (6 h): when the source is asked again. Earnings dates move
+  rarely, but vendors revise them.
+- `freshness_limit_seconds` (48 h): when a stored proof may still authorise
+  anything. 48 h survives a market-closed weekend; three missed days turn the
+  record `stale`, and a stale record **blocks**.
+
+A failed live query never refreshes `source_checked_at_utc` and always sets
+`live_query_failed`; the cache block carries the error code. A cache entry is
+never dressed up as a live check.
+
+**The rule** (`paperbroker/earnings_calendar.py`, pure, clock-free)
+
+1. The earnings date must be present, valid, fresh and not in the past.
+2. `date_confirmation` must be `confirmed` or `estimated` - `unknown` blocks.
+3. The planned exit is the **last US trading day strictly before** the earnings
+   date, whatever the session. Conservative on purpose: exiting one day early
+   never holds the position into the numbers.
+4. The expiry must be **in the chain's own list** and strictly after the
+   earnings date. The earliest such date is selected; if none exists the answer
+   is `blocked` with `no_listed_expiration_after_earnings` - never the next best
+   date.
+5. A listed expiry after earnings is **necessary, not sufficient**. The decision
+   says nothing about liquidity, IV or whether the trade is worth taking.
+
+The US calendar is computed, not tabulated: weekends, the ten NYSE holidays
+(including Good Friday and the Saturday/Sunday observance rule, e.g. 31 Dec 2021
+for New Year 2022) and the documented special closures (9/11, Hurricane Sandy,
+days of mourning).
+
+**Configuration.** The code default is OFF: without a source the Null adapter
+answers `unknown` with `earnings_source_not_configured`. The compose stack sets
+`PAPERBROKER_EARNINGS_SOURCE=nasdaq`. Deploying the code therefore never starts
+a new external call by itself.
+
+**For Hermes EVA.** Use `decision.eligible` plus `expirations.selected`; do not
+re-derive the exit day from the session, and do not treat `eligible` as a trade
+recommendation. `reasons[].code` is the stable machine field, `message` is the
+German page text.
