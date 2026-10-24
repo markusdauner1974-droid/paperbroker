@@ -621,6 +621,13 @@ class TestRemainingTradingDays(unittest.TestCase):
         )
         self.assertIsNone(ergebnis["exit"]["remaining_trading_days"])
 
+    def test_a_walk_ending_at_date_max_does_not_overflow(self):
+        # Kody's follow-up finding: the last `tag += 1` computed exit_day + 1,
+        # which overflows at the calendar edge even though the bound allowed it.
+        self.assertEqual(remaining_trading_days(date(9999, 12, 30), date.max), 1)
+        self.assertIsInstance(remaining_trading_days(date(9999, 11, 27), date(9999, 12, 31)), int)
+        self.assertEqual(remaining_trading_days(date.max, date.max), 0)
+
     def test_the_field_is_json_ready(self):
         import json
         ergebnis = self._window("2026-11-02")

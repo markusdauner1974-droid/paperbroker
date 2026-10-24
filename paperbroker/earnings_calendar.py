@@ -446,11 +446,11 @@ def remaining_trading_days(today, exit_day, max_calendar_days=400):
     if (exit_day - today).days > max_calendar_days:
         return None
     anzahl = 0
-    tag = today + timedelta(days=1)
-    while tag <= exit_day:
-        if is_us_trading_day(tag):
+    # Offsets, not `tag += 1`: after the last day that addition would compute
+    # exit_day + 1, which overflows for an exit day at date.max.
+    for versatz in range(1, (exit_day - today).days + 1):
+        if is_us_trading_day(today + timedelta(days=versatz)):
             anzahl += 1
-        tag += timedelta(days=1)
     return anzahl
 
 
