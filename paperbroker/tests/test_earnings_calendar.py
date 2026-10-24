@@ -426,9 +426,6 @@ class TestWindowRule(unittest.TestCase):
         self.assertEqual(ergebnis["as_of"], "2026-10-24")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
 
 class TestFailClosedOnEveryStatus(unittest.TestCase):
     """Only a fresh proof may authorise a window.
@@ -516,3 +513,6 @@ class TestFailClosedOnEveryStatus(unittest.TestCase):
         self.assertTrue(ergebnis["decision"]["eligible"])
         self.assertEqual(ergebnis["earnings"]["date_confirmation"], CONFIRMATION_ESTIMATED)
         self.assertNotEqual(ergebnis["earnings"]["date_confirmation"], CONFIRMATION_CONFIRMED)
+
+if __name__ == "__main__":
+    unittest.main()
