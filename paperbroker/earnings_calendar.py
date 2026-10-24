@@ -72,6 +72,8 @@ REASON_TEXT = {
     "earnings_source_unavailable": "Die Earnings-Quelle ist nicht erreichbar und kein Cache-Eintrag liegt vor.",
     "earnings_data_invalid": "Die Earnings-Antwort ist unbrauchbar oder widersprüchlich.",
     "earnings_data_stale": "Der Earnings-Nachweis ist zu alt - er darf keinen Handel freigeben.",
+    "earnings_status_unknown": "Der Prüfstatus des Earnings-Eintrags ist unbekannt - ohne belegten Status keine Freigabe.",
+    "earnings_status_unrecognised": "Der Prüfstatus ist ein unbekannter Wert - keine Freigabe.",
     "earnings_date_in_past": "Der Earnings-Termin liegt in der Vergangenheit.",
     "date_confirmation_unknown": "Der Termin ist weder bestätigt noch als Schätzung belegt.",
     "expirations_unavailable": "Die gelisteten Verfallstermine konnten nicht gelesen werden.",
@@ -88,6 +90,8 @@ UNKNOWN_REASONS = frozenset({
     "earnings_date_unknown",
     "earnings_source_unavailable",
     "earnings_data_invalid",
+    "earnings_status_unknown",
+    "earnings_status_unrecognised",
     "date_confirmation_unknown",
     "expirations_unavailable",
     "no_expirations_listed",
@@ -486,8 +490,23 @@ def combine_earnings_and_expirations(earnings, expirations, *, today):
     else:
         if FLAG_SOURCE_NOT_CONFIGURED in flags:
             gruende.append("earnings_source_not_configured")
-        if status == STATUS_STALE:
+        # Fail closed: a date alone proves nothing. Only a fresh proof may
+        # authorise; every other state - and every value the contract does not
+        # define - blocks. Before this, a record marked unknown/invalid or one
+        # with no status at all still returned eligible=True with a selected
+        # expiry, because only "stale" was named here.
+        if status == STATUS_FRESH:
+            pass
+        elif status == STATUS_STALE:
             gruende.append("earnings_data_stale")
+        elif status == STATUS_INVALID:
+            gruende.append("earnings_data_invalid")
+        elif status == STATUS_UNAVAILABLE:
+            gruende.append("earnings_source_unavailable")
+        elif status == STATUS_UNKNOWN:
+            gruende.append("earnings_status_unknown")
+        else:
+            gruende.append("earnings_status_unrecognised")
         if today is not None and termin < today:
             gruende.append("earnings_date_in_past")
         if confirmation == CONFIRMATION_UNKNOWN:
