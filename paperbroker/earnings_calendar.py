@@ -418,6 +418,32 @@ def last_trading_day_before(day, max_lookback_days=10):
     return None
 
 
+def remaining_trading_days(today, exit_day):
+    """Trading days from ``today`` (exclusive) to ``exit_day`` (inclusive).
+
+    ``None`` when either side is not a real date - an unknown "today" must not
+    be replaced by the system clock, and an exit day that could not be resolved
+    cannot be counted. An exit day already behind us counts 0; whether that also
+    blocks the window is the caller's decision, not this function's.
+
+    The count walks the calendar day by day and asks ``is_us_trading_day``, so
+    weekends, the ten NYSE holidays and the documented special closures are all
+    honoured. A Monday-to-Friday loop would report one day too many in every
+    holiday week.
+    """
+    if not isinstance(today, date) or not isinstance(exit_day, date):
+        return None
+    if exit_day < today:
+        return 0
+    anzahl = 0
+    tag = today + timedelta(days=1)
+    while tag <= exit_day:
+        if is_us_trading_day(tag):
+            anzahl += 1
+        tag += timedelta(days=1)
+    return anzahl
+
+
 # ---------------------------------------------------------------------- #
 # Earnings + listed expirations -> trade window                           #
 # ---------------------------------------------------------------------- #
@@ -565,6 +591,9 @@ def combine_earnings_and_expirations(earnings, expirations, *, today):
             "planned_last_exit_date": ausstieg.isoformat() if ausstieg else None,
             "rule": EXIT_RULE,
             "is_trading_day": bool(ausstieg is not None and is_us_trading_day(ausstieg)),
+            # Informational only: it never feeds ``eligible``. An exit day in the
+            # past counts 0 and is still blocked by its own reason below.
+            "remaining_trading_days": remaining_trading_days(today, ausstieg),
         },
         "expirations": {
             "listed": [v.isoformat() for v in verfaelle],

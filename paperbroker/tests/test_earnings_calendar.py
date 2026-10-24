@@ -37,6 +37,7 @@ from paperbroker.earnings_calendar import (
     merge_calendar_check,
     parse_nasdaq_calendar_row,
     parse_nasdaq_earnings_date,
+    remaining_trading_days,
     us_market_holidays,
 )
 
@@ -513,6 +514,103 @@ class TestFailClosedOnEveryStatus(unittest.TestCase):
         self.assertTrue(ergebnis["decision"]["eligible"])
         self.assertEqual(ergebnis["earnings"]["date_confirmation"], CONFIRMATION_ESTIMATED)
         self.assertNotEqual(ergebnis["earnings"]["date_confirmation"], CONFIRMATION_CONFIRMED)
+
+class TestRemainingTradingDays(unittest.TestCase):
+    """Calendar days from today (exclusive) to the planned exit (inclusive).
+
+    The count is informational - it must never move ``eligible``. The numbers
+    below are the ones the phase order names, plus the two cases a
+    Monday-to-Friday loop would get wrong.
+    """
+
+    def _window(self, datum, heute=TODAY):
+        return combine_earnings_and_expirations(
+            _record(datum=datum), ["2026-10-30", "2026-11-20", "2026-12-18"], today=heute
+        )
+
+    def test_aapl_example_counts_five_trading_days(self):
+        # Sat 24 Oct 2026 -> Fri 30 Oct 2026: Mon 26 to Fri 30.
+        ergebnis = self._window("2026-11-02")
+        self.assertEqual(ergebnis["exit"]["planned_last_exit_date"], "2026-10-30")
+        self.assertEqual(ergebnis["exit"]["remaining_trading_days"], 5)
+
+    def test_earnings_on_the_28th_leaves_two_days(self):
+        ergebnis = self._window("2026-10-28")
+        self.assertEqual(ergebnis["exit"]["planned_last_exit_date"], "2026-10-27")
+        self.assertEqual(ergebnis["exit"]["remaining_trading_days"], 2)
+
+    def test_earnings_on_the_12th_leaves_thirteen_days(self):
+        ergebnis = self._window("2026-11-12")
+        self.assertEqual(ergebnis["exit"]["planned_last_exit_date"], "2026-11-11")
+        self.assertEqual(ergebnis["exit"]["remaining_trading_days"], 13)
+
+    def test_a_weekend_is_not_counted(self):
+        # Saturday to Monday is one trading day, not three calendar days.
+        self.assertEqual(remaining_trading_days(date(2026, 10, 24), date(2026, 10, 26)), 1)
+        # Friday evening to Monday morning: only Monday.
+        self.assertEqual(remaining_trading_days(date(2026, 10, 23), date(2026, 10, 26)), 1)
+
+    def test_the_thanksgiving_holiday_is_not_counted(self):
+        # Wed 25 Nov -> Fri 27 Nov. Thu 26 Nov 2026 is closed; a Mon-Fri loop
+        # would answer 2 here.
+        self.assertFalse(is_us_trading_day(date(2026, 11, 26)))
+        self.assertEqual(remaining_trading_days(date(2026, 11, 25), date(2026, 11, 27)), 1)
+
+    def test_the_christmas_holiday_is_not_counted(self):
+        # Thu 24 Dec -> Mon 28 Dec: 25 Dec closed, 26/27 weekend.
+        self.assertFalse(is_us_trading_day(date(2026, 12, 25)))
+        self.assertEqual(remaining_trading_days(date(2026, 12, 24), date(2026, 12, 28)), 1)
+
+    def test_the_year_change_is_handled(self):
+        # Thu 31 Dec 2026 -> Mon 4 Jan 2027: 1 Jan is a Friday holiday,
+        # 2/3 Jan is a weekend.
+        self.assertFalse(is_us_trading_day(date(2027, 1, 1)))
+        self.assertEqual(remaining_trading_days(date(2026, 12, 31), date(2027, 1, 4)), 1)
+
+    def test_today_itself_is_never_counted(self):
+        # 30 Oct is a Friday and a trading day; from 30 Oct to 30 Oct it is 0.
+        self.assertEqual(remaining_trading_days(date(2026, 10, 30), date(2026, 10, 30)), 0)
+
+    def test_an_unknown_earnings_date_yields_null(self):
+        ergebnis = combine_earnings_and_expirations(
+            _record(datum=None, confirmation=CONFIRMATION_UNKNOWN, status=STATUS_UNKNOWN),
+            ["2026-11-20"], today=TODAY,
+        )
+        self.assertIsNone(ergebnis["exit"]["planned_last_exit_date"])
+        self.assertIsNone(ergebnis["exit"]["remaining_trading_days"])
+
+    def test_an_unresolvable_exit_day_yields_null(self):
+        self.assertIsNone(remaining_trading_days(TODAY, None))
+        self.assertIsNone(remaining_trading_days(None, date(2026, 10, 30)))
+        self.assertIsNone(remaining_trading_days("2026-10-24", date(2026, 10, 30)))
+        self.assertIsNone(remaining_trading_days(TODAY, "2026-10-30"))
+
+    def test_a_past_exit_day_counts_zero_and_still_blocks(self):
+        ergebnis = combine_earnings_and_expirations(
+            _record(datum="2026-11-02"), ["2026-10-30", "2026-11-20"], today=date(2026, 11, 5)
+        )
+        self.assertEqual(ergebnis["exit"]["remaining_trading_days"], 0)
+        self.assertFalse(ergebnis["decision"]["eligible"])
+        self.assertIn("earnings_date_in_past", _codes(ergebnis))
+
+    def test_the_count_never_changes_the_verdict(self):
+        # Same window, every status: the count is identical and only the
+        # verdict differs. If the number ever fed ``eligible``, this breaks.
+        for status in (STATUS_FRESH, STATUS_UNKNOWN, STATUS_INVALID, STATUS_STALE,
+                       STATUS_UNAVAILABLE, ""):
+            with self.subTest(status=status):
+                ergebnis = self._window("2026-11-02", heute=TODAY) if status == STATUS_FRESH else \
+                    combine_earnings_and_expirations(
+                        _record(status=status), ["2026-10-30", "2026-11-20"], today=TODAY
+                    )
+                self.assertEqual(ergebnis["exit"]["remaining_trading_days"], 5)
+                self.assertEqual(ergebnis["decision"]["eligible"], status == STATUS_FRESH)
+
+    def test_the_field_is_json_ready(self):
+        import json
+        ergebnis = self._window("2026-11-02")
+        self.assertIn('"remaining_trading_days": 5', json.dumps(ergebnis))
+
 
 if __name__ == "__main__":
     unittest.main()
