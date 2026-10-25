@@ -50,16 +50,16 @@ STATUS_DISABLED = "disabled"
 # Reason codes are the machine-readable contract; the text is for humans and
 # never parsed. Adding a code is additive; changing one is a contract change.
 REASON_TEXT = {
-    "source_timestamp_missing": "Die Quelle liefert keinen Zeitstempel.",
-    "source_timestamp_invalid": "Der Zeitstempel der Quelle ist nicht lesbar.",
-    "source_timezone_unproven": "Der Zeitstempel nennt keine Zeitzone - er darf nicht als UTC gelesen werden.",
-    "source_timestamp_stale": "Der Quellenzeitstempel ist älter als die Grenze.",
-    "source_timestamp_in_future": "Der Quellenzeitstempel liegt in der Zukunft - die Quelle ist nicht vertrauenswürdig.",
-    "age_check_disabled": "Die Altersprüfung ist deaktiviert (ignore_quote_age) - es wurde nichts geprüft.",
-    "check_clock_missing": "Ohne Prüfuhrzeit ist keine Altersaussage möglich.",
-    "fetched_at_is_not_a_source_time": "Der Abrufzeitpunkt belegt nicht die Aktualität der Quelle.",
-    "contract_multiplier_unknown": "Der Kontraktmultiplikator ist in der Quelle nicht belegt.",
-    "contract_multiplier_invalid": "Der Kontraktmultiplikator ist unbrauchbar.",
+    "source_timestamp_missing": "The source delivered no timestamp.",
+    "source_timestamp_invalid": "The source timestamp cannot be parsed.",
+    "source_timezone_unproven": "The timestamp names no timezone; it must not be read as UTC.",
+    "source_timestamp_stale": "The source timestamp is older than the limit.",
+    "source_timestamp_in_future": "The source timestamp lies in the future; the feed is not trustworthy.",
+    "age_check_disabled": "The age check is disabled (ignore_quote_age); nothing was verified.",
+    "check_clock_missing": "Without a check clock there is no age to report.",
+    "fetched_at_is_not_a_source_time": "Our fetch time does not prove the freshness of the source.",
+    "contract_multiplier_unknown": "The source does not document the contract multiplier.",
+    "contract_multiplier_invalid": "The contract multiplier is unusable.",
 }
 
 _INVALID = frozenset({
