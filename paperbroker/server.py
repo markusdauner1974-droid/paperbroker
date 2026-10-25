@@ -35,6 +35,7 @@ from .earnings_calendar import (
     SESSION_BEFORE,
     combine_earnings_and_expirations,
 )
+from .eva_quality import assess_source_quality, snapshot_identity
 from .PaperBroker import PaperBroker
 from .screener import (
     FUTURE_TOLERANCE_S,
@@ -314,7 +315,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             return jsonify(ticker=ticker, expiration=None,
                            listed_dates=selectable, results=[], freshness=None,
                            dropped_reasons=[], verticals=[],
-                           vertical_drops=[], trend=None)
+                           vertical_drops=[], trend=None,
+                           # no snapshot was screened, so there is nothing to
+                           # certify - the key is present but empty
+                           eva_quality=None)
         # D9b: the JSON endpoint must answer JSON. An unknown symbol is the caller
         # mistake (404), a feed outage is nobodys (503) - the HTML error page the
         # framework produced broke every consumer that parses the body.
@@ -332,6 +336,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         vertical_kept, vertical_dropped = vertical_spreads(quotes, criteria,
                                                             option_type=spread_type,
                                                             now_fn=now_fn)
+        # One identity for the fetch. Both the gate and every vertical entry
+        # carry it, so a consumer can prove they refer to the same snapshot.
+        snapshot_id = snapshot_identity(ticker, expiration, quotes, _feed_stamp(quotes))
+        eva = _eva_quality(quotes, criteria, now_fn,
+                           ticker=ticker, expiration=expiration, snapshot_id=snapshot_id)
         return jsonify(
             ticker=ticker,
             expiration=expiration,
@@ -356,7 +365,14 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             # single-option filters do not preserve strike adjacency
             # (measured: 0 candidates -> 0 pairs on a live chain that
             # carries 102 adjacent call pairs).
-            verticals=[v.as_dict(criteria) for v in vertical_kept],
+            # EVA: a separate, machine-readable verdict. A row in `verticals`
+            # is a calculated candidate - never an approval. `eva_eligible`
+            # repeats the gate's single word per row so it cannot be inferred
+            # from presence.
+            eva_quality=eva,
+            verticals=[{**v.as_dict(criteria),
+                        "snapshot_id": snapshot_id,
+                        "eva_eligible": eva["eligible"]} for v in vertical_kept],
             vertical_drops=_drop_reason_groups(vertical_dropped),
             # the trend signal that really reached the screener: null when the
             # source is down or no provider is configured - then the list is
@@ -1038,6 +1054,33 @@ def _feed_stamp(quotes):
     stamps = [str(q.quote_timestamp) for q in quotes or []
               if getattr(q, "quote_timestamp", None) is not None]
     return max(stamps) if stamps else None
+
+
+def _eva_quality(quotes, criteria, now_fn=None, *, ticker=None, expiration=None, snapshot_id=None):
+    """EVA gate for the snapshot this request actually screened.
+
+    The CBOE payload names no timezone and no multiplier, so both stay unproven
+    and the answer is ``unknown`` with explicit reasons - never ``ok``. The
+    values are read from the same ``quotes`` list the spread engine was given;
+    ``snapshot_id`` is derived from that list as well, which is what makes
+    "quality and maths saw one snapshot" checkable instead of promised.
+    """
+    jetzt = now_fn() if now_fn is not None else arrow.get()
+    jetzt_dt = getattr(jetzt, "datetime", jetzt)
+    return assess_source_quality(
+        source_timestamp=_feed_stamp(quotes),
+        # CBOE delivers naive stamps; option_chain_api reports the same fact as
+        # SOURCE_TIMEZONE_UNKNOWN. Nothing here may upgrade that to UTC.
+        source_timezone=None,
+        fetched_at=None,
+        now=jetzt_dt,
+        max_age_seconds=None if criteria.max_quote_age_min is None
+        else criteria.max_quote_age_min * 60,
+        # No silent 100: the payload does not carry it.
+        multiplier=None,
+        multiplier_source="unavailable",
+        snapshot_id=snapshot_id,
+    )
 
 
 def _lamp_state(age_min):
