@@ -84,6 +84,18 @@ DEFAULT_FUTURE_TOLERANCE_S = 60
 _UTC_NAMES = frozenset({"utc", "z", "etc/utc", "+00:00", "+0000", "gmt"})
 
 
+def _json_scalar(value):
+    """Echo a caller value without breaking json.dumps.
+
+    A Decimal('100') is correctly rejected as a multiplier, but echoing it
+    verbatim made the whole answer unserialisable - the route would answer 500
+    instead of naming the problem.
+    """
+    if value is None or isinstance(value, (bool, int, float, str)):
+        return value
+    return str(value)
+
+
 def _reason(code, text=None):
     return {"code": code, "message": text or REASON_TEXT.get(code, code)}
 
@@ -210,14 +222,14 @@ def assess_source_quality(
             "source_age_seconds": alter,
         },
         "checks": {
-            "age_limit_seconds": max_age_seconds,
+            "age_limit_seconds": _json_scalar(max_age_seconds),
             "age_check_disabled": max_age_seconds is None,
             "fetched_at_utc": _iso(fetched_at),
             "checked_at_utc": _iso(now),
-            "future_tolerance_seconds": future_tolerance_seconds,
+            "future_tolerance_seconds": _json_scalar(future_tolerance_seconds),
         },
         "contract": {
-            "multiplier": multiplier,
+            "multiplier": _json_scalar(multiplier),
             "multiplier_source": multiplier_source,
             "multiplier_proven": isinstance(multiplier, (int, float))
             and not isinstance(multiplier, bool) and multiplier > 0,
@@ -248,19 +260,21 @@ def _iso(wert):
 def snapshot_identity(ticker, expiration, quotes, source_timestamp=None):
     """Stable id for one fetched snapshot, so quality and maths provably agree.
 
-    Derived from what distinguishes one fetch from another: the instrument, the
-    row count, the newest feed stamp and the first/last contract symbol in
-    iteration order. Two different fetches of the same chain therefore differ,
-    while the quality gate and the spread engine - both fed from the same list
-    in the same request - carry the same id.
+    Derived from the whole ordered chain: instrument, feed stamp, and for every
+    row the symbol plus its price inputs. Two fetches of the same chain therefore
+    differ as soon as a quote moves, while the quality gate and the spread engine
+    - both fed from the same list in the same request - carry the same id.
     """
-    symbole = [str(getattr(getattr(q, "asset", None), "symbol", "") or "") for q in quotes or []]
-    teile = [
-        str(ticker or ""),
-        str(expiration or ""),
-        str(len(symbole)),
-        str(source_timestamp or ""),
-        symbole[0] if symbole else "",
-        symbole[-1] if symbole else "",
-    ]
+    # The whole chain, not a boundary sample: two fetches a second apart can
+    # share row count, newest stamp and first/last symbol while a quote in the
+    # middle has moved. Prices are part of the identity for that reason.
+    teile = [str(ticker or ""), str(expiration or ""), str(source_timestamp or "")]
+    for q in quotes or []:
+        asset = getattr(q, "asset", None)
+        teile.append(":".join(str(_json_scalar(x)) for x in (
+            getattr(asset, "symbol", ""),
+            getattr(q, "bid", ""), getattr(q, "ask", ""),
+            getattr(q, "iv", ""), getattr(q, "volume", ""),
+            getattr(q, "open_interest", ""),
+        )))
     return hashlib.sha256("|".join(teile).encode("utf-8")).hexdigest()[:16]

@@ -205,6 +205,26 @@ class TestContract(unittest.TestCase):
             self.assertNotEqual(grund["message"], grund["code"])
 
 
+class TestUnserialisableInputs(unittest.TestCase):
+    """Kody finding: an unusable value must be named, not crash the route."""
+
+    def test_a_decimal_multiplier_is_invalid_and_still_serialisable(self):
+        from decimal import Decimal
+        ergebnis = _assess(multiplier=Decimal("100"))
+        self.assertEqual(ergebnis["status"], STATUS_INVALID)
+        self.assertIn("contract_multiplier_invalid", _codes(ergebnis))
+        # Must not raise: the route answers this dict.
+        text = json.dumps(ergebnis)
+        self.assertIn("contract_multiplier_invalid", text)
+        self.assertIsInstance(ergebnis["contract"]["multiplier"], str)
+
+    def test_exotic_limits_are_echoed_as_scalars(self):
+        from decimal import Decimal
+        ergebnis = _assess(max_age_seconds=Decimal("1800"))
+        json.dumps(ergebnis)          # must not raise
+        self.assertEqual(ergebnis["checks"]["age_limit_seconds"], "1800")
+
+
 class TestSnapshotIdentity(unittest.TestCase):
     def test_the_same_snapshot_gets_the_same_id(self):
         chain = make()
@@ -220,6 +240,17 @@ class TestSnapshotIdentity(unittest.TestCase):
         self.assertNotEqual(a, b)
         c = snapshot_identity("QQQ", "2026-10-16", chain, "2026-10-07 14:30")
         self.assertNotEqual(a, c)
+
+    def test_a_moved_quote_in_the_middle_changes_the_id(self):
+        # Kody finding: row count, newest stamp and the boundary symbols were
+        # enough for the same id although a middle quote had moved.
+        kette = make()
+        bewegt = make()
+        bewegt[2].bid = 0.11
+        a = snapshot_identity("SPY", "2026-10-16", kette, "2026-10-07 14:30")
+        b = snapshot_identity("SPY", "2026-10-16", bewegt, "2026-10-07 14:30")
+        self.assertNotEqual(a, b)
+        self.assertNotEqual(kette[2].bid, bewegt[2].bid)
 
     def test_an_empty_chain_still_gets_an_id(self):
         self.assertEqual(len(snapshot_identity("SPY", None, [], None)), 16)
