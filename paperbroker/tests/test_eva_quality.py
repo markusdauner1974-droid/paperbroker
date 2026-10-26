@@ -314,6 +314,19 @@ class TestRoute(unittest.TestCase):
         self.assertIn("source_timezone_unproven", [g["code"] for g in eva["reasons"]])
         self.assertIn("contract_multiplier_unknown", [g["code"] for g in eva["reasons"]])
 
+    def test_mock_adapter_does_not_inherit_cboe_utc_provenance(self):
+        body = self._screen()
+        quality = body["eva_quality"]
+
+        self.assertEqual(quality["status"], STATUS_UNKNOWN)
+        self.assertFalse(quality["eligible"])
+        self.assertIsNone(quality["snapshot"]["source_timestamp_utc"])
+        self.assertEqual(quality["snapshot"]["source_timezone"], "unknown")
+        self.assertIn(
+            "source_timezone_unproven",
+            [reason["code"] for reason in quality["reasons"]],
+        )
+
     def test_every_vertical_carries_the_same_snapshot_id_and_no_approval(self):
         koerper = self._screen()
         kennung = koerper["eva_quality"]["snapshot"]["id"]
