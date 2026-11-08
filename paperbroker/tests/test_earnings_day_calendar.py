@@ -12,6 +12,7 @@ and a stale day is labelled as stale instead of looking live.
 import json
 import os
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
 
@@ -54,6 +55,15 @@ def _row(symbol="AAPL", **overrides):
 
 def _payload(rows):
     return {"data": {"rows": rows}, "status": {"rCode": 200}}
+
+
+# The answer api.nasdaq.com really gave for Sunday 2026-11-08 (measured, not
+# constructed): HTTP 200, nothing listed, but the source names the day it
+# answered for. That stamp is what separates "empty" from "broken".
+SUNDAY_PAYLOAD = {
+    "data": {"asOf": "Sun, Nov 8, 2026", "headers": None, "rows": None},
+    "status": {"rCode": 200},
+}
 
 
 class _Clock:
@@ -187,6 +197,37 @@ class TestParseCalendarRows(unittest.TestCase):
                 self.assertEqual(geparst["skipped"], 0)
                 self.assertFalse(geparst["payload_ok"])
                 self.assertEqual(geparst["date"], "2026-11-09")
+
+    def test_a_sunday_with_null_rows_and_a_date_stamp_is_a_valid_empty_day(self):
+        # The live payload for 2026-11-08: rows is null, asOf names the day.
+        geparst = parse_calendar_rows(SUNDAY_PAYLOAD, "2026-11-08")
+        self.assertTrue(geparst["payload_ok"])
+        self.assertEqual(geparst["rows"], [])
+        self.assertEqual(geparst["skipped"], 0)
+        self.assertEqual(geparst["date"], "2026-11-08")
+        # ... and the page shows an empty group, not an error
+        gruppe = build_calendar({DAY_TODAY: geparst})["groups"][1]
+        self.assertTrue(gruppe["payload_ok"])
+        self.assertEqual(gruppe["rows"], [])
+        self.assertEqual(gruppe["total"], 0)
+        self.assertEqual(gruppe["hidden"], 0)
+
+    def test_null_rows_without_a_usable_date_stamp_stays_an_outage(self):
+        # Without the source's own date there is no proof a day was answered,
+        # so "empty" is not established - and guessing it would hide an outage.
+        for payload in (
+            {"data": {"rows": None}},
+            {"data": {"rows": None, "headers": None}},
+            {"data": {"asOf": "", "rows": None}},
+            {"data": {"asOf": "   ", "rows": None}},
+            {"data": {"asOf": None, "rows": None}},
+            {"data": {"asOf": 20261108, "rows": None}},
+        ):
+            with self.subTest(payload=payload):
+                geparst = parse_calendar_rows(payload, "2026-11-08")
+                self.assertFalse(geparst["payload_ok"])
+                self.assertEqual(geparst["rows"], [])
+                self.assertEqual(geparst["skipped"], 0)
 
 
 class TestRankRows(unittest.TestCase):
@@ -378,6 +419,192 @@ class TestCalendarDaysAdapter(unittest.TestCase):
         # B6
         ergebnis = NullEarningsAdapter().get_calendar_days(DAYS)
         self.assertEqual(ergebnis, {"days": {}, "state": "not_configured", "error": None})
+
+    def test_a_sunday_with_a_date_stamp_is_live_and_is_cached(self):
+        # Live measurement: a Sunday answers rows: null plus asOf. That is an
+        # empty day worth caching - not an outage, and not a blank refusal.
+        quelle = _CalendarSource(payload=SUNDAY_PAYLOAD)
+        adapter = _adapter(self.tmpdir, quelle)
+        ergebnis = adapter.get_calendar_days({DAY_TODAY: DAYS[DAY_TODAY]})
+        self.assertEqual(ergebnis["state"], "live")
+        eintrag = ergebnis["days"][DAYS[DAY_TODAY]]
+        self.assertEqual(eintrag["state"], "live")
+        self.assertNotEqual(eintrag["state"], "unavailable")
+        self.assertTrue(eintrag["payload_ok"])
+        self.assertEqual(eintrag["rows"], [])
+        self.assertFalse(eintrag["live_query_failed"])
+        self.assertNotIn("error", eintrag)
+        gespeichert = DayCalendarStore(path=os.path.join(self.tmpdir, "calendar.json")).get(DAYS[DAY_TODAY])
+        self.assertIsNotNone(gespeichert)
+        self.assertEqual(gespeichert["rows"], [])
+        self.assertTrue(gespeichert["payload_ok"])
+        self.assertEqual(gespeichert["date"], DAYS[DAY_TODAY])
+
+
+class _BarrierSource:
+    """Transport that answers only when all expected requests wait together.
+
+    Every call meets at a barrier sized to the number of days. Fetched one
+    after another, the first call finds no peer: the barrier times out, the
+    call fails and the day ends up unavailable - so a serial implementation
+    cannot pass this test. That is the concurrency proof; no stopwatch and no
+    timing threshold is involved, only the fact that a peer must be waiting.
+    """
+
+    def __init__(self, workers, timeout=2.0):
+        self._barrier = threading.Barrier(workers)
+        self._timeout = timeout
+        self.calls = []
+        self._lock = threading.Lock()
+        self.serial_failure = False
+
+    def __call__(self, url, headers, timeout):
+        with self._lock:
+            self.calls.append(url)
+        try:
+            self._barrier.wait(timeout=self._timeout)
+        except threading.BrokenBarrierError:
+            self.serial_failure = True
+            raise TimeoutError("no peer request: the days were fetched one by one") from None
+        tag = url.rsplit("date=", 1)[-1]
+        return 200, json.dumps(_payload(self._rows(tag))).encode()
+
+    @staticmethod
+    def _rows(tag):
+        return [_row("AAA"), _row("BBB")]
+
+
+class TestDayCalendarStore(unittest.TestCase):
+    """The day cache reads its file once per page view, not once per day."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def _store(self):
+        return DayCalendarStore(path=os.path.join(self.tmpdir, "calendar.json"))
+
+    @staticmethod
+    def _entry(day, stamp="2026-11-08T06:00:00Z"):
+        return {
+            "date": day,
+            "rows": [{"symbol": "AAA"}],
+            "fetched_at_utc": stamp,
+            "state": "live",
+            "payload_ok": True,
+            "skipped": 0,
+        }
+
+    def test_get_many_returns_the_entry_per_requested_day(self):
+        store = self._store()
+        tage = ["2026-11-07", "2026-11-08", "2026-11-09"]
+        for tag in tage:
+            store.put(tag, self._entry(tag))
+        gesammelt = store.get_many(tage)
+        self.assertEqual(sorted(gesammelt), sorted(tage))
+        for tag in tage:
+            self.assertEqual(gesammelt[tag]["date"], tag)
+            self.assertEqual(gesammelt[tag]["rows"], [{"symbol": "AAA"}])
+
+    def test_get_many_treats_a_broken_entry_as_absent(self):
+        store = self._store()
+        with open(store.path, "w", encoding="utf-8") as fh:
+            json.dump({"entries": {
+                # rows is not a list of objects
+                "2026-11-07": {"date": "2026-11-07", "rows": "kaputt",
+                               "fetched_at_utc": "2026-11-08T06:00:00Z"},
+                "2026-11-08": self._entry("2026-11-08"),
+                # carries a different date than the key it is filed under
+                "2026-11-09": {"date": "2026-11-10", "rows": [],
+                               "fetched_at_utc": "2026-11-08T06:00:00Z"},
+            }}, fh)
+        gesammelt = store.get_many(["2026-11-07", "2026-11-08", "2026-11-09", "2026-11-10"])
+        self.assertIsNone(gesammelt["2026-11-07"])
+        self.assertIsNotNone(gesammelt["2026-11-08"])
+        self.assertIsNone(gesammelt["2026-11-09"])
+        self.assertIsNone(gesammelt["2026-11-10"])
+        # get() is a wrapper over the same validation, not a second contract
+        self.assertIsNone(store.get("2026-11-07"))
+        self.assertEqual(store.get("2026-11-08")["date"], "2026-11-08")
+
+    def test_get_many_reads_the_file_only_once(self):
+        store = self._store()
+        for tag in ("2026-11-07", "2026-11-08", "2026-11-09"):
+            store.put(tag, self._entry(tag))
+        gelesen = []
+        original = store._read_all
+
+        def zaehlend():
+            gelesen.append(1)
+            return original()
+
+        store._read_all = zaehlend
+        store.get_many(["2026-11-07", "2026-11-08", "2026-11-09"])
+        self.assertEqual(len(gelesen), 1)
+
+
+class TestCalendarDaysFetching(unittest.TestCase):
+    """The three cold days are fetched side by side, the output stays ordered."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_three_days_without_cache_cost_three_queries_and_are_complete(self):
+        quelle = _CalendarSource(rows_for=lambda tag: [_row("AAA"), _row("BBB")])
+        adapter = _adapter(self.tmpdir, quelle)
+        ergebnis = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 3)
+        self.assertEqual(
+            sorted(url.rsplit("date=", 1)[-1] for url in quelle.calls),
+            sorted(DAYS.values()),
+        )
+        self.assertEqual(ergebnis["state"], "live")
+        self.assertEqual(sorted(ergebnis["days"]), sorted(DAYS.values()))
+        for tag in DAYS.values():
+            eintrag = ergebnis["days"][tag]
+            self.assertEqual(eintrag["state"], "live")
+            self.assertTrue(eintrag["payload_ok"])
+            self.assertFalse(eintrag["from_cache"])
+            self.assertEqual([z["symbol"] for z in eintrag["rows"]], ["AAA", "BBB"])
+            self.assertEqual(eintrag["fetched_at_utc"], "2026-11-08T06:00:00Z")
+        self.assertEqual(ergebnis["fetched_at_utc"], "2026-11-08T06:00:00Z")
+
+    def test_all_missing_days_are_fetched_concurrently(self):
+        # See _BarrierSource: a serial loop times out on the first day, so this
+        # test fails unless the three queries really wait for each other.
+        quelle = _BarrierSource(workers=3)
+        adapter = _adapter(self.tmpdir, quelle)
+        ergebnis = adapter.get_calendar_days(DAYS)
+        self.assertFalse(quelle.serial_failure)
+        self.assertEqual(len(quelle.calls), 3)
+        self.assertEqual(ergebnis["state"], "live")
+        for tag in DAYS.values():
+            self.assertEqual([z["symbol"] for z in ergebnis["days"][tag]["rows"]], ["AAA", "BBB"])
+
+    def test_a_fresh_cache_day_costs_no_query_while_the_rest_run_concurrently(self):
+        # Only the two missing days may be in flight, so the barrier is sized
+        # to two: a third parallel query (a cache hit ignored) would break it.
+        clock = _Clock()
+        _adapter(self.tmpdir, _CalendarSource(), clock=clock).get_calendar_days(
+            {DAY_TODAY: DAYS[DAY_TODAY]}
+        )
+        quelle = _BarrierSource(workers=2)
+        adapter = _adapter(self.tmpdir, quelle, clock=clock)
+        ergebnis = adapter.get_calendar_days(DAYS)
+        self.assertFalse(quelle.serial_failure)
+        self.assertEqual(len(quelle.calls), 2)
+        self.assertEqual(ergebnis["days"][DAYS[DAY_TODAY]]["from_cache"], True)
+        self.assertEqual([z["symbol"] for z in ergebnis["days"][DAYS[DAY_TODAY]]["rows"]], ["AAA"])
+        for tag in (DAYS[DAY_PREV], DAYS[DAY_NEXT]):
+            self.assertEqual(ergebnis["days"][tag]["state"], "live")
+            self.assertEqual([z["symbol"] for z in ergebnis["days"][tag]["rows"]], ["AAA", "BBB"])
 
 
 if __name__ == "__main__":

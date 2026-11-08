@@ -54,6 +54,7 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 
 from ...earnings_calendar import (
@@ -84,8 +85,14 @@ from ...earnings_day_calendar import parse_calendar_rows
 SOURCE_NAME = "nasdaq_earnings_date"
 DATE_URL = "https://api.nasdaq.com/api/analyst/{symbol}/earnings-date?assetclass=stocks"
 CALENDAR_URL = "https://api.nasdaq.com/api/calendar/earnings?date={date}"
+# Measured against api.nasdaq.com on 2026-11-08: this minimal user agent
+# answered in 0.06-0.16 s per request, while a full Chrome string cost
+# 1.06-2.11 s for BYTE-IDENTICAL bodies (54137 bytes for the calendar, 354
+# bytes for /analyst/AAPL/earnings-date, HTTP 200 on both). Nothing in the
+# answer depends on the browser string, so the cheap one is used - no retry
+# logic hides the cost.
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+    "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
 }
 
@@ -281,7 +288,30 @@ class DayCalendarStore:
         return roh["entries"]
 
     def get(self, day):
-        eintrag = self._read_all().get(day)
+        """One day, kept as a wrapper so existing callers do not change."""
+        return self.get_many([day]).get(day)
+
+    def get_many(self, days):
+        """``{day: entry_or_None}`` from ONE read of the file.
+
+        The start page asks for three dates on every render; parsing the same
+        file once per date cost three reads for no gain. The content check is
+        the same one ``get`` always applied, so a half-written entry is still
+        a miss and never reaches the page.
+        """
+        tage = list(days)
+        if not tage:
+            return {}
+        eintraege = self._read_all()
+        return {day: self._valid_entry(day, eintraege.get(day)) for day in tage}
+
+    @staticmethod
+    def _valid_entry(day, eintrag):
+        """The entry if it may be trusted for ``day``, else ``None``.
+
+        Unchanged contract: the entry must carry its own date, a rows list of
+        objects and a parseable timestamp. Anything else is treated as absent.
+        """
         if not isinstance(eintrag, dict):
             return None
         if eintrag.get("date") != day:
@@ -623,10 +653,21 @@ class NasdaqEarningsAdapter:
         * ``unavailable`` - the query failed and there is no cache: no rows.
 
         A payload without a usable ``data.rows`` list counts as a failure, not
-        as an empty day: a Sunday really lists nothing, a broken answer does
-        not. The aggregate state is the worst of the days, and its timestamp is
-        the OLDEST one delivered - the page must never imply a fresher stamp
-        than the data it shows.
+        as an empty day; a Sunday, by contrast, answers ``rows: null`` WITH its
+        own ``asOf`` stamp and is the valid empty day the parser accepts (see
+        ``parse_calendar_rows``). The aggregate state is the worst of the days,
+        and its timestamp is the OLDEST one delivered - the page must never
+        imply a fresher stamp than the data it shows.
+
+        Three clearly separated phases keep that answer deterministic although
+        the queries run side by side:
+
+        (a) one cache read for every requested day,
+        (b) the days WITHOUT a fresh cache are fetched concurrently - done one
+            by one, a dead source cost up to three times ``timeout_seconds``
+            (18 s by default) before the start page could render,
+        (c) assembly in the REQUESTED order, cache writes included - the output
+            never depends on which thread answered first.
         """
         jetzt = _utc_now(self._now_fn)
         ziele = _calendar_targets(days)
@@ -638,27 +679,40 @@ class NasdaqEarningsAdapter:
                 "error": {"code": "no_dates", "message": "no calendar dates were requested", "http_status": None},
             }
 
+        # Duplicate dates are one day (labels may repeat): the result is keyed
+        # by date, so fetching twice would only duplicate the query.
+        iso_tage = list(dict.fromkeys(tag.isoformat() for tag in ziele.values()))
+
+        # (a) cache: one read, then age each day against the injected clock.
+        gespeicherte = self._calendar_store.get_many(iso_tage)
+        frisch = {}
+        zu_holen = []
+        for iso in iso_tage:
+            eintrag = gespeicherte.get(iso)
+            alter = self._age_seconds(eintrag, jetzt)
+            if eintrag is not None and alter is not None and 0 <= alter < self.ttl_seconds:
+                frisch[iso] = eintrag
+            else:
+                zu_holen.append(iso)
+
+        # (b) source: only the missing days, all in flight together.
+        abrufe = self._fetch_days(zu_holen)
+
+        # (c) assembly in the requested order.
         geliefert = {}
         stempel = []
         zustaende = []
-        for _label, tag in ziele.items():
-            iso = tag.isoformat()
-            gespeichert, alter = self._cached_day(iso, jetzt)
-
-            if gespeichert is not None and alter is not None and 0 <= alter < self.ttl_seconds:
-                geliefert[iso] = self._day_entry(gespeichert, state="live", from_cache=True)
+        for iso in iso_tage:
+            gespeichert = gespeicherte.get(iso)
+            if iso in frisch:
+                geliefert[iso] = self._day_entry(frisch[iso], state="live", from_cache=True)
                 stempel.append(geliefert[iso]["fetched_at_utc"])
                 zustaende.append("live")
                 continue
 
-            try:
-                payload = self._get_json(CALENDAR_URL.format(date=iso))
-                geparst = parse_calendar_rows(payload, iso)
-                if not geparst["payload_ok"]:
-                    # The answer arrived but carries no rows list: an outage,
-                    # not a day without earnings.
-                    raise EarningsSourceError("invalid_payload", "the calendar answer carries no rows list")
-            except EarningsSourceError as exc:
+            ergebnis = abrufe[iso]
+            exc = ergebnis.get("error")
+            if exc is not None:
                 if gespeichert is not None:
                     geliefert[iso] = self._day_entry(gespeichert, state="stale", from_cache=True, error=exc)
                     stempel.append(geliefert[iso]["fetched_at_utc"])
@@ -678,6 +732,7 @@ class NasdaqEarningsAdapter:
                     zustaende.append("unavailable")
                 continue
 
+            geparst = ergebnis["parsed"]
             eintrag = {
                 "date": iso,
                 "rows": geparst["rows"],
@@ -700,16 +755,51 @@ class NasdaqEarningsAdapter:
             "fetched_at_utc": min(stempel) if stempel else None,
         }
 
-    def _cached_day(self, iso, jetzt):
-        """The stored entry and its age in seconds, or ``(None, None)``."""
-        gespeichert = self._calendar_store.get(iso)
-        if gespeichert is None:
-            return None, None
+    def _fetch_days(self, tage):
+        """``{iso: {"parsed": ...} | {"error": exc}}``, fetched side by side.
+
+        Only the days without a fresh cache are submitted, one worker each -
+        so a cold start page waits for the slowest day instead of their sum.
+        Every worker keeps the old per-day contract: a failed query and a
+        payload without a rows list are the same ``EarningsSourceError``.
+        """
+        if not tage:
+            return {}
+        ergebnisse = {}
+        with ThreadPoolExecutor(max_workers=len(tage)) as pool:
+            futures = [(iso, pool.submit(self._fetch_day, iso)) for iso in tage]
+            for iso, future in futures:
+                ergebnisse[iso] = future.result()
+        return ergebnisse
+
+    def _fetch_day(self, iso):
+        """One live day query, normalised - deliberately writes no cache.
+
+        Cache writes stay in the assembling phase, so they keep happening in
+        the requested order and the store's read-modify-write is never hit by
+        several workers at once.
+        """
         try:
-            geprueft = datetime.strptime(gespeichert["fetched_at_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-        except (TypeError, ValueError):        # pragma: no cover - the store validates it
-            return None, None
-        return gespeichert, (jetzt - geprueft).total_seconds()
+            payload = self._get_json(CALENDAR_URL.format(date=iso))
+            geparst = parse_calendar_rows(payload, iso)
+            if not geparst["payload_ok"]:
+                # The answer arrived but carries no rows list: an outage,
+                # not a day without earnings.
+                raise EarningsSourceError("invalid_payload", "the calendar answer carries no rows list")
+        except EarningsSourceError as exc:
+            return {"error": exc}
+        return {"parsed": geparst}
+
+    @staticmethod
+    def _age_seconds(eintrag, jetzt):
+        """The stored entry's age in seconds, or ``None`` when it cannot be aged."""
+        if eintrag is None:
+            return None
+        try:
+            geprueft = datetime.strptime(eintrag["fetched_at_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        except (KeyError, TypeError, ValueError):        # pragma: no cover - the store validates it
+            return None
+        return (jetzt - geprueft).total_seconds()
 
     @staticmethod
     def _day_entry(eintrag, *, state, from_cache, error=None):

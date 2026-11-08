@@ -746,8 +746,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         expiration = request.args.get("expiration", "").strip()
         # The calendar is decoration: its adapter call must never break the
         # screener. `?no_calendar` is the escape hatch for tests and bookmarks
-        # that only need the form.
-        calendar = None if request.args.get("no_calendar") else _calendar_view()
+        # that only need the form. It acts by its PRESENCE - any value,
+        # including the empty one a bare `?no_calendar` produces, means "off".
+        # A truthiness test would read that empty spelling as "on" and spend
+        # the three queries the caller just declined.
+        calendar = None if "no_calendar" in request.args else _calendar_view()
         error = None
         hint = None
         results = dropped = dates = selectable = quotes = None

@@ -166,6 +166,23 @@ class TestCalendarBlock(unittest.TestCase):
         self.assertIn("Quelle", html)
         self.assertEqual(html.count('class="cal-row"'), 0)
 
+    def test_no_calendar_acts_by_its_presence_not_its_value(self):
+        # The escape hatch is a flag, so every spelling of "parameter present"
+        # must mean off. Reading the VALUE as a truthiness test ties the answer
+        # to the spelling: `?no_calendar=` - the bare flag a bookmark produces -
+        # is a falsy string and shows the calendar the caller switched off.
+        # The marker is the block's own markup, not the text "Earnings-Kalender":
+        # that string also sits in the stylesheet comment and would make the
+        # assertion pass for the wrong reason.
+        for wert in ("0", "false", ""):
+            with self.subTest(wert=wert):
+                kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]})
+                html = _client(kalender).get(f"/?no_calendar={wert}").get_data(as_text=True)
+                self.assertNotIn('id="cal-title"', html)
+                self.assertNotIn('class="cal"', html)
+                self.assertEqual(html.count('class="cal-row"'), 0)
+                self.assertEqual(kalender.calls, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

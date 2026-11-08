@@ -100,16 +100,34 @@ def _normalise_row(row):
 def parse_calendar_rows(payload, day):
     """Read one day's Nasdaq calendar answer.
 
-    ``payload_ok`` separates "the source listed nothing" (a Sunday: an empty
-    list) from "the answer is unusable" (no ``data.rows`` list at all). The
-    caller must treat the second case as an outage, not as an empty day.
+    ``payload_ok`` separates three cases, and the line between them is drawn on
+    evidence rather than convenience:
+
+    * a ``data.rows`` LIST - the day as the source listed it,
+    * ``data.rows: null`` TOGETHER WITH the source's own date stamp
+      (``data.asOf``) - a real, empty day. Measured against the live endpoint on
+      a Sunday: Nasdaq answers HTTP 200 with ``{"data": {"asOf": "Sun, Nov 8,
+      2026", "headers": null, "rows": null}}``. Nothing was skipped, the source
+      simply listed nothing, so calling that an outage turns every weekend into
+      "the source does not answer",
+    * everything else (``{}``, ``{"data": {}}``, a non-list ``rows``, ``None``)
+      - unusable, ``payload_ok`` False. A bare ``{"data": {"rows": null}}``
+      without ``asOf`` belongs here on purpose: without the source's own stamp
+      there is no proof that a day was answered at all, so "empty" is not
+      established and the caller must keep treating it as an outage.
     """
     rows = None
+    # An empty day must be backed by the source's own date stamp: `rows: null`
+    # alone could just as well be a truncated answer.
+    leer_bestaetigt = False
     if isinstance(payload, dict):
         data = payload.get("data")
         if isinstance(data, dict):
             rows = data.get("rows")
+            leer_bestaetigt = rows is None and "rows" in data and _text(data.get("asOf")) is not None
     if not isinstance(rows, list):
+        if leer_bestaetigt:
+            return {"date": day, "rows": [], "skipped": 0, "payload_ok": True}
         return {"date": day, "rows": [], "skipped": 0, "payload_ok": False}
 
     sauber = []

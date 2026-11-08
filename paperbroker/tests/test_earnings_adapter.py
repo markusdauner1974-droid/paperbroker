@@ -15,6 +15,7 @@ import unittest
 from datetime import UTC, datetime, timedelta
 
 from paperbroker.adapters.earnings.NasdaqEarningsAdapter import (
+    _HEADERS,
     EarningsCache,
     NasdaqEarningsAdapter,
     NullEarningsAdapter,
@@ -394,6 +395,22 @@ class TestCache(_Basis):
         body = adapter.get_earnings("AAPL")
         self.assertEqual(body["earnings"]["next_earnings_date"], "2026-11-02")
         self.assertEqual(body["cache"]["state"], "live_unpersisted")
+
+
+class TestRequestHeaders(unittest.TestCase):
+    """The request headers must never regress to empty or missing values."""
+
+    def test_the_request_names_a_user_agent_and_asks_for_json(self):
+        # A live measurement: api.nasdaq.com answers byte-identical bodies to
+        # a minimal user agent (0.06-0.16 s) and to a Chrome string (1-2 s),
+        # so the minimal one is used - but it must be present and non-empty.
+        self.assertEqual(sorted(_HEADERS), ["Accept", "User-Agent"])
+        for name, wert in _HEADERS.items():
+            with self.subTest(header=name):
+                self.assertIsInstance(wert, str)
+                self.assertTrue(wert.strip())
+        self.assertEqual(_HEADERS["User-Agent"], "Mozilla/5.0")
+        self.assertEqual(_HEADERS["Accept"], "application/json")
 
 
 class TestNullAdapter(unittest.TestCase):
