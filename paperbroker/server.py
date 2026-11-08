@@ -200,6 +200,66 @@ def _german_stamp(iso_text):
     return wert.strftime("%d.%m.%Y %H:%M UTC")
 
 
+# German weekday abbreviations for the day tabs. ``%a`` would be locale
+# dependent - the same reason parse_as_of spells its tables out.
+_WEEKDAY_SHORT_DE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
+
+
+def _short_day(iso_text):
+    """``2026-11-08`` -> ``So 08.11.``; an unusable value stays ``None``."""
+    try:
+        wert = datetime.strptime(str(iso_text), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return None
+    return f"{_WEEKDAY_SHORT_DE[wert.weekday()]} {wert.strftime('%d.%m.')}"
+
+
+def _option_symbols(adapter):
+    """``(symbols|None, state, fetched_at_utc)`` from the earnings adapter.
+
+    Every failure mode collapses into "no list": an adapter without the
+    method, an exception, a non-dict answer or a malformed symbol list all
+    mean the page must not filter. A callable that raises may not cost the
+    calendar - the list is a filter, not content.
+    """
+    getter = getattr(adapter, "get_optionable_symbols", None)
+    if not callable(getter):
+        return None, "unavailable", None
+    try:
+        antwort = getter()
+    except Exception:                                    # noqa: BLE001 - the page must render
+        logger.exception("optionable symbol list failed")
+        return None, "unavailable", None
+    if not isinstance(antwort, dict):
+        return None, "unavailable", None
+
+    stempel = antwort.get("fetched_at_utc")
+    wert = antwort.get("symbols")
+    if not isinstance(wert, list) or not wert:
+        return None, "unavailable", stempel
+    symbole = set()
+    for eintrag in wert:
+        if not isinstance(eintrag, str) or not eintrag.strip():
+            return None, "unavailable", stempel
+        symbole.add(eintrag.strip())
+    return frozenset(symbole), str(antwort.get("state") or ""), stempel
+
+
+def _option_note(applied, hidden, stale):
+    """One German sentence for the filter: a number, or honestly no filter.
+
+    ``hidden`` is the block-wide count of titles the list removed. An
+    unavailable list must not name a number: a "0" would read like a result.
+    """
+    if not applied:
+        return "Options-Liste nicht abrufbar - ungefiltert"
+    satz = (f"{hidden} Titel ohne gelistete Optionen ausgeblendet" if hidden
+            else "kein Titel ohne gelistete Optionen ausgeblendet")
+    if stale:
+        satz += " (Options-Liste aus letztem Stand)"
+    return satz
+
+
 def _earnings_source_from_env():
     """Which earnings source create_app wires when none is injected.
 
@@ -685,6 +745,15 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         on that day". The header note names one failure per sentence, which is
         the only way a single failed day stays visible while its two siblings
         are live.
+
+        One group is flagged ``is_default`` and is the tab the page opens on:
+        ``today`` when it has rows, else the first day in ``DAY_ORDER``
+        (prev, today, next) that has rows, else ``today`` again when no day
+        has rows. A blind ``today`` default opens an empty tab on a weekend
+        while the next day lists the only titles of the page - the content
+        would be reachable but hidden behind a tab nobody clicks. Rows, not
+        state, decide: an ``unavailable`` day has no rows and therefore never
+        becomes the default while another day answered with titles.
         """
         try:
             heute = _us_today(now_fn)
@@ -716,7 +785,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 gemeldet = meldung.get("state") if isinstance(meldung, dict) else None
                 tageszustand[key] = gemeldet if gemeldet in ("live", "stale") else "unavailable"
 
-            kalender = build_calendar(tagesdaten)
+            symbole, option_state, option_fetched = _option_symbols(earnings_adapter)
+            kalender = build_calendar(tagesdaten, optionable=symbole)
             gruppen = []
             for gruppe in kalender["groups"]:
                 zeilen = [dict(zeile, session_text=_SESSION_TEXT.get(zeile.get("session"), _SESSION_UNKNOWN_TEXT))
@@ -727,10 +797,38 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                     rows=zeilen,
                     label=_CALENDAR_DAY_LABEL.get(gruppe["key"], ""),
                     date_text=_german_date(gruppe["date"]),
+                    short_day=_short_day(gruppe["date"]),
                     counter=f"{len(zeilen)} von {gruppe['total']}",
+                    # Tab counter: how many titles the day lists (after the
+                    # option filter). A failed day has no number - "0" would
+                    # read like "nothing reported".
+                    tab_counter=None if zustand == "unavailable" else gruppe["total"],
                     unavailable=zustand == "unavailable",
                     stale=zustand == "stale",
                 ))
+
+            # The page opens on exactly ONE day, so that day must be the one
+            # with something to show: a hard-wired "today" opens an empty tab on
+            # a Sunday while tomorrow lists 191 titles, which leaves the only
+            # content of the block behind a tab nobody sees. Rule, in
+            # DAY_ORDER: "today" wins when it has rows; otherwise the first day
+            # (prev, then next) that has rows. Has no day rows at all, "today"
+            # stays the default - an empty calendar must still open on the tab
+            # a reader expects, not on an arbitrary one. A day whose state is
+            # "unavailable" has no rows by definition, so it can never become
+            # the default while any other day answered with titles.
+            standard_key = DAY_TODAY
+            if not any(gruppe["key"] == DAY_TODAY and gruppe["rows"] for gruppe in gruppen):
+                for gruppe in gruppen:
+                    if gruppe["rows"]:
+                        standard_key = gruppe["key"]
+                        break
+            for gruppe in gruppen:
+                gruppe["is_default"] = gruppe["key"] == standard_key
+
+            angewendet = symbole is not None
+            ohne_optionen = sum(gruppe["without_options"] for gruppe in gruppen)
+            option_stale = bool(angewendet and option_state == "stale")
 
             state = str(antwort.get("state") or "unavailable")
             zustaende = list(tageszustand.values())
@@ -768,6 +866,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 "note": note,
                 "stand": _german_stamp(antwort.get("fetched_at_utc")),
                 "groups": gruppen,
+                # The option filter is a block-wide statement: which list was
+                # used (or not), how old it is, and one sentence naming what it
+                # did. The per-group "without_options" says the same for a day.
+                "option_filter": {"applied": angewendet, "stale": option_stale,
+                                  "unavailable": not angewendet},
+                "option_stamp": _german_stamp(option_fetched) if angewendet else None,
+                "option_note": _option_note(angewendet, ohne_optionen, option_stale),
             }
         except Exception:                                    # noqa: BLE001 - page must render
             app.logger.exception("earnings calendar view failed")
@@ -777,6 +882,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 "note": "Quelle nicht lesbar - Details im Server-Log.",
                 "stand": None,
                 "groups": [],
+                "option_filter": {"applied": False, "stale": False, "unavailable": True},
+                "option_stamp": None,
+                "option_note": "Options-Liste nicht abrufbar - ungefiltert",
             }
 
     @app.get("/")

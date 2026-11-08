@@ -27,6 +27,7 @@ import re
 from datetime import date
 
 from .earnings_calendar import SESSION_AFTER, SESSION_BEFORE, SESSION_UNKNOWN
+from .optionable_symbols import filter_optionable
 
 # --- the three calendar days, in the order the page shows them ----------- #
 DAY_PREV = "prev"
@@ -235,43 +236,53 @@ def _market_cap(zeile):
     return wert
 
 
-def rank_rows(rows, top_n=DEFAULT_TOP_N):
+def rank_rows(rows, top_n=DEFAULT_TOP_N, optionable=None):
     """Rank by market cap descending, ties by symbol, unknown caps last.
 
     The sort key is total: same input -> byte-identical order, on every run and
     on every machine. Rows without a cap are neither ranked as zero nor
     dropped - they are kept after the ranked ones and counted.
+
+    ``optionable`` is the CBOE symbol set. It is applied BEFORE the Top-N cut,
+    so a title without listed options costs no place: the group is the 25
+    largest OPTIONABLE titles, not the 25 largest titles of which some then
+    disappear. ``None`` means "the list is not available": no filtering at all
+    (the page says "ungefiltert"), and ``without_options`` is 0.
     """
     zeilen = [dict(z) for z in (rows or []) if isinstance(z, dict)]
-    ohne_cap = sum(1 for z in zeilen if _market_cap(z) is None)
+    behalten, ohne_optionen = filter_optionable(zeilen, optionable)
+    ohne_cap = sum(1 for z in behalten if _market_cap(z) is None)
 
     def schluessel(zeile):
         cap = _market_cap(zeile)
         return (cap is None, -(cap or 0), str(zeile.get("symbol") or ""))
 
-    geordnet = sorted(zeilen, key=schluessel)
+    geordnet = sorted(behalten, key=schluessel)
     grenze = DEFAULT_TOP_N if top_n is None else max(0, int(top_n))
     ausgewaehlt = geordnet[:grenze]
     return {
         "rows": ausgewaehlt,
-        "total": len(zeilen),
-        "hidden": max(0, len(zeilen) - len(ausgewaehlt)),
+        "total": len(behalten),
+        "hidden": max(0, len(behalten) - len(ausgewaehlt)),
         "without_market_cap": ohne_cap,
+        "without_options": len(ohne_optionen),
     }
 
 
-def build_calendar(days, top_n=DEFAULT_TOP_N):
+def build_calendar(days, top_n=DEFAULT_TOP_N, optionable=None):
     """Assemble the three groups in ``DAY_ORDER``, whatever order they arrive in.
 
     A missing or malformed day is an empty group: the page then says "keine
-    Einträge" for that day instead of dropping a column.
+    Einträge" for that day instead of dropping a column. ``optionable`` is the
+    CBOE symbol set and is passed to every group, so the Top-N selection is
+    made among optionable titles only.
     """
     gruppen = []
     for key in DAY_ORDER:
         geparst = days.get(key) if isinstance(days, dict) else None
         if not isinstance(geparst, dict):
             geparst = {}
-        geordnet = rank_rows(geparst.get("rows") or [], top_n)
+        geordnet = rank_rows(geparst.get("rows") or [], top_n, optionable=optionable)
         gruppen.append({
             "key": key,
             "date": geparst.get("date"),
@@ -279,6 +290,7 @@ def build_calendar(days, top_n=DEFAULT_TOP_N):
             "total": geordnet["total"],
             "hidden": geordnet["hidden"],
             "without_market_cap": geordnet["without_market_cap"],
+            "without_options": geordnet["without_options"],
             "payload_ok": bool(geparst.get("payload_ok")),
             "skipped": int(geparst.get("skipped") or 0),
         })
