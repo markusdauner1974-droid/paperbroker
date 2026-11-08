@@ -523,6 +523,11 @@ class TestEveryStateIsReachable(unittest.TestCase):
         self.assertEqual(aapl["status"], STATUS_NOT_CHECKED)
         self.assertEqual(aapl["exclusion"]["code"], "no_expiration_in_window")
         self.assertEqual(aapl["skipped_expirations"][0]["dte"], 44)
+        # Nothing was checked, so the per-strategy freshness says exactly that -
+        # not the chain-wide verdict (review finding on PR #74).
+        for sid in STRATEGY_IDS:
+            self.assertEqual(aapl["strategies"][sid]["checked_freshness"], "unknown")
+        self.assertEqual(aapl["data"]["freshness"], "fresh")
 
     def test_the_expiration_budget_names_what_it_left_out(self):
         rows = [calendar_row("AAPL", 30)]
@@ -534,6 +539,31 @@ class TestEveryStateIsReachable(unittest.TestCase):
         self.assertEqual(aapl["skipped_expirations"][0]["reason"], LIMIT_MAX_EXPIRATIONS)
         self.assertEqual(aapl["data"]["completeness"], "partial")
         self.assertIn("expiration_limit_reached", aapl["quality_flags"])
+
+    def test_both_not_checked_paths_answer_with_the_same_rule(self):
+        # Window path and budget path must agree: nothing checked -> "unknown".
+        rows = [calendar_row("AAPL", 30)]
+        fenster = run_scan({"AAPL": call_pair("AAPL", EXP_B)}, rows,
+                           criteria=ScreenerCriteria(dte_min=7, dte_max=30))
+        budget = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
+                          limits=ScanLimits(max_seconds=0.0, concurrency=1))
+        for koerper in (fenster, budget):
+            eintrag = entry_of(koerper, "AAPL")
+            self.assertEqual(eintrag["status"], STATUS_NOT_CHECKED)
+            for sid in STRATEGY_IDS:
+                self.assertEqual(eintrag["strategies"][sid]["checked_freshness"], "unknown")
+
+    def test_without_the_age_guard_an_empty_set_is_unchecked_not_unknown(self):
+        # The other half of the same rule: no guard configured -> nothing can be
+        # called unknown about the age.
+        rows = [calendar_row("AAPL", 30)]
+        koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
+                           criteria=ScreenerCriteria(max_quote_age_min=None),
+                           limits=ScanLimits(max_seconds=0.0, concurrency=1))
+        eintrag = entry_of(koerper, "AAPL")
+        self.assertEqual(eintrag["status"], STATUS_NOT_CHECKED)
+        for sid in STRATEGY_IDS:
+            self.assertEqual(eintrag["strategies"][sid]["checked_freshness"], "unchecked")
 
     def test_the_deadline_leaves_the_rest_explicitly_unchecked(self):
         rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]

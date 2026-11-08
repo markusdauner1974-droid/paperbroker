@@ -264,6 +264,16 @@ def _freshness(quotes, criteria, now_fn):
 _FRESHNESS_RANK = {"unchecked": 0, "unknown": 1, "fresh": 2, "partial": 3, "stale": 4}
 
 
+def _empty_freshness(criteria):
+    """The verdict for a set with nothing in it - by the same rule as any other.
+
+    ``_freshness`` answers this itself (no age guard -> ``unchecked``, nothing
+    to read -> ``unknown``); the helper exists so both not_checked paths use
+    that one rule instead of a chain-wide number here and a constant there.
+    """
+    return _freshness((), criteria, None)
+
+
 def _combine_freshness(verdicts, criteria):
     """The freshness of several expiries, from their individual verdicts.
 
@@ -503,12 +513,9 @@ def _scan_symbol(symbol, row, ctx):
             "no_expiration_in_window",
             "no listed expiration inside the maturity window",
         )
-        eintrag["strategies"] = {
-            sid: {"status": STATUS_NOT_CHECKED, "hits": 0, "best": None,
-                  "checked_expirations": [], "checked_freshness": freshness,
-                  "drop_reasons": []}
-            for sid in ctx.strategies
-        }
+        eintrag["strategies"] = _empty_strategies(
+            ctx.strategies, STATUS_NOT_CHECKED, ctx.criteria
+        )
         return eintrag
 
     # --- 6. the strategies, on the screener's own function ----------------
@@ -604,9 +611,12 @@ def _best_payload(pair, criteria, dte_by_expiry):
     return daten
 
 
-def _empty_strategies(strategies, status):
+def _empty_strategies(strategies, status, criteria):
+    """Strategy stubs for a ticker that was not checked - nothing was read, so
+    the freshness is derived (``unknown``, or ``unchecked`` without a guard)."""
+    leer = _empty_freshness(criteria)
     return {sid: {"status": status, "hits": 0, "best": None,
-                  "checked_expirations": [], "checked_freshness": "unknown",
+                  "checked_expirations": [], "checked_freshness": leer,
                   "drop_reasons": []}
             for sid in strategies}
 
@@ -700,7 +710,7 @@ def scan_day(
             "window": None,
             "checked_expirations": [],
             "skipped_expirations": [],
-            "strategies": _empty_strategies(auswahl, STATUS_NOT_CHECKED),
+            "strategies": _empty_strategies(auswahl, STATUS_NOT_CHECKED, criteria),
         })
 
     zaehler = {status: 0 for status in STATUSES}
