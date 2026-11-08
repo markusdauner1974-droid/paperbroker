@@ -14,6 +14,7 @@ What the tests are here to prove, in the order of the requirement:
 * a cut scan declares its own coverage instead of looking complete.
 """
 
+import json
 import unittest
 from datetime import date
 
@@ -437,6 +438,27 @@ class TestEveryStateIsReachable(unittest.TestCase):
         self.assertEqual(entry_of(koerper, "AAPL")["status"], STATUS_HITS)
         self.assertEqual(entry_of(koerper, "MSFT")["status"], STATUS_HITS)
         self.assertEqual(koerper["coverage"]["processed"], 2)
+
+    def test_the_answer_carries_codes_but_no_adapter_internals(self):
+        # Review finding on PR #74: `type(exc).__name__` in a 200 body exposes
+        # adapter internals. The code names WHICH call failed; the exception
+        # type belongs to the log, which is what `on_ticker_error` is for.
+        gesehen = []
+
+        class _Boom(RuntimeError):
+            pass
+
+        koerper = run_scan({"AAPL": _Boom("cdn.cboe.com refused")},
+                           [calendar_row("AAPL", 30)],
+                           on_ticker_error=lambda sym, exc: gesehen.append((sym, type(exc).__name__)))
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["status"], STATUS_FETCH_FAILED)
+        self.assertEqual(aapl["exclusion"]["code"], "chain_fetch_failed")
+        self.assertEqual(aapl["exclusion"]["message"], "option chain could not be read")
+        rohtext = json.dumps(koerper)
+        self.assertNotIn("_Boom", rohtext)
+        self.assertNotIn("cdn.cboe.com", rohtext)
+        self.assertEqual(gesehen, [("AAPL", "_Boom")])
 
     def test_a_failing_earnings_lookup_is_its_own_state(self):
         rows = [calendar_row("AAPL", 30)]

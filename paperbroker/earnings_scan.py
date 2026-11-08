@@ -274,6 +274,22 @@ class _Context:
     now_fn: object
     limits: ScanLimits
     counter: _Counter
+    on_ticker_error: object = None
+
+
+def _report(ctx, symbol, exc):
+    """Hand a per-ticker failure to the caller's logger - never to the body.
+
+    The answer names the code (``earnings_fetch_failed``/``chain_fetch_failed``);
+    the exception type and text are diagnostics for the server log. A logger
+    that raises must not cost the scan, so the call is bounded.
+    """
+    if not callable(ctx.on_ticker_error):
+        return
+    try:
+        ctx.on_ticker_error(symbol, exc)
+    except Exception:                               # noqa: BLE001 - logging is best effort
+        pass
 
 
 def _scan_symbol(symbol, row, ctx):
@@ -305,10 +321,14 @@ def _scan_symbol(symbol, row, ctx):
             raise ValueError("earnings answer carries no record")
         ctx.counter.count_earnings()
     except Exception as exc:                        # noqa: BLE001 - one ticker, one verdict
+        # No exception text and no class name in the 200 body: the code below
+        # names WHICH call failed, and that is the actionable part for the
+        # caller. The type goes to the caller's log (``on_ticker_error``).
+        _report(ctx, symbol, exc)
         eintrag["status"] = STATUS_FETCH_FAILED
         eintrag["exclusion"] = _exclusion(
             "earnings_fetch_failed",
-            f"earnings lookup failed ({type(exc).__name__})",
+            "earnings lookup failed",
         )
         return eintrag
 
@@ -319,10 +339,11 @@ def _scan_symbol(symbol, row, ctx):
         uebersprungen = int(getattr(chain, "skipped", 0) or 0)
         ctx.counter.count_chain()
     except Exception as exc:                        # noqa: BLE001 - one ticker, one verdict
+        _report(ctx, symbol, exc)
         eintrag["status"] = STATUS_FETCH_FAILED
         eintrag["exclusion"] = _exclusion(
             "chain_fetch_failed",
-            f"option chain could not be read ({type(exc).__name__})",
+            "option chain could not be read",
         )
         return eintrag
 
@@ -546,6 +567,7 @@ def scan_day(
     now_fn,
     limits=None,
     optionable=None,
+    on_ticker_error=None,
 ):
     """Scan one earnings day. Returns the response body (a plain dict).
 
@@ -584,6 +606,7 @@ def scan_day(
         now_fn=now_fn,
         limits=limits,
         counter=counter,
+        on_ticker_error=on_ticker_error,
     )
 
     eintraege = []

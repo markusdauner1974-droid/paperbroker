@@ -901,6 +901,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 now_fn=now_fn,
                 limits=args["limits"],
                 optionable=symbole,
+                # Diagnostics stay in the log: the answer itself carries a
+                # stable code and says nothing about adapter internals.
+                on_ticker_error=lambda symbol, exc: app.logger.warning(
+                    "earnings scan: %s not scanned (%s: %s)",
+                    symbol, type(exc).__name__, exc,
+                ),
             )
         except Exception:                                    # noqa: BLE001 - classified here
             app.logger.exception("earnings scan failed for %s", day)
