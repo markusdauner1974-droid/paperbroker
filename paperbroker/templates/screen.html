@@ -96,6 +96,11 @@
     .shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;text-align:right;padding:6px 2px}
     .shell fieldset.crit>label>small{grid-column:1/-1;margin-top:2px}
     .shell fieldset.crit>label:has(input[type=checkbox]){grid-template-columns:auto minmax(0,1fr);justify-items:start}
+    /* a radio has no number field, so the 74 px value column is wrong for it: the
+       text was squeezed into 184 px, wrapped over nine lines and the dot floated
+       in the middle of a 162 px row - the block looked like a doubled list */
+    .shell fieldset.crit>label:has(input[type=radio]){grid-template-columns:auto minmax(0,1fr);
+      align-items:start;justify-items:start}
 
     .err,.warn,.hint{padding:12px 14px;border:1px dotted;border-radius:0;font-size:12.5px}
     .err{border-color:rgba(224,85,52,.55);background:rgba(224,85,52,.08);color:#f7d3c9}
