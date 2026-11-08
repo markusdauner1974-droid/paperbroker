@@ -81,6 +81,18 @@
     .earn .blocked{color:#e0503c;font-weight:600}
     .earn .unknown{color:#e6b93c;font-weight:600}
     .earn ul{margin:4px 0 0;padding-left:18px;font-size:.85rem;color:#9aa3b5}
+    /* Earnings-Kalender: eigener Block ueber dem Screener, drei Tage
+       nebeneinander. Gleiche Palette wie der Rest, kein neues Skript. */
+    .cal{background:#151d2c;border:1px solid #2c3650;border-radius:8px;padding:12px 14px;margin-bottom:16px}
+    .cal h2{font-size:.95rem;margin:0 0 4px}
+    .cal-groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 20px}
+    @media (max-width:900px){.cal-groups{grid-template-columns:minmax(0,1fr)}}
+    .cal-group h3{font-size:.85rem;margin:6px 0 0}
+    .cal-group ul{list-style:none;margin:4px 0 0;padding:0;font-size:.85rem}
+    .cal-row{display:flex;flex-wrap:wrap;gap:2px 8px;padding:3px 0;border-bottom:1px solid #232b3b}
+    .cal-row a{font-weight:600}
+    .cal-name{color:#9aa3b5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+    .cal-session,.cal-eps{color:#9aa3b5;font-size:.8rem}
   </style>
 </head>
 <body>
@@ -109,6 +121,53 @@
   {% endif %}
 </header>
 <main>
+  {% if calendar %}
+  {# Der Kalender ist eine Zugabe: fehlt die Quelle, steht hier ein Satz -
+     keine erfundenen Zeilen, kein Absturz des Screener-Formulars darunter. #}
+  <section class="cal" aria-labelledby="cal-title">
+    {# Eigene Klasse am <h2>: der Block ist eine Sektion wie die Spread-Tabelle,
+       aber die Ueberschrift des Screener-Abschnitts bleibt die erste blanke <h2>. #}
+    <h2 class="cal-title" id="cal-title">Earnings-Kalender</h2>
+    <p class="note">
+      {%- if calendar.state == 'not_configured' -%}
+        Keine Earnings-Quelle konfiguriert.
+      {%- else -%}
+        Quelle: Nasdaq{% if calendar.stand %} · Stand {{ calendar.stand }}{% endif %}
+      {%- endif -%}
+      {%- if calendar.note and calendar.state != 'not_configured' %} · {{ calendar.note }}{% endif -%}
+    </p>
+    {% if calendar.show_groups %}
+    <div class="cal-groups">
+      {% for g in calendar.groups %}
+      <div class="cal-group">
+        <h3>{{ g.label }} · {{ g.date_text or 'Datum unbekannt' }}</h3>
+        {% if g.rows %}
+        <p class="note">{{ g.counter }}</p>
+        <ul>
+          {% for row in g.rows %}
+          <li class="cal-row">
+            <a href="/?ticker={{ row.symbol }}#screener-form">{{ row.symbol }}</a>
+            {% if row.name %}<span class="cal-name">{{ row.name }}</span>{% endif %}
+            <span class="cal-session">{{ row.session_text }}</span>
+            {% if row.eps_forecast %}<span class="cal-eps">EPS {{ row.eps_forecast }}</span>{% endif %}
+          </li>
+          {% endfor %}
+        </ul>
+        {% elif g.unavailable %}
+        {# Kein belegter Inhalt: "keine Einträge" waere hier eine erfundene
+           Aussage - die Quelle hat den Tag gar nicht beantwortet. #}
+        <p class="note">Tag nicht abrufbar</p>
+        {% else %}
+        <p class="note">keine Einträge</p>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <p class="note">Kalender nicht verfügbar – {{ calendar.note }}</p>
+    {% endif %}
+  </section>
+  {% endif %}
   {% if feed_note %}<p class="note">{{ feed_note }}.</p>{% endif %}
 
   {% if age_off %}
@@ -121,7 +180,7 @@
   {% if error %}<div class="err">{{ error }}</div>{% endif %}
 
   <div class="shell">
-  <form method="get" action="/">
+  <form method="get" action="/" id="screener-form">
     <h2 class="rail-title">Instrument</h2>
     <input name="ticker" id="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required autocomplete="off">
     <select name="expiration" id="expiration" {% if not dates %}disabled{% endif %}>

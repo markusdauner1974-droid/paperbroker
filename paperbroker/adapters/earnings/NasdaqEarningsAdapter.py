@@ -54,7 +54,8 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, date, datetime
 
 from ...earnings_calendar import (
     CONFIRMATION_UNKNOWN,
@@ -79,12 +80,19 @@ from ...earnings_calendar import (
     parse_nasdaq_calendar_row,
     parse_nasdaq_earnings_date,
 )
+from ...earnings_day_calendar import parse_calendar_rows
 
 SOURCE_NAME = "nasdaq_earnings_date"
 DATE_URL = "https://api.nasdaq.com/api/analyst/{symbol}/earnings-date?assetclass=stocks"
 CALENDAR_URL = "https://api.nasdaq.com/api/calendar/earnings?date={date}"
+# Measured against api.nasdaq.com on 2026-11-08: this minimal user agent
+# answered in 0.06-0.16 s per request, while a full Chrome string cost
+# 1.06-2.11 s for BYTE-IDENTICAL bodies (54137 bytes for the calendar, 354
+# bytes for /analyst/AAPL/earnings-date, HTTP 200 on both). Nothing in the
+# answer depends on the browser string, so the cheap one is used - no retry
+# logic hides the cost.
 _HEADERS = {
-    "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36",
+    "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
 }
 
@@ -92,7 +100,17 @@ DEFAULT_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_FRESHNESS_LIMIT_SECONDS = 48 * 60 * 60
 DEFAULT_TIMEOUT_SECONDS = 6.0
 DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS = 3.0
+# How long a failed day query is remembered. A dead source costs the full
+# timeout on the FIRST page view; without a memory the user pays it again on
+# every reload. 60 s keeps reloads cheap while a recovered source is visible
+# again within one minute - short enough that nobody waits for a stale verdict.
+DEFAULT_FAILURE_RETRY_SECONDS = 60
 DEFAULT_CACHE_PATH = ".cache/earnings.json"
+# The day calendar is a second cache: one entry per DATE, not per ticker. Three
+# dates per page view, and a date is only useful for a few days, so a small cap
+# keeps the file from growing for ever.
+DEFAULT_CALENDAR_CACHE_PATH = ".cache/earnings_calendar.json"
+MAX_CALENDAR_ENTRIES = 64
 # One entry per ticker; the route accepts any 1-6 letter symbol, so an
 # unthrottled public caller could otherwise grow the file without bound.
 MAX_CACHE_ENTRIES = 512
@@ -248,6 +266,163 @@ class EarningsCache:
         return dict(geordnet[: self.max_entries])
 
 
+class DayCalendarStore:
+    """One JSON file, one entry per DATE, written atomically.
+
+    Same contract as ``EarningsCache``: a corrupt, missing or unreadable file
+    is a cache MISS, never an exception. The calendar is decoration on the
+    start page - it may cost a query, it may not cost the page.
+
+    An entry is only trusted when it carries its own date, a rows list of
+    objects and a parseable timestamp. Anything else is treated as absent, so
+    a half-written or hand-edited file cannot put invented rows on screen.
+    """
+
+    def __init__(self, path=None, max_entries=MAX_CALENDAR_ENTRIES):
+        self.path = path or DEFAULT_CALENDAR_CACHE_PATH
+        self.max_entries = max(1, int(max_entries))
+
+    def _read_all(self):
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                roh = json.load(fh)
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError, ValueError):
+            return {}
+        if not isinstance(roh, dict) or not isinstance(roh.get("entries"), dict):
+            return {}
+        return roh["entries"]
+
+    def get(self, day):
+        """One day, kept as a wrapper so existing callers do not change."""
+        return self.get_many([day]).get(day)
+
+    def get_many(self, days):
+        """``{day: entry_or_None}`` from ONE read of the file.
+
+        The start page asks for three dates on every render; parsing the same
+        file once per date cost three reads for no gain. The content check is
+        the same one ``get`` always applied, so a half-written entry is still
+        a miss and never reaches the page.
+        """
+        tage = list(days)
+        if not tage:
+            return {}
+        eintraege = self._read_all()
+        return {day: self._valid_entry(day, eintraege.get(day)) for day in tage}
+
+    @staticmethod
+    def _valid_entry(day, eintrag):
+        """The entry if it may be trusted for ``day``, else ``None``.
+
+        Unchanged contract: the entry must carry its own date, a rows list of
+        objects and a parseable timestamp. Anything else is treated as absent.
+        """
+        if not isinstance(eintrag, dict):
+            return None
+        if eintrag.get("date") != day:
+            return None
+        rows = eintrag.get("rows")
+        if not isinstance(rows, list) or not all(isinstance(z, dict) for z in rows):
+            return None
+        try:
+            datetime.strptime(eintrag.get("fetched_at_utc") or "", "%Y-%m-%dT%H:%M:%SZ")
+        except (TypeError, ValueError):
+            return None
+        return eintrag
+
+    def put(self, day, entry):
+        """One day, kept as a wrapper so existing callers do not change."""
+        return self.put_many({day: entry})
+
+    def put_many(self, entries):
+        """All entries of one page view in ONE read-modify-write.
+
+        Why bundled: one ``put`` per day meant one lock, one full file read,
+        one bounded merge, one tempfile, one fsync and one ``os.replace`` per
+        day. A cold start page stores three days, so it paid three of those
+        (measured ~0.36 s cold versus ~0.05 s for a single write). Bundling
+        keeps the contract identical - one thread lock, one exclusive flock,
+        one ``_read_all``, one merge, one ``_bounded`` pass, one atomic
+        replace - and writes nothing at all for an empty mapping.
+        """
+        eintraege = dict(entries or ())
+        if not eintraege:
+            return True
+        verzeichnis = os.path.dirname(os.path.abspath(self.path)) or "."
+        try:
+            os.makedirs(verzeichnis, exist_ok=True)
+        except OSError:
+            return False
+        sperre = self.path + ".lock"
+        try:
+            with _CACHE_LOCK, open(sperre, "a", encoding="utf-8") as sperr_datei:
+                if fcntl is not None:
+                    fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_EX)
+                try:
+                    self._write_locked(eintraege, verzeichnis)
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            # An unwritable cache must not fail the request; the answer is still
+            # correct, it just cannot be reused.
+            return False
+        return True
+
+    def _write_locked(self, entries, verzeichnis):
+        """Merge every given day into the file, then replace it atomically."""
+        eintraege = dict(self._read_all())
+        eintraege.update(entries)
+        eintraege = self._bounded(eintraege)
+        nutzlast = {"entries": eintraege}
+        fd, tmp = tempfile.mkstemp(prefix=".calendar-", suffix=".tmp", dir=verzeichnis)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(nutzlast, fh, ensure_ascii=False, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _bounded(self, eintraege):
+        """Keep the most recently FETCHED dates; drop the oldest beyond the cap."""
+        if len(eintraege) <= self.max_entries:
+            return eintraege
+        geordnet = sorted(
+            eintraege.items(),
+            key=lambda kv: str((kv[1] or {}).get("fetched_at_utc") or ""),
+            reverse=True,
+        )
+        return dict(geordnet[: self.max_entries])
+
+
+def _calendar_targets(days):
+    """``{label: iso}`` (or a plain iterable of iso strings) -> ``{label: date}``.
+
+    Only the PARSED date goes into the URL: the format is rebuilt from a real
+    calendar date, so nothing caller-supplied can reach the query string.
+    """
+    if isinstance(days, dict):
+        paare = list(days.items())
+    else:
+        paare = [(wert, wert) for wert in (days or ())]
+    ziele = {}
+    for label, wert in paare:
+        if not isinstance(wert, str):
+            continue
+        try:
+            tag = date.fromisoformat(wert.strip())
+        except ValueError:
+            continue
+        ziele[str(label)] = tag
+    return ziele
+
+
 class NullEarningsAdapter:
     """The default when no source is configured: says so, invents nothing."""
 
@@ -275,6 +450,10 @@ class NullEarningsAdapter:
         )
         return body
 
+    def get_calendar_days(self, days):
+        """No source configured: an honest "not configured", not an empty day."""
+        return {"days": {}, "state": "not_configured", "error": None}
+
 
 class NasdaqEarningsAdapter:
     """Live Nasdaq query with a bounded, atomic cache (see module docstring)."""
@@ -291,14 +470,23 @@ class NasdaqEarningsAdapter:
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
         cross_check=True,
         cross_check_timeout_seconds=DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS,
+        calendar_store=None,
+        failure_retry_seconds=DEFAULT_FAILURE_RETRY_SECONDS,
     ):
         self._transport = transport or urllib_transport
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self._cache = cache if cache is not None else EarningsCache()
+        self._calendar_store = calendar_store if calendar_store is not None else DayCalendarStore()
         self.ttl_seconds = int(ttl_seconds)
         self.freshness_limit_seconds = int(freshness_limit_seconds)
         self.timeout_seconds = float(timeout_seconds)
         self.cross_check = bool(cross_check)
+        # 0 disables the memory: every page view queries again, as before.
+        self.failure_retry_seconds = max(0, int(failure_retry_seconds))
+        # Last failure per ISO day, PROCESS-LOCAL on purpose - no file, so a
+        # restart asks again immediately instead of inheriting a stale verdict.
+        self._day_failures = {}
+        self._day_failures_lock = threading.Lock()
         # The cross-check is optional (a failure is tolerated), so it must not
         # be able to double the cold-path latency: it gets its own, shorter cap.
         self.cross_check_timeout_seconds = float(cross_check_timeout_seconds)
@@ -480,3 +668,269 @@ class NasdaqEarningsAdapter:
             },
             cache=cache_block,
         )
+
+    # -- day calendar (start page) ----------------------------------------- #
+    def get_calendar_days(self, days):
+        """The three day lists, each served from the file cache when it is fresh.
+
+        Per day the states are:
+
+        * ``live`` - answered by the source now (or a cache entry younger than
+          ``ttl_seconds``, which is the same answer without the query),
+        * ``stale`` - the live query failed, the old rows are served WITH their
+          own timestamp and ``live_query_failed``,
+        * ``unavailable`` - the query failed and there is no cache: no rows.
+
+        A payload without a usable ``data.rows`` list counts as a failure, not
+        as an empty day; a Sunday, by contrast, answers ``rows: null`` WITH an
+        ``asOf`` stamp naming that very day and is the valid empty day the
+        parser accepts (see ``parse_calendar_rows``) - a stamp for another day
+        stays a failure and is never cached as empty. The aggregate state is the
+        worst of the days,
+        and its timestamp is the OLDEST one delivered - the page must never
+        imply a fresher stamp than the data it shows.
+
+        Three clearly separated phases keep that answer deterministic although
+        the queries run side by side:
+
+        (a) one cache read for every requested day,
+        (b) the days WITHOUT a fresh cache are fetched concurrently - done one
+            by one, a dead source cost up to three times ``timeout_seconds``
+            (18 s by default) before the start page could render,
+        (c) assembly in the REQUESTED order, the cache writes bundled into ONE
+            atomic write afterwards - the output never depends on which thread
+            answered first, and three fresh days cost one read-modify-write
+            instead of three.
+
+        Outage memory (why a failure is not retried on every page view)
+        --------------------------------------------------------------
+        A dead source costs the full ``timeout_seconds`` per attempt, and the
+        user reloads the page while it is down. So the last failure per day is
+        remembered for ``failure_retry_seconds``: a day failed that recently is
+        NOT queried again - it answers exactly like the query that just failed
+        (``stale`` with the old rows, or ``unavailable`` with no rows), but with
+        ``error.code="recent_failure"`` and without touching the transport. That
+        bounds the cost of a reload to the cached answer while recovery becomes
+        visible again after at most ``failure_retry_seconds``.
+
+        The memory is per PROCESS: nothing is written to the cache file, so a
+        restart asks the source again at once instead of inheriting a verdict
+        nobody can date. A successful query (or a day that is simply not
+        failed) clears the entry; ``invalid_payload`` counts as a failure
+        because it is an outage, not an empty day.
+        """
+        jetzt = _utc_now(self._now_fn)
+        ziele = _calendar_targets(days)
+        if not ziele:
+            return {
+                "days": {},
+                "state": "unavailable",
+                "fetched_at_utc": None,
+                "error": {"code": "no_dates", "message": "no calendar dates were requested", "http_status": None},
+            }
+
+        # Duplicate dates are one day (labels may repeat): the result is keyed
+        # by date, so fetching twice would only duplicate the query.
+        iso_tage = list(dict.fromkeys(tag.isoformat() for tag in ziele.values()))
+
+        # (a) cache: one read, then age each day against the injected clock.
+        gespeicherte = self._calendar_store.get_many(iso_tage)
+        frisch = {}
+        zu_holen = []
+        gesperrt = {}
+        for iso in iso_tage:
+            eintrag = gespeicherte.get(iso)
+            alter = self._age_seconds(eintrag, jetzt)
+            if eintrag is not None and alter is not None and 0 <= alter < self.ttl_seconds:
+                frisch[iso] = eintrag
+                continue
+            # A day that failed moments ago is not asked again; it answers like
+            # the failed query instead of paying the timeout a second time.
+            fehler = self._recent_failure(iso, jetzt)
+            if fehler is not None:
+                gesperrt[iso] = fehler
+            else:
+                zu_holen.append(iso)
+
+        # (b) source: only the missing days, all in flight together.
+        abrufe = self._fetch_days(zu_holen)
+
+        # (c) assembly in the requested order.
+        geliefert = {}
+        stempel = []
+        zustaende = []
+        zu_speichern = {}
+        for iso in iso_tage:
+            gespeichert = gespeicherte.get(iso)
+            if iso in frisch:
+                geliefert[iso] = self._day_entry(frisch[iso], state="live", from_cache=True)
+                stempel.append(geliefert[iso]["fetched_at_utc"])
+                zustaende.append("live")
+                continue
+
+            # A blocked day has no query result; the memory stands in for it, so
+            # both cases end in the same "failed" answer below.
+            if iso in gesperrt:
+                fehler = gesperrt[iso]
+            else:
+                fehler = abrufe[iso].get("error")
+                if fehler is not None:
+                    self._remember_failure(iso, jetzt)
+                else:
+                    self._forget_failure(iso)
+
+            if fehler is not None:
+                if gespeichert is not None:
+                    geliefert[iso] = self._day_entry(gespeichert, state="stale", from_cache=True, error=fehler)
+                    stempel.append(geliefert[iso]["fetched_at_utc"])
+                    zustaende.append("stale")
+                else:
+                    geliefert[iso] = {
+                        "date": iso,
+                        "rows": [],
+                        "state": "unavailable",
+                        "fetched_at_utc": None,
+                        "payload_ok": False,
+                        "skipped": 0,
+                        "from_cache": False,
+                        "live_query_failed": True,
+                        "error": fehler.as_dict(),
+                    }
+                    zustaende.append("unavailable")
+                continue
+
+            geparst = abrufe[iso]["parsed"]
+            eintrag = {
+                "date": iso,
+                "rows": geparst["rows"],
+                "fetched_at_utc": _iso(jetzt),
+                "state": "live",
+                "payload_ok": True,
+                "skipped": geparst["skipped"],
+            }
+            zu_speichern[iso] = eintrag
+            geliefert[iso] = dict(eintrag, from_cache=False, live_query_failed=False)
+            stempel.append(eintrag["fetched_at_utc"])
+            zustaende.append("live")
+
+        # (d) cache writes: one bundled write instead of one per day. Three
+        # separate ``put`` calls meant three read-modify-writes including three
+        # fsyncs for a single page view; the stored rows are identical, only
+        # the cost changes. ``persisted`` stays per day and is only True when
+        # that one write really landed.
+        geschrieben = self._calendar_store.put_many(zu_speichern)
+        for iso in zu_speichern:
+            geliefert[iso]["persisted"] = bool(geschrieben)
+
+        rang = {"live": 0, "stale": 1, "unavailable": 2}
+        gesamt = max(zustaende, key=lambda z: rang.get(z, 2))
+        return {
+            "days": geliefert,
+            "state": gesamt,
+            "fetched_at_utc": min(stempel) if stempel else None,
+        }
+
+    def _fetch_days(self, tage):
+        """``{iso: {"parsed": ...} | {"error": exc}}``, fetched side by side.
+
+        Only the days without a fresh cache are submitted, one worker each -
+        so a cold start page waits for the slowest day instead of their sum.
+        Every worker keeps the old per-day contract: a failed query and a
+        payload without a rows list are the same ``EarningsSourceError``.
+        """
+        if not tage:
+            return {}
+        ergebnisse = {}
+        with ThreadPoolExecutor(max_workers=len(tage)) as pool:
+            futures = [(iso, pool.submit(self._fetch_day, iso)) for iso in tage]
+            for iso, future in futures:
+                ergebnisse[iso] = future.result()
+        return ergebnisse
+
+    def _fetch_day(self, iso):
+        """One live day query, normalised - deliberately writes no cache.
+
+        Cache writes stay in the assembling phase, so they keep happening in
+        the requested order and the store's read-modify-write is never hit by
+        several workers at once.
+        """
+        try:
+            payload = self._get_json(CALENDAR_URL.format(date=iso))
+            geparst = parse_calendar_rows(payload, iso)
+            if not geparst["payload_ok"]:
+                # The answer arrived but carries no rows list: an outage,
+                # not a day without earnings.
+                raise EarningsSourceError("invalid_payload", "the calendar answer carries no rows list")
+        except EarningsSourceError as exc:
+            return {"error": exc}
+        return {"parsed": geparst}
+
+    # -- outage memory ------------------------------------------------------ #
+    def _recent_failure(self, iso, jetzt):
+        """The ``recent_failure`` error that blocks ``iso``, or ``None``.
+
+        A failure younger than ``failure_retry_seconds`` stands in for the query
+        that just failed, so a reload costs no transport call. The bound is
+        two-sided on purpose: a stamp from the FUTURE (clock moved backwards) is
+        not trusted to block anything - the same rule the cache applies to an
+        entry from the future - so a wrong clock can delay a query, never
+        suppress it indefinitely.
+        """
+        with self._day_failures_lock:
+            stempel = self._day_failures.get(iso)
+        if stempel is None:
+            return None
+        alter = (jetzt - stempel).total_seconds()
+        if not 0 <= alter < self.failure_retry_seconds:
+            return None
+        return EarningsSourceError(
+            "recent_failure",
+            f"the last query for {iso} failed {int(alter)} s ago; it is retried after at most "
+            f"{self.failure_retry_seconds} s",
+        )
+
+    def _remember_failure(self, iso, jetzt):
+        """Record ``jetzt`` as the day's last failure.
+
+        Memories that already left the retry window are dropped on the way, so
+        the dict holds at most one live entry per recently failed day and cannot
+        grow for the whole process lifetime.
+        """
+        with self._day_failures_lock:
+            self._day_failures[iso] = jetzt
+            for tag, stempel in list(self._day_failures.items()):
+                if (jetzt - stempel).total_seconds() >= self.failure_retry_seconds:
+                    del self._day_failures[tag]
+
+    def _forget_failure(self, iso):
+        """A successful query proves the source is back for that day."""
+        with self._day_failures_lock:
+            self._day_failures.pop(iso, None)
+
+    @staticmethod
+    def _age_seconds(eintrag, jetzt):
+        """The stored entry's age in seconds, or ``None`` when it cannot be aged."""
+        if eintrag is None:
+            return None
+        try:
+            geprueft = datetime.strptime(eintrag["fetched_at_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        except (KeyError, TypeError, ValueError):        # pragma: no cover - the store validates it
+            return None
+        return (jetzt - geprueft).total_seconds()
+
+    @staticmethod
+    def _day_entry(eintrag, *, state, from_cache, error=None):
+        """A stored day, labelled with its own timestamp - never as a live check."""
+        aus = {
+            "date": eintrag.get("date"),
+            "rows": list(eintrag.get("rows") or []),
+            "state": state,
+            "fetched_at_utc": eintrag.get("fetched_at_utc"),
+            "payload_ok": bool(eintrag.get("payload_ok", True)),
+            "skipped": int(eintrag.get("skipped") or 0),
+            "from_cache": from_cache,
+            "live_query_failed": error is not None,
+        }
+        if error is not None:
+            aus["error"] = error.as_dict()
+        return aus

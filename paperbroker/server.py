@@ -20,6 +20,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import arrow
@@ -34,6 +35,12 @@ from .earnings_calendar import (
     SESSION_AFTER,
     SESSION_BEFORE,
     combine_earnings_and_expirations,
+)
+from .earnings_day_calendar import (
+    DAY_NEXT,
+    DAY_PREV,
+    DAY_TODAY,
+    build_calendar,
 )
 from .eva_quality import assess_source_quality, snapshot_identity
 from .PaperBroker import PaperBroker
@@ -92,7 +99,7 @@ _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
                     + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
-_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type")
+_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type", "no_calendar")
 
 
 def _parse_criteria_value(field, raw):
@@ -171,7 +178,26 @@ def _criteria_echo(criteria):
 
 
 _SESSION_TEXT = {SESSION_BEFORE: "vorbörslich", SESSION_AFTER: "nachbörslich"}
+_SESSION_UNKNOWN_TEXT = "Zeitpunkt unbekannt"
 _CONFIRMATION_TEXT = {CONFIRMATION_CONFIRMED: "bestätigt", CONFIRMATION_ESTIMATED: "geschätzt"}
+_CALENDAR_DAY_LABEL = {DAY_PREV: "gestern", DAY_TODAY: "heute", DAY_NEXT: "morgen"}
+
+
+def _german_date(iso_text):
+    """``2026-11-08`` -> ``08.11.2026``; an unusable value stays ``None``."""
+    try:
+        return datetime.strptime(str(iso_text), "%Y-%m-%d").strftime("%d.%m.%Y")
+    except (TypeError, ValueError):
+        return None
+
+
+def _german_stamp(iso_text):
+    """``2026-11-08T06:00:00Z`` -> ``08.11.2026 06:00 UTC`` (source stamp, no guess)."""
+    try:
+        wert = datetime.strptime(str(iso_text), "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return None
+    return wert.strftime("%d.%m.%Y %H:%M UTC")
 
 
 def _earnings_source_from_env():
@@ -644,10 +670,126 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             "checked_live": cache.get("state") == "live",
         }
 
+    def _calendar_view():
+        """Yesterday/today/tomorrow for the start page - degrades, never raises.
+
+        The three days are US calendar dates, because the calendar is a US one
+        (a German date would shift the whole block by the night offset). Every
+        failure mode ends in a dict the template can render: a missing source
+        is a plain sentence, not an exception and not an empty day pretending
+        there is nothing to report.
+
+        Each group therefore carries the answer state the adapter reported
+        (``unavailable``: no content, ``stale``: last known rows) so the page
+        can tell "nobody could ask" apart from "the source answered: nothing
+        on that day". The header note names one failure per sentence, which is
+        the only way a single failed day stays visible while its two siblings
+        are live.
+        """
+        try:
+            heute = _us_today(now_fn)
+            tage = {
+                DAY_PREV: (heute - timedelta(days=1)).isoformat(),
+                DAY_TODAY: heute.isoformat(),
+                DAY_NEXT: (heute + timedelta(days=1)).isoformat(),
+            }
+            antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
+            roh = antwort.get("days") if isinstance(antwort, dict) else None
+            roh = roh if isinstance(roh, dict) else {}
+            tagesdaten = {}
+            for key, tag in tage.items():
+                eintrag = roh.get(tag)
+                if not isinstance(eintrag, dict):
+                    # No entry for this day: the group stays empty and says so.
+                    eintrag = {"date": tag, "rows": [], "payload_ok": False, "skipped": 0}
+                tagesdaten[key] = eintrag
+
+            # Per-day answer state, taken from the adapter's own labelling and
+            # never inferred from "the rows are empty": a live day may honestly
+            # list nothing (a weekend answers `rows: null` with its own date
+            # stamp), while an unavailable one has no content at all. A day the
+            # answer does not mention is unavailable too - an absent answer is
+            # no answer, so the page must not read it as an empty day.
+            tageszustand = {}
+            for key, tag in tage.items():
+                meldung = roh.get(tag)
+                gemeldet = meldung.get("state") if isinstance(meldung, dict) else None
+                tageszustand[key] = gemeldet if gemeldet in ("live", "stale") else "unavailable"
+
+            kalender = build_calendar(tagesdaten)
+            gruppen = []
+            for gruppe in kalender["groups"]:
+                zeilen = [dict(zeile, session_text=_SESSION_TEXT.get(zeile.get("session"), _SESSION_UNKNOWN_TEXT))
+                          for zeile in gruppe["rows"]]
+                zustand = tageszustand.get(gruppe["key"], "unavailable")
+                gruppen.append(dict(
+                    gruppe,
+                    rows=zeilen,
+                    label=_CALENDAR_DAY_LABEL.get(gruppe["key"], ""),
+                    date_text=_german_date(gruppe["date"]),
+                    counter=f"{len(zeilen)} von {gruppe['total']}",
+                    unavailable=zustand == "unavailable",
+                    stale=zustand == "stale",
+                ))
+
+            state = str(antwort.get("state") or "unavailable")
+            zustaende = list(tageszustand.values())
+            vorhanden = any(z in ("live", "stale") for z in zustaende)
+            ausgefallen = sum(1 for z in zustaende if z == "unavailable")
+            letzter_stand = "stale" in zustaende or state == "stale"
+            if state == "not_configured":
+                note = "keine Earnings-Quelle konfiguriert"
+            else:
+                # One sentence per failure mode, because a partial outage and a
+                # stale answer are different promises: the first says a day is
+                # missing, the second says what is shown is old. "Nothing was
+                # answered at all" stays the block-wide sentence - it is the
+                # honest wording for three missing days, and it keeps the
+                # weekend's two empty-but-answered days free of any warning.
+                saetze = []
+                if not vorhanden:
+                    saetze.append("Quelle antwortet nicht")
+                elif ausgefallen == 1:
+                    saetze.append("ein Tag konnte nicht abgerufen werden")
+                elif ausgefallen:
+                    saetze.append(f"{ausgefallen} Tage konnten nicht abgerufen werden")
+                if letzter_stand:
+                    saetze.append("letzter Stand, Quelle antwortet nicht")
+                note = " · ".join(saetze) or None
+
+            return {
+                "available": bool(vorhanden),
+                # Groups are rendered unless no source is configured at all: a
+                # failed day must stay a visible, labelled day instead of a
+                # column the page silently drops - and a not-configured source
+                # is a setup fact, not three outages.
+                "show_groups": bool(gruppen) and state != "not_configured",
+                "state": state,
+                "note": note,
+                "stand": _german_stamp(antwort.get("fetched_at_utc")),
+                "groups": gruppen,
+            }
+        except Exception:                                    # noqa: BLE001 - page must render
+            app.logger.exception("earnings calendar view failed")
+            return {
+                "available": False,
+                "state": "unavailable",
+                "note": "Quelle nicht lesbar - Details im Server-Log.",
+                "stand": None,
+                "groups": [],
+            }
+
     @app.get("/")
     def index():
         ticker = request.args.get("ticker", "").upper().strip()
         expiration = request.args.get("expiration", "").strip()
+        # The calendar is decoration: its adapter call must never break the
+        # screener. `?no_calendar` is the escape hatch for tests and bookmarks
+        # that only need the form. It acts by its PRESENCE - any value,
+        # including the empty one a bare `?no_calendar` produces, means "off".
+        # A truthiness test would read that empty spelling as "on" and spend
+        # the three queries the caller just declined.
+        calendar = None if "no_calendar" in request.args else _calendar_view()
         error = None
         hint = None
         results = dropped = dates = selectable = quotes = None
@@ -758,6 +900,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             dte=dte,
             trend=_trend_display(ticker) if ticker else None,
             earnings=earnings_view,
+            calendar=calendar,
             feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit")
 
     return app
