@@ -11,10 +11,13 @@ import arrow
 from paperbroker.assets import asset_factory
 from paperbroker.quotes import OptionQuote
 from paperbroker.screener import (
+    BEAR_PUT_DEBIT,
+    BULL_CALL_DEBIT,
     OptionScreener,
     ScreenerCriteria,
     ScreenResult,
     TrendSignal,
+    VerticalPair,
     filter_data_complete,
     filter_dte,
     filter_iv,
@@ -23,7 +26,9 @@ from paperbroker.screener import (
     filter_stale,
     filter_volume,
     form_vertical_pairs,
+    resolve_strategy,
     screen,
+    strategy_of_legs,
     vertical_spreads,
 )
 
@@ -1586,6 +1591,148 @@ class TestThePositionFieldsAreValidated(unittest.TestCase):
         mit = ScreenerCriteria(max_spread_pct=100.0, multiplier=100, quantity=1,
                                fees=0.0)
         self.assertIsInstance(pair.position_debit(mit), float)
+
+
+class TheStrategyNamesTheTrade(unittest.TestCase):
+    """L: bull_call_debit und bear_put_debit sind die Kennungen, die Rechnung,
+    Seite und JSON zusammenhalten.
+
+    Die Kette traegt dieselben zwei Strikes als Calls UND als Puts, damit jedes
+    Vorzeichen von Hand nachrechenbar ist und ein Fehler nicht als "plausible
+    Zahl" durchgeht:
+
+      Bull Call: long C100 ask 2.50 / short C105 bid 1.00 -> Debit 1.50,
+                 Breite 5.00, max Gewinn 3.50, Break-even 101.50, max Verlust 1.50
+      Bear Put:  long P105 ask 2.60 / short P100 bid 1.00 -> Debit 1.60,
+                 Breite 5.00, max Gewinn 3.40, Break-even 103.40, max Verlust 1.60
+    """
+
+    @staticmethod
+    def _kette():
+        return [
+            quote("SPY261016C00100000", bid=2.40, ask=2.50, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016C00105000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016P00100000", bid=1.00, ask=1.20, iv=30.0, oi=1500, volume=300),
+            quote("SPY261016P00105000", bid=2.40, ask=2.60, iv=30.0, oi=1500, volume=300),
+        ]
+
+    # --- die Auflösungsregel -------------------------------------------------
+
+    def test_the_default_is_the_bull_call(self):
+        self.assertEqual(resolve_strategy(), (BULL_CALL_DEBIT, None, None))
+        form_vertical_pairs_default = form_vertical_pairs(self._kette())
+        self.assertEqual([p.strategy_id for p in form_vertical_pairs_default],
+                         [BULL_CALL_DEBIT])
+
+    def test_the_legacy_side_maps_one_to_one(self):
+        self.assertEqual(resolve_strategy(option_type="call"), (BULL_CALL_DEBIT, None, None))
+        self.assertEqual(resolve_strategy(option_type="put"), (BEAR_PUT_DEBIT, None, None))
+
+    def test_a_matching_pair_of_parameters_is_accepted(self):
+        for strategie, seite in ((BULL_CALL_DEBIT, "call"), (BEAR_PUT_DEBIT, "put")):
+            self.assertEqual(resolve_strategy(strategie, seite), (strategie, None, None))
+
+    def test_a_contradiction_is_an_error_naming_both_sides(self):
+        strategie, code, text = resolve_strategy(BEAR_PUT_DEBIT, "call")
+        self.assertIsNone(strategie)
+        self.assertEqual(code, "conflict")
+        assert text is not None
+        self.assertIn("bear_put_debit", text)
+        self.assertIn("option_type=put", text)
+        self.assertIn("option_type=call", text)
+
+    def test_an_unknown_value_is_an_error_and_never_a_fallback(self):
+        strategie, code, text = resolve_strategy("bogus")
+        self.assertIsNone(strategie)
+        self.assertEqual(code, "unknown_strategy")
+        assert text is not None
+        self.assertIn("bull_call_debit", text)
+        self.assertIn("bear_put_debit", text)
+        strategie, code, text = resolve_strategy(option_type="bogus")
+        self.assertIsNone(strategie)
+        self.assertEqual(code, "unknown_option_type")
+        self.assertEqual(text, "Ungültige Spread-Art - erlaubt sind Calls oder Puts.")
+
+    def test_the_id_is_read_case_and_space_insensitive(self):
+        self.assertEqual(resolve_strategy(" Bear_Put_Debit ")[0], BEAR_PUT_DEBIT)
+
+    # --- die Kennung entscheidet Kaufbein, Richtung und Zahlen ---------------
+
+    def test_the_bull_call_buys_the_lower_strike_and_breaks_even_above_it(self):
+        paar = form_vertical_pairs(self._kette(), strategy=BULL_CALL_DEBIT)[0]
+        self.assertEqual(paar.strategy_id, BULL_CALL_DEBIT)
+        self.assertEqual((paar.long.asset.strike, paar.short.asset.strike), (100.0, 105.0))
+        self.assertEqual(paar.net_debit, 1.50)
+        self.assertEqual(paar.max_loss, 1.50)
+        self.assertEqual(paar.strike_width, 5.00)
+        self.assertEqual(paar.max_profit, 3.50)
+        self.assertEqual(paar.breakeven, 101.50)
+        self.assertEqual(paar.breakeven, paar.long.asset.strike + paar.net_debit)
+
+    def test_the_bear_put_buys_the_higher_strike_and_breaks_even_below_it(self):
+        paar = form_vertical_pairs(self._kette(), strategy=BEAR_PUT_DEBIT)[0]
+        self.assertEqual(paar.strategy_id, BEAR_PUT_DEBIT)
+        self.assertEqual((paar.long.asset.strike, paar.short.asset.strike), (105.0, 100.0))
+        self.assertEqual(paar.net_debit, 1.60)
+        self.assertEqual(paar.max_loss, 1.60)
+        self.assertEqual(paar.strike_width, 5.00)
+        self.assertEqual(paar.max_profit, 3.40)
+        self.assertEqual(paar.breakeven, 103.40)
+        self.assertEqual(paar.breakeven, paar.long.asset.strike - paar.net_debit)
+
+    def test_both_strategies_agree_on_width_and_differ_in_direction(self):
+        """Die Breite ist für beide dieselbe Distanz; nur der Break-even
+        wechselt die Seite - genau das war unter "Calls/Puts" nicht sichtbar.
+        """
+        bull = form_vertical_pairs(self._kette(), strategy=BULL_CALL_DEBIT)[0]
+        baer = form_vertical_pairs(self._kette(), strategy=BEAR_PUT_DEBIT)[0]
+        self.assertEqual(bull.strike_width, baer.strike_width)
+        self.assertGreater(bull.breakeven, bull.long.asset.strike)
+        self.assertLess(baer.breakeven, baer.long.asset.strike)
+
+    def test_the_json_carries_the_strategy_and_its_label(self):
+        for strategie, label, long_symbol, short_symbol in (
+                (BULL_CALL_DEBIT, "Bull Call Spread (Debit)",
+                 "SPY261016C00100000", "SPY261016C00105000"),
+                (BEAR_PUT_DEBIT, "Bear Put Spread (Debit)",
+                 "SPY261016P00105000", "SPY261016P00100000")):
+            d = form_vertical_pairs(self._kette(), strategy=strategie)[0].as_dict()
+            self.assertEqual(d["strategy"], strategie)
+            self.assertEqual(d["strategy_label"], label)
+            # long_symbol ist das GEKAUFTE Bein - die einzige Lesart, die die
+            # Seite und das JSON teilen
+            self.assertEqual((d["long_symbol"], d["short_symbol"]),
+                             (long_symbol, short_symbol))
+
+    # --- die Kennung reist durch die Filterkette ------------------------------
+
+    def test_vertical_spreads_takes_the_strategy_and_matches_the_legacy_side(self):
+        for strategie, seite in ((BULL_CALL_DEBIT, "call"), (BEAR_PUT_DEBIT, "put")):
+            neu, _ = vertical_spreads(self._kette(), _LOOSE, strategy=strategie, now_fn=_NOW)
+            alt, _ = vertical_spreads(self._kette(), _LOOSE, option_type=seite, now_fn=_NOW)
+            self.assertEqual([p.symbol for p in neu], [p.symbol for p in alt])
+            self.assertEqual([p.strategy_id for p in neu], [strategie])
+
+    def test_a_contradicting_request_raises_instead_of_choosing(self):
+        with self.assertRaises(ValueError):
+            vertical_spreads(self._kette(), _LOOSE, strategy=BEAR_PUT_DEBIT,
+                             option_type="call", now_fn=_NOW)
+        with self.assertRaises(ValueError):
+            form_vertical_pairs(self._kette(), strategy=BEAR_PUT_DEBIT, option_type="call")
+
+    # --- die Beine selbst benennen die Strategie ----------------------------
+
+    def test_the_legs_alone_name_the_strategy(self):
+        bull = form_vertical_pairs(self._kette(), strategy=BULL_CALL_DEBIT)[0]
+        baer = form_vertical_pairs(self._kette(), strategy=BEAR_PUT_DEBIT)[0]
+        self.assertEqual(strategy_of_legs(bull.long, bull.short), BULL_CALL_DEBIT)
+        self.assertEqual(strategy_of_legs(baer.long, baer.short), BEAR_PUT_DEBIT)
+        # ein Call, der am HOEHEREN Strike gekauft wird, ist ein Bear-Call-Credit -
+        # nicht eine der beiden Strategien dieses Moduls
+        self.assertIsNone(strategy_of_legs(bull.short, bull.long))
+        # und ein handgebautes Paar ohne Kennung liest sie aus den Beinen
+        self.assertEqual(VerticalPair(long=baer.long, short=baer.short).strategy_id,
+                         BEAR_PUT_DEBIT)
 
 
 if __name__ == "__main__":

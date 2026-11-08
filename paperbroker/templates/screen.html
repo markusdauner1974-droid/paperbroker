@@ -357,12 +357,12 @@
       <label>Gewicht OI · Standard 0.3 <input type="number" step="0.1" name="weight_oi" min="0" value="{{ request.args.get('weight_oi') or (criteria.weight_oi if criteria.weight_oi is not none else '') }}"></label>
       <label>Gewicht IV · Standard 0.2 <input type="number" step="0.1" name="weight_iv" min="0" value="{{ request.args.get('weight_iv') or (criteria.weight_iv if criteria.weight_iv is not none else '') }}"></label>
     </fieldset>
-    {# D12: position size is its own question - the pair numbers above stay per unit. #}
-    {# D14: which side of the chain - the calculation has taken option_type since D12. #}
+    {# L: die Wahl ist die STRATEGIE, nicht eine Kettenseite - der Name sagt, welches
+       Bein gekauft wird. option_type bleibt als alte Adresse gueltig (siehe server.py). #}
     <fieldset class="crit">
-      <legend>Spreads</legend>
-      <label><input type="radio" name="option_type" value="call" {% if spread_type != 'put' %}checked{% endif %}> Calls (Standard)</label>
-      <label><input type="radio" name="option_type" value="put" {% if spread_type == 'put' %}checked{% endif %}> Puts</label>
+      <legend>Strategie</legend>
+      <label><input type="radio" name="strategy" value="bull_call_debit" {% if strategy == 'bull_call_debit' %}checked{% endif %}> Bull Call Spread (Debit) — Call kaufen (niedriger Strike), Call verkaufen (höherer Strike)</label>
+      <label><input type="radio" name="strategy" value="bear_put_debit" {% if strategy == 'bear_put_debit' %}checked{% endif %}> Bear Put Spread (Debit) — Put kaufen (höherer Strike), Put verkaufen (niedrigerer Strike)</label>
     </fieldset>
     <fieldset class="crit">
       <legend>Position</legend>
@@ -434,10 +434,11 @@
       {% if feed_time %}<span>Kursdatum {{ feed_time }}</span>{% endif %}
     </div>
     {% if verticals %}
-      <h2>Vertikale {{ 'Put' if spread_type == 'put' else 'Call' }}-Spreads</h2>
-      <p class="note">Dieselben Filter wie die Liste oben, auf beide Beine angewandt - ein
-        Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer. Debit = Kauf zum Ask,
-        Verkauf zum Bid.</p>
+      <h2>{{ strategy_label or 'Spreads' }}</h2>
+      <p class="note">Die gewählte Strategie: {{ strategy_buy }}, {{ strategy_sell }}. Der Basiswert
+        muss {{ strategy_direction }} laufen. Dieselben Filter wie die Liste oben, auf beide Beine
+        angewandt - ein Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer.
+        Debit = Kauf zum Ask, Verkauf zum Bid.</p>
       <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads. Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert. Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung, in die der Basiswert laufen muss (↑ steigen für Calls, ↓ fallen für Puts).</p>
       <p class="note">Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl
         und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
@@ -447,7 +448,7 @@
         </tr></thead>
         {% for v, rendite, abstand in verticals %}
           <tr>
-            <td title="{{ v.long.asset.symbol }} / {{ v.short.asset.symbol }}">{{ v.long.asset.underlying.symbol }} {{ '%.2f'|format(v.long.asset.strike) }} / {{ '%.2f'|format(v.short.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }}</td>
+            <td title="Kauf {{ v.long.asset.symbol }} · Verkauf {{ v.short.asset.symbol }}">{{ v.long.asset.underlying.symbol }} {{ '%.2f'|format(v.long.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }} kaufen / {{ '%.2f'|format(v.short.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }} verkaufen</td>
             <td>{{ v.expiration }}</td>
             <td>{{ '%.2f'|format(v.strike_width) }}</td>
             <td>{{ '%.2f'|format(v.net_debit) }}</td>

@@ -531,12 +531,110 @@ class OptionScreener:
 
 
 
+# ---------------------------------------------------------------------- #
+# Slice L: the strategy is named, not implied by a side of the chain.
+#
+# "Calls" or "Puts" names a SIDE of the chain, not a trade: it does not say
+# which leg is bought, and a reader had to know the convention to see the
+# direction. The two debit spreads this module builds now carry a stable id
+# that decides the leg order AND every derived number. `option_type` stays as
+# the legacy alias for old links and API calls - one side maps to exactly one
+# strategy, so nothing that worked before changes meaning.
+# ---------------------------------------------------------------------- #
+
+BULL_CALL_DEBIT = "bull_call_debit"
+BEAR_PUT_DEBIT = "bear_put_debit"
+
+#: The stable ids, in the order the form offers them.
+STRATEGY_IDS = (BULL_CALL_DEBIT, BEAR_PUT_DEBIT)
+
+STRATEGIES = {
+    BULL_CALL_DEBIT: {
+        "option_type": "call",
+        "label": "Bull Call Spread (Debit)",
+        "buy": "Call mit dem niedrigeren Strike kaufen",
+        "sell": "Call mit dem höheren Strike verkaufen",
+        "direction": "steigend",
+    },
+    BEAR_PUT_DEBIT: {
+        "option_type": "put",
+        "label": "Bear Put Spread (Debit)",
+        "buy": "Put mit dem höheren Strike kaufen",
+        "sell": "Put mit dem niedrigeren Strike verkaufen",
+        "direction": "fallend",
+    },
+}
+
+#: Legacy spelling -> strategy. `?option_type=call` always meant the call debit
+#: spread, and that meaning is what it keeps.
+LEGACY_OPTION_TYPES = {"call": BULL_CALL_DEBIT, "put": BEAR_PUT_DEBIT}
+
+DEFAULT_STRATEGY = BULL_CALL_DEBIT
+
+
+def strategy_option_type(strategy):
+    """The chain side a strategy trades on; None for an id this module does not know."""
+    spec = STRATEGIES.get(strategy)
+    return None if spec is None else spec["option_type"]
+
+
+def resolve_strategy(strategy=None, option_type=None):
+    """(strategy, error_code, error_text) from the new id and/or the legacy side.
+
+    The rule for a request that names BOTH (documented in README.md and
+    docs/267_slice_L_strategy_selection.md):
+
+      * only `strategy`      -> used as sent;
+      * only `option_type`   -> mapped one-to-one (call -> bull call, put -> bear put);
+      * both, consistent     -> the strategy wins, the side is only its alias;
+      * both, contradicting  -> error. Never a silent choice: a caller that asks
+        for a bear put on the call side gets neither.
+
+    An unknown value is an error too, never a fallback - the caller named
+    something this code cannot compute.
+    """
+    neu = (strategy or "").strip().lower() or None
+    alt = (option_type or "").strip().lower() or None
+    if neu is not None and neu not in STRATEGIES:
+        erlaubt = " und ".join(f"{kennung} ({STRATEGIES[kennung]['label']})"
+                               for kennung in STRATEGY_IDS)
+        return None, "unknown_strategy", f"Ungültige Strategie - erlaubt sind {erlaubt}."
+    if alt is not None and alt not in LEGACY_OPTION_TYPES:
+        return None, "unknown_option_type", "Ungültige Spread-Art - erlaubt sind Calls oder Puts."
+    aus_alt = None if alt is None else LEGACY_OPTION_TYPES[alt]
+    if neu is None:
+        return (aus_alt or DEFAULT_STRATEGY), None, None
+    if aus_alt is not None and aus_alt != neu:
+        return None, "conflict", (
+            f"Widerspruch: {neu} gehört zu option_type="
+            f"{STRATEGIES[neu]['option_type']}, angegeben war option_type={alt}. "
+            f"Bitte nur einen der beiden Parameter setzen.")
+    return neu, None, None
+
+
+def strategy_of_legs(long, short):
+    """Which named strategy two legs actually form, read from the legs alone.
+
+    None for a combination this module does not name (a call bought at the
+    HIGHER strike is a bear call credit spread - not one of ours).
+    """
+    typ = getattr(long.asset, "option_type", None)
+    if typ != getattr(short.asset, "option_type", None):
+        return None
+    if typ == "call" and long.asset.strike < short.asset.strike:
+        return BULL_CALL_DEBIT
+    if typ == "put" and long.asset.strike > short.asset.strike:
+        return BEAR_PUT_DEBIT
+    return None
+
+
 @dataclass
 class VerticalPair:
     """One vertical spread in its trade direction: long is the leg that is bought.
 
-    A call debit spread buys the LOWER strike, a put debit spread buys the HIGHER one;
-    the builder decides which leg lands in `long`, and every derived number follows it.
+    `strategy` is the id the builder was asked for; it decides the leg order and
+    the sign of every derived number. A hand-built pair without it falls back to
+    the legs themselves (`strategy_of_legs`).
 
     Every derived number comes from ONE rounded debit, so the page and the
     JSON cannot drift apart: 5.1 - 2.4 is 2.6999999999999997 in binary
@@ -545,6 +643,19 @@ class VerticalPair:
 
     long: OptionQuote
     short: OptionQuote
+    strategy: str | None = None
+
+    @property
+    def strategy_id(self):
+        """The named strategy of this pair - the builder's id, else read off the legs."""
+        if self.strategy in STRATEGIES:
+            return self.strategy
+        return strategy_of_legs(self.long, self.short)
+
+    @property
+    def strategy_label(self):
+        kennung = self.strategy_id
+        return None if kennung is None else STRATEGIES[kennung]["label"]
 
     @property
     def symbol(self):
@@ -580,9 +691,11 @@ class VerticalPair:
 
     @property
     def breakeven(self):
-        # D12: a call debit spread breaks even at lower + debit, a put debit spread at
-        # higher - debit. The long leg carries the direction, the sign follows from it.
-        if getattr(self.long.asset, "option_type", "call") == "put":
+        # D12/L: the strategy decides the sign. A bull call breaks even ABOVE the
+        # bought (lower) strike, a bear put BELOW the bought (higher) one. Read
+        # from the strategy - not from the option type - so the number follows the
+        # trade that is actually being priced.
+        if self.strategy_id == BEAR_PUT_DEBIT:
             return round(self.long.asset.strike - self.net_debit, 2)
         return round(self.long.asset.strike + self.net_debit, 2)
 
@@ -631,7 +744,7 @@ class VerticalPair:
             return None
         menge, gebuehren = k
         je_einheit = gebuehren / menge
-        if getattr(self.long.asset, "option_type", "call") == "put":
+        if self.strategy_id == BEAR_PUT_DEBIT:
             return round(self.long.asset.strike - self.net_debit - je_einheit, 2)
         return round(self.long.asset.strike + self.net_debit + je_einheit, 2)
 
@@ -665,6 +778,9 @@ class VerticalPair:
         """The JSON shape - built from the same attributes the page reads."""
         return {
             "symbol": self.symbol,
+            # L: the trade this row is, named. `long_symbol` is the leg that is BOUGHT.
+            "strategy": self.strategy_id,
+            "strategy_label": self.strategy_label,
             "expiration": self.expiration,
             "long_symbol": self.long.asset.symbol,
             "short_symbol": self.short.asset.symbol,
@@ -694,14 +810,22 @@ class VerticalPair:
         }
 
 
-def form_vertical_pairs(chain, option_type="call", max_width=None):
-    """Adjacent-strike pairs per (underlying, expiration) from the RAW chain.
+def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None):
+    """Adjacent-strike pairs of ONE named strategy from the RAW chain.
+
+    `option_type` is the legacy alias: "put" is the bear put and "call" the bull
+    call. A request that names both must be consistent, otherwise ValueError -
+    the same rule the web layer applies to the query string.
 
     The iteration order IS the output order: groups ascending by
     (underlying, expiration, option_type), strikes ascending inside a group.
     Nothing is sorted afterwards, so the order is reproducible without any
     scoring rule.
     """
+    strategy, _code, error = resolve_strategy(strategy, option_type)
+    if error:
+        raise ValueError(error)
+    option_type = strategy_option_type(strategy)
     groups = {}
     for quote in chain or []:
         asset = getattr(quote, "asset", None)
@@ -712,12 +836,12 @@ def form_vertical_pairs(chain, option_type="call", max_width=None):
                option_type)
         groups.setdefault(key, []).append(quote)
     def _paar(lower, upper):
-        # D12: the pair order IS the trade direction. A call debit spread buys the LOWER
-        # strike, a put debit spread buys the HIGHER one - the comment above has said so
-        # all along, the code did not do it.
-        if option_type == "put":
-            return VerticalPair(long=upper, short=lower)
-        return VerticalPair(long=lower, short=upper)
+        # D12/L: the strategy IS the trade direction. A bull call buys the LOWER
+        # strike, a bear put buys the HIGHER one - the pair is handed the id it
+        # was built for, so its numbers cannot drift to the other direction.
+        if strategy == BEAR_PUT_DEBIT:
+            return VerticalPair(long=upper, short=lower, strategy=strategy)
+        return VerticalPair(long=lower, short=upper, strategy=strategy)
 
     pairs = []
     for key in sorted(groups):
@@ -760,7 +884,7 @@ def leg_drop_reason(leg, criteria, now_fn=None):
     return f"strike {leg.asset.strike} {leg.asset.option_type}: {dropped[0][1]}"
 
 
-def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
+def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=None):
     """(kept pairs, dropped pairs with reason) under the SAME criteria as the list.
 
     D7: the spread list used to run fixed leg rules of its own (both sides
@@ -779,6 +903,11 @@ def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
     an expiry outside the window must leave the section empty - and say why.
     """
     kept, dropped = [], []
+    # L: one resolution for the whole call - a contradicting request is an error
+    # here too, not a quiet pick of one of the two parameters.
+    strategy, _code, error = resolve_strategy(strategy, option_type)
+    if error:
+        raise ValueError(error)
     # D19: the maturity window is a gate for the WHOLE section - both legs of a pair always
     # carry the same expiration - and it must read the SAME date basis as filter_dte: the
     # clock of this scan, not the day the feed stamped the quote. Measured before this fix:
@@ -805,7 +934,7 @@ def vertical_spreads(chain, criteria, option_type="call", now_fn=None):
             return [], [(None, f"Verfall: Laufzeit {tage} Tage außerhalb "
                               f"[{criteria.dte_min}, {criteria.dte_max}]")]
         chain = gefiltert
-    for pair in form_vertical_pairs(chain, option_type=option_type,
+    for pair in form_vertical_pairs(chain, strategy=strategy,
                                    max_width=criteria.pair_max_width):
         # D18: a construction that can only lose after the costs is not a hit. Only with
         # fees does this say more than the pair rule below - at fees 0 the two agree, and

@@ -123,6 +123,43 @@ stock = broker.get_quote('AAPL')                # underlying price quote
 
 The original 2017 test data (`TestDataQuoteAdapter`) is still available and used by the unit tests.
 
+## Spread strategies (`/` and `GET /api/screen`)
+
+The spread section builds two **debit** verticals. Each one has a stable id that decides which leg
+is bought, so the page, the JSON and the arithmetic all read the same name:
+
+| `strategy` | What is traded | Debit | Break-even | Max profit | Max loss |
+|---|---|---|---|---|---|
+| `bull_call_debit` (default) | buy the call with the **lower** strike, sell the call with the higher one | ask(bought) − bid(sold) | lower strike + debit | width − debit | debit |
+| `bear_put_debit` | buy the put with the **higher** strike, sell the put with the lower one | ask(bought) − bid(sold) | higher strike − debit | width − debit | debit |
+
+`width` is the distance between the two strikes. All of these are per unit and gross; the position
+size (multiplier × quantity, plus fees) is a separate figure and only appears in the position
+columns and the `net_*` JSON keys.
+
+### Parameters and the legacy alias
+
+```
+GET /api/screen?ticker=SPY&expiration=2026-11-20&strategy=bear_put_debit
+```
+
+* `strategy=bull_call_debit|bear_put_debit` is the primary parameter.
+* `option_type=call|put` is the **legacy alias** from before the strategies had names: `call` means
+  `bull_call_debit`, `put` means `bear_put_debit`. Old links and API calls keep their meaning.
+* **Conflict rule:** a request that names both must agree. `strategy=bear_put_debit&option_type=call`
+  is an error, not a preference order - the page shows the contradiction and renders no spread
+  table (no silent fallback to either side), and `/api/screen` answers `400` with
+  `{"error": "conflicting strategy and option_type", "option_type_to_strategy": {...}}`. An unknown
+  `strategy` is `{"error": "unknown strategy", "allowed": [...]}`; an unknown `option_type` keeps its
+  old `{"error": "unknown spread type", "allowed": ["call", "put"]}` — that is the *bare* legacy
+  request (`?option_type=bogus` with no `strategy`). Sent **together with** a `strategy`, an
+  unreadable `option_type` makes the agreement unprovable: the request is rejected like a
+  contradiction (page: no table, API: `400`), and the page keeps the strategy the caller asked for
+  selected instead of showing a default.
+* The JSON carries `strategy`, `strategy_label` and - unchanged - `spread_type` (`call`/`put`), the
+  derived chain side. Inside every row `long_symbol` is the leg that is **bought**, `short_symbol`
+  the leg that is **sold**; the page spells that out per row.
+
 ## Testing and lint
 
 ```bash
