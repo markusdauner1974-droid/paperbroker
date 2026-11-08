@@ -683,6 +683,74 @@ class TestDayCalendarStore(unittest.TestCase):
         store.get_many(["2026-11-07", "2026-11-08", "2026-11-09"])
         self.assertEqual(len(gelesen), 1)
 
+    def test_put_many_writes_three_days_with_one_read_and_one_write(self):
+        # A page view stores three days; the store must read and replace the
+        # file ONCE, not once per day (each replace costs its own fsync).
+        store = self._store()
+        tage = ["2026-11-07", "2026-11-08", "2026-11-09"]
+        gelesen = []
+        geschrieben = []
+        original_read = store._read_all
+        original_write = store._write_locked
+
+        def read_zaehlend():
+            gelesen.append(1)
+            return original_read()
+
+        def write_zaehlend(entries, verzeichnis):
+            geschrieben.append(sorted(entries))
+            return original_write(entries, verzeichnis)
+
+        store._read_all = read_zaehlend
+        store._write_locked = write_zaehlend
+
+        self.assertTrue(store.put_many({tag: self._entry(tag) for tag in tage}))
+
+        self.assertEqual(len(gelesen), 1)
+        self.assertEqual(len(geschrieben), 1)
+        self.assertEqual(geschrieben[0], tage)
+        for tag in tage:
+            self.assertEqual(store.get(tag)["date"], tag)
+
+    def test_put_is_still_a_working_one_day_wrapper(self):
+        store = self._store()
+        self.assertTrue(store.put("2026-11-08", self._entry("2026-11-08")))
+        self.assertEqual(store.get("2026-11-08")["rows"], [{"symbol": "AAA"}])
+        self.assertIsNone(store.get("2026-11-07"))
+
+    def test_put_many_in_an_unwritable_directory_answers_false_without_raising(self):
+        # A file where the directory should be: mkdir fails, the cache is
+        # simply not writable, and the request still gets its answer.
+        blockiert = os.path.join(self.tmpdir, "kein-verzeichnis")
+        with open(blockiert, "w", encoding="utf-8") as fh:
+            fh.write("not a directory")
+        store = DayCalendarStore(path=os.path.join(blockiert, "calendar.json"))
+        self.assertFalse(store.put_many({"2026-11-08": self._entry("2026-11-08")}))
+        self.assertFalse(store.put("2026-11-08", self._entry("2026-11-08")))
+
+    def test_put_many_without_entries_does_not_create_or_touch_the_file(self):
+        store = self._store()
+        self.assertTrue(store.put_many({}))
+        self.assertFalse(os.path.exists(store.path))
+        self.assertTrue(store.put("2026-11-08", self._entry("2026-11-08")))
+        vorher = os.stat(store.path).st_mtime_ns
+        self.assertTrue(store.put_many({}))
+        self.assertEqual(os.stat(store.path).st_mtime_ns, vorher)
+
+    def test_put_many_still_applies_the_entry_cap(self):
+        store = DayCalendarStore(path=os.path.join(self.tmpdir, "calendar.json"), max_entries=2)
+        eintraege = {
+            "2026-11-07": self._entry("2026-11-07", stamp="2026-11-07T06:00:00Z"),
+            "2026-11-08": self._entry("2026-11-08", stamp="2026-11-08T06:00:00Z"),
+            "2026-11-09": self._entry("2026-11-09", stamp="2026-11-09T06:00:00Z"),
+        }
+        self.assertTrue(store.put_many(eintraege))
+        gespeichert = store.get_many(list(eintraege))
+        self.assertEqual(
+            sorted(tag for tag, eintrag in gespeichert.items() if eintrag is not None),
+            ["2026-11-08", "2026-11-09"],
+        )
+
 
 class TestCalendarDaysFetching(unittest.TestCase):
     """The three cold days are fetched side by side, the output stays ordered."""
@@ -713,6 +781,49 @@ class TestCalendarDaysFetching(unittest.TestCase):
             self.assertEqual([z["symbol"] for z in eintrag["rows"]], ["AAA", "BBB"])
             self.assertEqual(eintrag["fetched_at_utc"], "2026-11-08T06:00:00Z")
         self.assertEqual(ergebnis["fetched_at_utc"], "2026-11-08T06:00:00Z")
+
+    def test_a_cold_start_page_writes_the_cache_in_one_go(self):
+        # Three missing days: the answer stores all three, but the file is
+        # read-modify-written ONCE - three replaces would cost three fsyncs.
+        quelle = _CalendarSource()
+        adapter = _adapter(self.tmpdir, quelle)
+        store = adapter._calendar_store
+        geschrieben = []
+        original = store._write_locked
+
+        def write_zaehlend(entries, verzeichnis):
+            geschrieben.append(sorted(entries))
+            return original(entries, verzeichnis)
+
+        store._write_locked = write_zaehlend
+
+        ergebnis = adapter.get_calendar_days(DAYS)
+
+        self.assertEqual(len(geschrieben), 1)
+        self.assertEqual(geschrieben[0], sorted(DAYS.values()))
+        for tag in DAYS.values():
+            self.assertTrue(ergebnis["days"][tag]["persisted"])
+            self.assertEqual(store.get(tag)["date"], tag)
+
+    def test_an_unwritable_cache_still_answers_with_persisted_false(self):
+        # Same cold start, but the cache cannot be written: the page keeps its
+        # answer and says so per day instead of failing or claiming success.
+        blockiert = os.path.join(self.tmpdir, "kein-verzeichnis")
+        with open(blockiert, "w", encoding="utf-8") as fh:
+            fh.write("not a directory")
+        adapter = NasdaqEarningsAdapter(
+            transport=_CalendarSource(),
+            now_fn=_Clock().now,
+            cache=DayCalendarStore(path=os.path.join(self.tmpdir, "earnings.json")),
+            calendar_store=DayCalendarStore(path=os.path.join(blockiert, "calendar.json")),
+        )
+        ergebnis = adapter.get_calendar_days(DAYS)
+        self.assertEqual(ergebnis["state"], "live")
+        for tag in DAYS.values():
+            eintrag = ergebnis["days"][tag]
+            self.assertEqual(eintrag["state"], "live")
+            self.assertFalse(eintrag["persisted"])
+            self.assertEqual([z["symbol"] for z in eintrag["rows"]], ["AAA"])
 
     def test_all_missing_days_are_fetched_concurrently(self):
         # See _BarrierSource: a serial loop times out on the first day, so this

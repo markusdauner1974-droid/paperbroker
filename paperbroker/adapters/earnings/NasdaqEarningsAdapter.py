@@ -331,7 +331,23 @@ class DayCalendarStore:
         return eintrag
 
     def put(self, day, entry):
-        """Read-modify-write under one thread lock and one exclusive flock."""
+        """One day, kept as a wrapper so existing callers do not change."""
+        return self.put_many({day: entry})
+
+    def put_many(self, entries):
+        """All entries of one page view in ONE read-modify-write.
+
+        Why bundled: one ``put`` per day meant one lock, one full file read,
+        one bounded merge, one tempfile, one fsync and one ``os.replace`` per
+        day. A cold start page stores three days, so it paid three of those
+        (measured ~0.36 s cold versus ~0.05 s for a single write). Bundling
+        keeps the contract identical - one thread lock, one exclusive flock,
+        one ``_read_all``, one merge, one ``_bounded`` pass, one atomic
+        replace - and writes nothing at all for an empty mapping.
+        """
+        eintraege = dict(entries or ())
+        if not eintraege:
+            return True
         verzeichnis = os.path.dirname(os.path.abspath(self.path)) or "."
         try:
             os.makedirs(verzeichnis, exist_ok=True)
@@ -343,7 +359,7 @@ class DayCalendarStore:
                 if fcntl is not None:
                     fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_EX)
                 try:
-                    self._write_locked(day, entry, verzeichnis)
+                    self._write_locked(eintraege, verzeichnis)
                 finally:
                     if fcntl is not None:
                         fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_UN)
@@ -353,9 +369,10 @@ class DayCalendarStore:
             return False
         return True
 
-    def _write_locked(self, day, entry, verzeichnis):
+    def _write_locked(self, entries, verzeichnis):
+        """Merge every given day into the file, then replace it atomically."""
         eintraege = dict(self._read_all())
-        eintraege[day] = entry
+        eintraege.update(entries)
         eintraege = self._bounded(eintraege)
         nutzlast = {"entries": eintraege}
         fd, tmp = tempfile.mkstemp(prefix=".calendar-", suffix=".tmp", dir=verzeichnis)
@@ -680,8 +697,10 @@ class NasdaqEarningsAdapter:
         (b) the days WITHOUT a fresh cache are fetched concurrently - done one
             by one, a dead source cost up to three times ``timeout_seconds``
             (18 s by default) before the start page could render,
-        (c) assembly in the REQUESTED order, cache writes included - the output
-            never depends on which thread answered first.
+        (c) assembly in the REQUESTED order, the cache writes bundled into ONE
+            atomic write afterwards - the output never depends on which thread
+            answered first, and three fresh days cost one read-modify-write
+            instead of three.
 
         Outage memory (why a failure is not retried on every page view)
         --------------------------------------------------------------
@@ -740,6 +759,7 @@ class NasdaqEarningsAdapter:
         geliefert = {}
         stempel = []
         zustaende = []
+        zu_speichern = {}
         for iso in iso_tage:
             gespeichert = gespeicherte.get(iso)
             if iso in frisch:
@@ -788,11 +808,19 @@ class NasdaqEarningsAdapter:
                 "payload_ok": True,
                 "skipped": geparst["skipped"],
             }
-            geschrieben = self._calendar_store.put(iso, eintrag)
-            geliefert[iso] = dict(eintrag, from_cache=False, live_query_failed=False,
-                                  persisted=bool(geschrieben))
+            zu_speichern[iso] = eintrag
+            geliefert[iso] = dict(eintrag, from_cache=False, live_query_failed=False)
             stempel.append(eintrag["fetched_at_utc"])
             zustaende.append("live")
+
+        # (d) cache writes: one bundled write instead of one per day. Three
+        # separate ``put`` calls meant three read-modify-writes including three
+        # fsyncs for a single page view; the stored rows are identical, only
+        # the cost changes. ``persisted`` stays per day and is only True when
+        # that one write really landed.
+        geschrieben = self._calendar_store.put_many(zu_speichern)
+        for iso in zu_speichern:
+            geliefert[iso]["persisted"] = bool(geschrieben)
 
         rang = {"live": 0, "stale": 1, "unavailable": 2}
         gesamt = max(zustaende, key=lambda z: rang.get(z, 2))
