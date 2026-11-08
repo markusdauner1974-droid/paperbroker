@@ -168,6 +168,24 @@ def _expiry_key(quote):
         return None
 
 
+def _bucket_quotes(quotes):
+    """``{iso_expiry: [quote, ...]}`` in ONE pass over the chain.
+
+    Every caller that needs expiries uses this: listing them, slicing them per
+    expiry and - once per ticker - nothing else runs ``_expiry_key``. Parsing
+    the same expiry once per (expiry x quote) made the bucket pass cost a date
+    parse per comparison, which at 40 expiries and a chain of a few thousand
+    rows is real CPU that no deadline inside a worker can interrupt.
+    """
+    buckets = {}
+    for quote in quotes:
+        schluessel = _expiry_key(quote)
+        if schluessel is None:
+            continue
+        buckets.setdefault(schluessel, []).append(quote)
+    return buckets
+
+
 def _listed_expirations(quotes):
     """Real, unique expiry dates the passed quotes carry, ascending.
 
@@ -175,13 +193,7 @@ def _listed_expirations(quotes):
     not parse is not a date we could check, and inventing one would be an
     unbacked claim about the chain.
     """
-    gefunden = set()
-    for quote in quotes:
-        schluessel = _expiry_key(quote)
-        if schluessel is None:
-            continue
-        gefunden.add(date.fromisoformat(schluessel))
-    return sorted(gefunden)
+    return sorted(date.fromisoformat(schluessel) for schluessel in _bucket_quotes(quotes))
 
 
 def _in_window(dte, criteria):
@@ -427,7 +439,10 @@ def _scan_symbol(symbol, row, ctx):
         )
         return eintrag
 
-    verfaelle = _listed_expirations(quotes)
+    # One key pass for the whole ticker: the listing and every expiry slice come
+    # from the same buckets, so no quote is parsed twice.
+    buckets = _bucket_quotes(quotes)
+    verfaelle = sorted(date.fromisoformat(schluessel) for schluessel in buckets)
 
     # --- 3. freshness, decided by the screener's own rule -----------------
     # filter_stale is the function the single-ticker view uses; calling it here
@@ -540,8 +555,7 @@ def _scan_symbol(symbol, row, ctx):
         return eintrag
 
     # --- 6. the strategies, on the screener's own function ----------------
-    per_expiry = {iso: [q for q in quotes if _expiry_key(q) == iso]
-                  for iso, _dte in zu_pruefen}
+    per_expiry = {iso: buckets.get(iso, []) for iso, _dte in zu_pruefen}
     dte_by_expiry = dict(zu_pruefen)
     # One age pass per expiry, NOT per strategy: the split of an expiry cannot
     # change between strategies, and running filter_stale four times over the

@@ -673,6 +673,28 @@ class TestTheAgePassRunsOncePerExpiry(unittest.TestCase):
         self.assertEqual(_combine_freshness(["unknown", "fresh"], _LOOSE), "fresh")
         self.assertEqual(_combine_freshness(["unknown", "partial"], _LOOSE), "partial")
 
+    def test_each_quote_is_keyed_exactly_once(self):
+        # Review finding on PR #74: the bucket comprehension parsed every quote
+        # once per checked expiry. One pass for the ticker is the contract.
+        from paperbroker import earnings_scan as modul
+
+        kette = call_pair("AAPL", EXP_A) + call_pair("AAPL", EXP_B)
+        aufrufe = []
+        echt = modul._expiry_key
+
+        def zaehlend(quote):
+            aufrufe.append(1)
+            return echt(quote)
+
+        modul._expiry_key = zaehlend
+        try:
+            koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
+        finally:
+            modul._expiry_key = echt
+
+        self.assertEqual(len(entry_of(koerper, "AAPL")["checked_expirations"]), 2)
+        self.assertEqual(len(aufrufe), len(kette), f"key passes: {len(aufrufe)} for {len(kette)} quotes")
+
     def test_list_and_buckets_use_the_same_normalised_key(self):
         # A trailing space in the raw field must not empty the expiry bucket and
         # make a listed expiry look like one that was never read. Unit-level on
