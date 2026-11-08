@@ -408,7 +408,10 @@ look" are different answers:
   distance, then symbol),
 - `no_match` - the data was good, nothing survived,
 - `stale_data` - the quotes are older than `max_quote_age_min`; the decision is
-  `screener.filter_stale`, the same rule the single view uses,
+  `screener.filter_stale`, the same rule the single view uses, applied to the
+  expiries that were actually checked (`checked_freshness`). A stale chain
+  section on an expiry that was skipped for another reason does not turn a
+  fresh, empty result into "too old",
 - `incomplete_data` - part of the chain was unusable (skipped contracts, a
   truncated expiry list),
 - `fetch_failed` - the earnings record or the chain could not be read; one

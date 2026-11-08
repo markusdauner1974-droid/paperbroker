@@ -407,6 +407,26 @@ class TestEveryStateIsReachable(unittest.TestCase):
         self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["hits"], 1)
         self.assertIn("partially_stale_chain", aapl["quality_flags"])
 
+    def test_a_stale_contract_on_a_skipped_expiry_does_not_flip_the_verdict(self):
+        # Review finding on PR #74 (second pass). The status keys on the quotes a
+        # strategy really looked at: a 3-day-old chain section on an expiry that
+        # was skipped anyway (here: 2026-10-16, before the earnings date) must
+        # leave a fresh, empty result at no_match - not turn it into stale_data.
+        kette = [quote("AAPL261016C00250000", 2.40, 2.50,
+                       quote_timestamp="2026-10-04 09:00:00"),
+                 quote("AAPL261016C00252500", 0.50, 0.55,
+                       quote_timestamp="2026-10-04 09:00:00")]
+        # ... plus a fresh checked expiry whose spread is dropped for illiquidity
+        kette += [quote("AAPL261030C00250000", 2.40, 2.50, oi=10),
+                  quote("AAPL261030C00252500", 0.50, 0.55)]
+        koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
+        aapl = entry_of(koerper, "AAPL")
+        bull = aapl["strategies"][BULL_CALL_DEBIT]
+        self.assertEqual(bull["checked_expirations"], [EXP_A])
+        self.assertEqual(bull["checked_freshness"], "fresh")
+        self.assertEqual(bull["status"], STATUS_NO_MATCH)
+        self.assertEqual(aapl["status"], STATUS_NO_MATCH)
+
     def test_an_incomplete_chain_is_named_instead_of_quiet(self):
         kette = ChainResult(call_pair("AAPL", EXP_A), skipped=7)
         koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])

@@ -241,6 +241,25 @@ def _age_minutes(stamp, now_fn):
     return round((jetzt - gestempelt).total_seconds() / 60.0, 1)
 
 
+def _freshness(quotes, criteria, now_fn):
+    """``fresh`` / ``partial`` / ``stale`` / ``unchecked`` / ``unknown`` for a quote set.
+
+    The decision is ``screener.filter_stale`` - the single-ticker view's own rule.
+    Called twice on purpose: once over the WHOLE chain (what the reader is told
+    about the data) and once over the quotes a strategy really looked at (what
+    decides its status). A stale contract on an expiry that was skipped for
+    another reason must not turn a fresh, empty result into "too old".
+    """
+    if criteria.max_quote_age_min is None:
+        return "unchecked"
+    if not quotes:
+        return "unknown"
+    frisch, veraltet = filter_stale(quotes, criteria, now_fn)
+    if not frisch:
+        return "stale"
+    return "partial" if veraltet else "fresh"
+
+
 class _Counter:
     """Thread-safe tally of the external calls one scan really made."""
 
@@ -352,17 +371,7 @@ def _scan_symbol(symbol, row, ctx):
     # --- 3. freshness, decided by the screener's own rule -----------------
     # filter_stale is the function the single-ticker view uses; calling it here
     # means "too old" means the same thing in both places.
-    frisch, veraltet = filter_stale(quotes, ctx.criteria, ctx.now_fn)
-    if ctx.criteria.max_quote_age_min is None:
-        freshness = "unchecked"
-    elif not quotes:
-        freshness = "unknown"
-    elif not frisch:
-        freshness = "stale"
-    elif veraltet:
-        freshness = "partial"
-    else:
-        freshness = "fresh"
+    freshness = _freshness(quotes, ctx.criteria, ctx.now_fn)
 
     stempel = [str(q.quote_timestamp) for q in quotes
                if getattr(q, "quote_timestamp", None) is not None]
@@ -466,7 +475,8 @@ def _scan_symbol(symbol, row, ctx):
         )
         eintrag["strategies"] = {
             sid: {"status": STATUS_NOT_CHECKED, "hits": 0, "best": None,
-                  "checked_expirations": [], "drop_reasons": []}
+                  "checked_expirations": [], "checked_freshness": freshness,
+                  "drop_reasons": []}
             for sid in ctx.strategies
         }
         return eintrag
@@ -502,11 +512,18 @@ def _scan_symbol(symbol, row, ctx):
                 if bestes is None or best_sort_key(pair) < best_sort_key(bestes):
                     bestes = pair
 
-        # "Too old" and "nothing fits" are different answers. A chain that is
-        # only partly fresh says so too: without a hit, the excluded contracts
-        # ARE the reason there is none. A real hit is never hidden behind a
-        # data note - it keeps its state and carries the flag beside it.
-        if not treffer and freshness in ("stale", "partial"):
+        # "Too old" and "nothing fits" are different answers - and the age that
+        # counts is the age of what this strategy actually LOOKED AT, not of the
+        # whole chain. A stale contract on an expiry that was skipped (outside
+        # the window, before the numbers, beyond max_expirations) must not turn
+        # a fresh, empty result into "too old".
+        geprueft_freshness = _freshness(
+            [q for iso in geprueft for q in per_expiry[iso]], ctx.criteria, ctx.now_fn
+        )
+        # Without a hit, a checked set that is stale (or only partly fresh) IS
+        # the reason there is none. A real hit is never hidden behind a data
+        # note - it keeps its state and carries the flag beside it.
+        if not treffer and geprueft_freshness in ("stale", "partial"):
             status = STATUS_STALE_DATA
         elif treffer:
             status = STATUS_HITS
@@ -521,6 +538,9 @@ def _scan_symbol(symbol, row, ctx):
             "best": None if bestes is None else _best_payload(bestes, ctx.criteria,
                                                              dte_by_expiry),
             "checked_expirations": geprueft,
+            # The age of exactly these expiries - the number the status above
+            # was decided on, so a reader can check the verdict.
+            "checked_freshness": geprueft_freshness,
             "drop_reasons": _reason_groups(gruende),
         }
         treffer_gesamt += treffer
@@ -551,7 +571,8 @@ def _best_payload(pair, criteria, dte_by_expiry):
 
 def _empty_strategies(strategies, status):
     return {sid: {"status": status, "hits": 0, "best": None,
-                  "checked_expirations": [], "drop_reasons": []}
+                  "checked_expirations": [], "checked_freshness": "unknown",
+                  "drop_reasons": []}
             for sid in strategies}
 
 
