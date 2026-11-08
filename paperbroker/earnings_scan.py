@@ -428,6 +428,11 @@ def _scan_symbol(symbol, row, ctx):
 
     eintrag["data"]["completeness"] = completeness
     eintrag["checked_expirations"] = [iso for iso, _dte in zu_pruefen]
+    # A chain that is only PARTLY fresh is neither "fresh" nor "stale": the
+    # excluded contracts must be visible next to a hit, and without a hit they
+    # are the reason there is none.
+    if freshness == "partial":
+        flags.append("partially_stale_chain")
     eintrag["quality_flags"] = flags
 
     if not zu_pruefen:
@@ -476,7 +481,11 @@ def _scan_symbol(symbol, row, ctx):
                 if bestes is None or best_sort_key(pair) < best_sort_key(bestes):
                     bestes = pair
 
-        if freshness == "stale" and not treffer:
+        # "Too old" and "nothing fits" are different answers. A chain that is
+        # only partly fresh says so too: without a hit, the excluded contracts
+        # ARE the reason there is none. A real hit is never hidden behind a
+        # data note - it keeps its state and carries the flag beside it.
+        if not treffer and freshness in ("stale", "partial"):
             status = STATUS_STALE_DATA
         elif treffer:
             status = STATUS_HITS

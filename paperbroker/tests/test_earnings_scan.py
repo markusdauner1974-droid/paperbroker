@@ -378,6 +378,34 @@ class TestEveryStateIsReachable(unittest.TestCase):
         self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["status"], STATUS_STALE_DATA)
         self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["hits"], 0)
 
+    def test_a_partly_stale_chain_is_not_reported_as_no_match(self):
+        # Measured (PR #74 review): a pair whose sold leg carries a 335-minute-old
+        # timestamp produced zero hits - the leg is dropped inside
+        # vertical_spreads by the very same filter_stale - but the row said
+        # "no_match", i.e. "nothing fits". The stale leg IS the answer.
+        kette = [quote("AAPL261030C00250000", 2.40, 2.50),
+                 quote("AAPL261030C00252500", 0.50, 0.55,
+                       quote_timestamp="2026-10-07 09:00:00")]
+        koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["data"]["freshness"], "partial")
+        self.assertEqual(aapl["status"], STATUS_STALE_DATA)
+        self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["hits"], 0)
+        gruende = " | ".join(g["reason"] for g
+                             in aapl["strategies"][BULL_CALL_DEBIT]["drop_reasons"])
+        self.assertIn("veraltet", gruende)
+
+    def test_a_fresh_pair_next_to_a_stale_one_still_counts(self):
+        # The other side of the same finding: a valid pair must not be hidden
+        # because ANOTHER contract of the chain is old - but the row says so.
+        kette = (call_pair("AAPL", EXP_A)
+                 + call_pair("AAPL", EXP_B, quote_timestamp="2026-10-07 09:00:00"))
+        koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["status"], STATUS_HITS)
+        self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["hits"], 1)
+        self.assertIn("partially_stale_chain", aapl["quality_flags"])
+
     def test_an_incomplete_chain_is_named_instead_of_quiet(self):
         kette = ChainResult(call_pair("AAPL", EXP_A), skipped=7)
         koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
