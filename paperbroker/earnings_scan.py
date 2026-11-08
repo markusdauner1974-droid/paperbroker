@@ -556,8 +556,23 @@ def _scan_symbol(symbol, row, ctx):
         gruende = []
         geprueft = []
         for iso, _dte in zu_pruefen:
-            kept, dropped = vertical_spreads(per_expiry[iso], ctx.criteria,
-                                             strategy=sid, now_fn=ctx.now_fn)
+            # One expiry may be unpriceable in a way the screener does not
+            # expect (measured: a padded expiration string makes the maturity
+            # arithmetic raise). That is one expiry, not the scan: the boundary
+            # is here, so a broken chain section cannot cancel 39 other titles.
+            try:
+                kept, dropped = vertical_spreads(per_expiry[iso], ctx.criteria,
+                                                 strategy=sid, now_fn=ctx.now_fn)
+            except Exception as exc:                # noqa: BLE001 - boundary by design
+                _report(ctx, symbol, exc)
+                eintrag["skipped_expirations"].append({
+                    "expiration": iso,
+                    "reason": "expiration_not_checkable",
+                })
+                if "expiration_not_checkable" not in flags:
+                    flags.append("expiration_not_checkable")
+                completeness = "partial"
+                continue
             # vertical_spreads reports a whole-section gate as a (None, reason)
             # pair - that expiry was not really checked, so it is named instead
             # of counted as "checked and empty".
@@ -595,6 +610,8 @@ def _scan_symbol(symbol, row, ctx):
         else:
             status = STATUS_NO_MATCH
 
+        eintrag["data"]["completeness"] = completeness
+        eintrag["quality_flags"] = flags
         eintrag["strategies"][sid] = {
             "status": status,
             "hits": treffer,

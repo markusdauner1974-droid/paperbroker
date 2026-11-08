@@ -673,18 +673,48 @@ class TestTheAgePassRunsOncePerExpiry(unittest.TestCase):
         self.assertEqual(_combine_freshness(["unknown", "fresh"], _LOOSE), "fresh")
         self.assertEqual(_combine_freshness(["unknown", "partial"], _LOOSE), "partial")
 
-    def test_a_whitespace_expiry_is_still_the_same_expiry(self):
-        # List and buckets are keyed by the SAME normalised date: a trailing
-        # space in the raw field must not empty the bucket and make a checked
-        # expiry look unreadable.
-        kette = call_pair("AAPL", EXP_A)
-        for q in kette:
-            q.asset.expiration_date = q.asset.expiration_date + " "
-        koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
+    def test_list_and_buckets_use_the_same_normalised_key(self):
+        # A trailing space in the raw field must not empty the expiry bucket and
+        # make a listed expiry look like one that was never read. Unit-level on
+        # purpose: the padded string breaks arrow's date parser further down, so
+        # feeding it through the screener would test arrow, not this rule.
+        from paperbroker.earnings_scan import _expiry_key, _listed_expirations
+
+        quote_a = quote("AAPL261030C00250000", 2.40, 2.50)
+        quote_a.asset.expiration_date = quote_a.asset.expiration_date + " "
+        self.assertEqual(_expiry_key(quote_a), EXP_A)
+        self.assertEqual([d.isoformat() for d in _listed_expirations([quote_a])], [EXP_A])
+        # An OCC symbol without an expiry is not an expiry - it is no key at all.
+        ohne = quote("AAPL261030C00250000", 2.40, 2.50)
+        ohne.asset.expiration_date = "not-a-date"
+        self.assertIsNone(_expiry_key(ohne))
+
+    def test_an_uncheckable_expiry_costs_one_expiry_not_the_scan(self):
+        # Found by CI: the maturity arithmetic can raise on one expiry. That must
+        # cost that one expiry (and be named), never the whole scan - the other
+        # titles must not depend on it. The failure is injected on purpose: it
+        # must not hang on what arrow happens to accept in a given version.
+        from paperbroker import earnings_scan as modul
+
+        echt = modul.vertical_spreads
+
+        def kaputt(chain, criteria, *, strategy=None, now_fn=None, **kw):
+            if chain and chain[0].asset.underlying.symbol == "AAPL":
+                raise ValueError("unpriceable expiry")
+            return echt(chain, criteria, strategy=strategy, now_fn=now_fn, **kw)
+
+        modul.vertical_spreads = kaputt
+        try:
+            koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A),
+                                "MSFT": call_pair("MSFT", EXP_A)},
+                               [calendar_row("AAPL", 30), calendar_row("MSFT", 20)])
+        finally:
+            modul.vertical_spreads = echt
         aapl = entry_of(koerper, "AAPL")
-        self.assertEqual(aapl["checked_expirations"], [EXP_A])
-        self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["checked_freshness"], "fresh")
-        self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["hits"], 1)
+        self.assertEqual(aapl["status"], STATUS_INCOMPLETE_DATA)
+        self.assertIn("expiration_not_checkable", aapl["quality_flags"])
+        self.assertEqual(aapl["skipped_expirations"][0]["reason"], "expiration_not_checkable")
+        self.assertEqual(entry_of(koerper, "MSFT")["status"], STATUS_HITS)
 
     def test_without_the_age_guard_nothing_is_called_stale(self):
         from paperbroker.earnings_scan import _combine_freshness
