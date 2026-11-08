@@ -150,6 +150,24 @@ def _expiration_of(quote):
     return None if asset is None else getattr(asset, "expiration_date", None)
 
 
+def _expiry_key(quote):
+    """The expiry as the ISO string everything else is keyed by, or ``None``.
+
+    One normalisation for the LIST and the BUCKETS: ``_listed_expirations``
+    parses ``date.fromisoformat``, so the expiry buckets must be keyed by that
+    same parsed date. Keying one side by the raw ``asset.expiration_date``
+    string split the two whenever the string carried whitespace - the bucket
+    stayed empty and the expiry looked like one that was never read.
+    """
+    wert = _expiration_of(quote)
+    if not isinstance(wert, str):
+        return None
+    try:
+        return date.fromisoformat(wert.strip()).isoformat()
+    except ValueError:
+        return None
+
+
 def _listed_expirations(quotes):
     """Real, unique expiry dates the passed quotes carry, ascending.
 
@@ -159,13 +177,10 @@ def _listed_expirations(quotes):
     """
     gefunden = set()
     for quote in quotes:
-        wert = _expiration_of(quote)
-        if not isinstance(wert, str):
+        schluessel = _expiry_key(quote)
+        if schluessel is None:
             continue
-        try:
-            gefunden.add(date.fromisoformat(wert.strip()))
-        except ValueError:
-            continue
+        gefunden.add(date.fromisoformat(schluessel))
     return sorted(gefunden)
 
 
@@ -293,9 +308,15 @@ def _combine_freshness(verdicts, criteria):
         return "unknown"
     if any(v == "unchecked" for v in verdicts):
         return "unchecked"
-    if all(v == "stale" for v in verdicts):
+    # An expiry nothing could be read for contributes no evidence - exactly as
+    # the empty set does in _freshness. Ignoring it (instead of counting it as
+    # fresh-leaning) keeps the fold equal to one pass over the union.
+    bekannt = [v for v in verdicts if v != "unknown"]
+    if not bekannt:
+        return "unknown"
+    if all(v == "stale" for v in bekannt):
         return "stale"
-    if any(v in ("stale", "partial") for v in verdicts):
+    if any(v in ("stale", "partial") for v in bekannt):
         return "partial"
     return "fresh"
 
@@ -519,7 +540,7 @@ def _scan_symbol(symbol, row, ctx):
         return eintrag
 
     # --- 6. the strategies, on the screener's own function ----------------
-    per_expiry = {iso: [q for q in quotes if _expiration_of(q) == iso]
+    per_expiry = {iso: [q for q in quotes if _expiry_key(q) == iso]
                   for iso, _dte in zu_pruefen}
     dte_by_expiry = dict(zu_pruefen)
     # One age pass per expiry, NOT per strategy: the split of an expiry cannot

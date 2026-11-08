@@ -663,6 +663,29 @@ class TestTheAgePassRunsOncePerExpiry(unittest.TestCase):
             vereinigt = _freshness([q for e in expiries for q in e], _LOOSE, CLOCK)
             self.assertEqual(_combine_freshness(teile, _LOOSE), vereinigt, name)
 
+    def test_an_unreadable_expiry_contributes_no_evidence(self):
+        # The fold must answer like one pass over the union: an "unknown" part
+        # is no evidence, not a fresh-leaning one (review finding on PR #74).
+        from paperbroker.earnings_scan import _combine_freshness
+
+        self.assertEqual(_combine_freshness(["unknown"], _LOOSE), "unknown")
+        self.assertEqual(_combine_freshness(["unknown", "stale"], _LOOSE), "stale")
+        self.assertEqual(_combine_freshness(["unknown", "fresh"], _LOOSE), "fresh")
+        self.assertEqual(_combine_freshness(["unknown", "partial"], _LOOSE), "partial")
+
+    def test_a_whitespace_expiry_is_still_the_same_expiry(self):
+        # List and buckets are keyed by the SAME normalised date: a trailing
+        # space in the raw field must not empty the bucket and make a checked
+        # expiry look unreadable.
+        kette = call_pair("AAPL", EXP_A)
+        for q in kette:
+            q.asset.expiration_date = q.asset.expiration_date + " "
+        koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["checked_expirations"], [EXP_A])
+        self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["checked_freshness"], "fresh")
+        self.assertEqual(aapl["strategies"][BULL_CALL_DEBIT]["hits"], 1)
+
     def test_without_the_age_guard_nothing_is_called_stale(self):
         from paperbroker.earnings_scan import _combine_freshness
 
