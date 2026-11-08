@@ -8,6 +8,7 @@ healthz liveness without external calls.
 import html
 import json
 import os
+import pathlib
 import re
 import unittest
 from datetime import datetime
@@ -3706,3 +3707,60 @@ class TestApiErrorContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheFontsComeFromThePackage(unittest.TestCase):
+    """Die Seite laedt ihre Schriften aus dem eigenen Paket, nicht von Google.
+
+    Gemessen im Browser (Chromium, 1440 px): mit den drei <link>-Tags auf
+    fonts.googleapis.com brauchte die Seite drei Fremdanfragen und zeigte ohne
+    Internet die Ersatzschrift. Die woff2-Dateien liegen jetzt unter
+    paperbroker/static/fonts (6 Dateien, 102,9 KB) und werden von
+    static/fonts.css referenziert.
+
+    Geprueft wird die Klasse, nicht die einzelne Datei: keine Schrift-URL
+    ausserhalb des Pakets, und jede im CSS genannte Datei muss es geben.
+    """
+
+    @staticmethod
+    def _page():
+        adapter = _MockAdapter(make())
+        adapter.expirations = ["2026-10-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app.test_client().get(
+            "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}
+        ).get_data(as_text=True)
+
+    def test_the_page_asks_no_font_host(self):
+        page = self._page()
+        self.assertIn('<link rel="stylesheet" href="/static/fonts.css">', page)
+        for fremd in ("fonts.googleapis.com", "fonts.gstatic.com"):
+            self.assertNotIn(fremd, page, fremd)
+
+    def test_every_declared_font_file_exists(self):
+        static = pathlib.Path(__file__).resolve().parents[1] / "static"
+        css = (static / "fonts.css").read_text(encoding="utf-8")
+        dateien = re.findall(r"url\((fonts/[^)]+\.woff2)\)", css)
+        self.assertGreaterEqual(len(dateien), 3)
+        for datei in sorted(set(dateien)):
+            self.assertTrue((static / datei).is_file(), datei)
+
+    def test_the_three_families_carry_the_weights_the_page_uses(self):
+        static = pathlib.Path(__file__).resolve().parents[1] / "static"
+        css = (static / "fonts.css").read_text(encoding="utf-8")
+        seite = self._page()
+        for familie in ("Oswald", "Instrument Sans", "Martian Mono"):
+            self.assertIn(f"'{familie}'", css)
+            self.assertIn(f'"{familie}"', seite)
+        # die Gewichte, die das CSS der Seite wirklich anfordert
+        for familie, gewicht in (("Oswald", "700"),
+                                 ("Instrument Sans", "400"),
+                                 ("Instrument Sans", "600"),
+                                 ("Martian Mono", "400"),
+                                 ("Martian Mono", "600")):
+            block = [b for b in re.findall(r"@font-face \{(.*?)\}", css, re.S)
+                     if f"'{familie}'" in b and f"font-weight: {gewicht};" in b]
+            self.assertTrue(block, f"{familie} {gewicht} fehlt")

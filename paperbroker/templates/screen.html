@@ -3,12 +3,12 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Martian+Mono:wght@400;600&family=Instrument+Sans:wght@400;600&display=swap" rel="stylesheet">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Martian+Mono:wght@400;600&family=Instrument+Sans:wght@400;600&display=swap" rel="stylesheet">
+  {# Die drei Schriftschnitte liegen als woff2 im Paket: keine Anfrage
+     verlaesst das LAN, und die Seite haengt nicht an einem CDN. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
+  {# Die drei Schriftschnitte liegen als woff2 im Paket: keine Anfrage
+     verlaesst das LAN, und die Seite haengt nicht an einem CDN. #}
+  <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
   <title>Options-Screener — CoachBen-Stil</title>
   <style>
     :root{
@@ -144,6 +144,10 @@
 
     /* CB-EDIT: overflow container for the twelve-column spread table */
     .tbl{min-width:0;overflow-x:auto}
+    /* Auf schmalen Fenstern klappt die Leiste unter das Ergebnis: das
+       Formular bekommt eine lesbare Breite statt der vollen Fensterbreite
+       (gemessen bei 780 px: der Scan-Knopf lief als Balken ueber 780 px) */
+    @media (max-width:1212px){.shell form{max-width:560px}}
     @media (max-width:900px){
       main{padding:18px 18px 56px}
       header{padding:16px 18px 14px}

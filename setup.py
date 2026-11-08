@@ -19,8 +19,10 @@ setup(name='paperbroker',
             'flask>=3.1'
         ],
         # B-13: templates/ holds screen.html but is not a python package
-        # (no __init__.py), so it needs an explicit data declaration
+        # (no __init__.py), so it needs an explicit data declaration.
+        # static/ carries the self-hosted webfonts and their @font-face rules -
+        # without them an installed wheel renders in the fallback stack.
         package_data={
-            'paperbroker': ['templates/*.html']
+            'paperbroker': ['templates/*.html', 'static/*.css', 'static/fonts/*.woff2']
         }
      )
