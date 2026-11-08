@@ -11,8 +11,10 @@ import arrow
 from paperbroker.assets import asset_factory
 from paperbroker.quotes import OptionQuote
 from paperbroker.screener import (
+    BEAR_CALL_CREDIT,
     BEAR_PUT_DEBIT,
     BULL_CALL_DEBIT,
+    BULL_PUT_CREDIT,
     OptionScreener,
     ScreenerCriteria,
     ScreenResult,
@@ -1728,12 +1730,267 @@ class TheStrategyNamesTheTrade(unittest.TestCase):
         self.assertEqual(strategy_of_legs(bull.long, bull.short), BULL_CALL_DEBIT)
         self.assertEqual(strategy_of_legs(baer.long, baer.short), BEAR_PUT_DEBIT)
         # ein Call, der am HOEHEREN Strike gekauft wird, ist ein Bear-Call-Credit -
-        # nicht eine der beiden Strategien dieses Moduls
-        self.assertIsNone(strategy_of_legs(bull.short, bull.long))
+        # dieselben zwei Beine, die andere Handelsrichtung
+        self.assertEqual(strategy_of_legs(bull.short, bull.long), BEAR_CALL_CREDIT)
+        self.assertEqual(strategy_of_legs(baer.short, baer.long), BULL_PUT_CREDIT)
         # und ein handgebautes Paar ohne Kennung liest sie aus den Beinen
         self.assertEqual(VerticalPair(long=baer.long, short=baer.short).strategy_id,
                          BEAR_PUT_DEBIT)
+        # gleicher Strike ist kein Spread - und Call/Put gemischt auch nicht
+        self.assertIsNone(strategy_of_legs(bull.long, bull.long))
+        self.assertIsNone(strategy_of_legs(bull.long, baer.long))
+
+
+
+class TheCreditSpreads(unittest.TestCase):
+    """Bull Put und Bear Call Credit: dieselbe Kette, die andere Handelsrichtung.
+
+    Die Kette traegt zwei Calls und zwei Puts mit je einem verkauften und einem
+    gekauften Bein, damit jede Zahl von Hand nachrechenbar ist:
+
+      Bear Call Credit: short C100 bid 2.30 / long C105 ask 1.15
+                         -> Credit 1.15, Breite 5.00, max Verlust 3.85,
+                            max Gewinn 1.15, Break-even 101.15
+      Bull Put Credit:   short P105 bid 2.55 / long P100 ask 1.15
+                         -> Credit 1.40, Breite 5.00, max Verlust 3.60,
+                            max Gewinn 1.40, Break-even 103.60
+
+    Mit Multiplikator 100, Stueckzahl 1 und 2.00 USD Gebuehren:
+      Bear Call: Risikobudget 385 + 2 = 387.00, netto 115 - 2 = 113.00,
+                 netto-BE 101.15 - 0.02 = 101.13, Rendite 113/387 = 29.20 %
+      Bull Put:  Risikobudget 360 + 2 = 362.00, netto 140 - 2 = 138.00,
+                 netto-BE 103.60 + 0.02 = 103.62, Rendite 138/362 = 38.12 %
+    """
+
+    @staticmethod
+    def _kette():
+        return [
+            quote("SPY261016C00100000", bid=2.30, ask=2.45,
+                  underlying_price=102.0),
+            quote("SPY261016C00105000", bid=1.05, ask=1.15,
+                  underlying_price=102.0),
+            quote("SPY261016P00100000", bid=1.05, ask=1.15,
+                  underlying_price=102.0),
+            quote("SPY261016P00105000", bid=2.55, ask=2.70,
+                  underlying_price=102.0),
+        ]
+
+    @staticmethod
+    def _criteria(**kw):
+        werte = dict(max_spread_pct=100.0, max_spread_abs=None,
+                     multiplier=100, quantity=1, fees=2.0)
+        werte.update(kw)
+        return ScreenerCriteria(**werte)
+
+    # --- Beinreihenfolge und die vier Zahlen --------------------------------
+
+    def test_the_bear_call_sells_the_lower_strike(self):
+        paar = form_vertical_pairs(self._kette(), strategy=BEAR_CALL_CREDIT)[0]
+        self.assertEqual(paar.strategy_id, BEAR_CALL_CREDIT)
+        self.assertEqual(paar.kind, "credit")
+        self.assertTrue(paar.is_credit)
+        self.assertEqual((paar.long.asset.strike, paar.short.asset.strike), (105.0, 100.0))
+        self.assertEqual(paar.strike_width, 5.00)
+        self.assertEqual(paar.net_credit, 1.15)          # 2.30 - 1.15
+        self.assertEqual(paar.max_profit, 1.15)
+        self.assertEqual(paar.max_loss, 3.85)            # 5.00 - 1.15
+        self.assertEqual(paar.breakeven, 101.15)         # 100.00 + 1.15
+        self.assertEqual(paar.credit_width_ratio, 0.23)  # 1.15 / 5.00
+
+    def test_the_bull_put_sells_the_higher_strike(self):
+        paar = form_vertical_pairs(self._kette(), strategy=BULL_PUT_CREDIT)[0]
+        self.assertEqual(paar.strategy_id, BULL_PUT_CREDIT)
+        self.assertEqual((paar.long.asset.strike, paar.short.asset.strike), (100.0, 105.0))
+        self.assertEqual(paar.strike_width, 5.00)
+        self.assertEqual(paar.net_credit, 1.40)          # 2.55 - 1.15
+        self.assertEqual(paar.max_profit, 1.40)
+        self.assertEqual(paar.max_loss, 3.60)            # 5.00 - 1.40
+        self.assertEqual(paar.breakeven, 103.60)         # 105.00 - 1.40
+        self.assertEqual(paar.credit_width_ratio, 0.28)  # 1.40 / 5.00
+
+    def test_the_credit_is_bid_of_the_sold_leg_minus_ask_of_the_bought_leg(self):
+        """Der Credit ist der konservative, sofort erzielbare Betrag - kein Mittelwert.
+
+        Mitte waere 1.30 (2.375 gegen 1.10); der gerechnete Wert ist kleiner,
+        weil das verkaufte Bein am Bid und das gekaufte am Ask bewertet wird.
+        """
+        paar = form_vertical_pairs(self._kette(), strategy=BEAR_CALL_CREDIT)[0]
+        self.assertEqual(paar.net_credit, paar.short.bid - paar.long.ask)
+        mitte = (paar.short.bid + paar.short.ask) / 2 - (paar.long.bid + paar.long.ask) / 2
+        self.assertLess(paar.net_credit, mitte)
+
+    def test_the_same_two_legs_are_a_debit_or_a_credit_trade(self):
+        """Dieselben zwei Calls, zwei Handelsrichtungen, zwei Zahlensaetze.
+
+        Das ist der Grund, warum die Kennung die Rechnung fuehrt und nicht die
+        Kettenseite: aus C100/C105 wird je nach Kaufbein ein Debit- oder ein
+        Credit-Spread.
+        """
+        debit = form_vertical_pairs(self._kette(), strategy=BULL_CALL_DEBIT)[0]
+        credit = form_vertical_pairs(self._kette(), strategy=BEAR_CALL_CREDIT)[0]
+        self.assertEqual(debit.net_debit, 1.40)      # 2.45 - 1.05
+        self.assertEqual(debit.max_loss, 1.40)
+        self.assertEqual(debit.breakeven, 101.40)    # 100 + 1.40
+        self.assertIsNone(debit.net_credit)
+        self.assertIsNone(credit.net_debit)
+        self.assertNotEqual(debit.breakeven, credit.breakeven)
+
+    # --- Geld, Gebuehren, Risikobudget ------------------------------------
+
+    def test_a_credit_is_never_reported_as_a_negative_cost(self):
+        """Das Budget begrenzt den maximalen Verlust, nicht den Credit.
+
+        position_debit ist fuer einen Credit-Spread None (er kostet nichts) -
+        ein negativer Einsatz waere der Credit, falsch gelesen.
+        """
+        paar = form_vertical_pairs(self._kette(), strategy=BULL_PUT_CREDIT)[0]
+        kriterien = self._criteria()
+        self.assertIsNone(paar.position_debit(kriterien))
+        self.assertEqual(paar.risk_budget(kriterien), 362.00)   # 3.60 * 100 + 2
+        self.assertEqual(paar.net_max_loss(kriterien), 362.00)
+        self.assertEqual(paar.net_max_profit(kriterien), 138.00)  # 1.40 * 100 - 2
+        self.assertEqual(paar.net_breakeven(kriterien), 103.62)   # 103.60 + 2/100
+        self.assertEqual(paar.net_return_pct(kriterien), 38.12)   # 138 / 362
+        self.assertIs(paar.profitable_after_costs(kriterien), True)
+
+    def test_the_bear_call_numbers_after_costs(self):
+        paar = form_vertical_pairs(self._kette(), strategy=BEAR_CALL_CREDIT)[0]
+        kriterien = self._criteria()
+        self.assertEqual(paar.risk_budget(kriterien), 387.00)
+        self.assertEqual(paar.net_max_profit(kriterien), 113.00)
+        self.assertEqual(paar.net_breakeven(kriterien), 101.13)   # 101.15 - 0.02
+        self.assertEqual(paar.net_return_pct(kriterien), 29.20)
+
+    def test_the_budget_limits_the_max_loss_including_fees(self):
+        """Budget 357.00: der Bull Put (Risiko 362.00) faellt, der Bear Call nicht.
+
+        Der Credit selbst (140 bzw. 115) liegt in beiden Faellen unter dem
+        Budget - waere er der gepruefte Einsatz, blieben beide stehen.
+        """
+        kept, dropped = vertical_spreads(self._kette(), self._criteria(budget=357.0),
+                                         strategy=BULL_PUT_CREDIT, now_fn=_NOW)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Risikobudget 362.00 USD > Budget 357.00 USD"])
+        kept, dropped = vertical_spreads(self._kette(), self._criteria(budget=387.0),
+                                         strategy=BEAR_CALL_CREDIT, now_fn=_NOW)
+        self.assertEqual(len(kept), 1)
+        self.assertEqual(dropped, [])
+
+    def test_the_budget_is_inclusive_at_the_boundary(self):
+        # genau 362.00 passt, ein Cent darunter nicht
+        kept, _ = vertical_spreads(self._kette(), self._criteria(budget=362.0),
+                                   strategy=BULL_PUT_CREDIT, now_fn=_NOW)
+        self.assertEqual(len(kept), 1)
+        kept, dropped = vertical_spreads(self._kette(), self._criteria(budget=361.99),
+                                         strategy=BULL_PUT_CREDIT, now_fn=_NOW)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Risikobudget 362.00 USD > Budget 361.99 USD"])
+
+    def test_a_budget_above_the_credit_but_below_the_risk_still_drops(self):
+        # 200 liegt ueber dem Credit (140) und unter dem Risiko (362)
+        kept, dropped = vertical_spreads(self._kette(), self._criteria(budget=200.0),
+                                         strategy=BULL_PUT_CREDIT, now_fn=_NOW)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Risikobudget 362.00 USD > Budget 200.00 USD"])
+
+    # --- ungueltige Preise -------------------------------------------------
+
+    def test_a_credit_of_zero_or_below_is_not_a_trade(self):
+        kette = self._kette()
+        # verkauftes C100 faellt auf 1.00, gekauftes C105 kostet 1.15 -> -0.15
+        kette[0].bid = 1.00
+        kept, dropped = vertical_spreads(kette, self._criteria(), strategy=BEAR_CALL_CREDIT,
+                                         now_fn=_NOW)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Credit -0.15 außerhalb (0, 5.0) - kein gültiger Credit"])
+
+    def test_a_credit_at_or_above_the_width_is_not_a_trade(self):
+        kette = self._kette()
+        kette[3].bid = 6.20            # verkaufter P105 zahlt 6.20, gekaufter P100 kostet 1.15
+        kept, dropped = vertical_spreads(kette, self._criteria(), strategy=BULL_PUT_CREDIT,
+                                         now_fn=_NOW)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Credit 5.05 außerhalb (0, 5.0) - kein gültiger Credit"])
+
+    def test_a_missing_price_keeps_the_credit_unknown_instead_of_crashing(self):
+        kette = self._kette()
+        kette[3].bid = None           # verkauftes Bein ohne Geldkurs
+        paar_und_ablehnung = vertical_spreads(kette, self._criteria(),
+                                              strategy=BULL_PUT_CREDIT, now_fn=_NOW)
+        kept, dropped = paar_und_ablehnung
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped],
+                         ["Credit nicht bestimmbar - kein gültiger Geld-/Briefkurs"])
+
+    # --- dieselben Filter auf beiden Beinen --------------------------------
+
+    def test_both_legs_run_through_the_same_filters(self):
+        kette = self._kette()
+        kette[3].open_interest = 40    # verkauftes Bein des Bull Put
+        kept, dropped = vertical_spreads(kette, self._criteria(), strategy=BULL_PUT_CREDIT,
+                                         now_fn=_NOW)
+        self.assertEqual(kept, [])
+        self.assertEqual([r for _p, r in dropped], ["strike 105.0 put: OI 40 < 500"])
+
+        kept, dropped = vertical_spreads(kette, self._criteria(), strategy=BEAR_CALL_CREDIT,
+                                         now_fn=_NOW)
+        self.assertEqual(len(kept), 1, "der Call-Spread darf davon unberuehrt bleiben")
+
+    # --- Aufloesung und JSON ------------------------------------------------
+
+    def test_the_side_alone_still_means_the_debit_spread(self):
+        """Kompatibilitaet: `option_type=call|put` ohne Strategie bleibt Debit."""
+        self.assertEqual(resolve_strategy(option_type="call"), (BULL_CALL_DEBIT, None, None))
+        self.assertEqual(resolve_strategy(option_type="put"), (BEAR_PUT_DEBIT, None, None))
+        # MIT Strategie ist die Seite nur noch die Kettenseite
+        self.assertEqual(resolve_strategy(BULL_PUT_CREDIT, "put"), (BULL_PUT_CREDIT, None, None))
+        self.assertEqual(resolve_strategy(BEAR_CALL_CREDIT, "call"), (BEAR_CALL_CREDIT, None, None))
+        # und die falsche Seite bleibt ein Widerspruch
+        self.assertEqual(resolve_strategy(BULL_PUT_CREDIT, "call")[1], "conflict")
+        self.assertEqual(resolve_strategy(BEAR_CALL_CREDIT, "put")[1], "conflict")
+
+    def test_the_json_names_the_kind_and_keeps_the_debit_keys(self):
+        kriterien = self._criteria()
+        credit = form_vertical_pairs(self._kette(), strategy=BULL_PUT_CREDIT)[0].as_dict(kriterien)
+        self.assertEqual(credit["strategy"], BULL_PUT_CREDIT)
+        self.assertEqual(credit["strategy_kind"], "credit")
+        self.assertIsNone(credit["net_debit"])
+        self.assertIsNone(credit["position_debit"])
+        self.assertIsNone(credit["debit_width_ratio"])
+        self.assertIsNone(credit["debit_ge_width"])
+        self.assertEqual(credit["net_credit"], 1.40)
+        self.assertEqual(credit["credit_width_ratio"], 0.28)
+        self.assertIs(credit["credit_ge_width"], False)
+        self.assertEqual(credit["max_loss"], 3.60)
+        self.assertEqual(credit["max_profit"], 1.40)
+        self.assertEqual(credit["risk_budget"], 362.00)
+        self.assertIn("keine Broker-Margin", credit["risk_budget_note"])
+        self.assertIsNone(credit["budget_fits"])          # keine Grenze gesetzt
+
+        debit = form_vertical_pairs(self._kette(), strategy=BULL_CALL_DEBIT)[0].as_dict(kriterien)
+        self.assertEqual(debit["strategy_kind"], "debit")
+        self.assertIsNone(debit["net_credit"])
+        self.assertIsNone(debit["credit_width_ratio"])
+        self.assertIsNone(debit["credit_ge_width"])
+        # der Debit-Einsatz ist unveraendert der position_debit
+        self.assertEqual(debit["risk_budget"], debit["position_debit"])
+        self.assertEqual(debit["position_debit"], 142.00)   # 1.40 * 100 + 2
+
+    def test_every_credit_pair_is_kept_or_carries_a_reason(self):
+        kept, dropped = vertical_spreads(self._kette(), self._criteria(budget=0.0),
+                                         strategy=BEAR_CALL_CREDIT, now_fn=_NOW)
+        alle = form_vertical_pairs(self._kette(), strategy=BEAR_CALL_CREDIT)
+        self.assertEqual(len(kept) + len(dropped), len(alle))
+        self.assertEqual(kept, [])
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+

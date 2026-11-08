@@ -363,6 +363,8 @@
       <legend>Strategie</legend>
       <label><input type="radio" name="strategy" value="bull_call_debit" {% if strategy == 'bull_call_debit' %}checked{% endif %}> Bull Call Spread (Debit) — Call kaufen (niedriger Strike), Call verkaufen (höherer Strike)</label>
       <label><input type="radio" name="strategy" value="bear_put_debit" {% if strategy == 'bear_put_debit' %}checked{% endif %}> Bear Put Spread (Debit) — Put kaufen (höherer Strike), Put verkaufen (niedrigerer Strike)</label>
+      <label><input type="radio" name="strategy" value="bull_put_credit" {% if strategy == 'bull_put_credit' %}checked{% endif %}> Bull Put Spread (Credit) — Put kaufen (niedrigerer Strike), Put verkaufen (höherer Strike)</label>
+      <label><input type="radio" name="strategy" value="bear_call_credit" {% if strategy == 'bear_call_credit' %}checked{% endif %}> Bear Call Spread (Credit) — Call kaufen (höherer Strike), Call verkaufen (niedrigerer Strike)</label>
     </fieldset>
     <fieldset class="crit">
       <legend>Position</legend>
@@ -438,30 +440,39 @@
       <p class="note">Die gewählte Strategie: {{ strategy_buy }}, {{ strategy_sell }}. Der Basiswert
         muss {{ strategy_direction }} laufen. Dieselben Filter wie die Liste oben, auf beide Beine
         angewandt - ein Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer.
-        Debit = Kauf zum Ask, Verkauf zum Bid.</p>
-      <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads. Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert. Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung, in die der Basiswert laufen muss (↑ steigen für Calls, ↓ fallen für Puts).</p>
-      <p class="note">Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl
-        und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
+        {% if strategy_kind == 'credit' %}Credit = Bid des verkauften Beins minus Ask des gekauften
+        Beins - der konservativ sofort erzielbare Betrag, nie ein Mittelwert.{% else %}Debit = Kauf
+        zum Ask, Verkauf zum Bid.{% endif %}</p>
+      <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads.
+        {% if strategy_kind == 'credit' %}Max Gewinn ist der Credit, max Verlust die Strike-Breite
+        minus Credit.{% endif %}
+        Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert. Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung, in die der Basiswert laufen muss (↑ steigen für Calls, ↓ fallen für Puts){% if strategy_kind == 'credit' %}. Bei einem Credit-Spread ist der Break-even die <strong>Verlustschwelle</strong>: Gewinn entsteht, solange der Basiswert auf der anderen Seite bleibt{% endif %}.</p>
+      <p class="note">{% if strategy_kind == 'credit' %}Die Spalte Risikobudget ($) ist der maximale
+        Verlust nach Multiplikator, Stückzahl und Gebühren ((Breite − Credit) × Multiplikator ×
+        Stückzahl + Gebühren) — eine eigene Rechnung aus den Kursen, <strong>keine Broker-Margin</strong>.
+        Der Credit bleibt der Wert je Einheit.{% else %}Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.{% endif %}</p>
       <div class="tbl"><table>
         <thead><tr>
-          <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust<br>(je Einheit, brutto)</th><th>max Gewinn<br>(je Einheit, brutto)</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite<br>(brutto)</a></th><th>Breakeven<br>(brutto)</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite %</th><th>Hinweis</th>
+          <th>Spread</th><th>Verfall</th><th>Breite</th><th>{% if strategy_kind == 'credit' %}Credit (je Einheit){% else %}Debit (je Einheit){% endif %}</th><th>{% if strategy_kind == 'credit' %}Risikobudget ($){% else %}Position ($){% endif %}</th><th>max Verlust<br>(je Einheit, brutto)</th><th>max Gewinn<br>(je Einheit, brutto)</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite<br>(brutto)</a></th><th>Breakeven<br>(brutto)</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>{% if strategy_kind == 'credit' %}Credit/Breite %{% else %}Debit/Breite %{% endif %}</th><th>Hinweis</th>
         </tr></thead>
         {% for v, rendite, abstand in verticals %}
           <tr>
             <td title="Kauf {{ v.long.asset.symbol }} · Verkauf {{ v.short.asset.symbol }}">{{ v.long.asset.underlying.symbol }} {{ '%.2f'|format(v.long.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }} kaufen / {{ '%.2f'|format(v.short.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }} verkaufen</td>
             <td>{{ v.expiration }}</td>
             <td>{{ '%.2f'|format(v.strike_width) }}</td>
-            <td>{{ '%.2f'|format(v.net_debit) }}</td>
+            <td>{% if strategy_kind == 'credit' %}{% if v.net_credit is none %}-{% else %}{{ '%.2f'|format(v.net_credit) }}{% endif %}{% else %}{{ '%.2f'|format(v.net_debit) }}{% endif %}</td>
             {# D13: was die Position kostet - Multiplikator, Stueckzahl und Gebuehren
-               stehen im Formular. Ohne Groesse ein Strich, keine stille Null. #}
-            <td>{% if v.position_debit(criteria) is none %}-{% else %}{{ '%.0f'|format(v.position_debit(criteria)) }}{% endif %}</td>
+               stehen im Formular. Ohne Groesse ein Strich, keine stille Null.
+               Credit: das Risikobudget (max. Verlust inkl. Gebuehren), nicht der
+               Credit als negativer Einsatz. #}
+            <td>{% if strategy_kind == 'credit' %}{% if v.risk_budget(criteria) is none %}-{% else %}{{ '%.0f'|format(v.risk_budget(criteria)) }}{% endif %}{% else %}{% if v.position_debit(criteria) is none %}-{% else %}{{ '%.0f'|format(v.position_debit(criteria)) }}{% endif %}{% endif %}</td>
             <td>{{ '%.2f'|format(v.max_loss) }}</td>
             <td>{{ '%.2f'|format(v.max_profit) }}</td>
             <td{% if v.max_profit == 0 %} title="kein Gewinn möglich"{% endif %}>{% if rendite is none %}-{% else %}{{ '%.2f'|format(rendite) }} %{% endif %}</td>
             <td>{{ '%.2f'|format(v.breakeven) }}</td>
             <td>{% if abstand is none %}-{% else %}{{ '↑' if v.breakeven > v.long.underlying_price else '↓' }} {{ '%.2f'|format(abstand) }} %{% endif %}</td>
-            <td>{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio * 100) }} %{% endif %}</td>
-            <td>{% if v.debit_ge_width %}kein Gewinn möglich{% else %}-{% endif %}</td>
+            <td>{% if strategy_kind == 'credit' %}{% if v.credit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.credit_width_ratio * 100) }} %{% endif %}{% else %}{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio * 100) }} %{% endif %}{% endif %}</td>
+            <td>{% if strategy_kind == 'credit' %}{% if v.credit_ge_width %}Credit ≥ Breite{% else %}-{% endif %}{% else %}{% if v.debit_ge_width %}kein Gewinn möglich{% else %}-{% endif %}{% endif %}</td>
           </tr>
         {% endfor %}
       </table></div></div>

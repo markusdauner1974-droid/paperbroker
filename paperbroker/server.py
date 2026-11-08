@@ -1024,6 +1024,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             spread_type=spread_type,
             strategy=strategy,
             strategy_label=None if spez is None else spez["label"],
+            strategy_kind=None if spez is None else spez["kind"],
             strategy_buy=None if spez is None else spez["buy"],
             strategy_sell=None if spez is None else spez["sell"],
             strategy_direction=None if spez is None else spez["direction"],
