@@ -54,7 +54,7 @@ import tempfile
 import threading
 import urllib.error
 import urllib.request
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 from ...earnings_calendar import (
     CONFIRMATION_UNKNOWN,
@@ -79,6 +79,7 @@ from ...earnings_calendar import (
     parse_nasdaq_calendar_row,
     parse_nasdaq_earnings_date,
 )
+from ...earnings_day_calendar import parse_calendar_rows
 
 SOURCE_NAME = "nasdaq_earnings_date"
 DATE_URL = "https://api.nasdaq.com/api/analyst/{symbol}/earnings-date?assetclass=stocks"
@@ -93,6 +94,11 @@ DEFAULT_FRESHNESS_LIMIT_SECONDS = 48 * 60 * 60
 DEFAULT_TIMEOUT_SECONDS = 6.0
 DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS = 3.0
 DEFAULT_CACHE_PATH = ".cache/earnings.json"
+# The day calendar is a second cache: one entry per DATE, not per ticker. Three
+# dates per page view, and a date is only useful for a few days, so a small cap
+# keeps the file from growing for ever.
+DEFAULT_CALENDAR_CACHE_PATH = ".cache/earnings_calendar.json"
+MAX_CALENDAR_ENTRIES = 64
 # One entry per ticker; the route accepts any 1-6 letter symbol, so an
 # unthrottled public caller could otherwise grow the file without bound.
 MAX_CACHE_ENTRIES = 512
@@ -248,6 +254,123 @@ class EarningsCache:
         return dict(geordnet[: self.max_entries])
 
 
+class DayCalendarStore:
+    """One JSON file, one entry per DATE, written atomically.
+
+    Same contract as ``EarningsCache``: a corrupt, missing or unreadable file
+    is a cache MISS, never an exception. The calendar is decoration on the
+    start page - it may cost a query, it may not cost the page.
+
+    An entry is only trusted when it carries its own date, a rows list of
+    objects and a parseable timestamp. Anything else is treated as absent, so
+    a half-written or hand-edited file cannot put invented rows on screen.
+    """
+
+    def __init__(self, path=None, max_entries=MAX_CALENDAR_ENTRIES):
+        self.path = path or DEFAULT_CALENDAR_CACHE_PATH
+        self.max_entries = max(1, int(max_entries))
+
+    def _read_all(self):
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                roh = json.load(fh)
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError, ValueError):
+            return {}
+        if not isinstance(roh, dict) or not isinstance(roh.get("entries"), dict):
+            return {}
+        return roh["entries"]
+
+    def get(self, day):
+        eintrag = self._read_all().get(day)
+        if not isinstance(eintrag, dict):
+            return None
+        if eintrag.get("date") != day:
+            return None
+        rows = eintrag.get("rows")
+        if not isinstance(rows, list) or not all(isinstance(z, dict) for z in rows):
+            return None
+        try:
+            datetime.strptime(eintrag.get("fetched_at_utc") or "", "%Y-%m-%dT%H:%M:%SZ")
+        except (TypeError, ValueError):
+            return None
+        return eintrag
+
+    def put(self, day, entry):
+        """Read-modify-write under one thread lock and one exclusive flock."""
+        verzeichnis = os.path.dirname(os.path.abspath(self.path)) or "."
+        try:
+            os.makedirs(verzeichnis, exist_ok=True)
+        except OSError:
+            return False
+        sperre = self.path + ".lock"
+        try:
+            with _CACHE_LOCK, open(sperre, "a", encoding="utf-8") as sperr_datei:
+                if fcntl is not None:
+                    fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_EX)
+                try:
+                    self._write_locked(day, entry, verzeichnis)
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            # An unwritable cache must not fail the request; the answer is still
+            # correct, it just cannot be reused.
+            return False
+        return True
+
+    def _write_locked(self, day, entry, verzeichnis):
+        eintraege = dict(self._read_all())
+        eintraege[day] = entry
+        eintraege = self._bounded(eintraege)
+        nutzlast = {"entries": eintraege}
+        fd, tmp = tempfile.mkstemp(prefix=".calendar-", suffix=".tmp", dir=verzeichnis)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(nutzlast, fh, ensure_ascii=False, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+    def _bounded(self, eintraege):
+        """Keep the most recently FETCHED dates; drop the oldest beyond the cap."""
+        if len(eintraege) <= self.max_entries:
+            return eintraege
+        geordnet = sorted(
+            eintraege.items(),
+            key=lambda kv: str((kv[1] or {}).get("fetched_at_utc") or ""),
+            reverse=True,
+        )
+        return dict(geordnet[: self.max_entries])
+
+
+def _calendar_targets(days):
+    """``{label: iso}`` (or a plain iterable of iso strings) -> ``{label: date}``.
+
+    Only the PARSED date goes into the URL: the format is rebuilt from a real
+    calendar date, so nothing caller-supplied can reach the query string.
+    """
+    if isinstance(days, dict):
+        paare = list(days.items())
+    else:
+        paare = [(wert, wert) for wert in (days or ())]
+    ziele = {}
+    for label, wert in paare:
+        if not isinstance(wert, str):
+            continue
+        try:
+            tag = date.fromisoformat(wert.strip())
+        except ValueError:
+            continue
+        ziele[str(label)] = tag
+    return ziele
+
+
 class NullEarningsAdapter:
     """The default when no source is configured: says so, invents nothing."""
 
@@ -275,6 +398,10 @@ class NullEarningsAdapter:
         )
         return body
 
+    def get_calendar_days(self, days):
+        """No source configured: an honest "not configured", not an empty day."""
+        return {"days": {}, "state": "not_configured", "error": None}
+
 
 class NasdaqEarningsAdapter:
     """Live Nasdaq query with a bounded, atomic cache (see module docstring)."""
@@ -291,10 +418,12 @@ class NasdaqEarningsAdapter:
         timeout_seconds=DEFAULT_TIMEOUT_SECONDS,
         cross_check=True,
         cross_check_timeout_seconds=DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS,
+        calendar_store=None,
     ):
         self._transport = transport or urllib_transport
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self._cache = cache if cache is not None else EarningsCache()
+        self._calendar_store = calendar_store if calendar_store is not None else DayCalendarStore()
         self.ttl_seconds = int(ttl_seconds)
         self.freshness_limit_seconds = int(freshness_limit_seconds)
         self.timeout_seconds = float(timeout_seconds)
@@ -480,3 +609,121 @@ class NasdaqEarningsAdapter:
             },
             cache=cache_block,
         )
+
+    # -- day calendar (start page) ----------------------------------------- #
+    def get_calendar_days(self, days):
+        """The three day lists, each served from the file cache when it is fresh.
+
+        Per day the states are:
+
+        * ``live`` - answered by the source now (or a cache entry younger than
+          ``ttl_seconds``, which is the same answer without the query),
+        * ``stale`` - the live query failed, the old rows are served WITH their
+          own timestamp and ``live_query_failed``,
+        * ``unavailable`` - the query failed and there is no cache: no rows.
+
+        A payload without a usable ``data.rows`` list counts as a failure, not
+        as an empty day: a Sunday really lists nothing, a broken answer does
+        not. The aggregate state is the worst of the days, and its timestamp is
+        the OLDEST one delivered - the page must never imply a fresher stamp
+        than the data it shows.
+        """
+        jetzt = _utc_now(self._now_fn)
+        ziele = _calendar_targets(days)
+        if not ziele:
+            return {
+                "days": {},
+                "state": "unavailable",
+                "fetched_at_utc": None,
+                "error": {"code": "no_dates", "message": "no calendar dates were requested", "http_status": None},
+            }
+
+        geliefert = {}
+        stempel = []
+        zustaende = []
+        for _label, tag in ziele.items():
+            iso = tag.isoformat()
+            gespeichert, alter = self._cached_day(iso, jetzt)
+
+            if gespeichert is not None and alter is not None and 0 <= alter < self.ttl_seconds:
+                geliefert[iso] = self._day_entry(gespeichert, state="live", from_cache=True)
+                stempel.append(geliefert[iso]["fetched_at_utc"])
+                zustaende.append("live")
+                continue
+
+            try:
+                payload = self._get_json(CALENDAR_URL.format(date=iso))
+                geparst = parse_calendar_rows(payload, iso)
+                if not geparst["payload_ok"]:
+                    # The answer arrived but carries no rows list: an outage,
+                    # not a day without earnings.
+                    raise EarningsSourceError("invalid_payload", "the calendar answer carries no rows list")
+            except EarningsSourceError as exc:
+                if gespeichert is not None:
+                    geliefert[iso] = self._day_entry(gespeichert, state="stale", from_cache=True, error=exc)
+                    stempel.append(geliefert[iso]["fetched_at_utc"])
+                    zustaende.append("stale")
+                else:
+                    geliefert[iso] = {
+                        "date": iso,
+                        "rows": [],
+                        "state": "unavailable",
+                        "fetched_at_utc": None,
+                        "payload_ok": False,
+                        "skipped": 0,
+                        "from_cache": False,
+                        "live_query_failed": True,
+                        "error": exc.as_dict(),
+                    }
+                    zustaende.append("unavailable")
+                continue
+
+            eintrag = {
+                "date": iso,
+                "rows": geparst["rows"],
+                "fetched_at_utc": _iso(jetzt),
+                "state": "live",
+                "payload_ok": True,
+                "skipped": geparst["skipped"],
+            }
+            geschrieben = self._calendar_store.put(iso, eintrag)
+            geliefert[iso] = dict(eintrag, from_cache=False, live_query_failed=False,
+                                  persisted=bool(geschrieben))
+            stempel.append(eintrag["fetched_at_utc"])
+            zustaende.append("live")
+
+        rang = {"live": 0, "stale": 1, "unavailable": 2}
+        gesamt = max(zustaende, key=lambda z: rang.get(z, 2))
+        return {
+            "days": geliefert,
+            "state": gesamt,
+            "fetched_at_utc": min(stempel) if stempel else None,
+        }
+
+    def _cached_day(self, iso, jetzt):
+        """The stored entry and its age in seconds, or ``(None, None)``."""
+        gespeichert = self._calendar_store.get(iso)
+        if gespeichert is None:
+            return None, None
+        try:
+            geprueft = datetime.strptime(gespeichert["fetched_at_utc"], "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
+        except (TypeError, ValueError):        # pragma: no cover - the store validates it
+            return None, None
+        return gespeichert, (jetzt - geprueft).total_seconds()
+
+    @staticmethod
+    def _day_entry(eintrag, *, state, from_cache, error=None):
+        """A stored day, labelled with its own timestamp - never as a live check."""
+        aus = {
+            "date": eintrag.get("date"),
+            "rows": list(eintrag.get("rows") or []),
+            "state": state,
+            "fetched_at_utc": eintrag.get("fetched_at_utc"),
+            "payload_ok": bool(eintrag.get("payload_ok", True)),
+            "skipped": int(eintrag.get("skipped") or 0),
+            "from_cache": from_cache,
+            "live_query_failed": error is not None,
+        }
+        if error is not None:
+            aus["error"] = error.as_dict()
+        return aus

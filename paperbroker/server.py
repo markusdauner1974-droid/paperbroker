@@ -20,6 +20,7 @@ import os
 import re
 import urllib.error
 import urllib.request
+from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import arrow
@@ -34,6 +35,12 @@ from .earnings_calendar import (
     SESSION_AFTER,
     SESSION_BEFORE,
     combine_earnings_and_expirations,
+)
+from .earnings_day_calendar import (
+    DAY_NEXT,
+    DAY_PREV,
+    DAY_TODAY,
+    build_calendar,
 )
 from .eva_quality import assess_source_quality, snapshot_identity
 from .PaperBroker import PaperBroker
@@ -92,7 +99,7 @@ _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
                     + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
-_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type")
+_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type", "no_calendar")
 
 
 def _parse_criteria_value(field, raw):
@@ -171,7 +178,26 @@ def _criteria_echo(criteria):
 
 
 _SESSION_TEXT = {SESSION_BEFORE: "vorbörslich", SESSION_AFTER: "nachbörslich"}
+_SESSION_UNKNOWN_TEXT = "Zeitpunkt unbekannt"
 _CONFIRMATION_TEXT = {CONFIRMATION_CONFIRMED: "bestätigt", CONFIRMATION_ESTIMATED: "geschätzt"}
+_CALENDAR_DAY_LABEL = {DAY_PREV: "gestern", DAY_TODAY: "heute", DAY_NEXT: "morgen"}
+
+
+def _german_date(iso_text):
+    """``2026-11-08`` -> ``08.11.2026``; an unusable value stays ``None``."""
+    try:
+        return datetime.strptime(str(iso_text), "%Y-%m-%d").strftime("%d.%m.%Y")
+    except (TypeError, ValueError):
+        return None
+
+
+def _german_stamp(iso_text):
+    """``2026-11-08T06:00:00Z`` -> ``08.11.2026 06:00 UTC`` (source stamp, no guess)."""
+    try:
+        wert = datetime.strptime(str(iso_text), "%Y-%m-%dT%H:%M:%SZ")
+    except (TypeError, ValueError):
+        return None
+    return wert.strftime("%d.%m.%Y %H:%M UTC")
 
 
 def _earnings_source_from_env():
@@ -644,10 +670,84 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             "checked_live": cache.get("state") == "live",
         }
 
+    def _calendar_view():
+        """Yesterday/today/tomorrow for the start page - degrades, never raises.
+
+        The three days are US calendar dates, because the calendar is a US one
+        (a German date would shift the whole block by the night offset). Every
+        failure mode ends in a dict the template can render: a missing source
+        is a plain sentence, not an exception and not an empty day pretending
+        there is nothing to report.
+        """
+        try:
+            heute = _us_today(now_fn)
+            tage = {
+                DAY_PREV: (heute - timedelta(days=1)).isoformat(),
+                DAY_TODAY: heute.isoformat(),
+                DAY_NEXT: (heute + timedelta(days=1)).isoformat(),
+            }
+            antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
+            roh = antwort.get("days") if isinstance(antwort, dict) else None
+            roh = roh if isinstance(roh, dict) else {}
+            tagesdaten = {}
+            for key, tag in tage.items():
+                eintrag = roh.get(tag)
+                if not isinstance(eintrag, dict):
+                    # No entry for this day: the group stays empty and says so.
+                    eintrag = {"date": tag, "rows": [], "payload_ok": False, "skipped": 0}
+                tagesdaten[key] = eintrag
+
+            kalender = build_calendar(tagesdaten)
+            gruppen = []
+            for gruppe in kalender["groups"]:
+                zeilen = [dict(zeile, session_text=_SESSION_TEXT.get(zeile.get("session"), _SESSION_UNKNOWN_TEXT))
+                          for zeile in gruppe["rows"]]
+                gruppen.append(dict(
+                    gruppe,
+                    rows=zeilen,
+                    label=_CALENDAR_DAY_LABEL.get(gruppe["key"], ""),
+                    date_text=_german_date(gruppe["date"]),
+                    counter=f"{len(zeilen)} von {gruppe['total']}",
+                ))
+
+            state = str(antwort.get("state") or "unavailable")
+            tages_zustaende = [roh[tag].get("state") for tag in tage.values()
+                               if isinstance(roh.get(tag), dict)]
+            vorhanden = any(z in ("live", "stale") for z in tages_zustaende)
+            if state == "not_configured":
+                note = "keine Earnings-Quelle konfiguriert"
+            elif state == "stale" or "stale" in tages_zustaende:
+                note = "letzter Stand, Quelle antwortet nicht"
+            elif not vorhanden:
+                note = "Quelle antwortet nicht"
+            else:
+                note = None
+
+            return {
+                "available": bool(vorhanden),
+                "state": state,
+                "note": note,
+                "stand": _german_stamp(antwort.get("fetched_at_utc")),
+                "groups": gruppen,
+            }
+        except Exception:                                    # noqa: BLE001 - page must render
+            app.logger.exception("earnings calendar view failed")
+            return {
+                "available": False,
+                "state": "unavailable",
+                "note": "Quelle nicht lesbar - Details im Server-Log.",
+                "stand": None,
+                "groups": [],
+            }
+
     @app.get("/")
     def index():
         ticker = request.args.get("ticker", "").upper().strip()
         expiration = request.args.get("expiration", "").strip()
+        # The calendar is decoration: its adapter call must never break the
+        # screener. `?no_calendar` is the escape hatch for tests and bookmarks
+        # that only need the form.
+        calendar = None if request.args.get("no_calendar") else _calendar_view()
         error = None
         hint = None
         results = dropped = dates = selectable = quotes = None
@@ -758,6 +858,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             dte=dte,
             trend=_trend_display(ticker) if ticker else None,
             earnings=earnings_view,
+            calendar=calendar,
             feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit")
 
     return app
