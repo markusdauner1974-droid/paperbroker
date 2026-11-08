@@ -100,6 +100,11 @@ DEFAULT_TTL_SECONDS = 6 * 60 * 60
 DEFAULT_FRESHNESS_LIMIT_SECONDS = 48 * 60 * 60
 DEFAULT_TIMEOUT_SECONDS = 6.0
 DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS = 3.0
+# How long a failed day query is remembered. A dead source costs the full
+# timeout on the FIRST page view; without a memory the user pays it again on
+# every reload. 60 s keeps reloads cheap while a recovered source is visible
+# again within one minute - short enough that nobody waits for a stale verdict.
+DEFAULT_FAILURE_RETRY_SECONDS = 60
 DEFAULT_CACHE_PATH = ".cache/earnings.json"
 # The day calendar is a second cache: one entry per DATE, not per ticker. Three
 # dates per page view, and a date is only useful for a few days, so a small cap
@@ -449,6 +454,7 @@ class NasdaqEarningsAdapter:
         cross_check=True,
         cross_check_timeout_seconds=DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS,
         calendar_store=None,
+        failure_retry_seconds=DEFAULT_FAILURE_RETRY_SECONDS,
     ):
         self._transport = transport or urllib_transport
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
@@ -458,6 +464,12 @@ class NasdaqEarningsAdapter:
         self.freshness_limit_seconds = int(freshness_limit_seconds)
         self.timeout_seconds = float(timeout_seconds)
         self.cross_check = bool(cross_check)
+        # 0 disables the memory: every page view queries again, as before.
+        self.failure_retry_seconds = max(0, int(failure_retry_seconds))
+        # Last failure per ISO day, PROCESS-LOCAL on purpose - no file, so a
+        # restart asks again immediately instead of inheriting a stale verdict.
+        self._day_failures = {}
+        self._day_failures_lock = threading.Lock()
         # The cross-check is optional (a failure is tolerated), so it must not
         # be able to double the cold-path latency: it gets its own, shorter cap.
         self.cross_check_timeout_seconds = float(cross_check_timeout_seconds)
@@ -670,6 +682,23 @@ class NasdaqEarningsAdapter:
             (18 s by default) before the start page could render,
         (c) assembly in the REQUESTED order, cache writes included - the output
             never depends on which thread answered first.
+
+        Outage memory (why a failure is not retried on every page view)
+        --------------------------------------------------------------
+        A dead source costs the full ``timeout_seconds`` per attempt, and the
+        user reloads the page while it is down. So the last failure per day is
+        remembered for ``failure_retry_seconds``: a day failed that recently is
+        NOT queried again - it answers exactly like the query that just failed
+        (``stale`` with the old rows, or ``unavailable`` with no rows), but with
+        ``error.code="recent_failure"`` and without touching the transport. That
+        bounds the cost of a reload to the cached answer while recovery becomes
+        visible again after at most ``failure_retry_seconds``.
+
+        The memory is per PROCESS: nothing is written to the cache file, so a
+        restart asks the source again at once instead of inheriting a verdict
+        nobody can date. A successful query (or a day that is simply not
+        failed) clears the entry; ``invalid_payload`` counts as a failure
+        because it is an outage, not an empty day.
         """
         jetzt = _utc_now(self._now_fn)
         ziele = _calendar_targets(days)
@@ -689,11 +718,18 @@ class NasdaqEarningsAdapter:
         gespeicherte = self._calendar_store.get_many(iso_tage)
         frisch = {}
         zu_holen = []
+        gesperrt = {}
         for iso in iso_tage:
             eintrag = gespeicherte.get(iso)
             alter = self._age_seconds(eintrag, jetzt)
             if eintrag is not None and alter is not None and 0 <= alter < self.ttl_seconds:
                 frisch[iso] = eintrag
+                continue
+            # A day that failed moments ago is not asked again; it answers like
+            # the failed query instead of paying the timeout a second time.
+            fehler = self._recent_failure(iso, jetzt)
+            if fehler is not None:
+                gesperrt[iso] = fehler
             else:
                 zu_holen.append(iso)
 
@@ -712,11 +748,20 @@ class NasdaqEarningsAdapter:
                 zustaende.append("live")
                 continue
 
-            ergebnis = abrufe[iso]
-            exc = ergebnis.get("error")
-            if exc is not None:
+            # A blocked day has no query result; the memory stands in for it, so
+            # both cases end in the same "failed" answer below.
+            if iso in gesperrt:
+                fehler = gesperrt[iso]
+            else:
+                fehler = abrufe[iso].get("error")
+                if fehler is not None:
+                    self._remember_failure(iso, jetzt)
+                else:
+                    self._forget_failure(iso)
+
+            if fehler is not None:
                 if gespeichert is not None:
-                    geliefert[iso] = self._day_entry(gespeichert, state="stale", from_cache=True, error=exc)
+                    geliefert[iso] = self._day_entry(gespeichert, state="stale", from_cache=True, error=fehler)
                     stempel.append(geliefert[iso]["fetched_at_utc"])
                     zustaende.append("stale")
                 else:
@@ -729,12 +774,12 @@ class NasdaqEarningsAdapter:
                         "skipped": 0,
                         "from_cache": False,
                         "live_query_failed": True,
-                        "error": exc.as_dict(),
+                        "error": fehler.as_dict(),
                     }
                     zustaende.append("unavailable")
                 continue
 
-            geparst = ergebnis["parsed"]
+            geparst = abrufe[iso]["parsed"]
             eintrag = {
                 "date": iso,
                 "rows": geparst["rows"],
@@ -791,6 +836,48 @@ class NasdaqEarningsAdapter:
         except EarningsSourceError as exc:
             return {"error": exc}
         return {"parsed": geparst}
+
+    # -- outage memory ------------------------------------------------------ #
+    def _recent_failure(self, iso, jetzt):
+        """The ``recent_failure`` error that blocks ``iso``, or ``None``.
+
+        A failure younger than ``failure_retry_seconds`` stands in for the query
+        that just failed, so a reload costs no transport call. The bound is
+        two-sided on purpose: a stamp from the FUTURE (clock moved backwards) is
+        not trusted to block anything - the same rule the cache applies to an
+        entry from the future - so a wrong clock can delay a query, never
+        suppress it indefinitely.
+        """
+        with self._day_failures_lock:
+            stempel = self._day_failures.get(iso)
+        if stempel is None:
+            return None
+        alter = (jetzt - stempel).total_seconds()
+        if not 0 <= alter < self.failure_retry_seconds:
+            return None
+        return EarningsSourceError(
+            "recent_failure",
+            f"the last query for {iso} failed {int(alter)} s ago; it is retried after at most "
+            f"{self.failure_retry_seconds} s",
+        )
+
+    def _remember_failure(self, iso, jetzt):
+        """Record ``jetzt`` as the day's last failure.
+
+        Memories that already left the retry window are dropped on the way, so
+        the dict holds at most one live entry per recently failed day and cannot
+        grow for the whole process lifetime.
+        """
+        with self._day_failures_lock:
+            self._day_failures[iso] = jetzt
+            for tag, stempel in list(self._day_failures.items()):
+                if (jetzt - stempel).total_seconds() >= self.failure_retry_seconds:
+                    del self._day_failures[tag]
+
+    def _forget_failure(self, iso):
+        """A successful query proves the source is back for that day."""
+        with self._day_failures_lock:
+            self._day_failures.pop(iso, None)
 
     @staticmethod
     def _age_seconds(eintrag, jetzt):

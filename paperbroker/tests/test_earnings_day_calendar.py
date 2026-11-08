@@ -18,6 +18,7 @@ from datetime import UTC, date, datetime, timedelta
 
 from paperbroker.adapters.earnings.NasdaqEarningsAdapter import (
     CALENDAR_URL,
+    DEFAULT_FAILURE_RETRY_SECONDS,
     DayCalendarStore,
     NasdaqEarningsAdapter,
     NullEarningsAdapter,
@@ -742,6 +743,181 @@ class TestCalendarDaysFetching(unittest.TestCase):
         for tag in (DAYS[DAY_PREV], DAYS[DAY_NEXT]):
             self.assertEqual(ergebnis["days"][tag]["state"], "live")
             self.assertEqual([z["symbol"] for z in ergebnis["days"][tag]["rows"]], ["AAA", "BBB"])
+
+
+class _FailedDaysSource(_CalendarSource):
+    """Fails only for the days it was told to fail - the rest answer normally."""
+
+    def __init__(self, fail_days, **kwargs):
+        super().__init__(**kwargs)
+        self.fail_days = set(fail_days)
+
+    def __call__(self, url, headers, timeout):
+        if url.rsplit("date=", 1)[-1] in self.fail_days:
+            self.calls.append(url)
+            raise TimeoutError("source down for this day")
+        return super().__call__(url, headers, timeout)
+
+
+class TestCalendarDaysOutageMemory(unittest.TestCase):
+    """A failed day is remembered per PROCESS and per DAY, not globally.
+
+    A dead source costs the full timeout once; while the source is down the
+    page is reloaded, and every reload used to pay that timeout again. These
+    tests pin the memory: a day that failed inside ``failure_retry_seconds``
+    answers like the failure without a transport call, and is queried again
+    once the window has passed.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmpdir = self._tmp.name
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def test_the_default_retry_window_is_sixty_seconds(self):
+        self.assertEqual(DEFAULT_FAILURE_RETRY_SECONDS, 60)
+        adapter = _adapter(self.tmpdir, _CalendarSource())
+        self.assertEqual(adapter.failure_retry_seconds, DEFAULT_FAILURE_RETRY_SECONDS)
+
+    def test_a_recent_failure_is_not_retried_and_answers_unavailable(self):
+        # (a) no cache: the reload inside the window is honest and empty, and
+        # costs no second timeout.
+        clock = _Clock()
+        quelle = _CalendarSource(fail=True)
+        adapter = _adapter(self.tmpdir, quelle, clock=clock)
+
+        erste = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 3)
+        self.assertEqual(erste["state"], "unavailable")
+        self.assertEqual({d["error"]["code"] for d in erste["days"].values()}, {"source_unreachable"})
+
+        clock.advance(seconds=30)
+        zweite = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 3)          # NOT asked again
+        self.assertEqual(zweite["state"], "unavailable")
+        self.assertIsNone(zweite["fetched_at_utc"])
+        for tag in DAYS.values():
+            eintrag = zweite["days"][tag]
+            self.assertEqual(eintrag["state"], "unavailable")
+            self.assertEqual(eintrag["rows"], [])
+            self.assertIsNone(eintrag["fetched_at_utc"])
+            self.assertTrue(eintrag["live_query_failed"])
+            self.assertEqual(eintrag["error"]["code"], "recent_failure")
+
+    def test_a_recent_failure_with_cache_serves_the_old_rows_as_stale(self):
+        # (a) with cache: the same stale answer a just-failed query would give,
+        # old rows and old stamp, labelled recent_failure.
+        clock = _Clock()
+        quelle = _CalendarSource(rows_for=lambda tag: [_row("AAA")])
+        adapter = _adapter(self.tmpdir, quelle, clock=clock)
+
+        erste = adapter.get_calendar_days(DAYS)
+        stempel = erste["days"][DAYS[DAY_TODAY]]["fetched_at_utc"]
+        self.assertEqual(stempel, "2026-11-08T06:00:00Z")
+
+        clock.advance(hours=7)                          # TTL expired
+        quelle.fail = True
+        zweite = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 6)
+        self.assertEqual(zweite["state"], "stale")
+
+        clock.advance(seconds=30)                       # inside the retry window
+        dritte = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 6)          # NOT asked again
+        self.assertEqual(dritte["state"], "stale")
+        self.assertEqual(dritte["fetched_at_utc"], stempel)   # oldest delivered stamp
+        for tag in DAYS.values():
+            eintrag = dritte["days"][tag]
+            self.assertEqual(eintrag["state"], "stale")
+            self.assertEqual([z["symbol"] for z in eintrag["rows"]], ["AAA"])
+            self.assertEqual(eintrag["fetched_at_utc"], stempel)
+            self.assertTrue(eintrag["live_query_failed"])
+            self.assertTrue(eintrag["from_cache"])
+            self.assertEqual(eintrag["error"]["code"], "recent_failure")
+
+    def test_after_the_retry_window_the_source_is_asked_again(self):
+        # (b) recovery must be visible: at exactly the window's end the day is
+        # queried again, even though it is still failing.
+        clock = _Clock()
+        quelle = _CalendarSource(fail=True)
+        adapter = _adapter(self.tmpdir, quelle, clock=clock)
+        adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 3)
+
+        clock.advance(seconds=DEFAULT_FAILURE_RETRY_SECONDS)
+        ergebnis = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 6)          # asked again
+        for tag in DAYS.values():
+            self.assertEqual(ergebnis["days"][tag]["error"]["code"], "source_unreachable")
+
+    def test_a_successful_query_forgets_the_failure(self):
+        # (c) the memory must not become a permanent block. The retry window
+        # (60 s) is far shorter than the TTL (6 h), so no end-to-end sequence
+        # can separate "forgotten on success" from "expired by age" - the
+        # memory is therefore asserted empty, plus the behavioural query after
+        # the cache expired again.
+        clock = _Clock()
+        quelle = _CalendarSource(fail=True)
+        adapter = _adapter(self.tmpdir, quelle, clock=clock, ttl_seconds=10)
+
+        erste = adapter.get_calendar_days(DAYS)
+        self.assertEqual(erste["state"], "unavailable")
+        self.assertEqual(sorted(adapter._day_failures), sorted(DAYS.values()))
+
+        clock.advance(seconds=DEFAULT_FAILURE_RETRY_SECONDS)
+        quelle.fail = False
+        zweite = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 6)
+        self.assertEqual(zweite["state"], "live")
+        self.assertEqual(adapter._day_failures, {})     # success cleared the memory
+
+        clock.advance(seconds=11)                       # cache (ttl 10 s) expired again
+        dritte = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 9)          # asked, not blocked
+        self.assertEqual(dritte["state"], "live")
+        self.assertTrue(all(d["state"] == "live" for d in dritte["days"].values()))
+
+    def test_an_invalid_payload_counts_as_a_failure(self):
+        # A payload without a rows list is an outage, so it is remembered like one.
+        clock = _Clock()
+        quelle = _CalendarSource(payload={"data": {}})
+        adapter = _adapter(self.tmpdir, quelle, clock=clock)
+
+        erste = adapter.get_calendar_days({DAY_TODAY: DAYS[DAY_TODAY]})
+        self.assertEqual(erste["days"][DAYS[DAY_TODAY]]["error"]["code"], "invalid_payload")
+
+        clock.advance(seconds=30)
+        zweite = adapter.get_calendar_days({DAY_TODAY: DAYS[DAY_TODAY]})
+        self.assertEqual(len(quelle.calls), 1)
+        self.assertEqual(zweite["state"], "unavailable")
+        self.assertEqual(zweite["days"][DAYS[DAY_TODAY]]["error"]["code"], "recent_failure")
+
+    def test_one_failed_day_does_not_block_the_healthy_days(self):
+        # (d) the memory is per day: Sunday is blocked, Saturday and Monday are
+        # still fetched and still delivered live.
+        clock = _Clock()
+        quelle = _FailedDaysSource({DAYS[DAY_TODAY]})
+        adapter = _adapter(self.tmpdir, quelle, clock=clock)
+
+        erste = adapter.get_calendar_days({DAY_TODAY: DAYS[DAY_TODAY]})
+        self.assertEqual(erste["state"], "unavailable")
+        self.assertEqual(len(quelle.calls), 1)
+
+        clock.advance(seconds=5)                        # well inside the window
+        zweite = adapter.get_calendar_days(DAYS)
+        self.assertEqual(len(quelle.calls), 3)
+        self.assertEqual(
+            sorted(url.rsplit("date=", 1)[-1] for url in quelle.calls[1:]),
+            sorted([DAYS[DAY_PREV], DAYS[DAY_NEXT]]),
+        )
+        self.assertEqual(zweite["state"], "unavailable")
+        self.assertEqual(zweite["days"][DAYS[DAY_TODAY]]["state"], "unavailable")
+        self.assertEqual(zweite["days"][DAYS[DAY_TODAY]]["error"]["code"], "recent_failure")
+        for tag in (DAYS[DAY_PREV], DAYS[DAY_NEXT]):
+            self.assertEqual(zweite["days"][tag]["state"], "live")
+            self.assertEqual([z["symbol"] for z in zweite["days"][tag]["rows"]], ["AAA"])
 
 
 if __name__ == "__main__":
