@@ -918,16 +918,24 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         criteria, criteria_error, unknown = _criteria_from_request(
             screener.criteria, request.args)
         strategy, spread_type, strategy_error, strategy_message = _strategy_selection(request.args)
-        if strategy_error == "unknown_option_type":
-            # Legacy behaviour, unchanged (D14): the page names what is allowed and
-            # keeps computing the default. ONLY an unknown option_type does this -
-            # a strategy this code cannot price is never replaced by a default.
+        gewuenschte = (request.args.get("strategy") or "").strip().lower()
+        if strategy_error == "unknown_option_type" and not gewuenschte:
+            # Legacy behaviour, unchanged (D14) for the BARE old address: the page
+            # names what is allowed and keeps computing the default. Only here -
+            # the caller named nothing but a side.
             error = strategy_message
             strategy = DEFAULT_STRATEGY
             spread_type = strategy_option_type(strategy)
             strategy_error = None
         elif strategy_error:
+            # A named strategy is NEVER replaced by a default: the request cannot be
+            # honoured (unknown value, or a malformed legacy alias next to it), so the
+            # page says so and computes nothing - the same answer /api/screen gives
+            # with its 400. The radio keeps the id the caller asked for, so the form
+            # does not silently show a different strategy than the request carried.
             error = strategy_message
+            strategy = gewuenschte if gewuenschte in STRATEGIES else None
+            spread_type = None if strategy is None else strategy_option_type(strategy)
         if unknown:
             hint = ("Unbekannte Parameter ignoriert: " + ", ".join(unknown)
                     + " (bedienbar sind: " + ", ".join(_CRITERIA_FIELDS)

@@ -2597,6 +2597,29 @@ class TheStrategyIsTheChoice(unittest.TestCase):
                       'bear_put_debit (Bear Put Spread (Debit)).</div>', page)
         self.assertEqual(self._spread_rows(page), [])
 
+    def test_a_valid_strategy_is_never_replaced_by_a_broken_legacy_alias(self):
+        """Kody-Fund (PR #72): `?strategy=bear_put_debit&option_type=bogus` zeigte
+        still den Bull Call.
+
+        Die Anfrage ist nicht erfuellbar - die alte Adresse ist unbekannt, die
+        Uebereinstimmung also unbeweisbar. Die Seite nennt den Fehler, rechnet
+        NICHTS und laesst die GEWAEHLTE Strategie im Formular stehen; die API
+        lehnt dieselbe Anfrage mit 400 ab. Beide Antworten sagen dasselbe.
+        """
+        params = {"strategy": "bear_put_debit", "option_type": "bogus"}
+        page = self._page(params)
+        self.assertIn('<div class="err">Ungültige Spread-Art - erlaubt sind Calls oder Puts.</div>',
+                      page)
+        self.assertEqual(self._spread_rows(page), [])
+        self.assertEqual(page.count("<table>"), 0)
+        # die Wahl bleibt sichtbar und wird nicht durch die Voreinstellung ersetzt
+        self.assertTrue(re.search(r'name="strategy" value="bear_put_debit" checked', page))
+        self.assertFalse(re.search(r'name="strategy" value="bull_call_debit" checked', page))
+        # und die API lehnt DIESELBE Anfrage ab - keine zwei Antworten auf eine Frage
+        antwort = self._client().get("/api/screen", query_string=self._query(params))
+        self.assertEqual(antwort.status_code, 400)
+        self.assertEqual(antwort.get_json()["error"], "unknown spread type")
+
     def test_an_unknown_side_keeps_the_old_error_box_and_the_old_fallback(self):
         """D14 unveraendert: ein unbekanntes option_type ist die ALTE Adresse -
         Meldung, dann weiter mit der Voreinstellung (Bull Call)."""

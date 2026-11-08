@@ -151,7 +151,11 @@ GET /api/screen?ticker=SPY&expiration=2026-11-20&strategy=bear_put_debit
   table (no silent fallback to either side), and `/api/screen` answers `400` with
   `{"error": "conflicting strategy and option_type", "option_type_to_strategy": {...}}`. An unknown
   `strategy` is `{"error": "unknown strategy", "allowed": [...]}`; an unknown `option_type` keeps its
-  old `{"error": "unknown spread type", "allowed": ["call", "put"]}`.
+  old `{"error": "unknown spread type", "allowed": ["call", "put"]}` — that is the *bare* legacy
+  request (`?option_type=bogus` with no `strategy`). Sent **together with** a `strategy`, an
+  unreadable `option_type` makes the agreement unprovable: the request is rejected like a
+  contradiction (page: no table, API: `400`), and the page keeps the strategy the caller asked for
+  selected instead of showing a default.
 * The JSON carries `strategy`, `strategy_label` and - unchanged - `spread_type` (`call`/`put`), the
   derived chain side. Inside every row `long_symbol` is the leg that is **bought**, `short_symbol`
   the leg that is **sold**; the page spells that out per row.
