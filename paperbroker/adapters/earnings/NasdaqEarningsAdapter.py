@@ -81,10 +81,16 @@ from ...earnings_calendar import (
     parse_nasdaq_earnings_date,
 )
 from ...earnings_day_calendar import parse_calendar_rows
+from ...optionable_symbols import parse_cboe_symbols
 
 SOURCE_NAME = "nasdaq_earnings_date"
 DATE_URL = "https://api.nasdaq.com/api/analyst/{symbol}/earnings-date?assetclass=stocks"
 CALENDAR_URL = "https://api.nasdaq.com/api/calendar/earnings?date={date}"
+# One collective list instead of one chain query per title: the per-title
+# endpoint was measured at 0.3-1.5 s and 300-1500 KB per answer, and 25 parallel
+# requests were throttled with HTTP 429. This download (5415 rows, 388 KB,
+# 2.3-3.9 s) answers "has options?" for every title at once.
+OPTIONABLE_SYMBOLS_URL = "https://www.cboe.com/us/options/symboldir/equity_index_options/?download=csv"
 # Measured against api.nasdaq.com on 2026-11-08: this minimal user agent
 # answered in 0.06-0.16 s per request, while a full Chrome string cost
 # 1.06-2.11 s for BYTE-IDENTICAL bodies (54137 bytes for the calendar, 354
@@ -94,6 +100,11 @@ CALENDAR_URL = "https://api.nasdaq.com/api/calendar/earnings?date={date}"
 _HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
+}
+# The symbol list is a CSV download, not JSON - the Accept header says so.
+_CSV_HEADERS = {
+    "User-Agent": "Mozilla/5.0",
+    "Accept": "text/csv,*/*",
 }
 
 DEFAULT_TTL_SECONDS = 6 * 60 * 60
@@ -111,6 +122,11 @@ DEFAULT_CACHE_PATH = ".cache/earnings.json"
 # keeps the file from growing for ever.
 DEFAULT_CALENDAR_CACHE_PATH = ".cache/earnings_calendar.json"
 MAX_CALENDAR_ENTRIES = 64
+# The CBOE list changes on a scale of days (new listings, delistings), so one
+# download per day is enough. A separate cache from the calendar: the list is
+# ONE document, not an entry per date.
+DEFAULT_OPTIONABLE_CACHE_PATH = ".cache/optionable_symbols.json"
+DEFAULT_OPTIONABLE_TTL_SECONDS = 24 * 60 * 60
 # One entry per ticker; the route accepts any 1-6 letter symbol, so an
 # unthrottled public caller could otherwise grow the file without bound.
 MAX_CACHE_ENTRIES = 512
@@ -401,6 +417,89 @@ class DayCalendarStore:
         return dict(geordnet[: self.max_entries])
 
 
+class OptionableSymbolsStore:
+    """The CBOE symbol list on disk: ONE document, written atomically.
+
+    Same contract as the other stores: a missing, unreadable, half-written or
+    hand-edited file is a cache MISS, never an exception. The page may then
+    cost one download; it may never fail because of its cache.
+
+    Only a list of non-empty strings with a parseable timestamp is trusted.
+    An EMPTY list is deliberately not trusted either: filtering by it would
+    hide every title, so it counts as "no list" (see the module docstring).
+    """
+
+    def __init__(self, path=None):
+        self.path = path or DEFAULT_OPTIONABLE_CACHE_PATH
+
+    def _read_all(self):
+        try:
+            with open(self.path, encoding="utf-8") as fh:
+                roh = json.load(fh)
+        except (FileNotFoundError, NotADirectoryError, PermissionError, OSError, ValueError):
+            return None
+        if not isinstance(roh, dict) or not self._valid(roh):
+            return None
+        return roh
+
+    @staticmethod
+    def _valid(eintrag):
+        symbole = eintrag.get("symbols")
+        if not isinstance(symbole, list) or not symbole:
+            return False
+        if not all(isinstance(s, str) and s.strip() for s in symbole):
+            return False
+        try:
+            datetime.strptime(eintrag.get("fetched_at_utc") or "", "%Y-%m-%dT%H:%M:%SZ")
+        except (TypeError, ValueError):
+            return False
+        return True
+
+    def get(self):
+        """The stored list, or ``None`` when nothing trustworthy is there."""
+        return self._read_all()
+
+    def put(self, entry):
+        """Write the one document, atomically (thread lock + flock + replace)."""
+        if not isinstance(entry, dict) or not self._valid(entry):
+            return False
+        verzeichnis = os.path.dirname(os.path.abspath(self.path)) or "."
+        try:
+            os.makedirs(verzeichnis, exist_ok=True)
+        except OSError:
+            return False
+        sperre = self.path + ".lock"
+        try:
+            with _CACHE_LOCK, open(sperre, "a", encoding="utf-8") as sperr_datei:
+                if fcntl is not None:
+                    fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_EX)
+                try:
+                    self._write_locked(dict(entry), verzeichnis)
+                finally:
+                    if fcntl is not None:
+                        fcntl.flock(sperr_datei.fileno(), fcntl.LOCK_UN)
+        except OSError:
+            # An unwritable cache must not fail the request; the answer is still
+            # correct, it just cannot be reused.
+            return False
+        return True
+
+    def _write_locked(self, eintrag, verzeichnis):
+        fd, tmp = tempfile.mkstemp(prefix=".optionable-", suffix=".tmp", dir=verzeichnis)
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump(eintrag, fh, ensure_ascii=False, sort_keys=True)
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+
+
 def _calendar_targets(days):
     """``{label: iso}`` (or a plain iterable of iso strings) -> ``{label: date}``.
 
@@ -454,6 +553,10 @@ class NullEarningsAdapter:
         """No source configured: an honest "not configured", not an empty day."""
         return {"days": {}, "state": "not_configured", "error": None}
 
+    def get_optionable_symbols(self):
+        """No source configured: no list, so the calendar page stays unfiltered."""
+        return {"symbols": None, "state": "unavailable", "fetched_at_utc": None, "error": None}
+
 
 class NasdaqEarningsAdapter:
     """Live Nasdaq query with a bounded, atomic cache (see module docstring)."""
@@ -472,12 +575,16 @@ class NasdaqEarningsAdapter:
         cross_check_timeout_seconds=DEFAULT_CROSS_CHECK_TIMEOUT_SECONDS,
         calendar_store=None,
         failure_retry_seconds=DEFAULT_FAILURE_RETRY_SECONDS,
+        optionable_store=None,
+        optionable_ttl_seconds=DEFAULT_OPTIONABLE_TTL_SECONDS,
     ):
         self._transport = transport or urllib_transport
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self._cache = cache if cache is not None else EarningsCache()
         self._calendar_store = calendar_store if calendar_store is not None else DayCalendarStore()
+        self._optionable_store = optionable_store if optionable_store is not None else OptionableSymbolsStore()
         self.ttl_seconds = int(ttl_seconds)
+        self.optionable_ttl_seconds = int(optionable_ttl_seconds)
         self.freshness_limit_seconds = int(freshness_limit_seconds)
         self.timeout_seconds = float(timeout_seconds)
         self.cross_check = bool(cross_check)
@@ -503,6 +610,27 @@ class NasdaqEarningsAdapter:
             return json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body)
         except (ValueError, UnicodeDecodeError) as exc:
             raise EarningsSourceError("invalid_json", "the source answer is not JSON") from exc
+
+    def _get_text(self, url, headers):
+        """A text answer (the CBOE CSV), with the same failure classes as JSON.
+
+        ``utf-8-sig`` strips the BOM the measured file carries; a body that is
+        not UTF-8 is an unusable answer, not a half-parsed list.
+        """
+        try:
+            status, body = self._transport(url, dict(headers), self.timeout_seconds)
+        except Exception as exc:  # noqa: BLE001 - every transport failure is one class here
+            raise EarningsSourceError("source_unreachable", f"{type(exc).__name__}: {exc}") from exc
+        if status != 200:
+            raise EarningsSourceError("http_error", f"the source answered HTTP {status}", status)
+        if isinstance(body, (bytes, bytearray)):
+            try:
+                return body.decode("utf-8-sig")
+            except UnicodeDecodeError as exc:
+                raise EarningsSourceError("invalid_payload", "the source answer is not UTF-8") from exc
+        if isinstance(body, str):
+            return body.lstrip("\ufeff")
+        raise EarningsSourceError("invalid_payload", "the source answer is not text")
 
     # -- public ------------------------------------------------------------ #
     def get_earnings(self, ticker):
@@ -668,6 +796,65 @@ class NasdaqEarningsAdapter:
             },
             cache=cache_block,
         )
+
+    # -- optionable symbols (calendar filter) ------------------------------ #
+    def get_optionable_symbols(self):
+        """The CBOE symbol list, one download per 24 h, labelled by its state.
+
+        States, in the caller's words:
+
+        * ``live`` - downloaded now (or written from the answer just received),
+        * ``cached`` - a stored list younger than ``optionable_ttl_seconds``;
+          the same answer without the download,
+        * ``stale`` - the download failed, the stored list is served WITH its
+          own timestamp and the failure, so the page can filter and say the
+          list is the last known state,
+        * ``unavailable`` - the download failed and there is no stored list:
+          ``symbols`` is ``None`` and the page must NOT filter.
+
+        An empty parse is a FAILURE, not a list: filtering by an empty set
+        would hide every title. The failure is named (`invalid_payload`).
+        """
+        jetzt = _utc_now(self._now_fn)
+        gespeichert = self._optionable_store.get()
+        alter = self._age_seconds(gespeichert, jetzt)
+        if gespeichert is not None and alter is not None and 0 <= alter < self.optionable_ttl_seconds:
+            return {
+                "symbols": list(gespeichert["symbols"]),
+                "state": "cached",
+                "fetched_at_utc": gespeichert["fetched_at_utc"],
+                "error": None,
+            }
+
+        try:
+            text = self._get_text(OPTIONABLE_SYMBOLS_URL, _CSV_HEADERS)
+            symbole = parse_cboe_symbols(text)
+            if not symbole:
+                raise EarningsSourceError(
+                    "invalid_payload",
+                    "the CBOE list carries no usable 'Stock Symbol' column",
+                )
+        except EarningsSourceError as exc:
+            if gespeichert is not None:
+                # A stored list from the future (clock moved backwards) is not
+                # trusted as "stale either" - but it is still the only list we
+                # have, so it is served with its own stamp and the failure.
+                return {
+                    "symbols": list(gespeichert["symbols"]),
+                    "state": "stale",
+                    "fetched_at_utc": gespeichert["fetched_at_utc"],
+                    "error": exc.as_dict(),
+                }
+            return {"symbols": None, "state": "unavailable", "fetched_at_utc": None, "error": exc.as_dict()}
+
+        eintrag = {"symbols": sorted(symbole), "fetched_at_utc": _iso(jetzt)}
+        self._optionable_store.put(eintrag)
+        return {
+            "symbols": list(eintrag["symbols"]),
+            "state": "live",
+            "fetched_at_utc": eintrag["fetched_at_utc"],
+            "error": None,
+        }
 
     # -- day calendar (start page) ----------------------------------------- #
     def get_calendar_days(self, days):

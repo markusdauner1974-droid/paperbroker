@@ -373,7 +373,64 @@ class TestRankRows(unittest.TestCase):
 
     def test_an_empty_list_ranks_to_an_empty_group(self):
         geordnet = rank_rows([], top_n=25)
-        self.assertEqual(geordnet, {"rows": [], "total": 0, "hidden": 0, "without_market_cap": 0})
+        self.assertEqual(geordnet, {"rows": [], "total": 0, "hidden": 0,
+                                    "without_market_cap": 0, "without_options": 0})
+
+
+class TestOptionFilterBeforeTopN(unittest.TestCase):
+    """Plan C: the optionable filter runs BEFORE the Top-N cut.
+
+    The five titles without listed options are the LARGEST five on purpose:
+    filtering after the cut would leave them in and cost five optionable
+    titles their place - exactly the bug this section pins down.
+    """
+
+    @staticmethod
+    def _rows():
+        return [{"symbol": f"S{i:02d}", "market_cap": (30 - i) * 1000} for i in range(30)]
+
+    @staticmethod
+    def _optionable():
+        return {f"S{i:02d}" for i in range(5, 30)}
+
+    def test_the_without_options_rows_cost_no_place_in_the_top_25(self):
+        # C1
+        geordnet = rank_rows(self._rows(), top_n=25, optionable=self._optionable())
+        self.assertEqual([z["symbol"] for z in geordnet["rows"]], [f"S{i:02d}" for i in range(5, 30)])
+        self.assertEqual(geordnet["total"], 25)
+        self.assertEqual(geordnet["hidden"], 0)
+        self.assertEqual(geordnet["without_options"], 5)
+
+    def test_the_largest_row_without_options_never_appears(self):
+        # C2
+        geordnet = rank_rows(self._rows(), top_n=25, optionable=self._optionable())
+        self.assertNotIn("S00", [z["symbol"] for z in geordnet["rows"]])
+        # Without the filter the same row IS first - the proof that the
+        # difference comes from the filter and not from the sort.
+        self.assertEqual(rank_rows(self._rows(), top_n=25)["rows"][0]["symbol"], "S00")
+
+    def test_no_filter_is_the_old_behaviour_and_counts_nothing(self):
+        # C3
+        geordnet = rank_rows(self._rows(), top_n=25)
+        self.assertEqual(geordnet["without_options"], 0)
+        self.assertEqual(geordnet["total"], 30)
+
+    def test_an_empty_symbol_set_hides_every_row(self):
+        geordnet = rank_rows(self._rows(), top_n=25, optionable=set())
+        self.assertEqual(geordnet["rows"], [])
+        self.assertEqual(geordnet["total"], 0)
+        self.assertEqual(geordnet["without_options"], 30)
+
+    def test_build_calendar_passes_the_filter_to_every_group(self):
+        # C4
+        days = {DAY_TODAY: parse_calendar_rows(_payload([_row("AAPL"), _row("IX")]), DAYS[DAY_TODAY])}
+        kalender = build_calendar(days, optionable={"AAPL"})
+        gruppe = kalender["groups"][1]
+        self.assertEqual([z["symbol"] for z in gruppe["rows"]], ["AAPL"])
+        self.assertEqual(gruppe["without_options"], 1)
+        self.assertEqual(gruppe["total"], 1)
+        # The other groups are empty but carry the field as well.
+        self.assertEqual([g["without_options"] for g in kalender["groups"]], [0, 1, 0])
 
 
 class TestBuildCalendar(unittest.TestCase):

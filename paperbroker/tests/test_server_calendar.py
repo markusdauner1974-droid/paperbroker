@@ -42,14 +42,29 @@ class _FakeCalendar:
 
     _RANG = {"live": 0, "stale": 1, "unavailable": 2}
 
-    def __init__(self, rows_by_day=None, state="live", boom=False, state_by_day=None, omit=()):
+    def __init__(self, rows_by_day=None, state="live", boom=False, state_by_day=None, omit=(),
+                 option_symbols=None, option_state="unavailable", option_boom=False):
         self.rows_by_day = rows_by_day or {}
         self.state = state
         self.boom = boom
         self.state_by_day = dict(state_by_day or {})
         self.omit = tuple(omit)
+        # Slice 10: the optionable list is a SECOND answer of the same adapter.
+        # Default "unavailable" keeps the old tests unfiltered on purpose.
+        self.option_symbols = option_symbols
+        self.option_state = option_state
+        self.option_boom = option_boom
+        self.option_calls = 0
         self.calls = 0
         self.last_days = None
+
+    def get_optionable_symbols(self):
+        self.option_calls += 1
+        if self.option_boom:
+            raise RuntimeError("option list exploded")
+        stempel = STAMP if self.option_state in ("live", "cached", "stale") else None
+        return {"symbols": self.option_symbols, "state": self.option_state,
+                "fetched_at_utc": stempel, "error": None}
 
     def get_calendar_days(self, days):
         self.calls += 1
@@ -322,6 +337,211 @@ class TestCalendarDayOutages(unittest.TestCase):
 
         self.assertIn("Tag nicht abrufbar", _group(html, "gestern"))
         self.assertIn("ein Tag konnte nicht abgerufen werden", html)
+
+
+def _filter_note(html):
+    """The calendar's option-filter sentence, isolated from the rest of the page."""
+    treffer = re.search(r'<p class="note cal-filter">(.*?)</p>', html, re.S)
+    assert treffer is not None, "option filter note missing"
+    return treffer.group(1)
+
+
+class TestCalendarTabs(unittest.TestCase):
+    """Plan E: day tabs with a counter, ONE visible body, a real table head."""
+
+    def _html(self, **kwargs):
+        rows = {
+            "2026-11-07": [_row("AAA", cap=30)],
+            "2026-11-08": [_row("BBB", cap=20), _row("CCC", cap=10)],
+            "2026-11-09": [_row("DDD", cap=5)],
+        }
+        rows.update(kwargs.pop("rows", {}))
+        option_symbols = kwargs.pop("option_symbols", ["AAA", "BBB", "CCC", "DDD"])
+        kalender = _FakeCalendar(rows, option_symbols=option_symbols,
+                                 option_state=kwargs.pop("option_state", "live"))
+        return _client(kalender).get("/").get_data(as_text=True)
+
+    def test_three_tabs_carry_their_day_and_counter(self):
+        # E1
+        html = self._html()
+        self.assertEqual(len(re.findall(r'<button[^>]*class="cal-tab[^"]*"[^>]*data-day=', html)), 3)
+        for tag in ("2026-11-07", "2026-11-08", "2026-11-09"):
+            self.assertIn(f'data-day="{tag}"', html)
+        # Label + weekday/date + the number of optionable titles of that day.
+        self.assertRegex(html, r'data-day="2026-11-07"[^>]*>[^<]*gestern[^<]*· 1<')
+        self.assertRegex(html, r'data-day="2026-11-08"[^>]*>[^<]*heute[^<]*· 2<')
+        self.assertRegex(html, r'data-day="2026-11-09"[^>]*>[^<]*morgen[^<]*· 1<')
+
+    def test_exactly_one_day_body_is_visible_and_it_is_today(self):
+        # E2
+        html = self._html()
+        self.assertEqual(html.count('class="cal-body show"'), 1)
+        self.assertEqual(html.count('class="cal-body"'), 2)   # the two hidden ones
+        self.assertRegex(html, r'<div class="cal-body show"[^>]*data-day="2026-11-08"')
+
+    def test_the_table_has_a_real_column_head(self):
+        # E3
+        html = self._html()
+        self.assertRegex(
+            html,
+            r"<thead><tr><th>Zeit</th><th>Ticker</th><th>Unternehmen</th>"
+            r"<th>EPS erwartet \(USD\)</th><th>Marktkap\. \(Mrd USD\)</th></tr></thead>",
+        )
+        self.assertRegex(html, r"<td class=\"num\">[\d.,]+</td>")   # market cap, right aligned
+        self.assertIn('class="cal-scroll"', html)
+        self.assertIn("max-height:264px", html)
+
+    def test_the_collapse_switch_exists_and_the_rule_hides_tabs_and_table(self):
+        # E4: the actual class flip is JS; the structure and the CSS contract
+        # are what a server-side test can pin down.
+        html = self._html()
+        self.assertIn('data-cal-toggle', html)
+        self.assertIn(">ausblenden<", html)
+        self.assertIn(".cal.collapsed .cal-groups", html)
+
+    def test_a_symbol_click_can_fill_the_ticker_field(self):
+        # E5: the link keeps its href (no-JS fallback) and carries the symbol
+        # for the small page script.
+        html = self._html()
+        self.assertIn('data-symbol="BBB"', html)
+        self.assertIn('href="/?ticker=BBB#screener-form"', html)
+
+
+class TestCalendarOptionFilter(unittest.TestCase):
+    """Plan E: the filter note names its number - or says "ungefiltert"."""
+
+    def test_hidden_titles_are_counted_and_not_linked(self):
+        # E6
+        kalender = _FakeCalendar(
+            {"2026-11-08": [_row("AAPL", cap=2000), _row("IX", cap=5000)]},
+            option_symbols=["AAPL"],
+            option_state="live",
+        )
+        html = _client(kalender).get("/").get_data(as_text=True)
+        self.assertIn("1 Titel ohne gelistete Optionen ausgeblendet", _filter_note(html))
+        self.assertNotIn('data-symbol="IX"', html)
+        self.assertNotIn('href="/?ticker=IX#screener-form"', html)
+        # The tab counter names the optionable total, not the raw day list.
+        self.assertRegex(html, r'data-day="2026-11-08"[^>]*>[^<]*· 1<')
+
+    def test_an_unavailable_list_says_unfiltered_and_names_no_number(self):
+        # E7
+        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL"), _row("IX")]})
+        html = _client(kalender).get("/").get_data(as_text=True)
+        note = _filter_note(html)
+        self.assertIn("ungefiltert", note)
+        self.assertNotRegex(note, r"\d")
+        # Unfiltered means unfiltered: the title without options stays.
+        self.assertIn('data-symbol="IX"', html)
+
+    def test_a_broken_option_list_does_not_break_the_page(self):
+        # E8
+        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]}, option_boom=True)
+        antwort = _client(kalender).get("/")
+        html = antwort.get_data(as_text=True)
+        self.assertEqual(antwort.status_code, 200)
+        self.assertIn("ungefiltert", _filter_note(html))
+        self.assertIn('data-symbol="AAPL"', html)
+        self.assertIn("Instrument", html)
+
+    def test_a_stale_list_filters_and_says_it_is_the_last_state(self):
+        # E9
+        kalender = _FakeCalendar(
+            {"2026-11-08": [_row("AAPL"), _row("IX")]},
+            option_symbols=["AAPL"],
+            option_state="stale",
+        )
+        html = _client(kalender).get("/").get_data(as_text=True)
+        self.assertIn("Options-Liste aus letztem Stand", html)
+        self.assertIn("Options-Liste: Stand 08.11.2026 06:00 UTC", html)
+        self.assertNotIn('data-symbol="IX"', html)
+
+    def test_healthz_never_touches_the_option_list(self):
+        # E10
+        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]})
+        client = _client(kalender)
+        self.assertEqual(client.get("/healthz").status_code, 200)
+        self.assertEqual(kalender.option_calls, 0)
+
+
+class TestCalendarDefaultDay(unittest.TestCase):
+    """The tab the page opens on must be the first day that has content.
+
+    A hard-wired "today" opens an empty tab on a weekend while the next day
+    lists everything - the block's only content would sit behind a tab the
+    reader never clicks. These tests pin the rule on the rendered markup,
+    because that is what a reader sees: exactly one ``is-active`` tab and
+    exactly one visible body, both on the same day.
+    """
+
+    def _html(self, kalender):
+        antwort = _client(kalender).get("/")
+        assert antwort.status_code == 200, "the start page must not fail"
+        return antwort.get_data(as_text=True)
+
+    @staticmethod
+    def _active_days(html):
+        """Every day whose tab is marked active (one is expected)."""
+        return re.findall(r'<button[^>]*class="cal-tab is-active"[^>]*data-day="([^"]+)"', html)
+
+    @staticmethod
+    def _visible_days(html):
+        """Every day whose body is visible (one is expected)."""
+        return re.findall(r'<div class="cal-body show"[^>]*data-day="([^"]+)"', html)
+
+    def _assert_opens_on(self, html, tag):
+        self.assertEqual(self._active_days(html), [tag])
+        self.assertEqual(self._visible_days(html), [tag])
+        self.assertEqual(html.count('class="cal-body show"'), 1)
+        self.assertEqual(html.count('class="cal-body"'), 2)   # the two hidden ones
+        # aria-selected must agree with the visual state, or a screen reader
+        # announces a different day than the one the page shows.
+        self.assertRegex(html, rf'<button[^>]*class="cal-tab is-active"[^>]*data-day="{tag}"[^>]*aria-selected="true"')
+
+    def test_an_empty_today_yields_to_the_next_day_with_rows(self):
+        # The measured weekend case: 0 titles today, 191 tomorrow.
+        rows = [_row(f"SY{i:02d}", cap=1000 - i) for i in range(191)]
+        kalender = _FakeCalendar({"2026-11-09": rows})
+        html = self._html(kalender)
+
+        self._assert_opens_on(html, "2026-11-09")
+        # The content is in the opened body, not merely reachable.
+        self.assertIn('href="/?ticker=SY00#screener-form"', html)
+        self.assertIn("keine Einträge", _group(html, "heute"))
+        self.assertIn("25 von 191", _group(html, "morgen"))
+
+    def test_a_today_with_rows_stays_the_default(self):
+        # Regression: the rule must not prefer an earlier day that has rows.
+        kalender = _FakeCalendar({"2026-11-07": [_row("AAA")],
+                                  "2026-11-08": [_row("BBB")],
+                                  "2026-11-09": [_row("CCC")]})
+        self._assert_opens_on(self._html(kalender), "2026-11-08")
+
+    def test_an_empty_prev_day_yields_to_today(self):
+        # Order check in the other direction: prev is only the fallback when
+        # today is empty, never the default merely because it has rows.
+        kalender = _FakeCalendar({"2026-11-07": [_row("AAA")],
+                                  "2026-11-08": [_row("BBB")]})
+        self._assert_opens_on(self._html(kalender), "2026-11-08")
+
+    def test_three_empty_days_keep_today_as_the_default(self):
+        # No content anywhere: the page still opens on "heute", it does not
+        # raise and it does not leave every body hidden.
+        kalender = _FakeCalendar({})
+        html = self._html(kalender)
+        self._assert_opens_on(html, "2026-11-08")
+        self.assertEqual(html.count("keine Einträge"), 3)
+
+    def test_a_failed_today_never_becomes_the_default(self):
+        # "unavailable" is no answer, not an empty day: tomorrow's rows must
+        # win, and the failed tab must not look active.
+        kalender = _FakeCalendar(
+            {"2026-11-09": [_row("CCC")]},
+            state_by_day={"2026-11-08": "unavailable"},
+        )
+        html = self._html(kalender)
+        self._assert_opens_on(html, "2026-11-09")
+        self.assertIn("Tag nicht abrufbar", _group(html, "heute"))
 
 
 if __name__ == "__main__":

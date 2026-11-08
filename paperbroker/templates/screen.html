@@ -81,18 +81,29 @@
     .earn .blocked{color:#e0503c;font-weight:600}
     .earn .unknown{color:#e6b93c;font-weight:600}
     .earn ul{margin:4px 0 0;padding-left:18px;font-size:.85rem;color:#9aa3b5}
-    /* Earnings-Kalender: eigener Block ueber dem Screener, drei Tage
-       nebeneinander. Gleiche Palette wie der Rest, kein neues Skript. */
-    .cal{background:#151d2c;border:1px solid #2c3650;border-radius:8px;padding:12px 14px;margin-bottom:16px}
-    .cal h2{font-size:.95rem;margin:0 0 4px}
-    .cal-groups{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px 20px}
-    @media (max-width:900px){.cal-groups{grid-template-columns:minmax(0,1fr)}}
-    .cal-group h3{font-size:.85rem;margin:6px 0 0}
-    .cal-group ul{list-style:none;margin:4px 0 0;padding:0;font-size:.85rem}
-    .cal-row{display:flex;flex-wrap:wrap;gap:2px 8px;padding:3px 0;border-bottom:1px solid #232b3b}
+    /* Earnings-Kalender: Tagesreiter statt drei Spalten. Genau EIN
+       Tageskoerper ist sichtbar (.show), die Tabelle scrollt in fester Hoehe,
+       "ausblenden" laesst nur die Kopfzeile stehen. Kein neues Framework. */
+    .cal{background:#151d2c;border:1px solid #2c3650;border-radius:8px;padding:10px 14px;margin-bottom:16px}
+    .cal-head{display:flex;align-items:center;justify-content:space-between;gap:12px}
+    .cal h2{font-size:.95rem;margin:0}
+    .cal .cal-note,.cal .cal-filter{margin:2px 0}
+    .cal-toggle{font-size:.78rem;font-weight:400;padding:3px 10px;background:none;border:1px solid #2c3650;color:#9aa3b5}
+    .cal-tabs{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
+    .cal-tab{font-size:.85rem;font-weight:500;padding:5px 12px;border-radius:6px;background:#1a2233;border:1px solid #2c3650;color:#c7cede}
+    .cal-tab.is-active{background:#2c6bed;border-color:#2c6bed;color:#fff}
+    .cal-body{display:none}
+    .cal-body.show{display:block}
+    .cal-day-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 10px;margin:2px 0}
+    .cal-group h3{font-size:.85rem;font-weight:600;margin:0;color:#c7cede}
+    .cal-day-head .note{margin:0}
+    .cal-scroll{max-height:264px;overflow-y:auto}
+    .cal-table{table-layout:fixed}
+    .cal-table th,.cal-table td{padding:5px 8px;border-bottom:1px solid #232b3b;text-align:left}
+    .cal-table th:nth-child(4),.cal-table th:nth-child(5),.cal-table td.num{text-align:right;font-variant-numeric:tabular-nums}
+    .cal-table td.cal-name{max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#9aa3b5}
     .cal-row a{font-weight:600}
-    .cal-name{color:#9aa3b5;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
-    .cal-session,.cal-eps{color:#9aa3b5;font-size:.8rem}
+    .cal.collapsed .cal-note,.cal.collapsed .cal-filter,.cal.collapsed .cal-groups{display:none}
   </style>
 </head>
 <body>
@@ -124,11 +135,16 @@
   {% if calendar %}
   {# Der Kalender ist eine Zugabe: fehlt die Quelle, steht hier ein Satz -
      keine erfundenen Zeilen, kein Absturz des Screener-Formulars darunter. #}
-  <section class="cal" aria-labelledby="cal-title">
+  <section class="cal" id="cal-block" aria-labelledby="cal-title">
     {# Eigene Klasse am <h2>: der Block ist eine Sektion wie die Spread-Tabelle,
        aber die Ueberschrift des Screener-Abschnitts bleibt die erste blanke <h2>. #}
-    <h2 class="cal-title" id="cal-title">Earnings-Kalender</h2>
-    <p class="note">
+    <div class="cal-head">
+      <h2 class="cal-title" id="cal-title">Earnings-Kalender</h2>
+      {% if calendar.show_groups %}
+      <button type="button" class="cal-toggle" data-cal-toggle aria-expanded="true" aria-controls="cal-groups">ausblenden</button>
+      {% endif %}
+    </div>
+    <p class="note cal-note">
       {%- if calendar.state == 'not_configured' -%}
         Keine Earnings-Quelle konfiguriert.
       {%- else -%}
@@ -136,30 +152,50 @@
       {%- endif -%}
       {%- if calendar.note and calendar.state != 'not_configured' %} · {{ calendar.note }}{% endif -%}
     </p>
+    {% if calendar.option_note %}
+    {# Der Filter ist eine Aussage ueber die Auswahl, nicht ueber den Tag:
+       Zahl und Stand stehen deshalb einmal ueber den Reitern. #}
+    <p class="note cal-filter">{{ calendar.option_note }}{% if calendar.option_stamp %} · Options-Liste: Stand {{ calendar.option_stamp }}{% endif %}</p>
+    {% endif %}
     {% if calendar.show_groups %}
-    <div class="cal-groups">
+    <div class="cal-groups" id="cal-groups">
+      <div class="cal-tabs" role="tablist">
+        {% for g in calendar.groups %}
+        <button type="button" class="cal-tab{% if g.is_default %} is-active{% endif %}" data-day="{{ g.date }}" role="tab" aria-selected="{{ 'true' if g.is_default else 'false' }}" aria-controls="cal-body-{{ g.key }}">{{ g.label }} · {{ g.short_day or 'Datum unbekannt' }} · {{ g.tab_counter if g.tab_counter is not none else '–' }}</button>
+        {% endfor %}
+      </div>
       {% for g in calendar.groups %}
-      <div class="cal-group">
-        <h3>{{ g.label }} · {{ g.date_text or 'Datum unbekannt' }}</h3>
-        {% if g.rows %}
-        <p class="note">{{ g.counter }}</p>
-        <ul>
-          {% for row in g.rows %}
-          <li class="cal-row">
-            <a href="/?ticker={{ row.symbol }}#screener-form">{{ row.symbol }}</a>
-            {% if row.name %}<span class="cal-name">{{ row.name }}</span>{% endif %}
-            <span class="cal-session">{{ row.session_text }}</span>
-            {% if row.eps_forecast %}<span class="cal-eps">EPS {{ row.eps_forecast }}</span>{% endif %}
-          </li>
-          {% endfor %}
-        </ul>
-        {% elif g.unavailable %}
-        {# Kein belegter Inhalt: "keine Einträge" waere hier eine erfundene
-           Aussage - die Quelle hat den Tag gar nicht beantwortet. #}
-        <p class="note">Tag nicht abrufbar</p>
-        {% else %}
-        <p class="note">keine Einträge</p>
-        {% endif %}
+      <div class="cal-body{% if g.is_default %} show{% endif %}" id="cal-body-{{ g.key }}" data-day="{{ g.date }}" role="tabpanel">
+        <div class="cal-group">
+          <div class="cal-day-head">
+            <h3>{{ g.label }} · {{ g.date_text or 'Datum unbekannt' }}</h3>
+            {% if g.rows %}<p class="note">{{ g.counter }}{% if g.without_options %} · {{ g.without_options }} ohne gelistete Optionen ausgeblendet{% endif %}</p>{% endif %}
+          </div>
+          {% if g.rows %}
+          <div class="cal-scroll">
+          <table class="cal-table">
+            <thead><tr><th>Zeit</th><th>Ticker</th><th>Unternehmen</th><th>EPS erwartet (USD)</th><th>Marktkap. (Mrd USD)</th></tr></thead>
+            <tbody>
+            {% for row in g.rows %}
+              <tr class="cal-row">
+                <td>{{ row.session_text }}</td>
+                <td><a href="/?ticker={{ row.symbol }}#screener-form" data-symbol="{{ row.symbol }}">{{ row.symbol }}</a></td>
+                <td class="cal-name">{{ row.name or '–' }}</td>
+                <td class="num">{{ row.eps_forecast or '–' }}</td>
+                <td class="num">{% if row.market_cap is not none %}{{ '%.1f'|format(row.market_cap / 1000000000) }}{% else %}–{% endif %}</td>
+              </tr>
+            {% endfor %}
+            </tbody>
+          </table>
+          </div>
+          {% elif g.unavailable %}
+          {# Kein belegter Inhalt: "keine Einträge" waere hier eine erfundene
+             Aussage - die Quelle hat den Tag gar nicht beantwortet. #}
+          <p class="note">Tag nicht abrufbar</p>
+          {% else %}
+          <p class="note">keine Einträge</p>
+          {% endif %}
+        </div>
       </div>
       {% endfor %}
     </div>
@@ -476,6 +512,57 @@
     debounce = setTimeout(function () {
       if (v !== last) loadDates(v);           // skip refetch on same ticker
     }, 350);                                  // debounce keystrokes
+  });
+})();
+
+// Kalender-Reiter: genau ein sichtbarer Tageskoerper, Einklappen, Symbol-Klick.
+// Bewusst ohne Framework - die Seite traegt dieses eine kleine Skript.
+(function () {
+  var block = document.getElementById('cal-block');
+  if (!block) return;
+  var tabs = Array.prototype.slice.call(block.querySelectorAll('.cal-tab'));
+  var bodies = Array.prototype.slice.call(block.querySelectorAll('.cal-body'));
+
+  function showDay(day) {
+    tabs.forEach(function (t) {
+      var on = t.getAttribute('data-day') === day;
+      t.classList.toggle('is-active', on);
+      t.setAttribute('aria-selected', on ? 'true' : 'false');
+    });
+    bodies.forEach(function (b) {
+      b.classList.toggle('show', b.getAttribute('data-day') === day);
+    });
+  }
+
+  tabs.forEach(function (t) {
+    t.addEventListener('click', function () { showDay(t.getAttribute('data-day')); });
+  });
+
+  var toggle = block.querySelector('[data-cal-toggle]');
+  if (toggle) {
+    toggle.addEventListener('click', function () {
+      var zu = block.classList.toggle('collapsed');
+      toggle.textContent = zu ? 'einblenden' : 'ausblenden';
+      toggle.setAttribute('aria-expanded', zu ? 'false' : 'true');
+    });
+  }
+
+  // Symbol-Klick: Tickerfeld fuellen und zum Formular scrollen. Der href
+  // bleibt als Rückfall ohne JavaScript bestehen.
+  block.addEventListener('click', function (ev) {
+    var ziel = ev.target;
+    if (!ziel || !ziel.closest) return;
+    var link = ziel.closest('a[data-symbol]');
+    if (!link) return;
+    ev.preventDefault();
+    var feld = document.getElementById('ticker');
+    if (feld) {
+      feld.value = link.getAttribute('data-symbol');
+      feld.dispatchEvent(new Event('input', {bubbles: true}));
+      feld.focus();
+    }
+    var formular = document.getElementById('screener-form');
+    if (formular) formular.scrollIntoView({behavior: 'smooth', block: 'start'});
   });
 })();
 </script>
