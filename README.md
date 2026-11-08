@@ -361,3 +361,75 @@ a new external call by itself.
 re-derive the exit day from the session, and do not treat `eligible` as a trade
 recommendation. `reasons[].code` is the stable machine field, `message` is the
 German page text.
+
+## Whole-day earnings scan (`GET /api/v1/earnings-scan`)
+
+The single-ticker view costs one request and one form per title: 25 titles a day
+mean 25 page loads, and the titles behind the start page's Top-25 cut cannot be
+reached at all. This route answers for the whole day at once:
+
+```
+GET /api/v1/earnings-scan?day=2026-11-16
+GET /api/v1/earnings-scan?day=2026-11-16&strategy=bull_call_debit&strategy=bear_put_debit
+GET /api/v1/earnings-scan?day=2026-11-16&max_symbols=20&max_expirations=4&concurrency=3
+```
+
+**It runs on an explicit request only.** `GET /` never calls it - one chain
+lookup per title is far too expensive for a page view. Nothing is scheduled and
+nothing is cached beyond the adapters' own caches (6 h for earnings dates, 900 s
+for a chain), so a repeated scan inside those windows costs no source call.
+
+**The universe is the day, not the page.** The starting set is every row Nasdaq
+lists for `day`, before any ranking. The CBOE symbol list (`Stock Symbol` column,
+one download a day) is the prefilter, and only then does the budget decide how
+many titles are worked through. `coverage` reports all three numbers - and if
+the budget cut the day short, `complete: false` plus `truncation_reasons` plus
+the names in `hidden_symbols`.
+
+**Every listed expiry is checked, not just the first one.** For each title the
+scan reads the chain once, takes the expiries the chain really lists, and checks
+every one of them that lies after the earnings date and inside the maturity
+window. Expiries it leaves out are listed under `skipped_expirations` with the
+reason (`expiration_on_or_before_earnings`, `outside_dte_window`,
+`max_expirations`).
+
+**It does not re-implement the calculation.** Hits come from
+`screener.vertical_spreads` - the function `/api/screen` calls - with the same
+`ScreenerCriteria` and the same clock, so a scan hit and a single-view hit are
+the same spread by construction. Measured 2026-11-08 over live data (day
+2026-11-16, 6 titles): 1/21/7/2/5/2 hits per ticker and strategy, every one of
+them identical to the single-ticker route over the same expiries.
+
+**Eight states per ticker and strategy**, because "no hits" and "we could not
+look" are different answers:
+
+- `hits` - at least one spread survived every filter; `best` is the first row of
+  the documented `rendite_desc` sort (max profit / max loss, then break-even
+  distance, then symbol),
+- `no_match` - the data was good, nothing survived,
+- `stale_data` - the quotes are older than `max_quote_age_min`; the decision is
+  `screener.filter_stale`, the same rule the single view uses, applied to the
+  expiries that were actually checked (`checked_freshness`). A stale chain
+  section on an expiry that was skipped for another reason does not turn a
+  fresh, empty result into "too old",
+- `incomplete_data` - part of the chain was unusable (skipped contracts, a
+  truncated expiry list),
+- `fetch_failed` - the earnings record or the chain could not be read; one
+  failing title never cancels the others,
+- `not_checked` - the scan budget did not reach the title, or no listed expiry
+  falls inside the window,
+- `window_blocked` / `window_unknown` - the earnings window itself refuses (or
+  cannot decide); the reasons are the ones `/api/v1/earnings-window` returns.
+
+**The budget** (all parameters optional, upper bounds are enforced server-side):
+
+- `max_symbols` (default 40, max 200) - chain lookups,
+- `max_expirations` (default 8, max 40) - per title,
+- `max_seconds` (default 120, max 300) - wall clock; checked before each wave,
+- `concurrency` (default 4, max 8) - parallel chain lookups.
+
+Everything else is a screener criterion (`max_spread_pct`, `min_oi`, `dte_min`,
+`ignore_quote_age`, ...), exactly as on `/api/screen`.
+
+`coverage.source_calls` counts the adapter lookups that were really made - not
+HTTP requests: inside their TTLs both adapters answer from cache.

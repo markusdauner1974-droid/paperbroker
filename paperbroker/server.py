@@ -42,6 +42,18 @@ from .earnings_day_calendar import (
     DAY_TODAY,
     build_calendar,
 )
+from .earnings_scan import (
+    CONCURRENCY_CEILING,
+    DEFAULT_CONCURRENCY,
+    DEFAULT_MAX_EXPIRATIONS,
+    DEFAULT_MAX_SECONDS,
+    DEFAULT_MAX_SYMBOLS,
+    MAX_EXPIRATIONS_CEILING,
+    MAX_SECONDS_CEILING,
+    MAX_SYMBOLS_CEILING,
+    ScanLimits,
+    scan_day,
+)
 from .eva_quality import assess_source_quality, snapshot_identity
 from .PaperBroker import PaperBroker
 from .screener import (
@@ -701,6 +713,211 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             "expirations_read": verfaelle is not None,
         }
         return jsonify(antwort)
+
+    # ------------------------------------------------------------------ #
+    # One scan across a whole earnings day (GET /api/v1/earnings-scan).   #
+    #                                                                     #
+    # Deliberately NOT wired into GET /: one chain request per title is    #
+    # far too expensive for a page view, and the page's Top-25 cut is      #
+    # exactly the limit this scan exists to lift. It therefore runs on an  #
+    # explicit request only, behind a hard budget, and answers with its    #
+    # own coverage report instead of pretending to be complete.           #
+    # ------------------------------------------------------------------ #
+    _SCAN_LIMIT_PARAMS = ("max_symbols", "max_expirations", "max_seconds", "concurrency")
+
+    def _scan_limit(name, raw, default, ceiling, *, integer, minimum):
+        """One budget number, or a readable reason why it is unusable.
+
+        Bounds are enforced here, not in the client: a scan of 5000 titles is
+        not a slower answer, it is an outage waiting to happen.
+        """
+        text = (raw or "").strip()
+        if not text:
+            return default, None
+        try:
+            wert = int(text) if integer else float(text)
+        except ValueError:
+            return None, f"{name}: '{text}' is not a number"
+        if not integer and not math.isfinite(wert):
+            return None, f"{name}: '{text}' is not a finite number"
+        if wert < minimum:
+            return None, f"{name}: must be >= {minimum} (is: {wert})"
+        if wert > ceiling:
+            return None, f"{name}: must be <= {ceiling} (is: {wert})"
+        return wert, None
+
+    def _scan_args():
+        """Validated arguments of one scan, or a ready-made JSON error."""
+        erlaubt = (set(_SCAN_LIMIT_PARAMS) | {"day", "strategy", "option_type",
+                                             "ignore_quote_age"}
+                   | set(_CRITERIA_FIELDS))
+        unbekannt = sorted(set(request.args) - erlaubt)
+        if unbekannt:
+            return None, _earnings_error(
+                400, "unknown_parameter",
+                f"unknown parameter(s): {', '.join(unbekannt)}. Allowed: day, strategy, "
+                f"{', '.join(_SCAN_LIMIT_PARAMS)} and the screener criteria",
+            )
+        doppelt = sorted(name for name in ("day", "option_type") + _SCAN_LIMIT_PARAMS
+                         if len(request.args.getlist(name)) > 1)
+        if doppelt:
+            return None, _earnings_error(
+                400, "duplicate_parameter",
+                f"duplicate parameter(s): {', '.join(doppelt)} (only strategy may repeat)",
+            )
+
+        day = (request.args.get("day") or "").strip()
+        if not day:
+            return None, _earnings_error(400, "day_required", "day is required (YYYY-MM-DD)")
+        if not _DATE_RE.match(day):
+            return None, _earnings_error(400, "invalid_day", "invalid day (YYYY-MM-DD expected)")
+        try:
+            datetime.strptime(day, "%Y-%m-%d")
+        except ValueError:
+            return None, _earnings_error(
+                400, "invalid_day", "invalid day (not a real calendar date)"
+            )
+
+        # One or more strategies; `strategy` may repeat and may carry a comma
+        # list. An empty list means "all four" - the scan answers what the day
+        # offers, and the caller narrows it down.
+        gewaehlt = []
+        for wert in request.args.getlist("strategy"):
+            for teil in str(wert).split(","):
+                teil = teil.strip().lower()
+                if teil and teil not in gewaehlt:
+                    gewaehlt.append(teil)
+        for sid in gewaehlt:
+            if sid not in STRATEGIES:
+                return None, (jsonify(_strategy_error_body("unknown_strategy")), 400)
+
+        option_type = (request.args.get("option_type") or "").strip().lower()
+        if option_type:
+            # The legacy alias names ONE strategy. With several strategies it
+            # cannot say which one is meant, so the request is refused instead
+            # of resolved in silence - the same rule the single view follows.
+            if len(gewaehlt) > 1:
+                return None, (jsonify(_strategy_error_body("conflict")), 400)
+            aufgeloest, code, _text = resolve_strategy(
+                gewaehlt[0] if gewaehlt else None, option_type
+            )
+            if code:
+                return None, (jsonify(_strategy_error_body(code)), 400)
+            gewaehlt = [aufgeloest]
+
+        limits = {}
+        for name, default, ceiling, integer, minimum in (
+            ("max_symbols", DEFAULT_MAX_SYMBOLS, MAX_SYMBOLS_CEILING, True, 1),
+            ("max_expirations", DEFAULT_MAX_EXPIRATIONS, MAX_EXPIRATIONS_CEILING, True, 1),
+            ("max_seconds", DEFAULT_MAX_SECONDS, MAX_SECONDS_CEILING, False, 0.1),
+            ("concurrency", DEFAULT_CONCURRENCY, CONCURRENCY_CEILING, True, 1),
+        ):
+            wert, fehler = _scan_limit(name, request.args.get(name), default, ceiling,
+                                       integer=integer, minimum=minimum)
+            if fehler is not None:
+                return None, _earnings_error(400, "invalid_limit", fehler)
+            limits[name] = wert
+
+        criteria, criteria_error, _unused = _criteria_from_request(
+            screener.criteria, request.args
+        )
+        if criteria_error:
+            return None, _earnings_error(400, "invalid_criteria", criteria_error)
+
+        return {
+            "day": day,
+            "strategies": tuple(gewaehlt) or None,
+            "criteria": criteria,
+            "limits": ScanLimits(
+                max_symbols=int(limits["max_symbols"]),
+                max_expirations_per_symbol=int(limits["max_expirations"]),
+                max_seconds=float(limits["max_seconds"]),
+                concurrency=int(limits["concurrency"]),
+            ),
+        }, None
+
+    @app.get("/api/v1/earnings-scan")
+    def api_earnings_scan():
+        """Scan one earnings day: every optionable title, every listed expiry.
+
+        Every external call is counted and bounded (``coverage.limits``); the
+        answer says how many titles the day listed, how many carried options,
+        how many the scan took on and how many it never reached. A cut scan is
+        ``complete: false`` with a named reason - never a silently short list.
+        """
+        args, fehler = _scan_args()
+        if fehler is not None:
+            return fehler
+        day = args["day"]
+
+        symbole, option_state, option_fetched = _option_symbols(earnings_adapter)
+        try:
+            antwort = earnings_adapter.get_calendar_days({DAY_TODAY: day}) or {}
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("earnings scan: calendar failed for %s", day)
+            return _earnings_error(
+                503, "calendar_source_failed", "the earnings calendar could not be read"
+            )
+        tage = antwort.get("days") if isinstance(antwort, dict) else None
+        tag = (tage or {}).get(day) if isinstance(tage, dict) else None
+        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
+        if gesamt == "not_configured":
+            # Setup fact, not an outage: the null adapter answers no days at
+            # all, and "not configured" is the honest wording for that.
+            return _earnings_error(
+                503, "earnings_source_not_configured",
+                "no earnings source is configured - there is nothing to scan",
+            )
+        if not isinstance(tag, dict):
+            # No entry for the requested day is no answer - not an empty day.
+            return _earnings_error(
+                503, "calendar_unavailable",
+                f"the earnings calendar did not answer for {day}",
+            )
+        zustand = str(tag.get("state") or gesamt or "unavailable")
+        zeilen = tag.get("rows") or []
+        if zustand == "not_configured":
+            return _earnings_error(
+                503, "earnings_source_not_configured",
+                "no earnings source is configured - there is nothing to scan",
+            )
+        if zustand == "unavailable" or not isinstance(zeilen, list):
+            return _earnings_error(
+                503, "calendar_unavailable",
+                f"the earnings calendar did not answer for {day}",
+            )
+
+        try:
+            koerper = scan_day(
+                zeilen,
+                fetch_earnings=earnings_adapter.get_earnings,
+                # ONE request per ticker: the adapter caches the whole chain per
+                # underlying, and every expiry of it is sliced locally.
+                fetch_chain=lambda symbol: broker.get_options(symbol, None),
+                criteria=args["criteria"],
+                strategies=args["strategies"],
+                day=day,
+                today=_us_today(now_fn),
+                now_fn=now_fn,
+                limits=args["limits"],
+                optionable=symbole,
+                # Diagnostics stay in the log: the answer itself carries a
+                # stable code and says nothing about adapter internals.
+                on_ticker_error=lambda symbol, exc: app.logger.warning(
+                    "earnings scan: %s not scanned (%s: %s)",
+                    symbol, type(exc).__name__, exc,
+                ),
+            )
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("earnings scan failed for %s", day)
+            return _earnings_error(503, "scan_failed", "the scan could not be completed")
+
+        koerper["day_state"] = zustand
+        koerper["day_fetched_at_utc"] = tag.get("fetched_at_utc")
+        koerper["day_rows_skipped"] = int(tag.get("skipped") or 0)
+        koerper["option_filter"]["state"] = option_state
+        koerper["option_filter"]["fetched_at_utc"] = option_fetched
+        return jsonify(koerper)
 
     def _earnings_view(ticker, expirations, offered):
         """What the page shows - derived from the same calls the API makes.
