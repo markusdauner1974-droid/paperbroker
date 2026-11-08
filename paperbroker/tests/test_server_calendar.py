@@ -31,12 +31,23 @@ def _row(symbol, cap=1000, session="before_market", eps="$1.41"):
 
 
 class _FakeCalendar:
-    """A calendar adapter that answers from memory and counts its calls."""
+    """A calendar adapter that answers from memory and counts its calls.
 
-    def __init__(self, rows_by_day=None, state="live", boom=False):
+    ``state_by_day`` overrides ``state`` for single days (an outage is rarely
+    all three days at once), and ``omit`` leaves days out of the answer
+    entirely - the shape a caller has to read as "not answered" rather than
+    "answered empty". The aggregate state is the worst of the delivered days,
+    exactly like the real adapter's rule.
+    """
+
+    _RANG = {"live": 0, "stale": 1, "unavailable": 2}
+
+    def __init__(self, rows_by_day=None, state="live", boom=False, state_by_day=None, omit=()):
         self.rows_by_day = rows_by_day or {}
         self.state = state
         self.boom = boom
+        self.state_by_day = dict(state_by_day or {})
+        self.omit = tuple(omit)
         self.calls = 0
         self.last_days = None
 
@@ -47,15 +58,25 @@ class _FakeCalendar:
             raise RuntimeError("calendar adapter exploded")
         geliefert = {}
         for _label, tag in days.items():
+            if tag in self.omit:
+                continue
+            zustand = self.state_by_day.get(tag, self.state)
             geliefert[tag] = {
                 "date": tag,
                 "rows": list(self.rows_by_day.get(tag, [])),
-                "state": self.state,
-                "fetched_at_utc": STAMP,
-                "payload_ok": True,
+                "state": zustand,
+                "fetched_at_utc": STAMP if zustand in ("live", "stale") else None,
+                "payload_ok": zustand in ("live", "stale"),
                 "skipped": 0,
             }
-        return {"days": geliefert, "state": self.state, "fetched_at_utc": STAMP}
+        gesamt = "unavailable"
+        if geliefert:
+            gesamt = max((e["state"] for e in geliefert.values()),
+                         key=lambda z: self._RANG.get(z, 2))
+        # Like the adapter: the aggregate stamp is the oldest delivered one, and
+        # no delivered day means no stamp at all (never a fresh-looking "now").
+        stempel = [e["fetched_at_utc"] for e in geliefert.values() if e["fetched_at_utc"]]
+        return {"days": geliefert, "state": gesamt, "fetched_at_utc": min(stempel) if stempel else None}
 
 
 class _Chain:
@@ -85,6 +106,20 @@ def _select_block(html):
     treffer = re.search(r'<select name="expiration".*?</select>', html, re.S)
     assert treffer is not None, "expiration select missing"
     return treffer.group(0)
+
+
+def _group(html, label):
+    """One rendered calendar group: from its heading up to the next boundary.
+
+    The slice ends at the next group's container marker or at the section end,
+    so a nested ``<ul>`` cannot make the match swallow the neighbouring group
+    and the last group cannot swallow the rest of the page.
+    """
+    kopf = html.index(f"<h3>{label}")
+    grenzen = [grenze for grenze in (html.find('<div class="cal-group">', kopf + 1),
+                                     html.find("</section>", kopf + 1)) if grenze != -1]
+    assert grenzen, f"group {label!r} has no closing boundary"
+    return html[kopf:min(grenzen)]
 
 
 class TestCalendarBlock(unittest.TestCase):
@@ -182,6 +217,111 @@ class TestCalendarBlock(unittest.TestCase):
                 self.assertNotIn('class="cal"', html)
                 self.assertEqual(html.count('class="cal-row"'), 0)
                 self.assertEqual(kalender.calls, 0)
+
+
+class TestCalendarDayOutages(unittest.TestCase):
+    """A day nobody could ask about must not read like a day without earnings.
+
+    The three groups are derived from the adapter's per-day ``state``, so every
+    test here builds the answer per day - a uniform fake would hide exactly the
+    bug this class covers.
+    """
+
+    def test_one_failed_day_is_labelled_and_the_other_two_stay_as_they_were(self):
+        rows = [_row(f"SY{i:02d}", cap=241 - i) for i in range(241)]
+        kalender = _FakeCalendar(
+            {"2026-11-07": [_row("AAA")], "2026-11-09": rows},
+            state_by_day={"2026-11-08": "unavailable"},
+        )
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        heute = _group(html, "heute")
+        self.assertIn("Tag nicht abrufbar", heute)
+        self.assertNotIn("keine Einträge", heute)
+        # No invented row for the failed day: the group holds no link and no list.
+        self.assertNotIn("href=", heute)
+        self.assertNotIn('class="cal-row"', heute)
+        self.assertNotIn(" von ", heute)
+
+        gestern = _group(html, "gestern")
+        self.assertIn('href="/?ticker=AAA#screener-form"', gestern)
+        self.assertIn("1 von 1", gestern)
+        self.assertNotIn("Tag nicht abrufbar", gestern)
+
+        morgen = _group(html, "morgen")
+        self.assertIn("25 von 241", morgen)
+        self.assertNotIn("Tag nicht abrufbar", morgen)
+        self.assertNotIn("keine Einträge", morgen)
+
+        # The header names the single outage and does not claim a stale answer.
+        self.assertIn("ein Tag konnte nicht abgerufen werden", html)
+        self.assertNotIn("letzter Stand, Quelle antwortet nicht", html)
+        self.assertLess(html.index("ein Tag konnte nicht abgerufen werden"), html.index('class="cal-groups"'))
+
+    def test_two_answered_empty_weekend_days_carry_no_warning(self):
+        # Regression against a standing warning: on a Saturday/Sunday the two
+        # empty days ARE the answer, and only "keine Einträge" may be shown.
+        rows = [_row(f"SY{i:02d}", cap=241 - i) for i in range(241)]
+        kalender = _FakeCalendar({"2026-11-09": rows})
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertEqual(html.count("keine Einträge"), 2)
+        self.assertNotIn("Tag nicht abrufbar", html)
+        self.assertNotIn("konnte nicht abgerufen werden", html)
+        self.assertNotIn("antwortet nicht", html)
+        self.assertIn("25 von 241", html)
+        self.assertIn("Quelle: Nasdaq · Stand 08.11.2026 06:00 UTC</p>", html)
+
+    def test_a_stale_day_shows_its_rows_and_is_named_as_the_last_state(self):
+        kalender = _FakeCalendar(
+            {"2026-11-07": [_row("AAA")], "2026-11-08": [_row("BBB")], "2026-11-09": [_row("CCC")]},
+            state_by_day={"2026-11-07": "stale"},
+        )
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertIn("letzter Stand, Quelle antwortet nicht", html)
+        self.assertNotIn("konnte nicht abgerufen werden", html)
+        gestern = _group(html, "gestern")
+        self.assertIn('href="/?ticker=AAA#screener-form"', gestern)
+        self.assertIn("1 von 1", gestern)
+        self.assertNotIn("Tag nicht abrufbar", html)
+        self.assertNotIn("keine Einträge", html)
+
+    def test_a_failed_and_a_stale_day_are_named_in_one_header(self):
+        kalender = _FakeCalendar(
+            {"2026-11-09": [_row("CCC")]},
+            state_by_day={"2026-11-07": "stale", "2026-11-08": "unavailable"},
+        )
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertIn("ein Tag konnte nicht abgerufen werden", html)
+        self.assertIn("letzter Stand, Quelle antwortet nicht", html)
+        self.assertIn("Tag nicht abrufbar", _group(html, "heute"))
+        self.assertIn("keine Einträge", _group(html, "gestern"))
+
+    def test_all_three_failed_days_keep_three_labelled_groups(self):
+        kalender = _FakeCalendar({}, state="unavailable")
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertIn("Quelle antwortet nicht", html)
+        self.assertEqual(html.count("Tag nicht abrufbar"), 3)
+        self.assertEqual(html.count('class="cal-group"'), 3)
+        self.assertEqual(html.count("keine Einträge"), 0)
+        self.assertEqual(html.count('class="cal-row"'), 0)
+        self.assertNotIn("Kalender nicht verfügbar", html)
+        # No day was answered, so no timestamp may suggest a fresh answer: the
+        # source line runs straight from the source name into the outage note.
+        self.assertIn("Quelle: Nasdaq · Quelle antwortet nicht</p>", html)
+
+    def test_a_day_the_answer_omits_is_an_outage_not_an_empty_day(self):
+        # The adapter's answer simply has no entry for yesterday: absence of an
+        # answer is no answer - it may not be rendered as a day without rows.
+        kalender = _FakeCalendar({"2026-11-08": [_row("BBB")], "2026-11-09": [_row("CCC")]},
+                                 omit=("2026-11-07",))
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertIn("Tag nicht abrufbar", _group(html, "gestern"))
+        self.assertIn("ein Tag konnte nicht abgerufen werden", html)
 
 
 if __name__ == "__main__":

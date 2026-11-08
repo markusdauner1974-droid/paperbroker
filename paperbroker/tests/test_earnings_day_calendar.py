@@ -14,7 +14,7 @@ import os
 import tempfile
 import threading
 import unittest
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 
 from paperbroker.adapters.earnings.NasdaqEarningsAdapter import (
     CALENDAR_URL,
@@ -30,6 +30,7 @@ from paperbroker.earnings_day_calendar import (
     DAY_TODAY,
     DEFAULT_TOP_N,
     build_calendar,
+    parse_as_of,
     parse_calendar_rows,
     parse_market_cap,
     rank_rows,
@@ -125,6 +126,63 @@ class TestParseMarketCap(unittest.TestCase):
 
     def test_digits_without_a_dollar_sign_still_parse(self):
         self.assertEqual(parse_market_cap("1,500"), 1500)
+
+
+class TestParseAsOf(unittest.TestCase):
+    """The stamp is read without the process locale, on every machine.
+
+    A German locale prints Sunday as ``Son`` and is why ``strptime`` with
+    ``%a``/``%b`` is not an option here: these cases must pass identically
+    under ``LC_ALL=de_DE.UTF-8``.
+    """
+
+    def test_a_real_stamp_becomes_the_date(self):
+        self.assertEqual(parse_as_of("Sun, Nov 8, 2026"), date(2026, 11, 8))
+
+    def test_leading_zero_case_and_whitespace_do_not_matter(self):
+        for text in (
+            "Sun, Nov 08, 2026",
+            "sun, nov 8, 2026",
+            "SUN, NOV 08, 2026",
+            "  Sun,  Nov   8,   2026  ",
+            "Sun,Nov 8,2026",
+        ):
+            with self.subTest(text=text):
+                self.assertEqual(parse_as_of(text), date(2026, 11, 8))
+
+    def test_every_english_month_and_weekday_token_is_understood(self):
+        monate = {m: i for i, m in enumerate(
+            ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1)}
+        for monat, nummer in monate.items():
+            with self.subTest(monat=monat):
+                self.assertEqual(parse_as_of(f"Mon, {monat} 15, 2026"), date(2026, nummer, 15))
+        for tag in ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"):
+            with self.subTest(tag=tag):
+                self.assertEqual(parse_as_of(f"{tag}, Jan 1, 2026"), date(2026, 1, 1))
+
+    def test_everything_unusable_is_none(self):
+        for text in (
+            None,
+            20261108,
+            20261108.0,
+            [],
+            {},
+            "",
+            "   ",
+            "Sun, Nov 8",                 # no year
+            "Nov 8, 2026",                # no weekday
+            "Sun, Nov 8, 26",             # two-digit year
+            "Sunday, Nov 8, 2026",        # full weekday name
+            "Son, Nov 8, 2026",           # German weekday
+            "Sun, Nov, 8, 2026",          # stray comma
+            "Sun, Foo 8, 2026",           # unknown month
+            "Xyz, Nov 8, 2026",           # unknown weekday
+            "Sun, Feb 31, 2026",          # impossible date
+            "Sun, Nov 0, 2026",           # day zero
+            "2026-11-08",
+        ):
+            with self.subTest(text=text):
+                self.assertIsNone(parse_as_of(text))
 
 
 class TestParseCalendarRows(unittest.TestCase):
@@ -228,6 +286,43 @@ class TestParseCalendarRows(unittest.TestCase):
                 self.assertFalse(geparst["payload_ok"])
                 self.assertEqual(geparst["rows"], [])
                 self.assertEqual(geparst["skipped"], 0)
+
+    def test_a_stamp_for_another_day_is_an_outage(self):
+        # Monday's answer says nothing about Sunday: taking it as proof would
+        # cache an empty Sunday that was never answered.
+        payload = {"data": {"asOf": "Mon, Nov 9, 2026", "headers": None, "rows": None},
+                   "status": {"rCode": 200}}
+        geparst = parse_calendar_rows(payload, "2026-11-08")
+        self.assertFalse(geparst["payload_ok"])
+        self.assertEqual(geparst["rows"], [])
+        self.assertEqual(geparst["skipped"], 0)
+        self.assertEqual(geparst["date"], "2026-11-08")
+
+    def test_a_stamp_without_a_year_is_an_outage(self):
+        payload = {"data": {"asOf": "Sun, Nov 8", "headers": None, "rows": None}}
+        geparst = parse_calendar_rows(payload, "2026-11-08")
+        self.assertFalse(geparst["payload_ok"])
+        self.assertEqual(geparst["rows"], [])
+
+    def test_a_german_weekday_in_the_stamp_is_an_outage(self):
+        payload = {"data": {"asOf": "Son, Nov 8, 2026", "headers": None, "rows": None}}
+        geparst = parse_calendar_rows(payload, "2026-11-08")
+        self.assertFalse(geparst["payload_ok"])
+        self.assertEqual(geparst["rows"], [])
+
+    def test_an_impossible_date_in_the_stamp_is_an_outage(self):
+        payload = {"data": {"asOf": "Sun, Feb 31, 2026", "headers": None, "rows": None}}
+        geparst = parse_calendar_rows(payload, "2026-11-08")
+        self.assertFalse(geparst["payload_ok"])
+        self.assertEqual(geparst["rows"], [])
+
+    def test_an_unparseable_requested_day_keeps_everything_an_outage(self):
+        # Fail closed: without a day to compare against, the stamp proves nothing.
+        for tag in (None, "", "08.11.2026", "2026-11-8", 20261108):
+            with self.subTest(tag=tag):
+                geparst = parse_calendar_rows(SUNDAY_PAYLOAD, tag)
+                self.assertFalse(geparst["payload_ok"])
+                self.assertEqual(geparst["rows"], [])
 
 
 class TestRankRows(unittest.TestCase):
@@ -439,6 +534,48 @@ class TestCalendarDaysAdapter(unittest.TestCase):
         self.assertEqual(gespeichert["rows"], [])
         self.assertTrue(gespeichert["payload_ok"])
         self.assertEqual(gespeichert["date"], DAYS[DAY_TODAY])
+
+    def test_a_stamp_for_another_day_is_unavailable_and_is_not_cached(self):
+        # The answer is about 2026-11-09, not about the requested 2026-11-08:
+        # no empty Sunday may enter the cache under a date nobody answered for.
+        falscher_stempel = {"data": {"asOf": "Mon, Nov 9, 2026", "headers": None, "rows": None},
+                            "status": {"rCode": 200}}
+        quelle = _CalendarSource(payload=falscher_stempel)
+        adapter = _adapter(self.tmpdir, quelle)
+        ergebnis = adapter.get_calendar_days({DAY_TODAY: DAYS[DAY_TODAY]})
+        self.assertEqual(ergebnis["state"], "unavailable")
+        eintrag = ergebnis["days"][DAYS[DAY_TODAY]]
+        self.assertEqual(eintrag["state"], "unavailable")
+        self.assertFalse(eintrag["payload_ok"])
+        self.assertEqual(eintrag["rows"], [])
+        self.assertTrue(eintrag["live_query_failed"])
+        self.assertEqual(eintrag["error"]["code"], "invalid_payload")
+        gespeichert = DayCalendarStore(path=os.path.join(self.tmpdir, "calendar.json")).get(DAYS[DAY_TODAY])
+        self.assertIsNone(gespeichert)
+
+    def test_a_stamp_for_another_day_serves_the_old_day_as_stale(self):
+        # With an earlier, real answer on file the failure falls back to it -
+        # and the stored rows stay exactly the old ones, not an empty day.
+        clock = _Clock()
+        quelle = _CalendarSource(rows_for=lambda tag: [_row("AAA")])
+        adapter = _adapter(self.tmpdir, quelle, clock=clock)
+        erste = adapter.get_calendar_days({DAY_TODAY: DAYS[DAY_TODAY]})
+        alter_stempel = erste["days"][DAYS[DAY_TODAY]]["fetched_at_utc"]
+        self.assertIsNotNone(alter_stempel)
+        clock.advance(hours=7)                      # TTL expired: the source is asked again
+        quelle.payload = {"data": {"asOf": "Mon, Nov 9, 2026", "headers": None, "rows": None},
+                          "status": {"rCode": 200}}
+        zweite = adapter.get_calendar_days({DAY_TODAY: DAYS[DAY_TODAY]})
+        self.assertEqual(zweite["state"], "stale")
+        eintrag = zweite["days"][DAYS[DAY_TODAY]]
+        self.assertEqual(eintrag["state"], "stale")
+        self.assertTrue(eintrag["live_query_failed"])
+        self.assertEqual([z["symbol"] for z in eintrag["rows"]], ["AAA"])
+        self.assertEqual(eintrag["fetched_at_utc"], alter_stempel)
+        gespeichert = DayCalendarStore(path=os.path.join(self.tmpdir, "calendar.json")).get(DAYS[DAY_TODAY])
+        self.assertIsNotNone(gespeichert)
+        self.assertEqual([z["symbol"] for z in gespeichert["rows"]], ["AAA"])
+        self.assertEqual(gespeichert["fetched_at_utc"], alter_stempel)
 
 
 class _BarrierSource:

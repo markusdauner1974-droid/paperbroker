@@ -653,9 +653,11 @@ class NasdaqEarningsAdapter:
         * ``unavailable`` - the query failed and there is no cache: no rows.
 
         A payload without a usable ``data.rows`` list counts as a failure, not
-        as an empty day; a Sunday, by contrast, answers ``rows: null`` WITH its
-        own ``asOf`` stamp and is the valid empty day the parser accepts (see
-        ``parse_calendar_rows``). The aggregate state is the worst of the days,
+        as an empty day; a Sunday, by contrast, answers ``rows: null`` WITH an
+        ``asOf`` stamp naming that very day and is the valid empty day the
+        parser accepts (see ``parse_calendar_rows``) - a stamp for another day
+        stays a failure and is never cached as empty. The aggregate state is the
+        worst of the days,
         and its timestamp is the OLDEST one delivered - the page must never
         imply a fresher stamp than the data it shows.
 

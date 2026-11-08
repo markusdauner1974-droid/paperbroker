@@ -134,9 +134,9 @@
       {%- else -%}
         Quelle: Nasdaq{% if calendar.stand %} · Stand {{ calendar.stand }}{% endif %}
       {%- endif -%}
-      {%- if calendar.available and calendar.note %} · {{ calendar.note }}{% endif -%}
+      {%- if calendar.note and calendar.state != 'not_configured' %} · {{ calendar.note }}{% endif -%}
     </p>
-    {% if calendar.available %}
+    {% if calendar.show_groups %}
     <div class="cal-groups">
       {% for g in calendar.groups %}
       <div class="cal-group">
@@ -153,6 +153,10 @@
           </li>
           {% endfor %}
         </ul>
+        {% elif g.unavailable %}
+        {# Kein belegter Inhalt: "keine Einträge" waere hier eine erfundene
+           Aussage - die Quelle hat den Tag gar nicht beantwortet. #}
+        <p class="note">Tag nicht abrufbar</p>
         {% else %}
         <p class="note">keine Einträge</p>
         {% endif %}

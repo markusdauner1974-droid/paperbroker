@@ -678,6 +678,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         failure mode ends in a dict the template can render: a missing source
         is a plain sentence, not an exception and not an empty day pretending
         there is nothing to report.
+
+        Each group therefore carries the answer state the adapter reported
+        (``unavailable``: no content, ``stale``: last known rows) so the page
+        can tell "nobody could ask" apart from "the source answered: nothing
+        on that day". The header note names one failure per sentence, which is
+        the only way a single failed day stays visible while its two siblings
+        are live.
         """
         try:
             heute = _us_today(now_fn)
@@ -697,34 +704,66 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                     eintrag = {"date": tag, "rows": [], "payload_ok": False, "skipped": 0}
                 tagesdaten[key] = eintrag
 
+            # Per-day answer state, taken from the adapter's own labelling and
+            # never inferred from "the rows are empty": a live day may honestly
+            # list nothing (a weekend answers `rows: null` with its own date
+            # stamp), while an unavailable one has no content at all. A day the
+            # answer does not mention is unavailable too - an absent answer is
+            # no answer, so the page must not read it as an empty day.
+            tageszustand = {}
+            for key, tag in tage.items():
+                meldung = roh.get(tag)
+                gemeldet = meldung.get("state") if isinstance(meldung, dict) else None
+                tageszustand[key] = gemeldet if gemeldet in ("live", "stale") else "unavailable"
+
             kalender = build_calendar(tagesdaten)
             gruppen = []
             for gruppe in kalender["groups"]:
                 zeilen = [dict(zeile, session_text=_SESSION_TEXT.get(zeile.get("session"), _SESSION_UNKNOWN_TEXT))
                           for zeile in gruppe["rows"]]
+                zustand = tageszustand.get(gruppe["key"], "unavailable")
                 gruppen.append(dict(
                     gruppe,
                     rows=zeilen,
                     label=_CALENDAR_DAY_LABEL.get(gruppe["key"], ""),
                     date_text=_german_date(gruppe["date"]),
                     counter=f"{len(zeilen)} von {gruppe['total']}",
+                    unavailable=zustand == "unavailable",
+                    stale=zustand == "stale",
                 ))
 
             state = str(antwort.get("state") or "unavailable")
-            tages_zustaende = [roh[tag].get("state") for tag in tage.values()
-                               if isinstance(roh.get(tag), dict)]
-            vorhanden = any(z in ("live", "stale") for z in tages_zustaende)
+            zustaende = list(tageszustand.values())
+            vorhanden = any(z in ("live", "stale") for z in zustaende)
+            ausgefallen = sum(1 for z in zustaende if z == "unavailable")
+            letzter_stand = "stale" in zustaende or state == "stale"
             if state == "not_configured":
                 note = "keine Earnings-Quelle konfiguriert"
-            elif state == "stale" or "stale" in tages_zustaende:
-                note = "letzter Stand, Quelle antwortet nicht"
-            elif not vorhanden:
-                note = "Quelle antwortet nicht"
             else:
-                note = None
+                # One sentence per failure mode, because a partial outage and a
+                # stale answer are different promises: the first says a day is
+                # missing, the second says what is shown is old. "Nothing was
+                # answered at all" stays the block-wide sentence - it is the
+                # honest wording for three missing days, and it keeps the
+                # weekend's two empty-but-answered days free of any warning.
+                saetze = []
+                if not vorhanden:
+                    saetze.append("Quelle antwortet nicht")
+                elif ausgefallen == 1:
+                    saetze.append("ein Tag konnte nicht abgerufen werden")
+                elif ausgefallen:
+                    saetze.append(f"{ausgefallen} Tage konnten nicht abgerufen werden")
+                if letzter_stand:
+                    saetze.append("letzter Stand, Quelle antwortet nicht")
+                note = " · ".join(saetze) or None
 
             return {
                 "available": bool(vorhanden),
+                # Groups are rendered unless no source is configured at all: a
+                # failed day must stay a visible, labelled day instead of a
+                # column the page silently drops - and a not-configured source
+                # is a setup fact, not three outages.
+                "show_groups": bool(gruppen) and state != "not_configured",
                 "state": state,
                 "note": note,
                 "stand": _german_stamp(antwort.get("fetched_at_utc")),
