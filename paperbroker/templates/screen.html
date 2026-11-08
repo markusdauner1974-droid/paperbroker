@@ -3,84 +3,152 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Options-Screener</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Martian+Mono:wght@400;600&family=Instrument+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Oswald:wght@500;700&family=Martian+Mono:wght@400;600&family=Instrument+Sans:wght@400;600&display=swap" rel="stylesheet">
+  <title>Options-Screener — CoachBen-Stil</title>
   <style>
-    body{font-family:-apple-system,system-ui,sans-serif;margin:0;background:#0f1420;color:#e6e9ef}
-    /* D2c: ohne eigene Regel nimmt der Browser sein Blau (#0000ee) - auf
-       dunklem Grund 1,96:1. Gemessen im Browser, 1280 px. */
-    a,a:visited{color:#8ab4ff}
-    header{padding:14px 18px;border-bottom:1px solid #232b3b;display:flex;flex-wrap:wrap;gap:10px;align-items:center}
-    h1{font-size:1.05rem;margin:0}
-    .badge{padding:2px 10px;border-radius:999px;font-size:.8rem;border:1px solid #2c3650}
-    .lamp{width:14px;height:14px;border-radius:50%;display:inline-block;vertical-align:middle}
-    .green{background:#2fbf71}.yellow{background:#e6b93c}.red{background:#e0503c}.none{background:#5a6479}
-    main{padding:16px;max-width:1220px;margin:0 auto}
-    .shell{display:grid;grid-template-columns:296px minmax(0,1fr);gap:32px;align-items:start}
-    .results{min-width:0;display:flex;flex-direction:column;gap:16px}
-    .lede{font-size:1.25rem;font-weight:600;margin:0}
-    .lede span{color:#2fbf71;font-variant-numeric:tabular-nums}
+    :root{
+      --base:#091217; --panel:#0d181e; --ink:#fafafa;
+      --primary:#e05534; --primary-dark:#c8401e;
+      --muted:rgba(250,250,250,.62); --faint:rgba(250,250,250,.48);
+      --hair:rgba(250,250,250,.20); --hair-soft:rgba(250,250,250,.10);
+      /* Bedienkanten tragen 3,0:1 (gemessen: .36 -> #606669 = 3,24:1) */
+      --edge:rgba(250,250,250,.36);
+      --ok:#57c98b; --warn:#d9a441;
+      --font-display:"Oswald",sans-serif;
+      --font-body:"Instrument Sans",system-ui,sans-serif;
+      --font-mono:"Martian Mono",ui-monospace,"SFMono-Regular",monospace;
+    }
+    *,*::before,*::after{box-sizing:border-box}
+    body{margin:0;background:var(--base);color:var(--ink);font-family:var(--font-body);
+      font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+    /* Sortier-Links: eigene Farbe statt Browser-Blau (#0000ee = 1,96:1) */
+    a,a:visited{color:var(--primary);text-decoration:none;border-bottom:1px dotted rgba(224,85,52,.55)}
+    a:hover,a:focus-visible{color:var(--ink);border-bottom-color:var(--ink)}
+    :focus-visible{outline:2px solid var(--primary);outline-offset:2px}
+    header{padding:20px 28px 16px;border-bottom:1px dotted var(--hair);
+      display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    h1{font-family:var(--font-display);font-weight:700;text-transform:uppercase;
+      font-size:21px;letter-spacing:.01em;margin:0 12px 0 0;line-height:1}
+    .badge{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--muted);padding:5px 10px;
+      border:1px dotted var(--hair);border-radius:0}
+    .lamp{width:8px;height:8px;display:inline-block;vertical-align:middle;border-radius:0}
+    .green{background:var(--ok)}.yellow{background:var(--warn)}
+    .red{background:var(--primary)}.none{background:var(--faint)}
+    main{padding:24px 26px 72px;max-width:1400px;margin:0 auto}
+    .note{font-size:12.5px;color:var(--muted);margin:0}
+    .shell{display:grid;grid-template-columns:268px minmax(0,1fr);gap:30px;align-items:start}
+    .results{min-width:0;display:flex;flex-direction:column;gap:18px}
+    .lede{font-family:var(--font-display);font-weight:700;text-transform:uppercase;
+      font-size:26px;line-height:1.05;margin:0}
+    .lede span{color:var(--primary);font-family:var(--font-mono);font-size:.66em;letter-spacing:.02em}
     @media (max-width:1212px){.shell{grid-template-columns:minmax(0,1fr)}}
-    form{display:grid;grid-template-columns:1fr 1fr;gap:12px 8px;margin:0}
+
+    form{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0}
     form>input,form>select{width:100%;min-width:0}
     form>button,form>fieldset,form>span{grid-column:1/-1}
-    .shell fieldset.crit{grid-template-columns:minmax(0,1fr)}
-    .shell fieldset.crit label{flex-wrap:wrap;margin:4px 0}
-    /* D2b: die Leiste ist eine Liste aus Zeilen - Beschriftung links,
-       Feld rechtsbuendig in einer festen Spalte */
-    .shell fieldset.crit{border:0;background:none;padding:0;margin:0 0 16px}
-    .shell fieldset.crit legend{padding:0;font-size:.8rem}
-    .shell fieldset.crit>label{display:grid;grid-template-columns:minmax(0,1fr) 84px;align-items:center;gap:8px;margin:5px 0}
-    .shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;box-sizing:border-box;text-align:right;font-variant-numeric:tabular-nums;padding:6px 10px}
-    .shell form>input,.shell form>select{box-sizing:border-box}
-    .shell fieldset.crit>label>small{grid-column:1/-1;color:#e6b93c;font-weight:400;margin-top:2px}
-    .shell fieldset.crit>label:has(input[type=checkbox]){grid-template-columns:auto minmax(0,1fr);justify-items:start}
-    .shell fieldset.crit>label>input[type=checkbox]{width:16px;height:16px}
-    form>h2.rail-title{grid-column:1/-1;font-size:.8rem;font-weight:600;letter-spacing:.06em;color:#9aa3b5;margin:0 0 8px}
-    /* ausD3: der Ruecksetz-Link unter dem Scan-Knopf. Bewusst ein <a>:
-       die Seite darf genau EINEN Knopf tragen (gemessen in test_server). */
-    form>a.reset{grid-column:1/-1;font-size:.8rem;text-align:center;text-decoration:none;padding:2px 0}
-    input,button{font-size:1rem;padding:9px 12px;border-radius:8px;border:1px solid #5b6f99;background:#1a2233;color:inherit}
-    button{background:#2c6bed;border-color:#2c6bed;color:#fff;font-weight:600}
-    button:disabled{opacity:.55}
-    select{font-size:1rem;padding:9px;border-radius:8px;border:1px solid #5b6f99;background:#1a2233;color:inherit;max-width:220px}
-    select:disabled{opacity:.5}
-    .note{font-size:.85rem;color:#9aa3b5;margin:8px 0}
-    .err{background:#3a1f1f;border:1px solid #7c3a33;padding:10px 12px;border-radius:8px;margin-bottom:12px}
-    .spin{font-size:.85rem;color:#9aa3b5;display:none}
-    table{width:100%;border-collapse:collapse;font-size:.85rem}
-    th,td{text-align:right;padding:6px 8px;border-bottom:1px solid #232b3b}
-    th:first-child,td:first-child{text-align:left}
-    th{color:#9aa3b5;font-weight:600}
-    .score{font-weight:700;color:#2fbf71}
-    .mismatch{color:#e6b93c}
-    .stats{display:flex;gap:14px;flex-wrap:wrap;font-size:.9rem;color:#9aa3b5;margin-bottom:10px}
+    input,select,button{font-family:var(--font-mono);font-size:12px;border-radius:0;
+      border:0;border-bottom:1px dotted var(--edge);background:transparent;
+      color:var(--ink);padding:8px 2px}
+    input::placeholder{color:var(--faint)}
+    select{max-width:100%;padding:8px 4px;background:var(--panel);border:1px dotted var(--edge)}
+    select:disabled,input:disabled{opacity:.45}
+    /* Funkknoepfe und Schalter sind keine Textfelder: keine Unterkante,
+       keine Innenpolster (sonst werden sie zu grossen Ringen) */
+    input[type=radio],input[type=checkbox]{width:15px;height:15px;padding:0;
+      border:0;background:none;accent-color:var(--primary);vertical-align:middle}
+    button{background:var(--primary);border:1px solid var(--primary);color:#0b0704;
+      font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:11px;
+      padding:12px 16px;cursor:pointer;transition:background-color .15s,border-color .15s}
+    button:hover{background:var(--primary-dark);border-color:var(--primary-dark)}
+    button:disabled{opacity:.5}
+    form>h2.rail-title{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--faint);margin:4px 0 0;font-weight:600}
+    form>a.reset{font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;
+      text-transform:uppercase;text-align:center;padding:4px 0;border-bottom:0;color:var(--muted)}
+    form>a.reset:hover{color:var(--primary)}
 
-    .dropped-summary ul{margin:6px 0 0;padding-left:18px;font-size:.9rem}
-    .dropped-summary li{margin:2px 0}
-    .drop-count{color:#e6b93c;font-weight:700}
-    .warn{background:#3a2f1f;border:1px solid #7c6a33;padding:10px 12px;border-radius:8px;margin-bottom:12px}
-    .hint{background:#1a2233;border:1px solid #2c3650;padding:8px 12px;border-radius:8px;margin-bottom:12px}
-    fieldset.crit{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px 16px;flex:1 1 100%;border:1px solid #2c3650;border-radius:8px;padding:8px 12px;margin-bottom:12px;box-sizing:border-box}
-    fieldset.crit legend{grid-column:1/-1;font-size:.85rem;color:#9aa3b5;padding:0 6px}
-    fieldset.crit label{font-size:.85rem;color:#9aa3b5;display:inline-flex;gap:4px;align-items:center;margin:4px 10px 4px 0}
-    fieldset.crit>span{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:8px 16px;align-items:center}
-    fieldset.crit>span>label{display:inline-flex;align-items:center;gap:4px;margin:0}
-    small.warn-min{color:#e6b93c;font-size:.78rem}
-    fieldset.crit input[type=number]{width:5.5rem;font-size:.95rem;padding:6px 8px}
-    .dropped-summary{background:none;border:0;border-top:1px solid #232b3b;border-radius:0;padding:0;margin:0}
-    .dropped-summary summary{cursor:pointer;padding:10px 0;font-size:.85rem;color:#9aa3b5;list-style:none}
+    fieldset.crit{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
+      gap:8px 18px;flex:1 1 100%;border:0;border-top:1px dotted var(--hair);
+      border-radius:0;padding:14px 0 0;margin:0 0 18px}
+    fieldset.crit legend{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--faint);padding:0 0 6px}
+    fieldset.crit label{font-size:12px;color:var(--muted);display:inline-flex;gap:6px;
+      align-items:center;margin:3px 8px 3px 0}
+    fieldset.crit input[type=number]{width:5.2rem;text-align:right}
+    fieldset.crit input[type=checkbox],fieldset.crit input[type=radio]{accent-color:var(--primary);width:14px;height:14px}
+    fieldset.crit>span{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px 18px;
+      align-items:center;font-size:12px;color:var(--muted)}
+    fieldset.crit>span>label{margin:0}
+    small.warn-min{color:var(--warn);font-size:10.5px}
+    /* the rail is one column: ticker, date, button stacked (268 px) */
+    .shell form{grid-template-columns:minmax(0,1fr);gap:12px}
+    .shell form>input,.shell form>select{text-align:left}
+    .shell form>select{max-width:100%}
+    .shell fieldset.crit{grid-template-columns:minmax(0,1fr)}
+    .shell fieldset.crit>label{display:grid;grid-template-columns:minmax(0,1fr) 74px;
+      align-items:center;gap:10px;margin:6px 0}
+    .shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;text-align:right;padding:6px 2px}
+    .shell fieldset.crit>label>small{grid-column:1/-1;margin-top:2px}
+    .shell fieldset.crit>label:has(input[type=checkbox]){grid-template-columns:auto minmax(0,1fr);justify-items:start}
+
+    .err,.warn,.hint{padding:12px 14px;border:1px dotted;border-radius:0;font-size:12.5px}
+    .err{border-color:rgba(224,85,52,.55);background:rgba(224,85,52,.08);color:#f7d3c9}
+    .warn{border-color:rgba(217,164,65,.5);background:rgba(217,164,65,.07);color:#f0dfba}
+    .hint{border-color:var(--hair);background:var(--panel);color:var(--muted)}
+    .spin{display:none;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--faint)}
+
+    h2{font-family:var(--font-display);font-weight:700;text-transform:uppercase;
+      font-size:22px;margin:6px 0 0;line-height:1.05}
+    table{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:10.5px;
+      font-variant-numeric:tabular-nums}
+    th,td{text-align:right;padding:6px 6px;border-bottom:1px dotted var(--hair-soft);white-space:nowrap}
+    th{white-space:normal;line-height:1.25}
+    th:first-child,td:first-child{text-align:left}
+    th{font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
+      color:var(--faint);border-bottom:1px dotted var(--hair)}
+    tbody tr:hover{background:rgba(250,250,250,.035)}
+    .score{color:var(--primary);font-weight:700}
+    .mismatch{color:var(--warn)}
+    .stats{display:flex;gap:8px 20px;flex-wrap:wrap;font-family:var(--font-mono);
+      font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+    .stats b{color:var(--ink);font-weight:600}
+
+    .dropped-summary{border-top:1px dotted var(--hair);border-radius:0;background:none;padding:0}
+    .dropped-summary summary{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
+      text-transform:uppercase;color:var(--muted);cursor:pointer;padding:12px 0;list-style:none}
     .dropped-summary summary::-webkit-details-marker{display:none}
-    .dropped-summary summary::before{content:"\25B8 ";color:#828da5}
-    .dropped-summary[open] summary::before{content:"\25BE "}
-    /* Earnings-Panel: eigene Karte, damit der Termin nicht mit den Kursdaten
-       verwechselt wird (er kommt aus einer ANDEREN Quelle als CBOE). */
-    .earn{background:#151d2c;border:1px solid #2c3650;border-radius:8px;padding:12px 14px;margin-bottom:12px}
-    .earn h3{font-size:.95rem;margin:0 0 8px}
-    .earn-stats{display:flex;gap:14px;flex-wrap:wrap;font-size:.9rem;color:#9aa3b5;margin-bottom:6px}
-    .earn .ok{color:#2fbf71;font-weight:600}
-    .earn .blocked{color:#e0503c;font-weight:600}
-    .earn .unknown{color:#e6b93c;font-weight:600}
-    .earn ul{margin:4px 0 0;padding-left:18px;font-size:.85rem;color:#9aa3b5}
+    .dropped-summary summary::before{content:"\203A  ";color:var(--primary)}
+    .dropped-summary[open] summary::before{content:"\2304  "}
+    .dropped-summary ul{margin:0 0 10px;padding-left:0;list-style:none;
+      font-family:var(--font-mono);font-size:11px;color:var(--muted)}
+    .dropped-summary li{padding:5px 0;border-bottom:1px dotted var(--hair-soft);
+      display:flex;justify-content:space-between;gap:16px}
+    .drop-count{color:var(--primary);font-weight:700}
+
+    .earn{border:1px dotted var(--hair);border-radius:0;padding:16px 18px;background:var(--panel)}
+    .earn h3{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--faint);margin:0 0 12px;font-weight:600}
+    .earn-stats{display:flex;gap:9px 22px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-bottom:8px}
+    .earn-stats b{color:var(--ink);font-family:var(--font-mono);font-size:12px;font-weight:600}
+    .earn .ok{color:var(--ok);font-weight:600}
+    .earn .blocked{color:var(--primary);font-weight:600}
+    .earn .unknown{color:var(--warn);font-weight:600}
+    .earn ul{margin:6px 0 0;padding-left:16px;font-size:12px;color:var(--muted)}
+
+    /* CB-EDIT: overflow container for the twelve-column spread table */
+    .tbl{min-width:0;overflow-x:auto}
+    @media (max-width:900px){
+      main{padding:18px 18px 56px}
+      header{padding:16px 18px 14px}
+    }
+    @media (prefers-reduced-motion:reduce){*{transition:none!important}}
   </style>
 </head>
 <body>
@@ -258,7 +326,7 @@
       <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads. Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert. Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung, in die der Basiswert laufen muss (↑ steigen für Calls, ↓ fallen für Puts).</p>
       <p class="note">Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl
         und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.</p>
-      <table>
+      <div class="tbl"><table>
         <thead><tr>
           <th>Spread</th><th>Verfall</th><th>Breite</th><th>Debit (je Einheit)</th><th>Position ($)</th><th>max Verlust<br>(je Einheit, brutto)</th><th>max Gewinn<br>(je Einheit, brutto)</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite<br>(brutto)</a></th><th>Breakeven<br>(brutto)</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>Debit/Breite %</th><th>Hinweis</th>
         </tr></thead>
@@ -280,10 +348,10 @@
             <td>{% if v.debit_ge_width %}kein Gewinn möglich{% else %}-{% endif %}</td>
           </tr>
         {% endfor %}
-      </table>
+      </table></div></div>
     {% endif %}
     {% if results %}
-      <table>
+      <div class="tbl"><table>
         <thead><tr>
           <th>Kontrakt</th><th>Bid</th><th>Ask</th><th>Spread %</th><th>IV %</th><th>OI</th><th>Vol</th><th>Δ×100</th><th>Score</th>
         </tr></thead>
@@ -300,7 +368,7 @@
           </tr>
         {% endfor %}
         </tbody>
-      </table>
+      </table></div></div>
     {% else %}
       <p class="note">Keine Kontrakte haben die Kriterien bestanden.</p>
     {% endif %}
