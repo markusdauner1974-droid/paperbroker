@@ -860,8 +860,22 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             )
         tage = antwort.get("days") if isinstance(antwort, dict) else None
         tag = (tage or {}).get(day) if isinstance(tage, dict) else None
-        zustand = str((tag or {}).get("state") or antwort.get("state") or "unavailable")
-        zeilen = (tag or {}).get("rows") or []
+        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
+        if gesamt == "not_configured":
+            # Setup fact, not an outage: the null adapter answers no days at
+            # all, and "not configured" is the honest wording for that.
+            return _earnings_error(
+                503, "earnings_source_not_configured",
+                "no earnings source is configured - there is nothing to scan",
+            )
+        if not isinstance(tag, dict):
+            # No entry for the requested day is no answer - not an empty day.
+            return _earnings_error(
+                503, "calendar_unavailable",
+                f"the earnings calendar did not answer for {day}",
+            )
+        zustand = str(tag.get("state") or gesamt or "unavailable")
+        zeilen = tag.get("rows") or []
         if zustand == "not_configured":
             return _earnings_error(
                 503, "earnings_source_not_configured",
@@ -893,8 +907,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             return _earnings_error(503, "scan_failed", "the scan could not be completed")
 
         koerper["day_state"] = zustand
-        koerper["day_fetched_at_utc"] = (tag or {}).get("fetched_at_utc")
-        koerper["day_rows_skipped"] = int((tag or {}).get("skipped") or 0)
+        koerper["day_fetched_at_utc"] = tag.get("fetched_at_utc")
+        koerper["day_rows_skipped"] = int(tag.get("skipped") or 0)
         koerper["option_filter"]["state"] = option_state
         koerper["option_filter"]["fetched_at_utc"] = option_fetched
         return jsonify(koerper)

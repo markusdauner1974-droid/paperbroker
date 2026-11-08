@@ -642,6 +642,20 @@ class TestTheRoute(unittest.TestCase):
         self.assertEqual(chains.calls, [])
         self.assertEqual(earnings.earnings_calls, [])
 
+    def test_a_missing_day_entry_is_not_an_empty_day(self):
+        # A live answer that simply forgets the requested day proves nothing
+        # about that day: the scan must refuse instead of reporting "0 rows".
+        class _Forgetful(FakeEarningsAdapter):
+            def get_calendar_days(self, days):
+                antwort = super().get_calendar_days(days)
+                antwort["days"] = {}
+                return antwort
+
+        earnings = _Forgetful(self._rows())
+        antwort = self._client(earnings=earnings).get(f"/api/v1/earnings-scan?day={EXP_A}")
+        self.assertEqual(antwort.status_code, 503)
+        self.assertEqual(antwort.get_json()["error"]["code"], "calendar_unavailable")
+
     def test_a_stale_day_is_served_but_labelled(self):
         rows = self._rows()
         earnings = FakeEarningsAdapter(rows, day_state="stale")
