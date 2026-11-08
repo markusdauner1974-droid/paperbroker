@@ -8,6 +8,7 @@ healthz liveness without external calls.
 import html
 import json
 import os
+import pathlib
 import re
 import unittest
 from datetime import datetime
@@ -2761,17 +2762,16 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
     # --- die Breite ---
 
     def test_the_page_is_wider_than_its_widest_table(self):
-        # die breiteste Tabelle braucht gemessen 837 px; mit 2x16 px Polster
-        # sind das 869 px. Die Zahl wird AUS DER REGEL gelesen und geprueft -
-        # ein "assertIn('1100', page)" waere blind (die Zahl kann aus Daten
-        # stammen), ein "assertIn('max-width', page)" erst recht.
+        # Die breiteste Tabelle (zwoelf Spalten, Mono 10,5 px) braucht im
+        # Browser gemessen 1050 px. Die Zahl wird AUS DER REGEL gelesen und
+        # gegen die gemessene Tabelle gerechnet - ein "assertIn('1400', page)"
+        # waere blind (die Zahl kann aus Daten stammen).
         page = self._page()
         regel = re.search(r"main\{([^}]*)\}", page).group(1)
         breite = int(re.search(r"max-width:(\d+)px", regel).group(1))
-        # D2b: 1220 px - die Leiste ist auf 296 px gewachsen, der Abstand
-        # auf 32 px (1220 - 296 - 32 = 892 >= 837)
-        self.assertEqual(breite, 1220)
-        self.assertGreaterEqual(breite, 869)
+        leiste, abstand, polster = 268, 30, 26
+        self.assertEqual(breite, 1400)
+        self.assertGreaterEqual(breite, 1050 + leiste + abstand + 2 * polster)
         self.assertNotIn("max-width:760px", page)
 
     # --- das Raster ---
@@ -3013,10 +3013,11 @@ class TheFiltersStandBesideTheResult(unittest.TestCase):
 
     def test_the_filters_stand_beside_the_result(self):
         page = self._page()
-        # D2b: die Leiste ist breiter (296 statt 272) und der Umbruchpunkt
-        # mitgerechnet (Ergebnisbreite = Fenster - 375, 837 px brauchen 1212)
-        self.assertIn("max-width:1220px", page)
-        self.assertIn(".shell{display:grid;grid-template-columns:296px minmax(0,1fr)", page)
+        # Leiste 268 px, Abstand 30 px; die Tabelle braucht gemessen 1050 px,
+        # daraus folgt der Umbruchpunkt: 268 + 30 + 1050 + 2*26 = 1400
+        self.assertIn("max-width:1400px", page)
+        self.assertIn(".shell{display:grid;grid-template-columns:268px minmax(0,1fr);"
+                      "gap:30px;align-items:start}", page)
         self.assertIn("@media (max-width:1212px){.shell{grid-template-columns:minmax(0,1fr)}}", page)
         self.assertLess(page.index('<div class="shell">'), page.index("<form"))
         self.assertLess(page.index("<form"), page.index('<div class="results">'))
@@ -3132,23 +3133,26 @@ class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
             "/", query_string=query).get_data(as_text=True)
 
     def test_the_rail_groups_carry_no_boxes(self):
-        # Kaesten weg: die Gruppe ist eine Ueberschrift mit Zeilen darunter
+        # Kaesten weg: die Gruppe ist eine Haarlinie mit Zeilen darunter
         page = self._page()
-        self.assertIn(".shell fieldset.crit{border:0;background:none;padding:0;margin:0 0 16px}", page)
-        # und der Rahmen der Basisregel darf die Leiste nicht mehr treffen
-        self.assertNotIn(".shell fieldset.crit{border:1px", page)
+        css = re.sub(r"\s+", " ", page[page.index("<style>"):page.index("</style>")])
+        self.assertIn("flex:1 1 100%;border:0;border-top:1px dotted var(--hair); "
+                      "border-radius:0;", css)
+        self.assertNotIn("fieldset.crit{border:1px", css)
+        # die Kiste der Basisregel (Radius 8 px) ist ueberall verschwunden
+        self.assertNotIn("border-radius:8px", css)
 
     def test_each_field_is_a_row_with_the_input_on_the_right(self):
         page = self._page()
+        css = re.sub(r"\s+", " ", page[page.index("<style>"):page.index("</style>")])
         self.assertIn(".shell fieldset.crit>label{display:grid;"
-                      "grid-template-columns:minmax(0,1fr) 84px;"
-                      "align-items:center;gap:8px;margin:5px 0}", page)
+                      "grid-template-columns:minmax(0,1fr) 74px; "
+                      "align-items:center;gap:10px;margin:6px 0}", css)
         self.assertIn(".shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;"
-                      "box-sizing:border-box;text-align:right;"
-                      "font-variant-numeric:tabular-nums;padding:6px 10px}", page)
-        # ohne border-box ist das Feld 84 + 22 = 106 px breit und laeuft bei
-        # 1024 px um 6 px aus dem Fenster (gemessen)
-        self.assertIn(".shell form>input,.shell form>select{box-sizing:border-box}", page)
+                      "text-align:right;padding:6px 2px}", css)
+        # ohne border-box waechst das Feld um sein Polster und laeuft aus der
+        # 268-px-Leiste; die Regel gilt fuer JEDES Element der Seite
+        self.assertIn("*,*::before,*::after{box-sizing:border-box}", css)
 
     def test_the_warning_line_spans_the_whole_row(self):
         # die Warnung am Alter-Feld steht in der Beschriftungszeile; ohne
@@ -3182,19 +3186,23 @@ class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
 
 
 class TheColoursCarryEnoughContrast(unittest.TestCase):
-    """D2c: jede Schriftfarbe der Seite traegt 4,5:1, jeder Bedienrahmen 3,0:1.
+    """D2c, CoachBen-Schnitt: jede Schriftfarbe traegt 4,5:1, jede Bedienkante 3,0:1.
 
-    Gemessen im Browser (berechnete Stile, 1280 px):
+    Gemessen mit der Kontrastrechnung unten (WCAG 2.1, relative Leuchtdichte)
+    auf der neuen Seitenflaeche #091217:
 
-        Sortier-Links      #0000ee auf #0f1420 = 1,96:1   -> #8ab4ff = 8,81:1
-        Knoptschrift       #e6e9ef auf #2c6bed = 3,89:1   -> #ffffff = 4,74:1
-        Bedienrahmen       #2c3650 auf #0f1420 = 1,53:1   -> #5b6f99 = 3,66:1
-        Pfeil-Marker       #6b7689 auf #0f1420 = 4,01:1   -> #828da5 = 5,52:1
+        Text               #fafafa                 = 18,12:1
+        Sekundaertext      rgba(250,250,250,.62)   =  7,35:1
+        Mikro-Label        rgba(250,250,250,.48)   =  4,81:1
+        Akzent / Link      #e05534                 =  4,97:1
+        Knoptschrift       #0b0704 auf #e05534     =  5,27:1
+        Bedienkante        rgba(250,250,250,.36)   =  3,24:1
+        Warnung            #d9a441                 =  8,41:1
 
-    Die Sortier-Links waren der schwerste Fall: die Seite hatte ueberhaupt keine
-    a-Regel, deshalb griff das Browser-Blau #0000ee - auf dunklem Grund so gut wie
-    unlesbar. Kein Werkzeug haette das gemeldet, nur die Messung am gerenderten
-    Dokument.
+    Der schwaechste Wert der ersten Fassung war das Mikro-Label mit .42 Deckkraft
+    = 3,94:1, also UNTER der Grenze, die diese Klasse selbst zieht. Auf .48
+    angehoben (4,81:1). Die dekorative Haarlinie (--hair, .20 -> 1,79:1) ist
+    bewusst keine Schrift und keine Bedienkante.
     """
 
     @staticmethod
@@ -3228,37 +3236,101 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
         a, b = self._leuchtdichte(vorne), self._leuchtdichte(hinten)
         return (max(a, b) + 0.05) / (min(a, b) + 0.05)
 
-    SEITE = "#0f1420"
-    KNOPF = "#2c6bed"
+    SEITE = "#091217"
+    KNOPF = "#e05534"
+    KNOPFSCHRIFT = "#0b0704"
+    # --- Lesehilfen: Regeln zeichengenau, Leerraum egal ------------------
+
+    @staticmethod
+    def _css(page):
+        """Der <style>-Block mit zusammengefasstem Leerraum.
+
+        Gepinnt wird der Inhalt der Regel, nicht die Einrueckung: ein
+        umformatierter <style>-Block soll die Zusicherung nicht brechen.
+        """
+        return re.sub(r"\s+", " ", page[page.index("<style>"):page.index("</style>")])
+
+    def _variablen(self, page):
+        """{--name: wert} aus dem :root-Block der Seite."""
+        css = self._css(page)
+        anfang = css.index(":root{")
+        return dict(re.findall(r"(--[a-z-]+):([^;}]+)",
+                               css[anfang:css.index("}", anfang)]))
+
+    def _farbe(self, wert):
+        """var()/rgba()/#hex -> deckende Farbe, gemischt auf die Seitenflaeche.
+
+        Die Palette der Seite ist teilweise durchscheinend (--muted, --faint,
+        --edge). Der Kontrast einer Schrift haengt davon ab, was am Ende
+        WIRKLICH auf der Seitenflaeche steht - deshalb wird gemischt und nicht
+        der Alphawert geprueft.
+        """
+        wert = wert.strip()
+        basis = [int(self.SEITE[i:i + 2], 16) for i in (1, 3, 5)]
+        treffer = re.match(r"rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)", wert)
+        if not treffer:
+            return wert
+        werte = [int(treffer.group(i)) for i in (1, 2, 3)]
+        alpha = float(treffer.group(4)) if treffer.group(4) else 1.0
+        gemischt = [round(v * alpha + b * (1 - alpha)) for v, b in zip(werte, basis, strict=True)]
+        return "#{:02x}{:02x}{:02x}".format(*gemischt)
+
+    def _farbe_von(self, page, name):
+        """Der aufgeloeste Wert einer CSS-Variablen."""
+        return self._farbe(self._variablen(page)[name])
+
+    # --- die Zusicherungen ----------------------------------------------
 
     def test_the_sort_links_have_a_colour_of_their_own(self):
-        # ohne diese Regel nimmt der Browser sein Blau (#0000ee) - 1,96:1
+        # ohne eine a-Regel nimmt der Browser sein Blau (#0000ee) - auf diesem
+        # Grund 1,96:1. Der Akzent traegt gemessen 4,97:1.
         page = self._page()
-        self.assertIn("a,a:visited{color:#8ab4ff}", page)
+        self.assertIn("a,a:visited{color:var(--primary);", self._css(page))
+        self.assertGreaterEqual(round(self._kontrast(self._farbe_von(page, "--primary"),
+                                                     self.SEITE), 2), 4.5)
 
-    def test_the_button_text_is_white(self):
+    def test_the_button_text_clears_four_and_a_half(self):
+        """Der Knopf ist jetzt gefuellt im Akzent - die Schrift ist dunkel.
+
+        Weiss auf #e05534 waere 3,65:1 und wuerde die Regel der Seite
+        brechen; #0b0704 traegt gemessen 5,27:1.
+        """
         page = self._page()
-        self.assertIn("button{background:#2c6bed;border-color:#2c6bed;color:#fff;"
-                      "font-weight:600}", page)
+        self.assertIn("button{background:var(--primary);border:1px solid var(--primary);"
+                      "color:#0b0704;", self._css(page))
+        self.assertGreaterEqual(round(self._kontrast(self.KNOPFSCHRIFT, self.KNOPF), 2), 4.5)
 
     def test_the_controls_have_a_visible_border(self):
+        """Die Felder tragen eine gestrichelte Kante, keine Kiste.
+
+        Ein Rahmen muss 3,0:1 tragen. --edge ist deshalb eigens dafuer da und
+        nicht die dekorative Haarlinie (--hair, 1,79:1): gemessen .36 ->
+        #606669 = 3,24:1.
+        """
         page = self._page()
-        self.assertIn("input,button{font-size:1rem;padding:9px 12px;border-radius:8px;"
-                      "border:1px solid #5b6f99;background:#1a2233;color:inherit}", page)
-        self.assertIn("select{font-size:1rem;padding:9px;border-radius:8px;"
-                      "border:1px solid #5b6f99;", page)
+        css = self._css(page)
+        self.assertIn("border:0;border-bottom:1px dotted var(--edge)", css)   # input
+        self.assertIn("select{max-width:100%;padding:8px 4px;background:var(--panel);"
+                      "border:1px dotted var(--edge)}", css)
+        self.assertGreaterEqual(round(self._kontrast(self._farbe_von(page, "--edge"),
+                                                     self.SEITE), 2), 3.0)
 
     def test_the_folded_blocks_carry_a_brighter_marker(self):
+        # der Marker war der schwaechste Text der Seite (4,01:1); jetzt traegt
+        # er den Akzent (4,97:1) und ist damit auch als Bedienelement lesbar
         page = self._page()
-        self.assertIn('.dropped-summary summary::before{content:"\\25B8 ";color:#828da5}', page)
+        self.assertIn('.dropped-summary summary::before{content:"\\203A ";color:var(--primary)}',
+                      self._css(page))
+        self.assertGreaterEqual(round(self._kontrast(self._farbe_von(page, "--primary"),
+                                                     self.SEITE), 2), 4.5)
 
     def test_the_four_measured_pairs_clear_their_threshold(self):
         page = self._page()
-        for vorne, hinten, grenze, wo in (("#8ab4ff", self.SEITE, 4.5, "Sortier-Link"),
-                                          ("#fff", self.KNOPF, 4.5, "Knoptschrift"),   # die Seite schreibt die Kurzform
-                                          ("#5b6f99", self.SEITE, 3.0, "Bedienrahmen"),
-                                          ("#828da5", self.SEITE, 4.5, "Pfeil-Marker")):
-            self.assertIn(vorne, page, wo)
+        for vorne, hinten, grenze, wo in (
+                (self._farbe_von(page, "--primary"), self.SEITE, 4.5, "Sortier-Link"),
+                (self.KNOPFSCHRIFT, self.KNOPF, 4.5, "Knoptschrift"),
+                (self._farbe_von(page, "--edge"), self.SEITE, 3.0, "Bedienkante"),
+                (self._farbe_von(page, "--faint"), self.SEITE, 4.5, "Mikro-Label")):
             self.assertGreaterEqual(round(self._kontrast(vorne, hinten), 2), grenze,
                                     f"{wo}: {vorne} auf {hinten}")
 
@@ -3266,14 +3338,26 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
         """Die Klasse des Fehlers, nicht nur der eine Fall.
 
         Jede Schriftfarbe, die die Seite selbst setzt, muss 4,5:1 gegen die
-        Seitenflaeche tragen. Flaechen und rein zierende Rahmen duerfen
-        dunkler sein - sie sind keine Schrift.
+        Seitenflaeche tragen. var() wird aufgeloest, rgba() auf die Flaeche
+        gemischt; Flaechen und rein zierende Rahmen duerfen dunkler sein.
         """
         page = self._page()
-        css = page[page.index("<style>"):page.index("</style>")]
-        schriftfarben = set(re.findall(r"(?<![-\w])color:\s*(#[0-9a-fA-F]{6}|#fff)\b", css))
-        self.assertGreaterEqual(len(schriftfarben), 5)
-        for farbe in sorted(schriftfarben):
+        css = self._css(page)
+        variablen = self._variablen(page)
+        farben = set()
+        for roh in re.findall(r"(?<![-\w])color:\s*([^;}]+)", css):
+            roh = roh.strip()
+            treffer = re.match(r"var\((--[a-z-]+)\)", roh)
+            if treffer:
+                roh = variablen[treffer.group(1)]
+            farbe = self._farbe(roh)
+            if farbe == self.KNOPFSCHRIFT:
+                # steht auf dem gefuellten Knopf, nicht auf der Seitenflaeche -
+                # dieses Paar prueft test_the_button_text_clears_four_and_a_half
+                continue
+            farben.add(farbe)
+        self.assertGreaterEqual(len(farben), 5)
+        for farbe in sorted(farben):
             self.assertGreaterEqual(
                 round(self._kontrast(farbe, self.SEITE), 2), 4.5,
                 f"Schriftfarbe {farbe} traegt nur {self._kontrast(farbe, self.SEITE):.2f}:1")
@@ -3623,3 +3707,60 @@ class TestApiErrorContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheFontsComeFromThePackage(unittest.TestCase):
+    """Die Seite laedt ihre Schriften aus dem eigenen Paket, nicht von Google.
+
+    Gemessen im Browser (Chromium, 1440 px): mit den drei <link>-Tags auf
+    fonts.googleapis.com brauchte die Seite drei Fremdanfragen und zeigte ohne
+    Internet die Ersatzschrift. Die woff2-Dateien liegen jetzt unter
+    paperbroker/static/fonts (6 Dateien, 102,9 KB) und werden von
+    static/fonts.css referenziert.
+
+    Geprueft wird die Klasse, nicht die einzelne Datei: keine Schrift-URL
+    ausserhalb des Pakets, und jede im CSS genannte Datei muss es geben.
+    """
+
+    @staticmethod
+    def _page():
+        adapter = _MockAdapter(make())
+        adapter.expirations = ["2026-10-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(ScreenerCriteria()),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app.test_client().get(
+            "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}
+        ).get_data(as_text=True)
+
+    def test_the_page_asks_no_font_host(self):
+        page = self._page()
+        self.assertIn('<link rel="stylesheet" href="/static/fonts.css">', page)
+        for fremd in ("fonts.googleapis.com", "fonts.gstatic.com"):
+            self.assertNotIn(fremd, page, fremd)
+
+    def test_every_declared_font_file_exists(self):
+        static = pathlib.Path(__file__).resolve().parents[1] / "static"
+        css = (static / "fonts.css").read_text(encoding="utf-8")
+        dateien = re.findall(r"url\((fonts/[^)]+\.woff2)\)", css)
+        self.assertGreaterEqual(len(dateien), 3)
+        for datei in sorted(set(dateien)):
+            self.assertTrue((static / datei).is_file(), datei)
+
+    def test_the_three_families_carry_the_weights_the_page_uses(self):
+        static = pathlib.Path(__file__).resolve().parents[1] / "static"
+        css = (static / "fonts.css").read_text(encoding="utf-8")
+        seite = self._page()
+        for familie in ("Oswald", "Instrument Sans", "Martian Mono"):
+            self.assertIn(f"'{familie}'", css)
+            self.assertIn(f'"{familie}"', seite)
+        # die Gewichte, die das CSS der Seite wirklich anfordert
+        for familie, gewicht in (("Oswald", "700"),
+                                 ("Instrument Sans", "400"),
+                                 ("Instrument Sans", "600"),
+                                 ("Martian Mono", "400"),
+                                 ("Martian Mono", "600")):
+            block = [b for b in re.findall(r"@font-face \{(.*?)\}", css, re.S)
+                     if f"'{familie}'" in b and f"font-weight: {gewicht};" in b]
+            self.assertTrue(block, f"{familie} {gewicht} fehlt")
