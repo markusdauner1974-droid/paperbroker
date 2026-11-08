@@ -2594,7 +2594,9 @@ class TheStrategyIsTheChoice(unittest.TestCase):
         page = self._page({"strategy": "bogus"})
         self.assertIn('<div class="err">Ungültige Strategie - erlaubt sind '
                       'bull_call_debit (Bull Call Spread (Debit)) und '
-                      'bear_put_debit (Bear Put Spread (Debit)).</div>', page)
+                      'bear_put_debit (Bear Put Spread (Debit)) und '
+                      'bull_put_credit (Bull Put Spread (Credit)) und '
+                      'bear_call_credit (Bear Call Spread (Credit)).</div>', page)
         self.assertEqual(self._spread_rows(page), [])
 
     def test_a_valid_strategy_is_never_replaced_by_a_broken_legacy_alias(self):
@@ -2657,6 +2659,87 @@ class TheStrategyIsTheChoice(unittest.TestCase):
                              else "Bull Call Spread (Debit)", params)
             self.assertEqual(self._heading(self._page(params)),
                              daten["strategy_label"], params)
+
+    # --- die zwei Credit-Spreads auf derselben Seite ----------------------
+
+    def test_the_credit_heading_names_the_credit_strategy(self):
+        self.assertEqual(self._heading(self._page({"strategy": "bear_call_credit"})),
+                         "Bear Call Spread (Credit)")
+        self.assertEqual(self._heading(self._page({"strategy": "bull_put_credit"})),
+                         "Bull Put Spread (Credit)")
+
+    def test_the_credit_row_names_the_bought_leg_first(self):
+        # Bear Call Credit: verkauft wird der NIEDRIGERE Call, gekauft der hoehere
+        rows = self._spread_rows(self._page({"strategy": "bear_call_credit"}))
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0],
+                         "SPY 105.00 Call kaufen / 100.00 Call verkaufen")
+
+    def test_the_table_labels_follow_the_kind(self):
+        """Die Spalten sagen, was die Zahl IST: Credit oder Debit."""
+        credit = self._page({"strategy": "bear_call_credit"})
+        self.assertIn("Credit (je Einheit)", credit)
+        self.assertIn("Risikobudget ($)", credit)
+        self.assertIn("Credit/Breite %", credit)
+        self.assertNotIn("Position ($)", credit)
+        debit = self._page({"strategy": "bull_call_debit"})
+        self.assertIn("Debit (je Einheit)", debit)
+        self.assertIn("Position ($)", debit)
+        self.assertIn("Debit/Breite %", debit)
+        self.assertNotIn("Risikobudget ($)", debit)
+
+    def test_the_credit_row_shows_the_credit_and_the_risk_budget(self):
+        rows = self._spread_rows(self._page({"strategy": "bear_call_credit"}))
+        zeile = rows[0]
+        self.assertEqual(zeile[2], "5.00")      # Breite
+        self.assertEqual(zeile[3], "1.20")      # Credit je Einheit
+        self.assertEqual(zeile[4], "380")       # Risikobudget 3.80 x 100 + 0
+        self.assertEqual(zeile[5], "3.80")      # max Verlust
+        self.assertEqual(zeile[6], "1.20")      # max Gewinn
+        self.assertEqual(zeile[7], "31.58 %")   # 120 / 380
+        self.assertEqual(zeile[8], "101.20")    # 100.00 + 1.20
+        self.assertEqual(zeile[10], "24.00 %")  # 1.20 / 5.00
+
+    def test_the_json_carries_both_kinds_without_mixing_them(self):
+        credit = self._json({"strategy": "bull_put_credit"})
+        self.assertEqual(credit["strategy"], "bull_put_credit")
+        self.assertEqual(credit["strategy_label"], "Bull Put Spread (Credit)")
+        self.assertEqual(credit["spread_type"], "put")
+        self.assertEqual(len(credit["verticals"]), 3)
+        v = credit["verticals"][0]                  # P100/P105
+        self.assertEqual(v["strategy_kind"], "credit")
+        self.assertEqual(v["net_credit"], 1.20)
+        self.assertIsNone(v["net_debit"])
+        self.assertIsNone(v["position_debit"])
+        self.assertEqual(v["risk_budget"], 380.0)
+        self.assertEqual(v["net_max_loss"], 380.0)
+        self.assertEqual(v["net_max_profit"], 120.0)
+        self.assertEqual(v["budget_fits"], None)   # keine Grenze gesetzt
+        # die Debit-Spalte der alten Strategie bleibt unveraendert
+        debit = self._json({"strategy": "bull_call_debit"})["verticals"][0]
+        self.assertEqual(debit["net_debit"], 1.50)
+        self.assertIsNone(debit["net_credit"])
+        self.assertEqual(debit["position_debit"], 150.0)
+        self.assertEqual(debit["risk_budget"], 150.0)
+        self.assertIs(debit["budget_fits"], None)
+
+    def test_the_budget_bounds_the_credit_risk_budget_not_the_credit(self):
+        data = self._json({"strategy": "bear_call_credit", "budget": "379"})
+        self.assertEqual(data["verticals"], [])
+        self.assertEqual([g["reason"] for g in data["vertical_drops"]],
+                         ["Risikobudget 380.00 USD > Budget 379.00 USD"])
+        data = self._json({"strategy": "bear_call_credit", "budget": "380"})
+        self.assertEqual(len(data["verticals"]), 1)
+        self.assertIs(data["verticals"][0]["budget_fits"], True)
+
+    def test_the_switch_preselects_a_credit_strategy_too(self):
+        page = self._page({"strategy": "bull_put_credit"})
+        block = re.search(r'<fieldset class="crit">\s*<legend>Strategie</legend>'
+                          r'(.*?)</fieldset>', page, re.S).group(1)
+        knoepfe = re.findall(r'<input[^>]*name="strategy"[^>]*>', block)
+        getroffen = [k for k in knoepfe if "checked" in k]
+        self.assertEqual(len(getroffen), 1)
+        self.assertIn('value="bull_put_credit"', getroffen[0])
 
 
 class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
@@ -2892,16 +2975,17 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # Feld laesst sich nicht durch Textsuche finden
         erwartet = {"ticker": 1, "expiration": 1, "require_oi": 2,
                     "require_volume": 2, "iv_pref": 3, "ignore_quote_age": 1,
-                    # D14: die zwei Funkknoepfe tragen denselben Namen - eine
-                    # EINZELNE Anzeige mit zwei Werten, nicht zwei Felder
-                    "strategy": 2}
+                    # D14: die Funkknoepfe tragen denselben Namen - eine
+                    # EINZELNE Anzeige, nicht vier Felder; seit den
+                    # Credit-Spreads sind es vier Werte
+                    "strategy": 4}
         for name in self.ZAHLENFELDER:
             erwartet[name] = 1
         self.assertEqual(self._namen(self._page()), erwartet)
 
     def test_no_control_is_added_or_lost(self):
         page = self._page()
-        self.assertEqual(page.count("<input"), 30)   # D12 +4 Position, D14 +2 Funkknoepfe
+        self.assertEqual(page.count("<input"), 32)   # D12 +4 Position, +2 Credit
         self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
         self.assertEqual(page.count("<button"), 1)
         self.assertEqual(page.count("<fieldset"), 6)  # D12 + Position, D14 + Spreads
@@ -2950,7 +3034,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
     # --- L: die Strategiewahl --------------------------------------------
 
     def test_the_strategy_group_holds_the_two_named_strategies(self):
-        """L: die Gruppe "Strategie" bietet genau die zwei stabilen Kennungen an,
+        """L: die Gruppe "Strategie" bietet genau die vier stabilen Kennungen an,
         und bull_call_debit ist ohne Parameter vorausgewaehlt.
 
         Knoepfe UND Vorauswahl werden aus DEMSELBEN Gruppenblock gelesen; die
@@ -2961,19 +3045,25 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         block = re.search(r'<fieldset class="crit">\s*<legend>Strategie</legend>(.*?)</fieldset>',
                           page, re.S).group(1)
         knoepfe = re.findall(r'<input[^>]*name="strategy"[^>]*>', block)
-        self.assertEqual(len(knoepfe), 2)
-        for knopf, wert in zip(knoepfe, ("bull_call_debit", "bear_put_debit"), strict=True):
+        self.assertEqual(len(knoepfe), 4)
+        for knopf, wert in zip(knoepfe, ("bull_call_debit", "bear_put_debit",
+                                        "bull_put_credit", "bear_call_credit"), strict=True):
             self.assertIn('type="radio"', knopf)
             self.assertIn(f'value="{wert}"', knopf)
         # ohne Parameter ist der Bull Call vorausgewaehlt - und genau EINER
         self.assertIn("checked", knoepfe[0])
-        self.assertNotIn("checked", knoepfe[1])
+        for knopf in knoepfe[1:]:
+            self.assertNotIn("checked", knopf)
         # die Beschriftungen nennen Kauf- und Verkaufsbein, nicht nur die Seite
         labels = re.findall(r"<label>(.*?)</label>", block, re.S)
         self.assertIn("Bull Call Spread (Debit)", labels[0])
         self.assertIn("Call kaufen (niedriger Strike)", labels[0])
         self.assertIn("Bear Put Spread (Debit)", labels[1])
         self.assertIn("Put kaufen (höherer Strike)", labels[1])
+        self.assertIn("Bull Put Spread (Credit)", labels[2])
+        self.assertIn("Put kaufen (niedrigerer Strike)", labels[2])
+        self.assertIn("Bear Call Spread (Credit)", labels[3])
+        self.assertIn("Call kaufen (höherer Strike)", labels[3])
         # die Gruppe zaehlt vollstaendig mit (siehe die vier Struktur-Tests oben)
         self.assertEqual(dict(self._gruppen(page))["Strategie"], ("strategy",))
 
@@ -3789,7 +3879,9 @@ class TestApiErrorContract(unittest.TestCase):
         self.assertIsNotNone(body, "body is not JSON: "
                              f"{res.get_data(as_text=True)[:200]!r}")
         self.assertEqual(body["error"], "unknown strategy")
-        self.assertEqual(body["allowed"], ["bull_call_debit", "bear_put_debit"])
+        self.assertEqual(body["allowed"],
+                         ["bull_call_debit", "bear_put_debit",
+                          "bull_put_credit", "bear_call_credit"])
 
     def test_a_contradiction_answers_400_json_and_names_both_values(self):
         """L: Strategie und alte Adresse widersprechen sich - die Antwort nennt

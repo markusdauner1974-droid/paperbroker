@@ -524,9 +524,9 @@ class OptionScreener:
 # per-leg rules run afterwards - the same contract screen() uses when it
 # reports the FIRST filter that rejects a contract.
 #
-# Puts are deliberately not built here: no quote fixture in the suite
-# carries a put, so a put rule could not be pinned by a test. The rule
-# would read: long the HIGHER strike, breakeven = short strike - debit.
+# Puts were added by Slice L (long the HIGHER strike for the bear put debit,
+# break-even = long strike - debit), so the section now builds every one of
+# the four named verticals - the two debit and the two credit spreads.
 # ---------------------------------------------------------------------- #
 
 
@@ -544,13 +544,20 @@ class OptionScreener:
 
 BULL_CALL_DEBIT = "bull_call_debit"
 BEAR_PUT_DEBIT = "bear_put_debit"
+BULL_PUT_CREDIT = "bull_put_credit"
+BEAR_CALL_CREDIT = "bear_call_credit"
 
 #: The stable ids, in the order the form offers them.
-STRATEGY_IDS = (BULL_CALL_DEBIT, BEAR_PUT_DEBIT)
+STRATEGY_IDS = (BULL_CALL_DEBIT, BEAR_PUT_DEBIT, BULL_PUT_CREDIT, BEAR_CALL_CREDIT)
 
+#: What a strategy IS, in one table. `kind` decides the arithmetic: a debit
+#: spread pays to open and loses what it paid; a credit spread is paid to open
+#: and loses the strike width minus that credit. `option_type` is the chain side
+#: the legs come from - the legacy alias still reads it that way.
 STRATEGIES = {
     BULL_CALL_DEBIT: {
         "option_type": "call",
+        "kind": "debit",
         "label": "Bull Call Spread (Debit)",
         "buy": "Call mit dem niedrigeren Strike kaufen",
         "sell": "Call mit dem höheren Strike verkaufen",
@@ -558,18 +565,37 @@ STRATEGIES = {
     },
     BEAR_PUT_DEBIT: {
         "option_type": "put",
+        "kind": "debit",
         "label": "Bear Put Spread (Debit)",
         "buy": "Put mit dem höheren Strike kaufen",
         "sell": "Put mit dem niedrigeren Strike verkaufen",
         "direction": "fallend",
     },
+    BULL_PUT_CREDIT: {
+        "option_type": "put",
+        "kind": "credit",
+        "label": "Bull Put Spread (Credit)",
+        "buy": "Put mit dem niedrigeren Strike kaufen",
+        "sell": "Put mit dem höheren Strike verkaufen",
+        "direction": "steigend oder seitwärts",
+    },
+    BEAR_CALL_CREDIT: {
+        "option_type": "call",
+        "kind": "credit",
+        "label": "Bear Call Spread (Credit)",
+        "buy": "Call mit dem höheren Strike kaufen",
+        "sell": "Call mit dem niedrigeren Strike verkaufen",
+        "direction": "fallend oder seitwärts",
+    },
 }
 
 #: Legacy spelling -> strategy. `?option_type=call` always meant the call debit
-#: spread, and that meaning is what it keeps.
+#: spread, and that meaning is what it keeps: the bare side names the DEBIT
+#: strategy, never one of the two credit spreads.
 LEGACY_OPTION_TYPES = {"call": BULL_CALL_DEBIT, "put": BEAR_PUT_DEBIT}
 
 DEFAULT_STRATEGY = BULL_CALL_DEBIT
+
 
 
 def strategy_option_type(strategy):
@@ -604,7 +630,11 @@ def resolve_strategy(strategy=None, option_type=None):
     aus_alt = None if alt is None else LEGACY_OPTION_TYPES[alt]
     if neu is None:
         return (aus_alt or DEFAULT_STRATEGY), None, None
-    if aus_alt is not None and aus_alt != neu:
+    # With four strategies `option_type` can no longer say WHICH strategy is
+    # meant - it still names the chain SIDE, and a strategy that trades that
+    # side agrees with it. Only the bare side (`neu is None` above) keeps the
+    # one-to-one meaning it had before the credit spreads existed.
+    if aus_alt is not None and strategy_option_type(neu) != alt:
         return None, "conflict", (
             f"Widerspruch: {neu} gehört zu option_type="
             f"{STRATEGIES[neu]['option_type']}, angegeben war option_type={alt}. "
@@ -615,17 +645,31 @@ def resolve_strategy(strategy=None, option_type=None):
 def strategy_of_legs(long, short):
     """Which named strategy two legs actually form, read from the legs alone.
 
-    None for a combination this module does not name (a call bought at the
-    HIGHER strike is a bear call credit spread - not one of ours).
+    None for a combination this module cannot price (a call bought at the same
+    strike, a call and a put in one pair, or a direction that is no spread).
+
+    Which leg is bought decides what the pair IS: a call bought BELOW the sold
+    one pays a debit (bull call), a call bought ABOVE it collects a credit
+    (bear call) - the same two legs, two trades, two different sets of numbers.
     """
     typ = getattr(long.asset, "option_type", None)
     if typ != getattr(short.asset, "option_type", None):
         return None
-    if typ == "call" and long.asset.strike < short.asset.strike:
-        return BULL_CALL_DEBIT
-    if typ == "put" and long.asset.strike > short.asset.strike:
-        return BEAR_PUT_DEBIT
+    lang = float(getattr(long.asset, "strike", 0.0))
+    kurz = float(getattr(short.asset, "strike", 0.0))
+    if typ == "call":
+        if lang < kurz:
+            return BULL_CALL_DEBIT
+        if lang > kurz:
+            return BEAR_CALL_CREDIT
+        return None
+    if typ == "put":
+        if lang > kurz:
+            return BEAR_PUT_DEBIT
+        if lang < kurz:
+            return BULL_PUT_CREDIT
     return None
+
 
 
 @dataclass
@@ -658,6 +702,17 @@ class VerticalPair:
         return None if kennung is None else STRATEGIES[kennung]["label"]
 
     @property
+    def kind(self):
+        """``debit``/``credit`` - the strategy's arithmetic, None when unknown."""
+        spez = STRATEGIES.get(self.strategy_id or "")
+        return None if spez is None else spez["kind"]
+
+    @property
+    def is_credit(self):
+        """True when the position is OPENED for a credit, not for a payment."""
+        return self.kind == "credit"
+
+    @property
     def symbol(self):
         return f"{self.long.asset.symbol}/{self.short.asset.symbol}"
 
@@ -677,40 +732,108 @@ class VerticalPair:
     def net_debit(self):
         """Immediately executable cost: buy the long leg at ask, sell the
         short leg at bid. Rule 1 guarantees both sides are quoted, so no
-        missing-side fallback is needed here."""
+        missing-side fallback is needed here.
+
+        None for a credit spread: there is no cost. A credit must never be
+        reported as a negative cost (see `net_credit` and `risk_budget`).
+        """
+        if self.is_credit:
+            return None
         return round(self.long.ask - self.short.bid, 2)
 
     @property
+    def net_credit(self):
+        """Immediately executable CREDIT: sell the short leg at its BID, buy the
+        long leg at its ASK.
+
+        Conservative by construction - the sold leg is valued at the worse side
+        for a seller and the bought leg at the worse side for a buyer, so the
+        number is what the market would pay right now, never a mid-price hope.
+        None for a debit spread, and None when a leg carries no usable price
+        (the pair rule reports that instead of crashing on None arithmetic).
+        """
+        if not self.is_credit:
+            return None
+        if not all(isinstance(x, (int, float)) for x in (self.short.bid, self.long.ask)):
+            return None
+        return round(self.short.bid - self.long.ask, 2)
+
+    @property
     def max_loss(self):
+        """Worst case per unit, BEFORE costs and before the multiplier.
+
+        A debit spread loses what it costs; a credit spread loses the strike
+        width minus the credit it already collected.
+        """
+        if self.is_credit:
+            credit = self.net_credit
+            return None if credit is None else round(self.strike_width - credit, 2)
         # a debit spread loses at most what it costs - no second computation
         return self.net_debit
 
     @property
     def max_profit(self):
+        """Best case per unit, BEFORE costs: what the spread can still gain."""
+        if self.is_credit:
+            return self.net_credit
         return round(self.strike_width - self.net_debit, 2)
 
     @property
     def breakeven(self):
-        # D12/L: the strategy decides the sign. A bull call breaks even ABOVE the
-        # bought (lower) strike, a bear put BELOW the bought (higher) one. Read
-        # from the strategy - not from the option type - so the number follows the
-        # trade that is actually being priced.
+        # D12/L: the strategy decides the sign and the STRIKE. A bull call breaks
+        # even ABOVE the bought (lower) strike, a bear put BELOW the bought
+        # (higher) one. The two credit spreads break even off the SOLD strike:
+        # a bull put below the higher sold put, a bear call above the lower sold
+        # call. Read from the strategy - not from the option type - so the number
+        # follows the trade that is actually being priced.
+        if self.is_credit:
+            credit = self.net_credit
+            if credit is None:
+                return None
+            if self.strategy_id == BULL_PUT_CREDIT:
+                return round(self.short.asset.strike - credit, 2)
+            return round(self.short.asset.strike + credit, 2)
         if self.strategy_id == BEAR_PUT_DEBIT:
             return round(self.long.asset.strike - self.net_debit, 2)
         return round(self.long.asset.strike + self.net_debit, 2)
 
     @property
     def debit_width_ratio(self):
+        if self.is_credit:
+            return None
         width = self.strike_width
         return round(self.net_debit / width, 4) if width else None
+
+    @property
+    def credit_width_ratio(self):
+        """The credit as a share of the width - the return side of a credit spread."""
+        if not self.is_credit:
+            return None
+        width = self.strike_width
+        credit = self.net_credit
+        return round(credit / width, 4) if width and credit is not None else None
 
     @property
     def debit_ge_width(self):
         """Derived marker, never stored: at or above the width the spread
         cannot make money. Measured on the raw chains: 316 of 560 cleanly
         quoted call pairs - the most common case, so it stays visible
-        instead of being filtered away."""
+        instead of being filtered away.
+
+        None for a credit spread - there is no debit to compare.
+        """
+        if self.is_credit:
+            return None
         return self.net_debit >= self.strike_width
+
+    @property
+    def credit_ge_width(self):
+        """True when the credit is not smaller than the width - no risk left,
+        therefore no trade. Such a pair is dropped; kept rows carry False."""
+        if not self.is_credit:
+            return None
+        credit = self.net_credit
+        return None if credit is None else credit >= self.strike_width
 
     def _kosten(self, criteria):
         """D18: the cost assumption in one place - fees scale with the position, so the
@@ -720,38 +843,63 @@ class VerticalPair:
         return criteria.multiplier * criteria.quantity, (criteria.fees or 0.0)
 
     def net_max_loss(self, criteria=None):
-        """What the position can lose: the debit paid plus the fees, in money."""
-        d = self.position_debit(criteria)
-        return None if d is None else round(d, 2)
+        """What the position can lose, fees included, in money.
+
+        For a debit spread that is the debit paid plus the fees; for a credit
+        spread it is (width - credit) x multiplier x quantity plus the fees.
+        This is also the RISK BUDGET the budget limit is compared against.
+        """
+        return self.risk_budget(criteria)
 
     def net_max_profit(self, criteria=None):
         """What is left at expiry in the best case, after the fees.
 
-        Gross profit is width - debit per unit; the fees are charged once for the
+        Gross profit is (width - debit) per unit for a debit spread and the
+        credit itself for a credit spread; the fees are charged once for the
         position, so they come off the whole amount, not off each share.
         """
         k = self._kosten(criteria)
         if k is None:
             return None
         menge, gebuehren = k
-        return round((self.strike_width - self.net_debit) * menge - gebuehren, 2)
+        if self.max_profit is None:
+            return None
+        return round(self.max_profit * menge - gebuehren, 2)
 
     def net_breakeven(self, criteria=None):
         """The break-even once the fees are paid for - the per-unit break-even moves by
-        the fees divided by the position size, in the direction of the trade."""
+        the fees divided by the position size, in the direction of the trade.
+
+        For a credit spread the fees eat into the credit, so the break-even
+        moves TOWARDS the sold strike (a bull put's break-even up, a bear
+        call's down) - the same "costs hurt" direction as a debit spread.
+        """
         k = self._kosten(criteria)
         if k is None:
             return None
         menge, gebuehren = k
         je_einheit = gebuehren / menge
+        if self.is_credit:
+            credit = self.net_credit
+            if credit is None:
+                return None
+            rest = credit - je_einheit
+            if self.strategy_id == BULL_PUT_CREDIT:
+                return round(self.short.asset.strike - rest, 2)
+            return round(self.short.asset.strike + rest, 2)
         if self.strategy_id == BEAR_PUT_DEBIT:
             return round(self.long.asset.strike - self.net_debit - je_einheit, 2)
         return round(self.long.asset.strike + self.net_debit + je_einheit, 2)
 
     def net_return_pct(self, criteria=None):
-        """Net profit over what the position costs - the number a decision needs."""
+        """Net profit over the capital at risk - the number a decision needs.
+
+        The denominator is the RISK BUDGET (max loss including fees), not the
+        premium: a collected credit is no capital, and dividing by it would
+        report a return on money that was never at stake.
+        """
         gewinn = self.net_max_profit(criteria)
-        einsatz = self.position_debit(criteria)
+        einsatz = self.risk_budget(criteria)
         if gewinn is None or not einsatz:
             return None
         return round(gewinn / einsatz * 100, 2)
@@ -761,18 +909,47 @@ class VerticalPair:
         gewinn = self.net_max_profit(criteria)
         return None if gewinn is None else gewinn > 0
 
+    def risk_budget(self, criteria=None):
+        """The money this position can lose, fees included - the size the budget
+        limit is compared against.
+
+        Debit spread: multiplier x quantity x debit + fees (what it costs).
+        Credit spread: multiplier x quantity x (width - credit) + fees.
+
+        This is OUR OWN arithmetic from the quoted legs, the strike width and the
+        form's costs. It is NOT a broker margin requirement and must not be read
+        as one - no exchange, no broker and no risk model is consulted here.
+        """
+        if criteria is None or criteria.multiplier is None or criteria.quantity is None:
+            return None
+        verlust = self.max_loss
+        if verlust is None:
+            return None
+        return round(criteria.multiplier * criteria.quantity * verlust
+                     + (criteria.fees or 0.0), 2)
+
     def position_debit(self, criteria=None):
         """D12: what this position costs - multiplier x quantity x debit, plus fees.
 
         None when the position size is not set (or the debit is not a number): a missing
-        size must not silently read as zero.
+        size must not silently read as zero. None for a CREDIT spread too: it costs
+        nothing, and a negative "cost" would be the credit misread as capital.
         """
+        if self.is_credit:
+            return None
         if criteria is None or criteria.multiplier is None or criteria.quantity is None:
             return None
         debit = self.net_debit
         if debit is None:
             return None
         return round(criteria.multiplier * criteria.quantity * debit + (criteria.fees or 0.0), 2)
+
+    def fits_budget(self, criteria=None):
+        """Does the risk budget stay inside the operator's limit? None = not asked."""
+        if criteria is None or criteria.budget is None:
+            return None
+        groesse = self.risk_budget(criteria)
+        return None if groesse is None else groesse <= criteria.budget
 
     def as_dict(self, criteria=None):
         """The JSON shape - built from the same attributes the page reads."""
@@ -781,6 +958,8 @@ class VerticalPair:
             # L: the trade this row is, named. `long_symbol` is the leg that is BOUGHT.
             "strategy": self.strategy_id,
             "strategy_label": self.strategy_label,
+            # credit spreads (2026-11-08): which arithmetic the row follows
+            "strategy_kind": self.kind,
             "expiration": self.expiration,
             "long_symbol": self.long.asset.symbol,
             "short_symbol": self.short.asset.symbol,
@@ -794,20 +973,34 @@ class VerticalPair:
             "fees": None if criteria is None else criteria.fees,
             "budget": None if criteria is None else criteria.budget,
             "currency": "USD",
+            # None for a credit spread: the position costs nothing, and a credit is
+            # never reported as a negative cost.
             "position_debit": self.position_debit(criteria),
+            # The capital the budget limit is compared against, fees included. Own
+            # arithmetic from the legs (width - credit) - NOT a broker margin.
+            "risk_budget": self.risk_budget(criteria),
+            "risk_budget_note": "eigene Rechnung aus Strike-Breite, Praemie und "
+                                "Gebuehren; keine Broker-Margin",
+            "budget_fits": self.fits_budget(criteria),
             # D18: the same position, seen after the costs
             "net_max_loss": self.net_max_loss(criteria),
             "net_max_profit": self.net_max_profit(criteria),
             "net_breakeven": self.net_breakeven(criteria),
             "net_return_pct": self.net_return_pct(criteria),
             "profitable_after_costs": self.profitable_after_costs(criteria),
+            # None on the side that does not apply: a debit row carries no credit and
+            # a credit row carries no debit.
             "net_debit": self.net_debit,
+            "net_credit": self.net_credit,
             "max_loss": self.max_loss,
             "max_profit": self.max_profit,
             "breakeven": self.breakeven,
             "debit_width_ratio": self.debit_width_ratio,
+            "credit_width_ratio": self.credit_width_ratio,
             "debit_ge_width": self.debit_ge_width,
+            "credit_ge_width": self.credit_ge_width,
         }
+
 
 
 def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None):
@@ -836,12 +1029,14 @@ def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None):
                option_type)
         groups.setdefault(key, []).append(quote)
     def _paar(lower, upper):
-        # D12/L: the strategy IS the trade direction. A bull call buys the LOWER
-        # strike, a bear put buys the HIGHER one - the pair is handed the id it
-        # was built for, so its numbers cannot drift to the other direction.
-        if strategy == BEAR_PUT_DEBIT:
+        # D12/L: the strategy IS the trade direction. A bull call and a bull put
+        # buy the LOWER strike, a bear put and a bear call buy the HIGHER one -
+        # the pair is handed the id it was built for, so its numbers cannot drift
+        # to another trade.
+        if strategy in (BEAR_PUT_DEBIT, BEAR_CALL_CREDIT):
             return VerticalPair(long=upper, short=lower, strategy=strategy)
         return VerticalPair(long=lower, short=upper, strategy=strategy)
+
 
     pairs = []
     for key in sorted(groups):
@@ -936,20 +1131,39 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
         chain = gefiltert
     for pair in form_vertical_pairs(chain, strategy=strategy,
                                    max_width=criteria.pair_max_width):
+        # Credit spreads: the collected premium decides everything below, so it is
+        # checked BEFORE any cost arithmetic. An unpriceable credit is no trade,
+        # and formatting a None into the drop text would not be a reason either.
+        if pair.is_credit:
+            credit = pair.net_credit
+            if credit is None:
+                dropped.append((pair, "Credit nicht bestimmbar - kein gültiger Geld-/Briefkurs"))
+                continue
+            if not 0 < credit < pair.strike_width:
+                # 0 <= credit means the bought leg costs as much as the sold one
+                # pays; credit >= width means the market pays more than the
+                # spread can ever lose - an incoherent quote pair, no trade.
+                dropped.append((pair, f"Credit {credit} außerhalb (0, {pair.strike_width}) - "
+                                      f"kein gültiger Credit"))
+                continue
         # D18: a construction that can only lose after the costs is not a hit. Only with
         # fees does this say more than the pair rule below - at fees 0 the two agree, and
         # the older, more precise reason ("kein Gewinn möglich") should keep the field.
         if (criteria.fees or 0.0) > 0 and pair.profitable_after_costs(criteria) is False:
             dropped.append((pair, f"Nach Kosten nicht gewinnfähig: "
                                  f"netto {pair.net_max_profit(criteria):.2f} USD "
-                                 f"(Einsatz {pair.position_debit(criteria):.2f} USD)"))
+                                 f"(Einsatz {pair.risk_budget(criteria):.2f} USD)"))
             continue
         if criteria.budget is not None:
-            groesse = pair.position_debit(criteria)
+            # The budget bounds the CAPITAL AT RISK, not the premium: for a credit
+            # spread that is width - credit (plus fees), never the collected credit
+            # read as a negative investment.
+            groesse = pair.risk_budget(criteria)
             if groesse is not None and groesse > criteria.budget:
-                dropped.append((pair, f"Position {groesse:.2f} USD > Budget {criteria.budget:.2f} USD"))
+                etikett = "Risikobudget" if pair.is_credit else "Position"
+                dropped.append((pair, f"{etikett} {groesse:.2f} USD > Budget {criteria.budget:.2f} USD"))
                 continue
-        if pair.net_debit <= 0 or pair.net_debit >= pair.strike_width:
+        if not pair.is_credit and (pair.net_debit <= 0 or pair.net_debit >= pair.strike_width):
             # PAIR-level rule (both legs are quoted by now). Debit <= 0 means the
             # higher strike's bid reaches the lower strike's ask - an incoherent
             # quote pair. Debit >= width means the spread cannot make money at

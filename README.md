@@ -125,30 +125,59 @@ The original 2017 test data (`TestDataQuoteAdapter`) is still available and used
 
 ## Spread strategies (`/` and `GET /api/screen`)
 
-The spread section builds two **debit** verticals. Each one has a stable id that decides which leg
-is bought, so the page, the JSON and the arithmetic all read the same name:
+The spread section builds **four** verticals: two debit spreads and two credit spreads. Each one has
+a stable id that decides which leg is bought, so the page, the JSON and the arithmetic all read the
+same name:
 
-| `strategy` | What is traded | Debit | Break-even | Max profit | Max loss |
-|---|---|---|---|---|---|
-| `bull_call_debit` (default) | buy the call with the **lower** strike, sell the call with the higher one | ask(bought) − bid(sold) | lower strike + debit | width − debit | debit |
-| `bear_put_debit` | buy the put with the **higher** strike, sell the put with the lower one | ask(bought) − bid(sold) | higher strike − debit | width − debit | debit |
+| `strategy` | Kind | What is traded | Premium | Break-even | Max profit | Max loss |
+|---|---|---|---|---|---|---|
+| `bull_call_debit` (default) | debit | buy the call with the **lower** strike, sell the call with the higher one | ask(bought) − bid(sold) | lower strike + debit | width − debit | debit |
+| `bear_put_debit` | debit | buy the put with the **higher** strike, sell the put with the lower one | ask(bought) − bid(sold) | higher strike − debit | width − debit | debit |
+| `bull_put_credit` | credit | buy the put with the **lower** strike, sell the put with the higher one | bid(sold) − ask(bought) | sold (higher) strike − credit | credit | width − credit |
+| `bear_call_credit` | credit | buy the call with the **higher** strike, sell the call with the lower one | bid(sold) − ask(bought) | sold (lower) strike + credit | credit | width − credit |
 
 `width` is the distance between the two strikes. All of these are per unit and gross; the position
 size (multiplier × quantity, plus fees) is a separate figure and only appears in the position
 columns and the `net_*` JSON keys.
 
+A credit is the **conservative, immediately executable** amount: the sold leg is valued at its bid,
+the bought leg at its ask — never a mid price. A pair is only a result while `0 < credit < width`;
+a credit at or below zero, at or above the width, or a leg without a usable price is dropped with a
+named reason. Both legs always run through the same filters as the single-option list above.
+
+### Risk budget and the budget limit
+
+A credit spread is opened for a credit, so it costs nothing to enter — the collected premium is
+**not** capital and is never reported as a negative debit. For a credit spread
+`position_debit` is `null`; the size of the position is its **risk budget**:
+
+```
+risk_budget = (width − credit) × multiplier × quantity + fees      # credit spread
+risk_budget = debit × multiplier × quantity + fees                  # debit spread (= position_debit)
+```
+
+`budget` is compared against this risk budget for **both** kinds, so a credit spread is bounded by
+its maximum loss including fees, not by its credit. `net_return_pct` uses the same denominator
+(`net_max_profit / risk_budget`). The figure is this app's own arithmetic from the quoted legs, the
+strike width and the form's costs: it is **not** a broker margin requirement, and no exchange,
+broker or risk model is consulted.
+
 ### Parameters and the legacy alias
 
 ```
-GET /api/screen?ticker=SPY&expiration=2026-11-20&strategy=bear_put_debit
+GET /api/screen?ticker=SPY&expiration=2026-11-20&strategy=bear_call_credit
 ```
 
-* `strategy=bull_call_debit|bear_put_debit` is the primary parameter.
-* `option_type=call|put` is the **legacy alias** from before the strategies had names: `call` means
-  `bull_call_debit`, `put` means `bear_put_debit`. Old links and API calls keep their meaning.
-* **Conflict rule:** a request that names both must agree. `strategy=bear_put_debit&option_type=call`
-  is an error, not a preference order - the page shows the contradiction and renders no spread
-  table (no silent fallback to either side), and `/api/screen` answers `400` with
+* `strategy=bull_call_debit|bear_put_debit|bull_put_credit|bear_call_credit` is the primary parameter.
+* `option_type=call|put` is the **legacy alias** from before the strategies had names. On its own it
+  still means the debit spread: `call` → `bull_call_debit`, `put` → `bear_put_debit`. Old links and
+  API calls keep their meaning exactly.
+* Sent **together with** a `strategy`, `option_type` only names the chain side and must match it
+  (`bull_put_credit&option_type=put` and `bear_call_credit&option_type=call` are accepted).
+* **Conflict rule:** a request whose two parameters disagree is an error, not a preference order.
+  `strategy=bear_put_debit&option_type=call` and `strategy=bull_put_credit&option_type=call` are
+  rejected: the page shows the contradiction and renders no spread table (no silent fallback to
+  either side), and `/api/screen` answers `400` with
   `{"error": "conflicting strategy and option_type", "option_type_to_strategy": {...}}`. An unknown
   `strategy` is `{"error": "unknown strategy", "allowed": [...]}`; an unknown `option_type` keeps its
   old `{"error": "unknown spread type", "allowed": ["call", "put"]}` — that is the *bare* legacy
@@ -159,6 +188,33 @@ GET /api/screen?ticker=SPY&expiration=2026-11-20&strategy=bear_put_debit
 * The JSON carries `strategy`, `strategy_label` and - unchanged - `spread_type` (`call`/`put`), the
   derived chain side. Inside every row `long_symbol` is the leg that is **bought**, `short_symbol`
   the leg that is **sold**; the page spells that out per row.
+
+### JSON fields of a vertical row
+
+Unchanged for existing consumers: `symbol`, `expiration`, `long_symbol`, `short_symbol`,
+`long_strike`, `short_strike`, `strike_width`, `multiplier`, `quantity`, `fees`, `budget`,
+`currency`, `net_max_loss`, `net_max_profit`, `net_breakeven`, `net_return_pct`,
+`profitable_after_costs`, `max_loss`, `max_profit`, `breakeven`, `snapshot_id`, `eva_eligible`; and
+`strategy` / `strategy_label` from the strategy slice. For a debit row every value is computed
+exactly as before.
+
+Added for the credit spreads (additive, no existing key changed meaning):
+
+| Field | Debit row | Credit row |
+|---|---|---|
+| `strategy_kind` | `"debit"` | `"credit"` |
+| `net_debit` | the debit per unit | `null` |
+| `position_debit` | debit × multiplier × quantity + fees | `null` |
+| `debit_width_ratio`, `debit_ge_width` | as before | `null` |
+| `net_credit` | `null` | the credit per unit |
+| `credit_width_ratio`, `credit_ge_width` | `null` | credit / width, and `credit >= width` |
+| `risk_budget` | = `position_debit` | `(width − credit) × multiplier × quantity + fees` |
+| `risk_budget_note` | own arithmetic, no broker margin | same text |
+| `budget_fits` | `risk_budget <= budget`, `null` without a budget | same |
+
+`max_loss`, `max_profit` and `breakeven` are strategy-dependent: a credit row carries
+`width − credit`, the credit itself, and the break-even off the **sold** strike.
+
 
 ## Testing and lint
 
