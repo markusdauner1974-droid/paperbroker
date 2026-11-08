@@ -585,6 +585,61 @@ class TestTheBestRowIsTheDocumentedSort(unittest.TestCase):
         self.assertEqual(scan, seite)
 
 
+class TestTheAgePassRunsOncePerExpiry(unittest.TestCase):
+    """Review finding on PR #74: the freshness split was recomputed per strategy."""
+
+    def test_fewer_age_passes_than_strategies_times_expiries(self):
+        # Four strategies over two checked expiries. Before this fix that was
+        # 1 chain pass + 4 x 2 strategy passes = 9; now it is 1 + 2 = 3.
+        from paperbroker import earnings_scan as modul
+
+        kette = call_pair("AAPL", EXP_A) + call_pair("AAPL", EXP_B)
+        aufrufe = []
+        echt = modul._freshness
+
+        def zaehlend(quotes, criteria, now_fn):
+            aufrufe.append(len(quotes))
+            return echt(quotes, criteria, now_fn)
+
+        modul._freshness = zaehlend
+        try:
+            koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 30)])
+        finally:
+            modul._freshness = echt
+
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(len(aapl["checked_expirations"]), 2)
+        self.assertEqual(len(koerper["strategies"]), 4)
+        self.assertEqual(len(aufrufe), 3, f"age passes: {aufrufe}")
+
+    def test_the_fold_equals_one_pass_over_the_union(self):
+        """The shortcut is only allowed if it answers what the union answers."""
+        from paperbroker.earnings_scan import _combine_freshness, _freshness
+
+        alt = "2026-10-07 09:00:00"
+        faelle = {
+            "zwei frische": [call_pair("AAPL", EXP_A), call_pair("AAPL", EXP_B)],
+            "eine alt, eine frisch": [call_pair("AAPL", EXP_A),
+                                       call_pair("AAPL", EXP_B, quote_timestamp=alt)],
+            "beide alt": [call_pair("AAPL", EXP_A, quote_timestamp=alt),
+                          call_pair("AAPL", EXP_B, quote_timestamp=alt)],
+            "halbe Expiry alt": [[quote("AAPL261030C00250000", 2.40, 2.50),
+                                  quote("AAPL261030C00252500", 0.50, 0.55,
+                                        quote_timestamp=alt)],
+                                 call_pair("AAPL", EXP_B)],
+        }
+        for name, expiries in faelle.items():
+            teile = [_freshness(e, _LOOSE, CLOCK) for e in expiries]
+            vereinigt = _freshness([q for e in expiries for q in e], _LOOSE, CLOCK)
+            self.assertEqual(_combine_freshness(teile, _LOOSE), vereinigt, name)
+
+    def test_without_the_age_guard_nothing_is_called_stale(self):
+        from paperbroker.earnings_scan import _combine_freshness
+
+        ohne = ScreenerCriteria(max_quote_age_min=None)
+        self.assertEqual(_combine_freshness(["stale", "stale"], ohne), "unchecked")
+
+
 class TestTheRoute(unittest.TestCase):
     def _rows(self):
         return [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]

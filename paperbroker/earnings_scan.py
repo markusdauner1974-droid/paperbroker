@@ -260,6 +260,36 @@ def _freshness(quotes, criteria, now_fn):
     return "partial" if veraltet else "fresh"
 
 
+#: The per-expiry verdicts, folded back into the verdict of a set of expiries.
+_FRESHNESS_RANK = {"unchecked": 0, "unknown": 1, "fresh": 2, "partial": 3, "stale": 4}
+
+
+def _combine_freshness(verdicts, criteria):
+    """The freshness of several expiries, from their individual verdicts.
+
+    One pass over the union and the fold over the parts must agree - that is
+    what makes it safe to compute the split ONCE per expiry instead of once
+    per strategy (four passes re-parsed the same timestamps for nothing).
+
+    Rule: no age guard -> ``unchecked``; nothing checked -> ``unknown``; every
+    part fully stale -> ``stale``; any part with stale quotes -> ``partial``;
+    else ``fresh``. Exactly what ``_freshness`` answers for the concatenated
+    quote set, because "a fresh quote exists" and "a stale quote exists" are
+    both properties of the union.
+    """
+    if criteria.max_quote_age_min is None:
+        return "unchecked"
+    if not verdicts:
+        return "unknown"
+    if any(v == "unchecked" for v in verdicts):
+        return "unchecked"
+    if all(v == "stale" for v in verdicts):
+        return "stale"
+    if any(v in ("stale", "partial") for v in verdicts):
+        return "partial"
+    return "fresh"
+
+
 class _Counter:
     """Thread-safe tally of the external calls one scan really made."""
 
@@ -485,6 +515,11 @@ def _scan_symbol(symbol, row, ctx):
     per_expiry = {iso: [q for q in quotes if _expiration_of(q) == iso]
                   for iso, _dte in zu_pruefen}
     dte_by_expiry = dict(zu_pruefen)
+    # One age pass per expiry, NOT per strategy: the split of an expiry cannot
+    # change between strategies, and running filter_stale four times over the
+    # same few hundred quotes only re-parsed the same timestamp strings.
+    freshness_by_expiry = {iso: _freshness(per_expiry[iso], ctx.criteria, ctx.now_fn)
+                           for iso, _dte in zu_pruefen}
 
     treffer_gesamt = 0
     for sid in ctx.strategies:
@@ -517,8 +552,8 @@ def _scan_symbol(symbol, row, ctx):
         # whole chain. A stale contract on an expiry that was skipped (outside
         # the window, before the numbers, beyond max_expirations) must not turn
         # a fresh, empty result into "too old".
-        geprueft_freshness = _freshness(
-            [q for iso in geprueft for q in per_expiry[iso]], ctx.criteria, ctx.now_fn
+        geprueft_freshness = _combine_freshness(
+            [freshness_by_expiry[iso] for iso in geprueft], ctx.criteria
         )
         # Without a hit, a checked set that is stale (or only partly fresh) IS
         # the reason there is none. A real hit is never hidden behind a data
