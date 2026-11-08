@@ -45,12 +45,18 @@ from .earnings_day_calendar import (
 from .eva_quality import assess_source_quality, snapshot_identity
 from .PaperBroker import PaperBroker
 from .screener import (
+    DEFAULT_STRATEGY,
     FUTURE_TOLERANCE_S,
+    LEGACY_OPTION_TYPES,
+    STRATEGIES,
+    STRATEGY_IDS,
     OptionScreener,
     ScreenerCriteria,
     TrendSignal,
     _trend_label,
+    resolve_strategy,
     screen,
+    strategy_option_type,
     vertical_spreads,
 )
 
@@ -99,7 +105,8 @@ _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
                     + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
-_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type", "no_calendar")
+_IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type",
+                   "strategy", "no_calendar")
 
 
 def _parse_criteria_value(field, raw):
@@ -391,14 +398,15 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     @app.get("/api/screen")
     def api_screen():
         ticker, expiration, dates, selectable, criteria, unknown = _parse_args()
-        spread_type, spread_error = _spread_type(request.args)
-        if spread_error:
-            return jsonify(error="unknown spread type", allowed=list(_SPREAD_TYPES)), 400
+        strategy, spread_type, strategy_error, _text = _strategy_selection(request.args)
+        if strategy_error:
+            return jsonify(_strategy_error_body(strategy_error)), 400
         if not expiration:
             # picker stage: offer only the dates that can still hit. No
             # screening happened, so the drop list is empty - but the key
             # is always present, so a consumer never needs a key check.
             return jsonify(ticker=ticker, expiration=None,
+                           strategy=strategy, spread_type=spread_type,
                            listed_dates=selectable, results=[], freshness=None,
                            dropped_reasons=[], verticals=[],
                            vertical_drops=[], trend=None,
@@ -420,7 +428,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         results, dropped = screen(quotes, criteria, trend=trend_signal,
                                   now_fn=now_fn)
         vertical_kept, vertical_dropped = vertical_spreads(quotes, criteria,
-                                                            option_type=spread_type,
+                                                            strategy=strategy,
                                                             now_fn=now_fn)
         # One identity for the fetch. Both the gate and every vertical entry
         # carry it, so a consumer can prove they refer to the same snapshot.
@@ -431,6 +439,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             ticker=ticker,
             expiration=expiration,
             chain_size=len(quotes),
+            # L: the strategy that was priced, and - unchanged - the chain side it
+            # trades on. `spread_type` stays for existing consumers; `strategy` is
+            # the name a caller should read.
+            strategy=strategy,
+            strategy_label=_strategy_label(strategy),
             spread_type=spread_type,
             # B-16: rows the adapter had to skip (list subclass carries
             # the count); the key is always present so a consumer never
@@ -904,10 +917,17 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         vertical_kept = vertical_dropped = None
         criteria, criteria_error, unknown = _criteria_from_request(
             screener.criteria, request.args)
-        spread_type, spread_error = _spread_type(request.args)
-        if spread_error:
-            error = spread_error
-            spread_type = "call"
+        strategy, spread_type, strategy_error, strategy_message = _strategy_selection(request.args)
+        if strategy_error == "unknown_option_type":
+            # Legacy behaviour, unchanged (D14): the page names what is allowed and
+            # keeps computing the default. ONLY an unknown option_type does this -
+            # a strategy this code cannot price is never replaced by a default.
+            error = strategy_message
+            strategy = DEFAULT_STRATEGY
+            spread_type = strategy_option_type(strategy)
+            strategy_error = None
+        elif strategy_error:
+            error = strategy_message
         if unknown:
             hint = ("Unbekannte Parameter ignoriert: " + ", ".join(unknown)
                     + " (bedienbar sind: " + ", ".join(_CRITERIA_FIELDS)
@@ -915,7 +935,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         if criteria_error:
             error = criteria_error
         try:
-            if ticker and not criteria_error:
+            if ticker and not criteria_error and not strategy_error:
                 if not _TICKER_RE.match(ticker):
                     error = "Ungültiger Ticker - 1-6 Buchstaben A-Z."
                 else:
@@ -933,7 +953,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                                 now_fn=now_fn)
                             # the RAW chain, not the screened candidates (B)
                             vertical_kept, vertical_dropped = vertical_spreads(
-                                quotes, criteria, option_type=spread_type, now_fn=now_fn)
+                                quotes, criteria, strategy=strategy, now_fn=now_fn)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,
@@ -984,6 +1004,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         earnings_view = None
         if ticker and dates is not None:
             earnings_view = _earnings_view(ticker, dates, offered)
+        # L: label and the two legs are printed from the same table the calculation
+        # used - one source for the wording, no second copy in the template.
+        spez = STRATEGIES.get(strategy or "")
         return render_template(
             "screen.html", ticker=ticker, expiration=expiration,
             feed_time=feed_time,
@@ -991,6 +1014,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             results=results, dropped_count=len(dropped) if dropped else 0,
             dropped_reasons=_drop_reason_groups(dropped),
             spread_type=spread_type,
+            strategy=strategy,
+            strategy_label=None if spez is None else spez["label"],
+            strategy_buy=None if spez is None else spez["buy"],
+            strategy_sell=None if spez is None else spez["sell"],
+            strategy_direction=None if spez is None else spez["direction"],
             verticals=vertical_rows,
             sort_links=_sort_links(request.args),
             vertical_drops=_drop_reason_groups(vertical_dropped),
@@ -1253,19 +1281,39 @@ def _vertical_sort_key(mode):
 _SPREAD_TYPES = ("call", "put")
 
 
-def _spread_type(args):
-    """D14: which side of the chain the spread section trades.
+def _strategy_selection(args):
+    """Slice L: which strategy a request asks for.
 
-    Returns (value, None) or (None, message) for an unknown value - the page shows the
-    message and keeps computing calls, the JSON endpoint answers 400. Default is calls,
-    exactly as before.
+    `strategy` is the primary parameter; `option_type` stays the legacy alias and
+    means exactly what it always meant (`call` = bull call debit, `put` = bear put
+    debit). Returns (strategy, spread_type, error_code, error_text). A request that
+    names both with contradicting values is an ERROR on both routes - see
+    `screener.resolve_strategy` for the documented rule; nothing is guessed.
     """
-    wert = (args.get("option_type") or "").strip().lower()
-    if not wert:
-        return "call", None
-    if wert not in _SPREAD_TYPES:
-        return None, "Ungültige Spread-Art - erlaubt sind Calls oder Puts."
-    return wert, None
+    strategy, code, text = resolve_strategy(args.get("strategy"), args.get("option_type"))
+    if code:
+        return None, None, code, text
+    return strategy, strategy_option_type(strategy), None, None
+
+
+def _strategy_label(strategy):
+    """The human label of a resolved strategy id; None when no strategy is known."""
+    return None if strategy is None else STRATEGIES[strategy]["label"]
+
+
+def _strategy_error_body(code):
+    """The JSON body for a rejected strategy request.
+
+    The two legacy refusals keep their old shape word for word so an existing
+    consumer does not have to change; the new codes name themselves.
+    """
+    if code == "unknown_option_type":
+        return {"error": "unknown spread type", "allowed": list(_SPREAD_TYPES)}
+    if code == "conflict":
+        return {"error": "conflicting strategy and option_type",
+                "allowed": list(STRATEGY_IDS),
+                "option_type_to_strategy": dict(LEGACY_OPTION_TYPES)}
+    return {"error": "unknown strategy", "allowed": list(STRATEGY_IDS)}
 
 
 def _sort_links(args):

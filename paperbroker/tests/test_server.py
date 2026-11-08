@@ -1574,7 +1574,7 @@ class TestVerticalSpreadList(unittest.TestCase):
                                     dte_min=None, dte_max=None)
         page = self._page(criteria=criteria)
         self.assertEqual(page.count("<table>"), 2)
-        self.assertIn("Vertikale Call-Spreads", page)
+        self.assertIn("Bull Call Spread (Debit)", page)
         self.assertIn("Kontrakt", page)
 
     def test_the_api_reports_why_pairs_were_dropped(self):
@@ -1607,7 +1607,7 @@ class TestVerticalSpreadList(unittest.TestCase):
     def _ratio_cell(page, long_symbol, short_symbol):
         """The Debit/Breite cell of one pair's row - found by its title,
         not by a table position."""
-        zeile = re.search(rf'<td title="{long_symbol} / {short_symbol}">.*?</tr>',
+        zeile = re.search(rf'<td title="Kauf {long_symbol} · Verkauf {short_symbol}">.*?</tr>',
                           page, re.S)
         zellen = re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile.group(0), re.S)
         return zellen[10].strip()
@@ -2134,8 +2134,8 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         # D7: the degenerated AAPL pair (debit == width, return 0.00 %) is no
         # longer a result - it is dropped with the pair rule's reason.
         self.assertEqual([z[0] for z in zeilen],
-                         ["AMZN 260.00 / 262.50 Call",
-                          "TSLA 290.00 / 292.50 Call"])
+                         ["AMZN 260.00 Call kaufen / 262.50 Call verkaufen",
+                          "TSLA 290.00 Call kaufen / 292.50 Call verkaufen"])
         # D13: the Position ($) cell slides in at index 4, so the return column
         # moved from 6 to 7 - same value, one cell further right.
         self.assertEqual([z[7] for z in zeilen], ["257.14 %", "257.14 %"])
@@ -2204,8 +2204,8 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
                   self._spread_rows(self._page(quotes=self._distance_fixture()))
                   + self._spread_rows(self._page({"option_type": "put"},
                                                  quotes=self._distance_fixture()))}
-        self.assertEqual(zellen["SPY 480.00 / 475.00 Put"], "↓ 4.00 %")
-        self.assertEqual(zellen["SPY 500.00 / 505.00 Call"], "↑ 0.30 %")
+        self.assertEqual(zellen["SPY 480.00 Put kaufen / 475.00 Put verkaufen"], "↓ 4.00 %")
+        self.assertEqual(zellen["SPY 500.00 Call kaufen / 505.00 Call verkaufen"], "↑ 0.30 %")
         for zelle in zellen.values():
             self.assertNotIn("+", zelle)
             self.assertNotIn("-", zelle)
@@ -2240,8 +2240,8 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     def test_the_spread_cell_names_the_trade_and_keeps_the_codes_in_the_tooltip(self):
         html = self._page()
-        self.assertIn('title="AMZN261016C00260000 / AMZN261016C00262500"', html)
-        self.assertIn(">AMZN 260.00 / 262.50 Call<", html)
+        self.assertIn('title="Kauf AMZN261016C00260000 · Verkauf AMZN261016C00262500"', html)
+        self.assertIn(">AMZN 260.00 Call kaufen / 262.50 Call verkaufen<", html)
 
     # --- D13: die Spalte Position ($) ---------------------------------------
 
@@ -2338,8 +2338,10 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
     # --- die Reihenfolge: Seite sortiert, Schnittstelle nicht ---
 
     def test_the_page_sorts_by_return_per_default(self):
-        self.assertEqual(self._spread_rows(self._page())[0][0], "AMZN 260.00 / 262.50 Call")
-        self.assertEqual(self._spread_rows(self._page())[-1][0], "TSLA 290.00 / 292.50 Call")
+        self.assertEqual(self._spread_rows(self._page())[0][0],
+                         "AMZN 260.00 Call kaufen / 262.50 Call verkaufen")
+        self.assertEqual(self._spread_rows(self._page())[-1][0],
+                         "TSLA 290.00 Call kaufen / 292.50 Call verkaufen")
 
     def test_the_page_can_sort_by_distance_to_break_even(self):
         zeilen = self._spread_rows(self._page({"sort": "be_asc"}))
@@ -2371,7 +2373,8 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
 
     def test_the_page_can_keep_the_chain_order(self):
         self.assertEqual([z[0] for z in self._spread_rows(self._page({"sort": "none"}))],
-                         ["AMZN 260.00 / 262.50 Call", "TSLA 290.00 / 292.50 Call"])
+                         ["AMZN 260.00 Call kaufen / 262.50 Call verkaufen",
+                          "TSLA 290.00 Call kaufen / 292.50 Call verkaufen"])
 
     def test_an_unknown_sort_mode_falls_back_to_the_return(self):
         self.assertEqual(self._spread_rows(self._page({"sort": "quatsch"}))[0][0],
@@ -2451,13 +2454,14 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
             self.assertNotIn("↓", zelle)
 
 
-class TheSpreadSectionFollowsTheCallPutSwitch(unittest.TestCase):
-    """D14: der Spread-Abschnitt handelt die Seite, die der Bediener waehlt.
+class TheStrategyIsTheChoice(unittest.TestCase):
+    """L: die Wahl ist eine Strategie, keine Kettenseite.
 
-    Seit D12 nimmt die Rechnung `option_type`; beide Routen gaben aber nur den
-    Standard weiter, der Abschnitt war also auf Calls festgelegt. Der Umschalter
-    "Spreads" speist ihn jetzt, und Ueberschrift, Zell-Label je Zeile und das
-    `spread_type` des JSON folgen alle derselben Wahl.
+    Bis D14 fragte das Formular nach "Calls" oder "Puts" - einer SEITE der Kette.
+    Das sagt nicht, welches Bein gekauft wird. Das Formular bietet jetzt zwei
+    stabile Kennungen an, und Ueberschrift, Zeilen, Rechnung und JSON folgen
+    derselben Wahl. `option_type=call|put` bleibt als alte Adresse gueltig und
+    bedeutet dasselbe wie zuvor.
 
     Die Kette traegt BEIDE Seiten und MEHR Put- als Call-Paare (ein benachbartes
     Call-Paar, drei benachbarte Put-Paare) - der Zeilenvergleich ist damit ein
@@ -2502,7 +2506,7 @@ class TheSpreadSectionFollowsTheCallPutSwitch(unittest.TestCase):
 
     @staticmethod
     def _heading(page):
-        """Der Spread-Abschnitt nennt seine Seite in EINER <h2>."""
+        """Der Spread-Abschnitt nennt seine Strategie in EINER <h2>."""
         return re.search(r"<h2>(.*?)</h2>", page, re.S).group(1)
 
     @staticmethod
@@ -2517,62 +2521,119 @@ class TheSpreadSectionFollowsTheCallPutSwitch(unittest.TestCase):
                  re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', z, re.S)]
                 for z in zeilen[1:]]
 
-    # --- die Ueberschrift folgt der Wahl ---
+    # --- der Name der Strategie steht in der Ueberschrift ---
 
-    def test_the_heading_names_the_side_the_operator_picked(self):
-        self.assertEqual(self._heading(self._page()), "Vertikale Call-Spreads")
-        self.assertEqual(self._heading(self._page({"option_type": "put"})),
-                         "Vertikale Put-Spreads")
+    def test_the_heading_names_the_strategy_the_operator_picked(self):
+        self.assertEqual(self._heading(self._page()), "Bull Call Spread (Debit)")
+        self.assertEqual(self._heading(self._page({"strategy": "bear_put_debit"})),
+                         "Bear Put Spread (Debit)")
 
-    # --- die Zeilen folgen der Wahl ---
+    # --- die Zeilen nennen Kaufbein und Verkaufsbein ---
 
-    def test_the_rows_follow_the_choice_and_the_puts_outnumber_the_calls(self):
+    def test_every_row_names_the_leg_it_buys_and_the_leg_it_sells(self):
         call_rows = self._spread_rows(self._page())
-        put_rows = self._spread_rows(self._page({"option_type": "put"}))
-        # ein echter Vergleich, keine abgeschriebene Zahl: dieselbe Kette, beide Seiten
-        self.assertGreater(len(put_rows), len(call_rows))
+        put_rows = self._spread_rows(self._page({"strategy": "bear_put_debit"}))
         self.assertGreater(len(call_rows), 0)
+        # ein echter Vergleich: dieselbe Kette, beide Strategien
+        self.assertGreater(len(put_rows), len(call_rows))
         for zeile in call_rows:
-            self.assertTrue(zeile[0].endswith(" Call"), zeile[0])
+            self.assertIn("Call kaufen /", zeile[0])
+            self.assertTrue(zeile[0].endswith("Call verkaufen"), zeile[0])
         for zeile in put_rows:
-            self.assertTrue(zeile[0].endswith(" Put"), zeile[0])
+            self.assertIn("Put kaufen /", zeile[0])
+            self.assertTrue(zeile[0].endswith("Put verkaufen"), zeile[0])
 
-    def test_the_switch_moves_the_heading_and_the_row_labels_together(self):
-        """D17 (finding 5b partner): ONE request flips the heading AND the
-        per-row label - the choice reaches the whole table, not one of the two.
-        """
-        page = self._page({"option_type": "put"})
-        self.assertEqual(self._heading(page), "Vertikale Put-Spreads")
+    def test_the_strategy_moves_the_heading_and_the_row_labels_together(self):
+        """ONE request flips the heading AND the labels - the choice reaches the
+        whole table, not one of the two."""
+        page = self._page({"strategy": "bear_put_debit"})
+        self.assertEqual(self._heading(page), "Bear Put Spread (Debit)")
         put_rows = self._spread_rows(page)
         self.assertTrue(put_rows, "no put rows found")
         for zeile in put_rows:
-            self.assertTrue(zeile[0].endswith(" Put"), zeile[0])
+            self.assertTrue(zeile[0].endswith("Put verkaufen"), zeile[0])
         call_rows = self._spread_rows(self._page())
         self.assertTrue(call_rows, "no call rows found")
         for zeile in call_rows:
-            self.assertTrue(zeile[0].endswith(" Call"), zeile[0])
+            self.assertTrue(zeile[0].endswith("Call verkaufen"), zeile[0])
 
-    # --- ein unbekannter Wert: Fehlerbox, dann weiter mit Calls ---
+    # --- die alte Adresse bedeutet dasselbe ---
 
-    def test_an_unknown_side_shows_the_error_box_and_keeps_computing_calls(self):
+    def test_the_legacy_side_gives_exactly_the_same_rows_as_the_strategy(self):
+        """`option_type=call|put` ist die alte Adresse derselben Wahl.
+
+        Verglichen werden die ZELLEN, nicht die Anfrage: die alte Adresse muss
+        dieselbe Tabelle erzeugen wie die neue, sonst haetten alte Links eine
+        andere Bedeutung.
+        """
+        for alt, neu in (("call", "bull_call_debit"), ("put", "bear_put_debit")):
+            alt_rows = self._spread_rows(self._page({"option_type": alt}))
+            neu_rows = self._spread_rows(self._page({"strategy": neu}))
+            self.assertTrue(alt_rows, f"keine Zeilen fuer option_type={alt}")
+            self.assertEqual(alt_rows, neu_rows, alt)
+
+    def test_the_legacy_side_and_the_matching_strategy_agree(self):
+        page = self._page({"strategy": "bear_put_debit", "option_type": "put"})
+        self.assertEqual(self._heading(page), "Bear Put Spread (Debit)")
+        self.assertTrue(self._spread_rows(page))
+
+    # --- Widerspruch und unbekannte Werte ---
+
+    def test_a_contradiction_is_an_error_and_computes_neither_side(self):
+        """Strategie sagt Bear Put, die alte Adresse sagt Calls: KEINE stille
+        Mehrheit. Die Seite nennt beide Werte und zeigt keine Spread-Tabelle -
+        eine Tabelle wuerde eine der beiden Antworten erfinden.
+        """
+        page = self._page({"strategy": "bear_put_debit", "option_type": "call"})
+        self.assertIn('<div class="err">Widerspruch: bear_put_debit gehört zu '
+                      'option_type=put, angegeben war option_type=call.', page)
+        self.assertEqual(self._spread_rows(page), [])
+        self.assertEqual(page.count("<table>"), 0)
+
+    def test_an_unknown_strategy_is_an_error_and_computes_nothing(self):
+        page = self._page({"strategy": "bogus"})
+        self.assertIn('<div class="err">Ungültige Strategie - erlaubt sind '
+                      'bull_call_debit (Bull Call Spread (Debit)) und '
+                      'bear_put_debit (Bear Put Spread (Debit)).</div>', page)
+        self.assertEqual(self._spread_rows(page), [])
+
+    def test_an_unknown_side_keeps_the_old_error_box_and_the_old_fallback(self):
+        """D14 unveraendert: ein unbekanntes option_type ist die ALTE Adresse -
+        Meldung, dann weiter mit der Voreinstellung (Bull Call)."""
         page = self._page({"option_type": "bogus"})
         self.assertIn(
             '<div class="err">Ungültige Spread-Art - erlaubt sind Calls oder Puts.</div>',
             page)
-        # kein stiller Rueckfall: die Seite rechnet weiter mit Calls, die
-        # Ueberschrift bleibt Call-Spreads und die Zeilenzahl ist die der Calls
-        self.assertEqual(self._heading(page), "Vertikale Call-Spreads")
+        self.assertEqual(self._heading(page), "Bull Call Spread (Debit)")
         self.assertEqual(len(self._spread_rows(page)),
                          len(self._spread_rows(self._page())))
 
-    # --- das JSON nennt die Seite, die es benutzt hat ---
+    def test_the_sort_links_carry_the_strategy(self):
+        """Ein Klick auf einen Spaltenkopf darf die Wahl nicht verlieren - die
+        Sortieradressen entstehen aus DERSELBEN Anfrage (sort= wird ersetzt)."""
+        page = self._page({"strategy": "bear_put_debit"})
+        links = [h for h in re.findall(r'href="\?([^"]*)"', page) if "sort=" in h]
+        # zwei Spaltenkoepfe sind verlinkt (Rendite, BE-Abstand); `none` kennt der
+        # Helfer, die Seite bietet es nicht an
+        self.assertEqual(len(links), 2)
+        for link in links:
+            self.assertIn("strategy=bear_put_debit", link)
 
-    def test_the_json_names_the_side_it_used(self):
-        """`spread_type` folgt DERSELBEN Anfrage wie die Ueberschrift."""
-        for params, erwartet in ((None, "call"), ({"option_type": "put"}, "put")):
-            self.assertEqual(self._json(params)["spread_type"], erwartet, params)
+    # --- das JSON nennt beides ---
+
+    def test_the_json_names_the_strategy_and_the_side_it_used(self):
+        for params, strategie, seite in (
+                (None, "bull_call_debit", "call"),
+                ({"strategy": "bear_put_debit"}, "bear_put_debit", "put"),
+                ({"option_type": "put"}, "bear_put_debit", "put")):
+            daten = self._json(params)
+            self.assertEqual(daten["strategy"], strategie, params)
+            self.assertEqual(daten["spread_type"], seite, params)
+            self.assertEqual(daten["strategy_label"],
+                             "Bear Put Spread (Debit)" if seite == "put"
+                             else "Bull Call Spread (Debit)", params)
             self.assertEqual(self._heading(self._page(params)),
-                             f"Vertikale {erwartet.capitalize()}-Spreads", params)
+                             daten["strategy_label"], params)
 
 
 class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
@@ -2686,7 +2747,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # D14: which side of the chain the spread section trades. It does not
         # filter the chain - it picks the side for the table below, so it has
         # its own group and stands BETWEEN the four filters and the position.
-        ("Spreads", ("option_type",)),
+        ("Strategie", ("strategy",)),
         # D12: the position size is its own question and stands AFTER the four
         # filter groups. It does not filter the chain: it turns the pair numbers
         # above (per unit) into the position the operator would really hold.
@@ -2810,7 +2871,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
                     "require_volume": 2, "iv_pref": 3, "ignore_quote_age": 1,
                     # D14: die zwei Funkknoepfe tragen denselben Namen - eine
                     # EINZELNE Anzeige mit zwei Werten, nicht zwei Felder
-                    "option_type": 2}
+                    "strategy": 2}
         for name in self.ZAHLENFELDER:
             erwartet[name] = 1
         self.assertEqual(self._namen(self._page()), erwartet)
@@ -2863,51 +2924,57 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
             self.assertIn("<input", label, feld)                 # inside the row
             self.assertIn("Standard", label[:label.index("<input")], feld)
 
-    # --- D14: der Umschalter Calls / Puts ---------------------------------
+    # --- L: die Strategiewahl --------------------------------------------
 
-    def test_the_spreads_group_holds_the_call_put_switch(self):
-        """D14: der Umschalter sitzt in der Gruppe "Spreads", bietet genau die
-        Werte call und put an, und calls ist ohne Parameter vorausgewaehlt.
+    def test_the_strategy_group_holds_the_two_named_strategies(self):
+        """L: die Gruppe "Strategie" bietet genau die zwei stabilen Kennungen an,
+        und bull_call_debit ist ohne Parameter vorausgewaehlt.
 
-        Knoepfe UND Vorauswahl werden aus DEMSELBEN Gruppenblock gelesen: ein
-        aus der Gruppe gerutschtes oder ein zweites danebengesetztes Bedienelement
-        faellt so auf, waehrend das blosse Wort "option_type" es nicht verriete.
+        Knoepfe UND Vorauswahl werden aus DEMSELBEN Gruppenblock gelesen; die
+        Kennung selbst (nicht das deutsche Wort) ist die Zusicherung, weil sie in
+        URL, API und Rechnung steht.
         """
         page = self._page()
-        block = re.search(r'<fieldset class="crit">\s*<legend>Spreads</legend>(.*?)</fieldset>',
+        block = re.search(r'<fieldset class="crit">\s*<legend>Strategie</legend>(.*?)</fieldset>',
                           page, re.S).group(1)
-        knoepfe = re.findall(r'<input[^>]*name="option_type"[^>]*>', block)
+        knoepfe = re.findall(r'<input[^>]*name="strategy"[^>]*>', block)
         self.assertEqual(len(knoepfe), 2)
-        for knopf, wert in zip(knoepfe, ("call", "put"), strict=True):
+        for knopf, wert in zip(knoepfe, ("bull_call_debit", "bear_put_debit"), strict=True):
             self.assertIn('type="radio"', knopf)
             self.assertIn(f'value="{wert}"', knopf)
-        # ohne Parameter ist calls vorausgewaehlt - und genau EINES von beiden
+        # ohne Parameter ist der Bull Call vorausgewaehlt - und genau EINER
         self.assertIn("checked", knoepfe[0])
         self.assertNotIn("checked", knoepfe[1])
-        # die Beschriftungen nennen Vorauswahl und Gegenstueck
+        # die Beschriftungen nennen Kauf- und Verkaufsbein, nicht nur die Seite
         labels = re.findall(r"<label>(.*?)</label>", block, re.S)
-        self.assertIn("Calls (Standard)", labels[0])
-        self.assertIn("Puts", labels[1])
+        self.assertIn("Bull Call Spread (Debit)", labels[0])
+        self.assertIn("Call kaufen (niedriger Strike)", labels[0])
+        self.assertIn("Bear Put Spread (Debit)", labels[1])
+        self.assertIn("Put kaufen (höherer Strike)", labels[1])
         # die Gruppe zaehlt vollstaendig mit (siehe die vier Struktur-Tests oben)
-        self.assertEqual(dict(self._gruppen(page))["Spreads"], ("option_type",))
+        self.assertEqual(dict(self._gruppen(page))["Strategie"], ("strategy",))
 
-    def test_the_switch_preselects_puts_when_the_put_side_is_asked_for(self):
-        # die Vorauswahl folgt der Wahl: mit option_type=put ist der Put-Knopf
-        # angehakt und der Call-Knopf nicht - sonst waere der Umschalter nur
-        # eine Anzeige ohne Wirkung
-        query = {"ticker": "AAPL", "expiration": "2026-10-16", "option_type": "put"}
-        adapter = _MockAdapter(make() + make_verticals())
-        adapter.expirations = ["2026-10-16"]
-        app = create_app(quote_adapter=adapter, screener=OptionScreener(_WIDE), now_fn=_clock())
-        app.config["TESTING"] = True
-        put_page = app.test_client().get("/", query_string=query).get_data(as_text=True)
-        block = re.search(r'<fieldset class="crit">\s*<legend>Spreads</legend>(.*?)</fieldset>',
-                          put_page, re.S).group(1)
-        knoepfe = re.findall(r'<input[^>]*name="option_type"[^>]*>', block)
-        self.assertIn('value="call"', knoepfe[0])
-        self.assertNotIn("checked", knoepfe[0])
-        self.assertIn('value="put"', knoepfe[1])
-        self.assertIn("checked", knoepfe[1])
+    def test_the_switch_preselects_the_strategy_the_request_names(self):
+        # die Vorauswahl folgt der Wahl - ueber die neue UND ueber die alte Adresse
+        for params, erwartet in (({"strategy": "bear_put_debit"}, "bear_put_debit"),
+                                 ({"option_type": "put"}, "bear_put_debit")):
+            query = {"ticker": "AAPL", "expiration": "2026-10-16"}
+            query.update(params)
+            adapter = _MockAdapter(make() + make_verticals())
+            adapter.expirations = ["2026-10-16"]
+            app = create_app(quote_adapter=adapter, screener=OptionScreener(_WIDE),
+                             now_fn=_clock())
+            app.config["TESTING"] = True
+            page = app.test_client().get("/", query_string=query).get_data(as_text=True)
+            treffer = re.search(r'<fieldset class="crit">\s*<legend>Strategie</legend>'
+                                r'(.*?)</fieldset>', page, re.S)
+            assert treffer is not None
+            block = treffer.group(1)
+            knoepfe = re.findall(r'<input[^>]*name="strategy"[^>]*>', block)
+            self.assertIn('value="bull_call_debit"', knoepfe[0])
+            self.assertNotIn("checked", knoepfe[0])
+            self.assertIn(f'value="{erwartet}"', knoepfe[1])
+            self.assertIn("checked", knoepfe[1])
 
     # --- die Beschriftungen ---
 
@@ -3549,7 +3616,7 @@ class TestErrorBehaviour(unittest.TestCase):
     @staticmethod
     def _spread_reihenfolge(html_out):
         """Die erste Zelle jeder Spread-Zeile, in Seitenreihenfolge."""
-        return re.findall(r'<td title="[^"]+ / [^"]+">([^<]+)</td>', html_out)
+        return re.findall(r'<td title="Kauf [^"]+ · Verkauf [^"]+">([^<]+)</td>', html_out)
 
     def test_every_violation_is_named_in_german_and_with_its_value(self):
         page = self._page("min_oi=-5&min_volume=-1")
@@ -3682,6 +3749,41 @@ class TestApiErrorContract(unittest.TestCase):
     def test_a_feed_outage_answers_503_json_with_market_data_unavailable(self):
         self._assert_json_error(self._FeedDown(), 503,
                                 "market data unavailable")
+
+    def test_an_unknown_strategy_answers_400_json_with_the_two_ids(self):
+        """L: eine unbekannte Strategie ist der Fehler des Aufrufers. Status,
+        Inhaltstyp, Koerperschluessel und die erlaubten Kennungen zusammen -
+        eine blosse get_json()-Pruefung bestuende auch einen HTML-Koerper.
+        """
+        app = server_module.create_app(quote_adapter=_MockAdapter(make_verticals()),
+                                       screener=OptionScreener(_LOOSE), now_fn=_clock())
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        res = app.test_client().get(
+            "/api/screen?ticker=AAPL&expiration=2026-10-16&strategy=bogus")
+        self.assertEqual(res.status_code, 400, res.get_data(as_text=True)[:200])
+        self.assertTrue(res.content_type.startswith("application/json"), res.content_type)
+        body = res.get_json()
+        self.assertIsNotNone(body, "body is not JSON: "
+                             f"{res.get_data(as_text=True)[:200]!r}")
+        self.assertEqual(body["error"], "unknown strategy")
+        self.assertEqual(body["allowed"], ["bull_call_debit", "bear_put_debit"])
+
+    def test_a_contradiction_answers_400_json_and_names_both_values(self):
+        """L: Strategie und alte Adresse widersprechen sich - die Antwort nennt
+        beide und die gueltige Zuordnung, statt eine der beiden zu waehlen.
+        """
+        app = server_module.create_app(quote_adapter=_MockAdapter(make_verticals()),
+                                       screener=OptionScreener(_LOOSE), now_fn=_clock())
+        app.config["PROPAGATE_EXCEPTIONS"] = False
+        res = app.test_client().get(
+            "/api/screen?ticker=AAPL&expiration=2026-10-16"
+            "&strategy=bear_put_debit&option_type=call")
+        self.assertEqual(res.status_code, 400, res.get_data(as_text=True)[:200])
+        self.assertTrue(res.content_type.startswith("application/json"), res.content_type)
+        body = res.get_json()
+        self.assertEqual(body["error"], "conflicting strategy and option_type")
+        self.assertEqual(body["option_type_to_strategy"],
+                         {"call": "bull_call_debit", "put": "bear_put_debit"})
 
     def test_an_unknown_spread_type_answers_400_json(self):
         """D14: ein unbekanntes `option_type` ist der Fehler des Aufrufers.
