@@ -594,6 +594,17 @@ class NasdaqEarningsAdapter:
         # restart asks again immediately instead of inheriting a stale verdict.
         self._day_failures = {}
         self._day_failures_lock = threading.Lock()
+        # The CBOE list is ONE document, so it needs its own two memories: the
+        # last SUCCESSFUL download and the last FAILED one. Both are
+        # process-local for the same reason as the day failures above - a
+        # restart must ask the source again rather than inherit an undated
+        # verdict. See ``get_optionable_symbols`` for why each one exists.
+        self._optionable_memory = None       # {"symbols": [...], "fetched_at_utc": "..."}
+        self._optionable_failure = None      # datetime of the last failed download
+        # Serialises the whole lookup behind the file cache (memory, failure
+        # memory, download): without it N cold page views start N parallel
+        # 388 KB downloads, and with it they share exactly one.
+        self._optionable_lock = threading.Lock()
         # The cross-check is optional (a failure is tolerated), so it must not
         # be able to double the cold-path latency: it gets its own, shorter cap.
         self.cross_check_timeout_seconds = float(cross_check_timeout_seconds)
@@ -799,62 +810,159 @@ class NasdaqEarningsAdapter:
 
     # -- optionable symbols (calendar filter) ------------------------------ #
     def get_optionable_symbols(self):
-        """The CBOE symbol list, one download per 24 h, labelled by its state.
+        """The CBOE symbol list, at most one download per 24 h, labelled by state.
 
         States, in the caller's words:
 
-        * ``live`` - downloaded now (or written from the answer just received),
-        * ``cached`` - a stored list younger than ``optionable_ttl_seconds``;
-          the same answer without the download,
-        * ``stale`` - the download failed, the stored list is served WITH its
-          own timestamp and the failure, so the page can filter and say the
-          list is the last known state,
+        * ``live`` - downloaded now,
+        * ``cached`` - a list younger than ``optionable_ttl_seconds``, served
+          from the cache file OR from this process's memory; the same answer
+          without the download,
+        * ``stale`` - the download failed (or was not retried, see below), the
+          stored list is served WITH its own timestamp and the failure, so the
+          page can filter and say the list is the last known state,
         * ``unavailable`` - the download failed and there is no stored list:
           ``symbols`` is ``None`` and the page must NOT filter.
 
         An empty parse is a FAILURE, not a list: filtering by an empty set
-        would hide every title. The failure is named (`invalid_payload`).
+        would hide every title. The failure is named (``invalid_payload``).
+
+        Check order (cheapest first, and why that order)
+        ------------------------------------------------
+        1. **cache file** - one small read; a fresh document answers without
+           touching the process or the network.
+        2. **in-process memory** - the last SUCCESSFUL download of this process,
+           symbols plus stamp. ``OptionableSymbolsStore.put`` returns ``False``
+           when the cache directory is not writable; without this step such a
+           host paid the full 388 KB download on EVERY page view.
+        3. **failure memory** - the last failed download, process-local, held
+           for ``failure_retry_seconds``. A dead source costs the full
+           ``timeout_seconds`` (6 s) per attempt while the user reloads the
+           page; a failure younger than the window therefore answers exactly
+           like the failed attempt (``stale`` with the old list, or
+           ``unavailable`` without one) with ``error.code="recent_failure"``,
+           and no transport call happens.
+        4. **download** - the only step that touches the network, under
+           ``_optionable_lock``.
+
+        Single flight
+        -------------
+        Steps 2-4 run under one lock and are re-checked after it is taken, so N
+        simultaneous cold callers cause exactly ONE transfer: the first loads,
+        the others wait and adopt its outcome (memory hit, or the failure
+        memory the first one just wrote) instead of starting 388 KB downloads
+        of their own.
+
+        Both memories are per PROCESS and deliberately not persisted: a restart
+        asks the source again at once instead of inheriting a verdict nobody
+        can date. A success clears the failure memory; ``invalid_payload``
+        counts as a failure because it is an outage, not an empty exchange.
         """
         jetzt = _utc_now(self._now_fn)
         gespeichert = self._optionable_store.get()
         alter = self._age_seconds(gespeichert, jetzt)
         if gespeichert is not None and alter is not None and 0 <= alter < self.optionable_ttl_seconds:
-            return {
-                "symbols": list(gespeichert["symbols"]),
-                "state": "cached",
-                "fetched_at_utc": gespeichert["fetched_at_utc"],
-                "error": None,
-            }
+            return self._optionable_answer(gespeichert["symbols"], gespeichert["fetched_at_utc"], "cached")
 
-        try:
-            text = self._get_text(OPTIONABLE_SYMBOLS_URL, _CSV_HEADERS)
-            symbole = parse_cboe_symbols(text)
-            if not symbole:
-                raise EarningsSourceError(
-                    "invalid_payload",
-                    "the CBOE list carries no usable 'Stock Symbol' column",
-                )
-        except EarningsSourceError as exc:
-            if gespeichert is not None:
-                # A stored list from the future (clock moved backwards) is not
-                # trusted as "stale either" - but it is still the only list we
-                # have, so it is served with its own stamp and the failure.
-                return {
-                    "symbols": list(gespeichert["symbols"]),
-                    "state": "stale",
-                    "fetched_at_utc": gespeichert["fetched_at_utc"],
-                    "error": exc.as_dict(),
-                }
-            return {"symbols": None, "state": "unavailable", "fetched_at_utc": None, "error": exc.as_dict()}
+        with self._optionable_lock:
+            # A parallel caller may have finished a download while this one
+            # waited for the lock: age the clock again and re-check, so the
+            # second caller adopts the first one's result instead of repeating
+            # the transfer.
+            jetzt = _utc_now(self._now_fn)
+            erinnerung = self._optionable_memory_hit(jetzt)
+            if erinnerung is not None:
+                return self._optionable_answer(erinnerung["symbols"], erinnerung["fetched_at_utc"], "cached")
+            # A list that failed moments ago is not downloaded again; it
+            # answers like the failed attempt without paying the timeout.
+            fehler = self._optionable_recent_failure(jetzt)
+            if fehler is not None:
+                return self._optionable_failure_answer(gespeichert, fehler)
 
-        eintrag = {"symbols": sorted(symbole), "fetched_at_utc": _iso(jetzt)}
-        self._optionable_store.put(eintrag)
+            try:
+                text = self._get_text(OPTIONABLE_SYMBOLS_URL, _CSV_HEADERS)
+                symbole = parse_cboe_symbols(text)
+                if not symbole:
+                    raise EarningsSourceError(
+                        "invalid_payload",
+                        "the CBOE list carries no usable 'Stock Symbol' column",
+                    )
+            except EarningsSourceError as exc:
+                self._optionable_failure = jetzt
+                return self._optionable_failure_answer(gespeichert, exc)
+
+            eintrag = {"symbols": sorted(symbole), "fetched_at_utc": _iso(jetzt)}
+            # Remembered BEFORE the write: an unwritable cache directory makes
+            # ``put`` return False, and the answer still has to be reusable.
+            self._optionable_memory = dict(eintrag)
+            self._optionable_failure = None
+            self._optionable_store.put(eintrag)
+            return self._optionable_answer(eintrag["symbols"], eintrag["fetched_at_utc"], "live")
+
+    def _optionable_memory_hit(self, jetzt):
+        """The last successful download of THIS process, if still fresh.
+
+        Why process-local: ``OptionableSymbolsStore.put`` returns ``False`` on
+        a read-only cache directory, and without this memory every page view
+        would pay the full 388 KB download again. Two-sided freshness like the
+        file cache - a stamp from the future is not a hit. Caller holds
+        ``_optionable_lock``.
+        """
+        eintrag = self._optionable_memory
+        alter = self._age_seconds(eintrag, jetzt)
+        if eintrag is not None and alter is not None and 0 <= alter < self.optionable_ttl_seconds:
+            return eintrag
+        return None
+
+    def _optionable_recent_failure(self, jetzt):
+        """The ``recent_failure`` error blocking a new download, or ``None``.
+
+        Mirrors ``_recent_failure`` for the day calendar: a failure younger
+        than ``failure_retry_seconds`` stands in for the attempt that just
+        failed, so a reload costs no transport call. The bound is two-sided on
+        purpose - a stamp from the FUTURE (clock moved backwards) must not
+        suppress the download indefinitely, it may only delay it. A configured
+        window of 0 disables the memory. Caller holds ``_optionable_lock``.
+        """
+        stempel = self._optionable_failure
+        if stempel is None:
+            return None
+        alter = (jetzt - stempel).total_seconds()
+        if not 0 <= alter < self.failure_retry_seconds:
+            return None
+        return EarningsSourceError(
+            "recent_failure",
+            f"the last CBOE list download failed {int(alter)} s ago; it is retried after at most "
+            f"{self.failure_retry_seconds} s",
+        )
+
+    @staticmethod
+    def _optionable_answer(symbols, fetched_at_utc, state):
+        """One answer shape for every non-failed state."""
         return {
-            "symbols": list(eintrag["symbols"]),
-            "state": "live",
-            "fetched_at_utc": eintrag["fetched_at_utc"],
+            "symbols": list(symbols),
+            "state": state,
+            "fetched_at_utc": fetched_at_utc,
             "error": None,
         }
+
+    @staticmethod
+    def _optionable_failure_answer(gespeichert, fehler):
+        """The failed-download answer: the old list as ``stale``, else ``unavailable``.
+
+        ``gespeichert`` is the cache-file document read BEFORE the lock; a
+        list from the future is served too, because it is still the only list
+        we have - it carries its own stamp and the failure, never a fresh
+        verdict.
+        """
+        if gespeichert is not None:
+            return {
+                "symbols": list(gespeichert["symbols"]),
+                "state": "stale",
+                "fetched_at_utc": gespeichert["fetched_at_utc"],
+                "error": fehler.as_dict(),
+            }
+        return {"symbols": None, "state": "unavailable", "fetched_at_utc": None, "error": fehler.as_dict()}
 
     # -- day calendar (start page) ----------------------------------------- #
     def get_calendar_days(self, days):
