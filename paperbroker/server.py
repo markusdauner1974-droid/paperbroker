@@ -117,6 +117,41 @@ _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
                     + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
+
+
+def scan_view_data():
+    """What the earnings-overview panel needs to run the day scan from the page.
+
+    One source for both sides of the same contract:
+
+    * ``strategies`` - the ids and the short column headers. The full labels
+      name both legs ("Bull Call Spread (Debit)") and do not fit above a
+      two-digit count, so the header prints the part before " Spread".
+    * ``fields`` - the form fields the browser may copy into the scan request,
+      built from the criteria table the route parses. A new filter therefore
+      reaches the scan automatically; the alternative (a second list in the
+      JavaScript) would silently drop it and the scan would then answer hits
+      for filters the page did not ask for. ``strategy`` and the age switch are
+      not criteria fields but ARE part of the request, so they are named here.
+    * ``api`` - the route, spelled once.
+
+    ``ticker``, ``expiration`` and ``sort`` are deliberately absent: they belong
+    to the single-ticker view and the route refuses them as unknown parameters.
+    """
+    return {
+        "api": "/api/v1/earnings-scan",
+        "strategies": [
+            {
+                "id": sid,
+                "label": STRATEGIES[sid]["label"],
+                "short": STRATEGIES[sid]["label"].split(" Spread")[0],
+            }
+            for sid in STRATEGY_IDS
+        ],
+        "fields": list(_CRITERIA_FIELDS) + ["ignore_quote_age", "strategy"],
+    }
+
+
 _IGNORED_PARAMS = ("ticker", "expiration", "ignore_quote_age", "sort", "option_type",
                    "strategy", "no_calendar")
 
@@ -1263,6 +1298,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             trend=_trend_display(ticker) if ticker else None,
             earnings=earnings_view,
             calendar=calendar,
+            # The day scan is the page's second action: what it may send and
+            # what its table is called come from one server-side table.
+            scan=scan_view_data(),
             feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit")
 
     return app
