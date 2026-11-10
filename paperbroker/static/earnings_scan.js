@@ -79,7 +79,11 @@
 
   var generation = 0;      // only the newest request may draw
   var timer = null;
-  var current = null;      // {day, params, body, at} - what the table shows
+  // Every edit of the form bumps this counter. It is what lets render() decide
+  // whether the answer it is about to show was computed from the filters the
+  // form shows NOW - or from the ones it showed when the request left.
+  var formVersion = 0;
+  var current = null;      // {day, params, body, at, sent, version}
 
   function n(value) { return typeof value === 'number' && isFinite(value) ? value : 0; }
 
@@ -135,7 +139,7 @@
     }
     block.classList.add('is-stale');
     el.stale.textContent = text || ('Filter geändert — die Ergebnisse von '
-      + (current ? clock(current.at) : '') + ' sind nicht mehr aktuell.');
+      + (current ? clock(current.sent || current.at) : '') + ' sind nicht mehr aktuell.');
     el.stale.hidden = false;
   }
 
@@ -170,6 +174,9 @@
     var gen = generation + 1;
     generation = gen;
     var params = collect();
+    // The version belongs to the params: both are read at the same moment, so
+    // a later edit is visible as a difference and not as a guess.
+    var version = formVersion;
     var url = API + '?day=' + encodeURIComponent(day)
       + (params.toString() ? '&' + params.toString() : '');
     var startedAt = Date.now();
@@ -201,7 +208,10 @@
         if (gen !== generation) return;   // a newer scan owns the panel
         stopTimer();
         el.progress.hidden = true;
-        current = { day: day, params: params, body: body, at: new Date() };
+        current = {
+          day: day, params: params, body: body, at: new Date(),
+          sent: new Date(startedAt), version: version
+        };
         render();
       })
       .catch(function (err) {
@@ -455,7 +465,9 @@
     el.coverage.hidden = false;
     el.controls.hidden = false;
     el.error.hidden = true;
-    setStale(false);
+    // Nur dann "aktuell": der Scan muss mit genau den Filtern gelaufen sein,
+    // die das Formular jetzt zeigt. Ein Edit waehrend des Laufs bleibt sichtbar.
+    setStale(current.version !== formVersion);
     var namen = activeSpecs().map(function (spec) { return spec.short; }).join(', ');
     el.state.textContent = 'Stand ' + clock(current.at) + ' · ' + entries.length
       + ' Zeilen · ' + namen;
@@ -471,7 +483,10 @@
   // Jede Aenderung an den Filtern macht die sichtbaren Zahlen alt - sie bleiben
   // stehen (samt ihren Links), sind aber als nicht mehr aktuell markiert.
   ['input', 'change'].forEach(function (name) {
-    form.addEventListener(name, function () { if (current) setStale(true); });
+    form.addEventListener(name, function () {
+      formVersion += 1;
+      if (current) setStale(true);
+    });
   });
 
   if (el.onlyHits) el.onlyHits.addEventListener('change', applyFilter);
