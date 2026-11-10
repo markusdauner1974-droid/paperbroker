@@ -185,6 +185,67 @@
     .cal-row:hover td{background:rgba(250,250,250,.04)}
     .cal-row a{font-weight:600;font-family:var(--font-mono);font-size:11px}
     .cal.collapsed .cal-note,.cal.collapsed .cal-filter,.cal.collapsed .cal-groups{display:none}
+    /* Der Tages-Scan ist eine Aktion des Tages, kein Seitenaufruf: der Knopf
+       sitzt am Tag, zu dem er gehoert. Ruhige Kante, Akzent nur beim Zeigen. */
+    .cal-scan{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
+      text-transform:uppercase;background:none;border:1px solid var(--edge);
+      color:var(--muted);cursor:pointer;padding:5px 10px;border-radius:0;margin-left:auto}
+    .cal-scan:hover:not(:disabled){color:var(--ink);border-color:var(--primary)}
+    .cal-scan:disabled{opacity:.4;cursor:not-allowed}
+
+    /* Earnings-Uebersicht: der gemeinsame Tages-Scan als Tabelle unter dem
+       Kalender. Dieselbe Sprache wie das uebrige Blatt - gepunktete Haarlinien,
+       Mono-Zahlen, keine Karten. Der Fortschrittsbalken ist UNBESTIMMT: die
+       Route antwortet einmal am Ende, eine erfundene Prozentzahl waere eine
+       Luege ueber den Fortschritt. */
+    [hidden]{display:none!important}
+    .escan{border:1px dotted var(--hair);border-radius:0;padding:16px 18px;
+      background:var(--panel);margin:0 0 22px}
+    .escan-head{display:flex;align-items:baseline;justify-content:space-between;
+      gap:4px 12px;flex-wrap:wrap;margin-bottom:8px}
+    .escan h2{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--faint);margin:0;font-weight:600}
+    .escan-meta{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
+      text-transform:uppercase;color:var(--muted)}
+    .escan-progress{display:flex;align-items:center;gap:10px;margin:10px 0 0}
+    .escan-progress span{font-family:var(--font-mono);font-size:10.5px;color:var(--muted)}
+    .escan-bar{position:relative;flex:1 1 120px;height:3px;background:var(--hair-soft);
+      overflow:hidden}
+    .escan-bar i{position:absolute;top:0;left:0;height:100%;width:34%;
+      background:var(--primary);animation:escan-sweep 1.3s linear infinite}
+    @keyframes escan-sweep{from{transform:translateX(-100%)}to{transform:translateX(294%)}}
+    .escan-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin:12px 0 0}
+    .escan-controls label{font-size:12px;color:var(--muted);display:inline-flex;
+      gap:6px;align-items:center}
+    .escan-stale{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.04em;
+      color:var(--warn);border:1px dotted rgba(217,164,65,.5);padding:4px 8px}
+    /* Veraltete Ergebnisse bleiben lesbar, treten aber zurueck: ein Klick auf
+       eine Trefferzahl oeffnet WEITERHIN den Scan mit den Filtern, die zu
+       diesen Zahlen gehoerten. */
+    .escan.is-stale #escan-table-wrap{opacity:.5}
+    .escan-table{width:100%;border-collapse:collapse;font-family:var(--font-mono);
+      font-size:10.5px;font-variant-numeric:tabular-nums}
+    .escan-table th,.escan-table td{text-align:right;padding:6px 6px;
+      border-bottom:1px dotted var(--hair-soft);white-space:nowrap}
+    .escan-table th:first-child,.escan-table td:first-child{text-align:left}
+    .escan-table th{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
+      color:var(--faint);border-bottom:1px dotted var(--hair);font-weight:600}
+    .escan-table td.name{font-family:var(--font-body);font-size:12px;color:var(--muted);
+      max-width:200px;overflow:hidden;text-overflow:ellipsis}
+    .escan-table a.hit{font-weight:700}
+    .escan-sub{display:block;font-family:var(--font-mono);font-size:9.5px;
+      color:var(--faint);letter-spacing:.04em}
+    .st-hits{color:var(--ok);font-weight:600}
+    .st-none{color:var(--muted)}
+    .st-stale{color:var(--warn);font-weight:600}
+    .st-warn{color:var(--warn)}
+    .st-failed{color:var(--primary);font-weight:600}
+    .st-blocked{color:var(--primary)}
+    .st-unchecked{color:var(--faint)}
+    .escan-legend{margin:10px 0 0}
+    .escan-legend b{font-weight:600;color:var(--muted)}
+    @media (prefers-reduced-motion:reduce){.escan-bar i{animation:none;transform:none;
+      width:100%;opacity:.35}}
 
     /* CB-EDIT: overflow container for the twelve-column spread table */
     .tbl{min-width:0;overflow-x:auto}
@@ -263,6 +324,12 @@
           <div class="cal-day-head">
             <h3>{{ g.label }} · {{ g.date_text or 'Datum unbekannt' }}</h3>
             {% if g.rows %}<p class="note">{{ g.counter }}{% if g.without_options %} · {{ g.without_options }} ohne gelistete Optionen ausgeblendet{% endif %}</p>{% endif %}
+            {# Ein Tag, den die Quelle nicht beantwortet hat, laesst sich nicht
+               scannen - der Knopf bleibt sichtbar, aber abgeschaltet, statt
+               eine Anfrage zu schicken, die nur 503 zurueckgeben kann. #}
+            {% if g.date %}
+            <button type="button" class="cal-scan" data-scan-day="{{ g.date }}"{% if g.unavailable %} disabled title="Dieser Tag ist bei der Quelle nicht abrufbar"{% endif %}>Earnings-Aktien scannen</button>
+            {% endif %}
           </div>
           {% if g.rows %}
           <div class="cal-scroll">
@@ -296,6 +363,57 @@
     <p class="note">Kalender nicht verfügbar – {{ calendar.note }}</p>
     {% endif %}
   </section>
+  {% endif %}
+
+  {% if calendar and calendar.show_groups %}
+  {# Der Tages-Scan: eine ausdrueckliche Aktion je Kalendertag, kein Seitenaufruf.
+     Er uebernimmt die Filter aus dem Formular links; die Namen der Felder kommen
+     vom Server (scan.fields), damit ein neuer Filter nicht still fehlt. Die
+     Tabelle zeigt je Aktie die Treffer der GEWAEHLTEN Strategien, den besten
+     Verfall, den max. Verlust des besten Treffers und den Datenzustand.
+     "nicht geprueft" ist dabei kein Treffer von null. #}
+  <section class="escan" id="earnings-scan" aria-labelledby="escan-title">
+    {# Die Konfiguration des Abschnitts steht als JSON-Datenblock, nicht in
+       Attributen: tojson maskiert <, > und ', aber keine Doppelten - in einem
+       Attribut wuerde die erste davon den Wert beenden. Der Datenblock haelt
+       Route, Feldnamen und Strategiekoepfe in EINER Aussage des Servers. #}
+    <script type="application/json" id="escan-config">{{ scan|tojson }}</script>
+    <div class="escan-head">
+      <h2 id="escan-title">Earnings-Übersicht</h2>
+      <span class="escan-meta" id="escan-state" aria-live="polite">Noch kein Scan gelaufen</span>
+    </div>
+    <p class="note">Scannt einen Kalendertag mit den links eingestellten Strategien und Filtern
+      (ein Kettenabruf je Aktie, Obergrenze 40 Aktien). „Nur Aktien mit Treffern“ blendet
+      Zeilen ohne Treffer aus, ohne sie zu löschen.</p>
+    <div class="escan-progress" id="escan-progress" hidden>
+      <span id="escan-progress-text">Scan läuft …</span>
+      <span class="escan-bar" aria-hidden="true"><i></i></span>
+    </div>
+    <p class="err" id="escan-error" role="alert" hidden></p>
+    <p class="note" id="escan-coverage" aria-live="polite" hidden></p>
+    <div class="escan-controls" id="escan-controls" hidden>
+      <label><input type="checkbox" id="escan-only-hits"> Nur Aktien mit Treffern</label>
+      <span class="escan-stale" id="escan-stale" role="status" hidden></span>
+    </div>
+    <p class="note" id="escan-empty" hidden></p>
+    <div class="tbl" id="escan-table-wrap" hidden>
+      <table class="escan-table" id="escan-table">
+        <thead id="escan-thead"></thead>
+        <tbody id="escan-tbody"></tbody>
+      </table>
+    </div>
+    <p class="note escan-legend">Zustände je Aktie: <b>Treffer</b> ·
+      <b>keine passenden Spreads</b> (Daten gelesen, nichts bestanden) ·
+      <b>Daten zu alt</b> · <b>Daten unvollständig</b> · <b>Abruffehler</b> ·
+      <b>nicht geprüft</b> (Budget oder Abbruch — keine Aussage über Treffer) ·
+      <b>Fenster verhindert/unklar</b> (der Earnings-Termin lässt keinen Einstieg zu).
+      Eine Trefferzahl anklicken öffnet den Einzelscan mit Aktie, Strategie, Verfall
+      und genau den Filtern, die zu dieser Zahl gehört haben.</p>
+  </section>
+  {# Das Verhalten des Abschnitts liegt in einer eigenen Datei: der Block traegt
+     Zustaende, Filter und Wettlauf-Schutz, nicht Text. defer haelt die
+     Reihenfolge zum Rest der Seite ein, ohne das Rendern zu blockieren. #}
+  <script src="{{ url_for('static', filename='earnings_scan.js') }}" defer></script>
   {% endif %}
   {% if feed_note %}<p class="note">{{ feed_note }}.</p>{% endif %}
 
