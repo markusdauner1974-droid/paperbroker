@@ -852,6 +852,44 @@ class TestTheRoute(unittest.TestCase):
         self.assertEqual(antwort.status_code, 503)
         self.assertEqual(antwort.get_json()["error"]["code"], "calendar_unavailable")
 
+    def test_a_blocked_source_is_named_in_the_503_instead_of_did_not_answer(self):
+        # The source answered 403 - so "did not answer" is a false sentence.
+        # The route's own code stays ``calendar_unavailable`` (nothing to scan),
+        # the upstream code and status travel beside it.
+        class _Blocked(FakeEarningsAdapter):
+            def get_calendar_days(self, days):
+                antwort = super().get_calendar_days(days)
+                for eintrag in antwort["days"].values():
+                    eintrag.update(
+                        state="unavailable", rows=[], payload_ok=False,
+                        live_query_failed=True,
+                        error={"code": "source_blocked", "http_status": 403,
+                               "message": "the source blocked this client with HTTP 403"},
+                    )
+                antwort["state"] = "unavailable"
+                return antwort
+
+        antwort = self._client(earnings=_Blocked(self._rows())).get(
+            f"/api/v1/earnings-scan?day={EXP_A}")
+        self.assertEqual(antwort.status_code, 503)
+        fehler = antwort.get_json()["error"]
+        self.assertEqual(fehler["code"], "calendar_unavailable")
+        self.assertEqual(fehler["source_code"], "source_blocked")
+        self.assertEqual(fehler["http_status"], 403)
+        self.assertIn("HTTP 403", fehler["message"])
+        self.assertIn("source_blocked", fehler["message"])
+        self.assertNotIn("did not answer", fehler["message"])
+
+    def test_a_day_without_an_error_keeps_the_old_sentence_and_no_extra_fields(self):
+        # Nothing to report about the source: the answer stays exactly as
+        # before, without invented upstream fields.
+        antwort = self._client(earnings=FakeEarningsAdapter(self._rows(), day_state="unavailable")).get(
+            f"/api/v1/earnings-scan?day={EXP_A}")
+        fehler = antwort.get_json()["error"]
+        self.assertEqual(fehler["code"], "calendar_unavailable")
+        self.assertNotIn("source_code", fehler)
+        self.assertNotIn("http_status", fehler)
+
     def test_without_a_source_the_scan_says_so(self):
         app = create_app(quote_adapter=FakeChainAdapter({}), now_fn=CLOCK)
         antwort = app.test_client().get(f"/api/v1/earnings-scan?day={EXP_A}")

@@ -5,10 +5,18 @@ clock drift. The last class pins that the existing option-chain API is not
 changed by the new routes.
 """
 
+import os
+import tempfile
 import unittest
 
 import arrow
 
+from paperbroker.adapters.earnings.NasdaqEarningsAdapter import (
+    DayCalendarStore,
+    EarningsCache,
+    NasdaqEarningsAdapter,
+    OptionableSymbolsStore,
+)
 from paperbroker.adapters.quotes.CBOEQuoteAdapter import CboeRequestError
 from paperbroker.earnings_calendar import (
     CONFIRMATION_ESTIMATED,
@@ -138,6 +146,49 @@ class TestEarningsRoute(unittest.TestCase):
         self.assertIsNone(koerper["earnings"]["next_earnings_date"])
         self.assertEqual(koerper["earnings"]["status"], STATUS_UNKNOWN)
         self.assertIn(FLAG_SOURCE_NOT_CONFIGURED, koerper["earnings"]["quality_flags"])
+
+
+class TestBlockedSourceRoute(unittest.TestCase):
+    """The deployed symptom end to end through the route: the source answers 403.
+
+    The adapter is the REAL one with a fake transport, so the JSON contract the
+    running service showed (``cache.state: miss``, HTTP 403) is exercised here;
+    only the socket is replaced.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+
+    def _client(self, status=403):
+        ordner = self._tmp.name
+        adapter = NasdaqEarningsAdapter(
+            transport=lambda url, headers, timeout: (status, b"Access Denied"),
+            now_fn=CLOCK,
+            cache=EarningsCache(os.path.join(ordner, "earnings.json")),
+            calendar_store=DayCalendarStore(os.path.join(ordner, "calendar.json")),
+            optionable_store=OptionableSymbolsStore(os.path.join(ordner, "optionable.json")),
+        )
+        return create_app(
+            quote_adapter=_ChainAdapter(), earnings_adapter=adapter, now_fn=CLOCK
+        ).test_client()
+
+    def test_a_403_is_named_as_a_block_not_as_a_generic_http_error(self):
+        antwort = self._client().get("/api/v1/earnings?ticker=AAPL")
+        self.assertEqual(antwort.status_code, 200)
+        koerper = antwort.get_json()
+        self.assertEqual(koerper["schema_version"], "1.0")
+        self.assertEqual(koerper["earnings"]["status"], STATUS_UNAVAILABLE)
+        self.assertEqual(koerper["earnings"]["quality_flags"], ["live_query_failed"])
+        self.assertIsNone(koerper["earnings"]["next_earnings_date"])
+        self.assertEqual(koerper["cache"]["state"], "miss")
+        self.assertEqual(koerper["cache"]["error"]["code"], "source_blocked")
+        self.assertEqual(koerper["cache"]["error"]["http_status"], 403)
+
+    def test_a_429_is_named_as_a_throttle(self):
+        koerper = self._client(status=429).get("/api/v1/earnings?ticker=AAPL").get_json()
+        self.assertEqual(koerper["cache"]["error"]["code"], "source_throttled")
+        self.assertEqual(koerper["cache"]["error"]["http_status"], 429)
 
 
 class TestEarningsWindowRoute(unittest.TestCase):

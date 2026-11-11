@@ -43,12 +43,16 @@ class _FakeCalendar:
     _RANG = {"live": 0, "stale": 1, "unavailable": 2}
 
     def __init__(self, rows_by_day=None, state="live", boom=False, state_by_day=None, omit=(),
-                 option_symbols=None, option_state="unavailable", option_boom=False):
+                 option_symbols=None, option_state="unavailable", option_boom=False,
+                 error_by_day=None):
         self.rows_by_day = rows_by_day or {}
         self.state = state
         self.boom = boom
         self.state_by_day = dict(state_by_day or {})
         self.omit = tuple(omit)
+        # The upstream failure per day, as the real adapter records it: a 403 is
+        # an ANSWER and has to reach the page, not just the log.
+        self.error_by_day = dict(error_by_day or {})
         # Slice 10: the optionable list is a SECOND answer of the same adapter.
         # Default "unavailable" keeps the old tests unfiltered on purpose.
         self.option_symbols = option_symbols
@@ -76,7 +80,7 @@ class _FakeCalendar:
             if tag in self.omit:
                 continue
             zustand = self.state_by_day.get(tag, self.state)
-            geliefert[tag] = {
+            eintrag = {
                 "date": tag,
                 "rows": list(self.rows_by_day.get(tag, [])),
                 "state": zustand,
@@ -84,6 +88,10 @@ class _FakeCalendar:
                 "payload_ok": zustand in ("live", "stale"),
                 "skipped": 0,
             }
+            if tag in self.error_by_day and zustand == "unavailable":
+                eintrag["error"] = dict(self.error_by_day[tag])
+                eintrag["live_query_failed"] = True
+            geliefert[tag] = eintrag
         gesamt = "unavailable"
         if geliefert:
             gesamt = max((e["state"] for e in geliefert.values()),
@@ -327,6 +335,37 @@ class TestCalendarDayOutages(unittest.TestCase):
         # No day was answered, so no timestamp may suggest a fresh answer: the
         # source line runs straight from the source name into the outage note.
         self.assertIn("Quelle: Nasdaq · Quelle antwortet nicht</p>", html)
+
+    def test_a_blocked_source_names_the_reason_instead_of_going_silent(self):
+        # Measured symptom: the start page said only "Quelle antwortet nicht"
+        # while the source had answered 403 - an event, not a silence.
+        block = {"code": "source_blocked", "http_status": 403,
+                 "message": "the source blocked this client with HTTP 403"}
+        kalender = _FakeCalendar({}, state="unavailable",
+                                 error_by_day={"2026-11-07": block, "2026-11-08": block,
+                                               "2026-11-09": block})
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertIn("Quelle antwortet nicht", html)
+        self.assertIn("Grund: Quelle blockt die Anfrage (HTTP 403)", html)
+        self.assertEqual(
+            html.count("Tag nicht abrufbar · Quelle blockt die Anfrage (HTTP 403)"), 3)
+        # Nothing to scan stays nothing to scan: the button keeps its disabled
+        # state and its own title.
+        self.assertEqual(html.count('data-scan-day="2026-11-08" disabled'), 1)
+
+    def test_one_blocked_day_names_its_reason_once_next_to_the_partial_sentence(self):
+        block = {"code": "source_blocked", "http_status": 403,
+                 "message": "the source blocked this client with HTTP 403"}
+        kalender = _FakeCalendar({"2026-11-07": [_row("AAA")], "2026-11-09": [_row("CCC")]},
+                                 state="live", state_by_day={"2026-11-08": "unavailable"},
+                                 error_by_day={"2026-11-08": block})
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertIn("ein Tag konnte nicht abgerufen werden", html)
+        self.assertIn("Grund: Quelle blockt die Anfrage (HTTP 403)", html)
+        # Header sentence plus the one day's own line - never once per day twice.
+        self.assertEqual(html.count("Quelle blockt die Anfrage"), 2)
 
     def test_a_day_the_answer_omits_is_an_outage_not_an_empty_day(self):
         # The adapter's answer simply has no entry for yesterday: absence of an

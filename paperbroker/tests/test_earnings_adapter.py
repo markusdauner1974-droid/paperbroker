@@ -11,14 +11,20 @@ and a broken cache file must cost a query, not the page.
 import json
 import os
 import tempfile
+import threading
 import unittest
 from datetime import UTC, datetime, timedelta
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from paperbroker.adapters.earnings.NasdaqEarningsAdapter import (
     _HEADERS,
+    DayCalendarStore,
     EarningsCache,
     NasdaqEarningsAdapter,
     NullEarningsAdapter,
+    OptionableSymbolsStore,
+    requests_transport,
+    urllib_transport,
 )
 from paperbroker.earnings_calendar import (
     FLAG_CACHE_USED,
@@ -416,6 +422,150 @@ class TestRequestHeaders(unittest.TestCase):
         self.assertEqual(_HEADERS["User-Agent"], "Mozilla/5.0")
         self.assertEqual(_HEADERS["Accept"], "application/json")
         self.assertEqual(_HEADERS["Referer"], "https://www.nasdaq.com/")
+
+
+class _HeaderRecorder(BaseHTTPRequestHandler):
+    """Answers one request and keeps the headers it really received."""
+
+    received = {}
+
+    def do_GET(self):                                   # noqa: N802 - http.server API
+        type(self).received = dict(self.headers)
+        body = b'{"data": {"reportText": "ok"}}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):               # noqa: A002 - http.server's signature
+        pass
+
+
+class TestDefaultTransport(unittest.TestCase):
+    """The Nasdaq path must go through ``requests`` - the stdlib stack gets 403.
+
+    The header test above pins the constant; these tests pin that the constant
+    is really SENT and that the default transport is the requests one. A
+    regression to ``urllib`` would keep every other test green (the fake
+    transport is injected everywhere) while the deployed source answers 403.
+    """
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), _HeaderRecorder)
+        self.addCleanup(self._server.server_close)
+        threading.Thread(target=self._server.serve_forever, daemon=True).start()
+        self.addCleanup(self._server.shutdown)
+        port = self._server.server_address[1]
+        self._url = f"http://127.0.0.1:{port}/api/analyst/NVDA/earnings-date?assetclass=stocks"
+        _HeaderRecorder.received = {}
+
+    def _adapter(self, **kwargs):
+        ordner = self._tmp.name
+        kwargs.setdefault("cache", EarningsCache(os.path.join(ordner, "earnings.json")))
+        kwargs.setdefault("calendar_store", DayCalendarStore(os.path.join(ordner, "calendar.json")))
+        kwargs.setdefault("optionable_store",
+                          OptionableSymbolsStore(os.path.join(ordner, "optionable.json")))
+        return NasdaqEarningsAdapter(now_fn=_Clock().now, **kwargs)
+
+    def test_the_default_transport_sends_the_documented_headers(self):
+        status, body = requests_transport(self._url, dict(_HEADERS), 5.0)
+        self.assertEqual(status, 200)
+        self.assertEqual(json.loads(body), {"data": {"reportText": "ok"}})
+        empfangen = {name.lower(): wert for name, wert in _HeaderRecorder.received.items()}
+        for name in ("user-agent", "accept", "accept-language", "referer"):
+            with self.subTest(header=name):
+                self.assertIn(name, empfangen)
+                self.assertTrue(empfangen[name].strip())
+        self.assertEqual(empfangen["accept"], "application/json")
+        self.assertEqual(empfangen["referer"], "https://www.nasdaq.com/")
+
+    def test_the_default_transport_is_the_requests_one(self):
+        self.assertIs(self._adapter()._transport, requests_transport)
+
+    def test_the_csv_path_keeps_urllib_and_still_follows_an_injected_transport(self):
+        # The CBOE download is a different host and was never blocked: it keeps
+        # the stdlib transport. An injected transport still serves BOTH paths -
+        # that is how every offline test in this repo drives the adapter.
+        self.assertIs(self._adapter()._text_transport, urllib_transport)
+        eigen = lambda url, headers, timeout: (200, b"")   # noqa: E731 - identity only
+        self.assertIs(self._adapter(transport=eigen)._text_transport, eigen)
+
+
+class TestBlockedSource(_Basis):
+    """A 403/429 is the source answering - not a silent source.
+
+    The deployed symptom was ``code: http_error`` for a systematic 403 and a
+    start page that only said "does not answer". Both are named here.
+    """
+
+    def test_a_403_is_a_blocked_source_and_not_a_generic_http_error(self):
+        body = NasdaqEarningsAdapter(
+            transport=_Source(status=403), now_fn=self.clock.now,
+            cache=EarningsCache(self.cache_path),
+        ).get_earnings("AAPL")
+        self.assertEqual(body["earnings"]["status"], STATUS_UNAVAILABLE)
+        self.assertIn(FLAG_LIVE_FAILED, body["earnings"]["quality_flags"])
+        self.assertEqual(body["cache"]["state"], "miss")
+        self.assertEqual(body["cache"]["error"]["code"], "source_blocked")
+        self.assertEqual(body["cache"]["error"]["http_status"], 403)
+        self.assertIn("403", body["cache"]["error"]["message"])
+
+    def test_a_429_is_a_throttled_source_and_not_a_generic_http_error(self):
+        body = NasdaqEarningsAdapter(
+            transport=_Source(status=429), now_fn=self.clock.now,
+            cache=EarningsCache(self.cache_path),
+        ).get_earnings("AAPL")
+        self.assertEqual(body["cache"]["error"]["code"], "source_throttled")
+        self.assertEqual(body["cache"]["error"]["http_status"], 429)
+        self.assertIn("429", body["cache"]["error"]["message"])
+
+    def test_any_other_status_stays_a_generic_http_error(self):
+        # The two named codes are an exception list, not a replacement: a 500
+        # is still "some HTTP error" and keeps its old code.
+        body = NasdaqEarningsAdapter(
+            transport=_Source(status=500), now_fn=self.clock.now,
+            cache=EarningsCache(self.cache_path),
+        ).get_earnings("AAPL")
+        self.assertEqual(body["cache"]["error"]["code"], "http_error")
+        self.assertEqual(body["cache"]["error"]["http_status"], 500)
+
+    def test_a_stored_proof_survives_a_403(self):
+        adapter = self._adapter()
+        erst = adapter.get_earnings("AAPL")
+        self.assertEqual(erst["cache"]["state"], "live")
+        self.assertEqual(erst["earnings"]["next_earnings_date"], "2026-11-02")
+
+        self.clock.advance(hours=7)          # past the 6 h TTL, inside the 48 h window
+        self.source.status = 403
+        body = adapter.get_earnings("AAPL")
+
+        # The proof is served, but never as a live check: both flags say why.
+        self.assertEqual(body["cache"]["state"], "stale_fallback")
+        self.assertIn(FLAG_CACHE_USED, body["earnings"]["quality_flags"])
+        self.assertIn(FLAG_LIVE_FAILED, body["earnings"]["quality_flags"])
+        self.assertEqual(body["earnings"]["next_earnings_date"], "2026-11-02")
+        # A failed attempt is not a check: the stamp of the last REAL check stays.
+        self.assertEqual(body["earnings"]["source_checked_at_utc"], "2026-10-24T06:00:00Z")
+        self.assertEqual(body["cache"]["stored_at_utc"], "2026-10-24T06:00:00Z")
+        self.assertEqual(body["cache"]["age_seconds"], 7 * 3600)
+        self.assertEqual(body["cache"]["error"]["code"], "source_blocked")
+        self.assertEqual(body["cache"]["error"]["http_status"], 403)
+        # Unchanged freshness rule: a 7 h old proof may still authorise (48 h).
+        # Exactly that is why the two flags above have to be read.
+        self.assertEqual(body["earnings"]["status"], STATUS_FRESH)
+
+    def test_a_403_after_the_freshness_limit_is_stale(self):
+        adapter = self._adapter()
+        adapter.get_earnings("AAPL")
+        self.clock.advance(hours=60)         # past 48 h: the proof may not authorise
+        self.source.status = 403
+        body = adapter.get_earnings("AAPL")
+        self.assertEqual(body["cache"]["state"], "stale_fallback")
+        self.assertEqual(body["earnings"]["status"], STATUS_STALE)
+        self.assertEqual(body["cache"]["error"]["code"], "source_blocked")
 
 
 class TestNullAdapter(unittest.TestCase):
