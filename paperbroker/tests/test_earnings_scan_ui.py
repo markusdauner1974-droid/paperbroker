@@ -395,3 +395,51 @@ class TestThePairSearchInTheMultiTickerScan(unittest.TestCase):
         body = self._scan(weit)
         self.assertEqual("within_width", body["pair_search"]["mode"])
         self.assertEqual("within_width", body["criteria"]["pair_mode"])
+
+
+class TestTheScanReportsACappedSearch(unittest.TestCase):
+    """Kody finding (PR #78): the scan swallowed the coverage.
+
+    The scan loops over many expiries. A section that hit MAX_PAIRS_PER_SECTION
+    used to leave no trace in the answer, so a cut search looked like a complete
+    one - on the surface with the most sections of all.
+    """
+
+    def _rows(self):
+        return [calendar_row("BIG", 3_000_000)]
+
+    def _chain(self):
+        from paperbroker.tests.test_earnings_scan import quote
+
+        ymd = EXP_A[2:4] + EXP_A[5:7] + EXP_A[8:10]
+        # 320 strikes: enough that a huge width exceeds the ceiling
+        return {"BIG": [quote(f"BIG{ymd}C{int((100.0 + i) * 1000):08d}", 2.40, 2.50, oi=4000)
+                        for i in range(320)]}
+
+    def test_a_cut_section_is_named_in_the_answer(self):
+        from unittest import mock
+
+        from paperbroker import screener as screener_mod
+
+        grenze = 500          # a small ceiling keeps the test fast
+        criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                    pair_mode="within_width",
+                                    pair_max_width=100_000.0)
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", grenze):
+            body = run_scan(self._chain(), self._rows(), criteria=criteria)
+        cov = body["pair_search"]["coverage"]
+        self.assertTrue(cov["capped"])
+        self.assertFalse(cov["possible_exact"])
+        self.assertEqual(grenze, cov["limit"])
+        # several sections per (title, expiry, strategy) - the cut ones are counted
+        self.assertGreaterEqual(cov["capped_sections"], 1)
+        self.assertLessEqual(cov["capped_sections"], cov["sections"])
+        self.assertGreaterEqual(cov["enumerated"], cov["capped_sections"] * grenze)
+
+    def test_a_complete_search_says_nothing_about_a_cap(self):
+        criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                    pair_mode="within_width", pair_max_width=3.0)
+        cov = run_scan(self._chain(), self._rows(), criteria=criteria)["pair_search"]["coverage"]
+        self.assertFalse(cov["capped"])
+        self.assertTrue(cov["possible_exact"])
+        self.assertNotIn("capped_sections", cov)

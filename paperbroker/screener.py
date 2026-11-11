@@ -56,11 +56,12 @@ PAIR_SEARCH_LABELS = {
 }
 
 #: Hard ceiling for the pairs of ONE section (one underlying, one expiry). The
-#: enumeration is bounded, never silently: whatever the ceiling cuts is reported
-#: as ``coverage.capped`` with the real numbers. 50 000 is far above any real
-#: chain (measured: 4 428 strikes in one expiry at 1 $ steps inside 40 $ give
-#: ~170 000 theoretical pairs, a real CBOE chain gives a few thousand) and keeps
-#: the worst case around 10 ms.
+#: enumeration is bounded in TIME AND MEMORY, never silently: the limit is
+#: enforced inside the pairing loop, so a user-chosen width of 100 000 $ on a
+#: long chain cannot allocate n^2/2 tuples first (Kody finding on PR #78), and
+#: whatever the ceiling cuts is reported as ``coverage.capped`` with the real
+#: numbers. 50 000 is far above any real chain (a real CBOE chain gives a few
+#: thousand pairs at 25 $); measured cost at the ceiling: ~100 ms.
 MAX_PAIRS_PER_SECTION = 50_000
 
 
@@ -82,8 +83,20 @@ def resolve_pair_mode(criteria):
     mode = getattr(criteria, "pair_mode", None)
     breite = getattr(criteria, "pair_max_width", None)
     if mode is None:
-        return (PAIR_SEARCH_WITHIN_WIDTH if breite is not None
-                else PAIR_SEARCH_ADJACENT), None
+        if breite is None:
+            return PAIR_SEARCH_ADJACENT, None
+        # The DERIVED path needs the same guard: without it validate() accepted
+        # pair_max_width=0, form_vertical_pairs raised inside vertical_spreads
+        # and the API answered 500 instead of 400 (Kody finding on PR #78,
+        # measured: "ValueError: pair search 'within_width' needs a positive
+        # max_width" out of /api/screen?pair_max_width=0).
+        if breite == 0:
+            # a NEGATIVE width is already refused by its own rule, so only the
+            # zero case is named here - one reason per problem, no double text
+            return None, ("pair_max_width: eine positive Breite erwartet "
+                          f"(ist: {breite!r}). Ohne Modus bedeutet eine Breite "
+                          "'alle Kombinationen bis hierher' - 0 ist keine Suche.")
+        return PAIR_SEARCH_WITHIN_WIDTH, None
     if mode not in PAIR_SEARCH_MODES:
         return None, (f"pair_mode: einer von {', '.join(PAIR_SEARCH_MODES)} "
                       f"erwartet (ist: '{mode}').")
@@ -1114,8 +1127,13 @@ def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None,
     (underlying, expiration, option_type), strikes ascending inside a group,
     and inside the wide mode by width (smallest first), then lower strike.
     Nothing is sorted afterwards, so the order is reproducible without any
-    scoring rule - and a truncated search keeps the NARROWEST pairs, which are
-    the ones a vertical spread is about.
+    scoring rule.
+
+    A search that hits the ceiling is CUT, not filtered: the pairs are collected
+    in enumeration order (lower strike, then upper strike) until the limit and
+    the rest is not examined - so the kept pairs are the first N of that order,
+    not necessarily the N narrowest. ``coverage.capped`` says that the search was
+    incomplete; the order of what was kept stays deterministic.
     """
     strategy, _code, error = resolve_strategy(strategy, option_type)
     if error:
@@ -1164,26 +1182,43 @@ def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None,
             neu = list(zip(legs, legs[1:], strict=False))
             meldung["possible"] += len(neu)
         else:
+            # The ceiling is enforced INSIDE the loop, not after it. Building the
+            # full list first would allocate n^2/2 tuples for a user-chosen width
+            # (Kody finding on PR #78: pair_max_width=100000 on a large chain) -
+            # the bound has to cost memory and time, not just output length.
             neu = []
+            rest = MAX_PAIRS_PER_SECTION - len(pairs)
+            gekappt_hier = False
             for i, lower in enumerate(legs):
                 for upper in legs[i + 1:]:
                     breite = float(upper.asset.strike) - float(lower.asset.strike)
                     if breite > breite_max:
                         break
+                    if len(neu) >= rest:
+                        gekappt_hier = True
+                        break
                     neu.append((lower, upper))
+                if gekappt_hier:
+                    break
+            if gekappt_hier:
+                meldung["capped"] = True
             neu.sort(key=lambda lager: (float(lager[1].asset.strike)
                                         - float(lager[0].asset.strike),
                                         float(lager[0].asset.strike)))
             meldung["possible"] += len(neu)
         rest = MAX_PAIRS_PER_SECTION - len(pairs)
         if len(neu) > rest:
-            # the ceiling bites: take what fits, SAY that it was cut
+            # only reachable for the adjacent branch: the wide one stops above
             meldung["capped"] = True
             neu = neu[:max(0, rest)]
         pairs.extend(_paar(lower, upper) for lower, upper in neu)
         if meldung["capped"]:
             break
     meldung["enumerated"] = len(pairs)
+    # A capped search stops COUNTING as well as collecting, so `possible` is a
+    # lower bound from then on. Saying "N von N" while the search was cut would
+    # be the misleading sum this project refuses to print.
+    meldung["possible_exact"] = not meldung["capped"]
     if coverage is not None:
         coverage.update(meldung)
     return pairs

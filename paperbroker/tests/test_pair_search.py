@@ -129,6 +129,24 @@ class TestHowTheModeIsDecided(unittest.TestCase):
             pair_mode=PAIR_SEARCH_ADJACENT, pair_max_width=25.0))
         self.assertEqual((PAIR_SEARCH_ADJACENT, None), (mode, error))
 
+    def test_a_zero_width_without_a_mode_is_a_400_not_a_500(self):
+        """Kody finding (PR #78): the DERIVED path had no positive-width guard.
+
+        Measured before the fix: /api/screen?pair_max_width=0 raised
+        "ValueError: pair search 'within_width' needs a positive max_width" out
+        of vertical_spreads - a 500 for a value the form itself offers.
+        """
+        # zero: the derived path names it ("0 ist keine Suche")
+        with self.assertRaises(ValueError) as ctx:
+            ScreenerCriteria(pair_max_width=0).validate()
+        self.assertIn("pair_max_width", str(ctx.exception))
+        self.assertIn("positive Breite", str(ctx.exception))
+        # negative: the existing rule already refuses it - ONE reason, not two
+        with self.assertRaises(ValueError) as ctx:
+            ScreenerCriteria(pair_max_width=-5.0).validate()
+        self.assertIn("muss ≥ 0 sein", str(ctx.exception))
+        self.assertNotIn("positive Breite", str(ctx.exception))
+
     def test_the_wide_mode_requires_a_positive_width(self):
         """A width of 0 used to pair nothing and say nothing - measured."""
         for breite in (None, 0, -5.0):
@@ -223,27 +241,47 @@ class TestTheBoundedSearch(unittest.TestCase):
         self.assertEqual(PAIR_SEARCH_WITHIN_WIDTH, meldung["mode"])
         self.assertFalse(meldung["capped"])
         self.assertEqual(meldung["possible"], meldung["enumerated"])
+        self.assertTrue(meldung["possible_exact"])
 
-    def test_the_cap_is_named_and_keeps_the_narrowest_pairs(self):
-        # 320 strikes at 1 $ steps, width 330 -> ~51 000 pairs > the ceiling
-        kette = self._wide_chain(320)
+    def test_the_cap_is_named_and_the_work_stays_bounded(self):
+        """Kody finding (PR #78): the ceiling must bound WORK, not only output.
+
+        Before the fix the whole n^2/2 list was allocated and then trimmed, so a
+        user-chosen width of 100 000 $ on a long chain cost hundreds of megabytes
+        before anything was reported. Measured here: the ceiling is enforced
+        inside the loop, the answer says `capped`, and `possible` is honestly a
+        LOWER bound from then on (possible_exact: False).
+        """
+        from unittest import mock
+
+        from paperbroker import screener as screener_mod
+
+        kette = self._wide_chain(320)          # 320 strikes -> 51 040 possible pairs
+        grenze = 500                           # a small ceiling keeps the test fast
         meldung = {}
-        paare = form_vertical_pairs(kette, strategy=BULL_CALL_DEBIT,
-                                    mode=PAIR_SEARCH_WITHIN_WIDTH, max_width=330.0,
-                                    coverage=meldung)
+        start = time.perf_counter()
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", grenze):
+            paare = form_vertical_pairs(kette, strategy=BULL_CALL_DEBIT,
+                                        mode=PAIR_SEARCH_WITHIN_WIDTH,
+                                        max_width=100_000.0,   # far beyond the chain
+                                        coverage=meldung)
+        dauer = time.perf_counter() - start
         self.assertTrue(meldung["capped"])
-        self.assertEqual(MAX_PAIRS_PER_SECTION, len(paare))
-        self.assertEqual(MAX_PAIRS_PER_SECTION, meldung["enumerated"])
-        self.assertGreater(meldung["possible"], MAX_PAIRS_PER_SECTION)
-        # deterministic truncation: the narrowest widths survive, and the very
-        # widest possible pair is NOT in the list
-        breiten = [p.strike_width for p in paare]
-        self.assertEqual(min(breiten), 1.0)
-        self.assertLess(max(breiten), 330.0)
-        # ... and the same input produces the same list twice
-        zweite = form_vertical_pairs(kette, strategy=BULL_CALL_DEBIT,
-                                     mode=PAIR_SEARCH_WITHIN_WIDTH,
-                                     max_width=330.0)
+        self.assertEqual(grenze, len(paare))
+        self.assertEqual(grenze, meldung["enumerated"])
+        self.assertEqual(grenze, meldung["possible"])
+        # the count is no longer exact - and it says so instead of "N von N"
+        self.assertFalse(meldung["possible_exact"])
+        # bounded time: without the in-loop ceiling this would enumerate 51 040
+        # pairs; the point is the bound, not a benchmark number
+        self.assertLess(dauer, 1.0, f"capped search took {dauer:.3f}s")
+        # deterministic truncation: enumeration order (lower strike, then upper),
+        # the first pair is the narrowest possible one
+        self.assertEqual(1.0, paare[0].strike_width)
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", grenze):
+            zweite = form_vertical_pairs(kette, strategy=BULL_CALL_DEBIT,
+                                         mode=PAIR_SEARCH_WITHIN_WIDTH,
+                                         max_width=100_000.0)
         self.assertEqual([p.symbol for p in paare], [p.symbol for p in zweite])
 
 

@@ -308,20 +308,30 @@ GET /api/screen?ticker=AAPL&expiration=2026-11-18
 GET /api/screen?ticker=AAPL&expiration=2026-11-18&pair_mode=within_width&pair_max_width=25
 ```
 
-The search is bounded and never silently: `MAX_PAIRS_PER_SECTION` (50 000 pairs
-of one expiry) caps the enumeration, and the answer reports the search that
-really happened:
+The search is bounded in **time and memory**, and never silently:
+`MAX_PAIRS_PER_SECTION` (50 000 pairs of one expiry) is enforced *inside* the
+pairing loop, so a user-chosen width of 100 000 $ on a long chain cannot allocate
+n²/2 tuples first. The answer reports the search that really happened:
 
 ```json
 "pair_search": {"mode": "within_width", "label": "Alle Kombinationen bis maximale Breite",
                 "max_width": 25.0, "width_ignored": false,
-                "coverage": {"possible": 380, "enumerated": 380, "capped": false, "limit": 50000}}
+                "coverage": {"possible": 380, "enumerated": 380, "possible_exact": true,
+                             "capped": false, "limit": 50000}}
 ```
 
-Truncation keeps the **narrowest** pairs (deterministic: width, then lower
-strike) and sets `capped: true`; the page then says the search was not complete.
+A search that hits the ceiling is **cut, not filtered**: pairs are collected in
+enumeration order (lower strike, then upper) until the limit, the rest is not
+examined, and the count stops too — so `capped: true` comes with
+`possible_exact: false`, and the page says "gekappt bei N; die Suche ist damit
+NICHT vollständig" instead of printing a reassuring "N von N".
+
 Measured on local data (4 expiries, 400 strikes each, 25 $ width): 38 700 pairs in
-87 ms; the cap case (320 strikes, all widths) takes 99 ms.
+87 ms; adjacent mode 2.9 ms; at the ceiling ~100 ms regardless of the width asked
+for.
+
+`pair_max_width=0` is refused with `400` (a width of zero is no search); a
+negative width is refused by its own rule.
 
 ## Why something was excluded (per unit, never summed)
 

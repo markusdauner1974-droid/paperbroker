@@ -611,7 +611,7 @@
        Spread uebrig bleibt, muss der Leser sehen, welche Suche lief und wie viele
        Kombinationen sie geprueft hat. #}
     {% if pair_search %}
-      <p class="note" id="pair-search">Suchart: <strong>{{ pair_search.label }}</strong>{% if pair_search.max_width %} · maximale Breite {{ pair_search.max_width }} $ · nur Kombinationen innerhalb dieser Breite{% endif %}{% if pair_search.coverage and pair_search.coverage.possible %} · geprüft {{ pair_search.coverage.enumerated }} von {{ pair_search.coverage.possible }} Kombinationen{% if pair_search.coverage.capped %} — <strong>gekappt</strong> bei {{ pair_search.coverage.limit }}; die Suche ist damit NICHT vollständig{% endif %}{% endif %}{% if pair_search.width_ignored %} · {{ pair_search.note }}{% endif %}</p>
+      <p class="note" id="pair-search">Suchart: <strong>{{ pair_search.label }}</strong>{% if pair_search.max_width %} · maximale Breite {{ pair_search.max_width }} $ · nur Kombinationen innerhalb dieser Breite{% endif %}{% if pair_search.coverage and pair_search.coverage.enumerated %} · geprüft {{ pair_search.coverage.enumerated }}{% if pair_search.coverage.possible_exact %} von {{ pair_search.coverage.possible }}{% else %} (mindestens so viele, die Suche wurde gekappt){% endif %} Kombinationen{% if pair_search.coverage.capped %} — <strong>gekappt</strong> bei {{ pair_search.coverage.limit }}; die Suche ist damit NICHT vollständig{% endif %}{% endif %}{% if pair_search.width_ignored %} · {{ pair_search.note }}{% endif %}</p>
     {% endif %}
     {% if verticals %}
       <h2>{{ strategy_label or 'Spreads' }}</h2>
