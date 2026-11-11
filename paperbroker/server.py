@@ -327,6 +327,26 @@ def _option_note(applied, hidden, stale):
     return satz
 
 
+def _calendar_failure(error, day):
+    """``(source_code, http_status, message)`` for a day the calendar did not deliver.
+
+    The scan route answers 503 in both cases, but the sentence may not be the
+    same: "did not answer" is false once the source has answered 403 or 429.
+    The upstream code and status travel in the message and in the error object,
+    so a caller never has to guess which of the two happened.
+    """
+    error = error if isinstance(error, dict) else {}
+    source_code = str(error.get("code") or "").strip() or None
+    status = error.get("http_status")
+    if status:
+        message = f"the earnings calendar answered HTTP {status} for {day} ({source_code})"
+    elif source_code:
+        message = f"the earnings calendar did not answer for {day} ({source_code})"
+    else:
+        message = f"the earnings calendar did not answer for {day}"
+    return source_code, status, message
+
+
 def _earnings_source_from_env():
     """Which earnings source create_app wires when none is injected.
 
@@ -687,11 +707,19 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # expirations this chain really lists and the deterministic decision. #
     # Neither route places an order, and neither invents a date.          #
     # ------------------------------------------------------------------ #
-    def _earnings_error(status, code, message):
+    def _earnings_error(status, code, message, *, source_code=None, source_status=None):
         from paperbroker.earnings_calendar import SCHEMA_VERSION as _EARNINGS_SCHEMA
 
+        fehler = {"code": code, "message": message}
+        # The upstream code and status stay separate fields: the route's own
+        # code says WHAT this endpoint could not do, these two say what the
+        # source did. Absent when there is nothing to report.
+        if source_code:
+            fehler["source_code"] = source_code
+        if source_status is not None:
+            fehler["http_status"] = source_status
         return (
-            jsonify(schema_version=_EARNINGS_SCHEMA, error={"code": code, "message": message}),
+            jsonify(schema_version=_EARNINGS_SCHEMA, error=fehler),
             status,
         )
 
@@ -936,9 +964,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             )
         if not isinstance(tag, dict):
             # No entry for the requested day is no answer - not an empty day.
+            quell_code, quell_status, message = _calendar_failure(
+                antwort.get("error") if isinstance(antwort, dict) else None, day
+            )
             return _earnings_error(
-                503, "calendar_unavailable",
-                f"the earnings calendar did not answer for {day}",
+                503, "calendar_unavailable", message,
+                source_code=quell_code, source_status=quell_status,
             )
         zustand = str(tag.get("state") or gesamt or "unavailable")
         zeilen = tag.get("rows") or []
@@ -948,9 +979,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 "no earnings source is configured - there is nothing to scan",
             )
         if zustand == "unavailable" or not isinstance(zeilen, list):
+            # The day failed. The message must name what the source DID: a 403
+            # or 429 is an answer, and "did not answer" would hide the reason.
+            quell_code, quell_status, message = _calendar_failure(tag.get("error"), day)
             return _earnings_error(
-                503, "calendar_unavailable",
-                f"the earnings calendar did not answer for {day}",
+                503, "calendar_unavailable", message,
+                source_code=quell_code, source_status=quell_status,
             )
 
         try:
