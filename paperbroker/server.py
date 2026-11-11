@@ -26,7 +26,7 @@ from urllib.parse import urlencode
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
 
-from . import quote_age
+from . import exclusions, quote_age
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
@@ -56,18 +56,22 @@ from .earnings_scan import (
     scan_day,
 )
 from .eva_quality import assess_source_quality, snapshot_identity
+from .exclusions import LEVEL_CONTRACT, LEVEL_EXPIRY, LEVEL_PAIR, LEVEL_SYMBOL
 from .PaperBroker import PaperBroker
 from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
 from .screener import (
     DEFAULT_STRATEGY,
     FUTURE_TOLERANCE_S,
     LEGACY_OPTION_TYPES,
+    PAIR_SEARCH_LABELS,
+    PAIR_SEARCH_MODES,
     STRATEGIES,
     STRATEGY_IDS,
     OptionScreener,
     ScreenerCriteria,
     TrendSignal,
     _trend_label,
+    pair_search_report,
     resolve_strategy,
     screen,
     strategy_option_type,
@@ -116,6 +120,9 @@ _CRITERIA_FLOAT_FIELDS = ("max_spread_pct", "max_spread_abs", "pair_max_width", 
                           "weight_spread", "weight_oi", "weight_iv", "fees", "budget")
 _CRITERIA_BOOL_FIELDS = ("require_oi", "require_volume")
 _CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low"),
+                           # how the strike pairs are searched: adjacent strikes
+                           # or every combination inside pair_max_width
+                           "pair_mode": PAIR_SEARCH_MODES,
                            # the age MODE is a choice, not a switch: "fresh" is
                            # the default and keeps every protection, the second
                            # value admits older data for a provisional run
@@ -466,6 +473,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                            # no chain was read: the block is present and empty,
                            # so a consumer never needs a key check
                            data_state=_data_state(None, criteria, now_fn),
+                           # the chosen search is a property of the request, not
+                           # of a chain - so it is known even at the picker stage
+                           pair_search=_pair_search_block(criteria),
+                           exclusions=[],
                            # no snapshot was screened, so there is nothing to
                            # certify - the key is present but empty
                            eva_quality=None)
@@ -483,9 +494,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         trend_signal = _trend_for_screener(ticker)
         results, dropped = screen(quotes, criteria, trend=trend_signal,
                                   now_fn=now_fn)
+        # The search report is filled by the pairing itself: what the chosen
+        # mode really enumerated, and whether the ceiling cut it.
+        pair_coverage = {}
         vertical_kept, vertical_dropped = vertical_spreads(quotes, criteria,
-                                                            strategy=strategy,
-                                                            now_fn=now_fn)
+                                                           strategy=strategy,
+                                                           now_fn=now_fn,
+                                                           coverage=pair_coverage)
         # One identity for the fetch. Both the gate and every vertical entry
         # carry it, so a consumer can prove they refer to the same snapshot.
         snapshot_id = snapshot_identity(ticker, expiration, quotes, _feed_stamp(quotes))
@@ -532,6 +547,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                         "snapshot_id": snapshot_id,
                         "eva_eligible": eva["eligible"]} for v in vertical_kept],
             vertical_drops=_drop_reason_groups(vertical_dropped),
+            # How the pairs were searched, and why something was excluded -
+            # counted per unit, never summed across units.
+            pair_search=_pair_search_block(criteria, pair_coverage),
+            exclusions=_exclusion_blocks(dropped, vertical_dropped, criteria),
             # the trend signal that really reached the screener: null when the
             # source is down or no provider is configured - then the list is
             # built without the trend guard instead of being withheld
@@ -1179,6 +1198,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         hint = None
         results = dropped = dates = selectable = quotes = None
         vertical_kept = vertical_dropped = None
+        pair_coverage = {}
         criteria, criteria_error, unknown = _criteria_from_request(
             screener.criteria, request.args)
         strategy, spread_type, strategy_error, strategy_message = _strategy_selection(request.args)
@@ -1225,7 +1245,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                                 now_fn=now_fn)
                             # the RAW chain, not the screened candidates (B)
                             vertical_kept, vertical_dropped = vertical_spreads(
-                                quotes, criteria, strategy=strategy, now_fn=now_fn)
+                                quotes, criteria, strategy=strategy, now_fn=now_fn,
+                                coverage=pair_coverage)
         except Exception:
             # no exception text in the page (CodeRabbit finding CWE-209:
             # CboeRequestError carries raw requests messages) - log it,
@@ -1249,7 +1270,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         sort_mode = request.args.get("sort", "rendite_desc")
         vertical_rows = None if vertical_kept is None else [
             (v, _spread_return_pct(v), _spread_be_gap_pct(v))
-            for v in sorted(vertical_kept, key=_vertical_sort_key(sort_mode))
+            for v in sorted(vertical_kept, key=_vertical_sort_key(sort_mode, criteria))
         ]
         age_min = _newest_quote_age_min(lamp_source, now_fn=now_fn)
         # Datenmodus + Datenstand + Vorlaeufig-Marker. Dasselbe Objekt liefert
@@ -1298,7 +1319,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             strategy_direction=None if spez is None else spez["direction"],
             verticals=vertical_rows,
             sort_links=_sort_links(request.args),
+            sort_mode=sort_mode,
+            sort_modes=SORT_MODES,
+            sort_labels=SORT_LABELS,
             vertical_drops=_drop_reason_groups(vertical_dropped),
+            # Suchart, Suchumfang und die Ausschlussuebersicht (je Einheit)
+            pair_search=_pair_search_block(criteria, pair_coverage),
+            exclusions=_exclusion_blocks(dropped, vertical_dropped, criteria),
             criteria=criteria, age_off=criteria.max_quote_age_min is None,
             hint=hint,
             error=error, freshness=_lamp_state(age_min),
@@ -1553,23 +1580,72 @@ def _spread_be_gap_pct(v):
     return abs(v.breakeven - spot) / spot * 100.0
 
 
-def _vertical_sort_key(mode):
+#: The sort orders the page offers. Every one of them is deterministic: a
+#: missing value sorts LAST, and ties fall back to symbol + long strike, so the
+#: same chain always produces the same list (the chain order is not a rule).
+SORT_MODES = ("rendite_desc", "be_asc", "net_ratio_desc", "net_profit_desc",
+              "max_loss_asc", "none")
+SORT_LABELS = {
+    "rendite_desc": "Rendite brutto (max. Gewinn / max. Verlust)",
+    "be_asc": "BE-Abstand (nächster zuerst)",
+    "net_ratio_desc": "Netto-Auszahlungsverhältnis (nach Kosten)",
+    "net_profit_desc": "Netto-Gewinnpotenzial (nach Kosten)",
+    "max_loss_asc": "maximaler Verlust (kleinster zuerst)",
+    "none": "Kettenreihenfolge",
+}
+
+
+def _sort_asc(value):
+    """``(0, value)`` for a real number, ``(1, 0.0)`` for a missing one.
+
+    The leading flag puts "kein Wert" after every real number in BOTH
+    directions - a row without a denominator must not look like the best or the
+    worst trade. The second slot is the value itself (ascending).
+    """
+    return (0, float(value)) if value is not None else (1, 0.0)
+
+
+def _sort_desc(value):
+    """Like :func:`_sort_asc`, but the second slot is negated (descending)."""
+    return (0, -float(value)) if value is not None else (1, 0.0)
+
+
+def _vertical_sort_key(mode, criteria=None):
     """Sortierschluessel der Spread-ANZEIGE (nicht der Schnittstelle).
 
     Unbekannte Werte (None) sortieren ans Ende, damit sie nichts verdraengen.
     Der dritte Schluessel ist das Symbol - ohne ihn waere die Reihenfolge bei
     Gleichstand von der Kettenreihenfolge abhaengig statt reproduzierbar.
+
+    The three net orders (net_ratio_desc, net_profit_desc, max_loss_asc) read
+    the pair's own after-cost numbers. None of them is a probability or an
+    expected return: they rank a payoff, and the page says so.
+
+    ``criteria`` is REQUIRED for those three: ``net_max_profit()`` without a
+    criteria set returns None (no size, no costs), and a key that silently
+    compared None for every row would quietly fall back to the symbol tie-break
+    - measured 2026-11-11 on a live chain: three different orders produced the
+    same three rows.
     """
     def key(v):
         if mode == "none":
             return (0,)
         rendite = _spread_return_pct(v)
         abstand = _spread_be_gap_pct(v)
+        kette = (v.symbol, float(getattr(v.long.asset, "strike", 0.0)))
         if mode == "be_asc":
             return (abstand if abstand is not None else 9e9,
-                    -(rendite or 0.0), v.symbol)
+                    -(rendite or 0.0), *kette)
+        if mode == "max_loss_asc":
+            # smallest risk first; at equal risk the larger profit first
+            return (*_sort_asc(v.net_max_loss(criteria)),
+                    *_sort_desc(v.net_max_profit(criteria)), *kette)
+        if mode == "net_profit_desc":
+            return (*_sort_desc(v.net_max_profit(criteria)), *kette)
+        if mode == "net_ratio_desc":
+            return (*_sort_desc(v.net_return_pct(criteria)), *kette)
         return (-(rendite if rendite is not None else -1.0),
-                abstand if abstand is not None else 9e9, v.symbol)
+                abstand if abstand is not None else 9e9, *kette)
     return key
 
 
@@ -1611,14 +1687,42 @@ def _strategy_error_body(code):
     return {"error": "unknown strategy", "allowed": list(STRATEGY_IDS)}
 
 
+def _exclusion_blocks(dropped_contracts, dropped_pairs, criteria):
+    """The exclusion overview of ONE screen, split by the unit it counts.
+
+    Contracts and spread combinations are counted separately and are NEVER
+    added up: one dropped combination is two contracts, and an expired expiry
+    can hide the whole chain behind it. A section gate (``(None, reason)``) is
+    an EXPIRY verdict, not a pair verdict, so it gets its own block.
+    """
+    paare, verfaelle = [], []
+    for item, reason in dropped_pairs or ():
+        (verfaelle if item is None else paare).append((item, reason))
+    bloecke = [
+        exclusions.summarise(dropped_contracts, LEVEL_CONTRACT, criteria),
+        exclusions.summarise(paare, LEVEL_PAIR, criteria),
+    ]
+    if verfaelle:
+        bloecke.append(exclusions.summarise(verfaelle, LEVEL_EXPIRY, criteria))
+    return [block for block in exclusions.combine(bloecke) if block["counted"]]
+
+
+def _pair_search_block(criteria, coverage=None):
+    """Search mode + what it really enumerated (never a silent cap)."""
+    block = pair_search_report(criteria)
+    if coverage:
+        block["coverage"] = dict(coverage)
+    return block
+
+
 def _sort_links(args):
-    """Die drei Sortier-Adressen MIT den uebrigen Parametern.
+    """Eine Sortier-Adresse je Modus, MIT den uebrigen Parametern.
 
     Ohne sie wuerde ein Klick auf einen Spaltenkopf Ticker, Verfall und alle
     Filter verlieren - die Seite fiele auf die Auswahl zurueck.
     """
     links = {}
-    for mode in ("rendite_desc", "be_asc", "none"):
+    for mode in SORT_MODES:
         paar = [(k, wert) for k, wert in args.items(multi=True) if k != "sort"]
         paar.append(("sort", mode))
         links[mode] = urlencode(paar)

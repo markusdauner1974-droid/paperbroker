@@ -45,14 +45,14 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
-from . import quote_age
+from . import exclusions, quote_age
 from .assets import calendar_days_between
 from .earnings_calendar import combine_earnings_and_expirations
 from .earnings_day_calendar import rank_rows
-from .screener import STRATEGIES, STRATEGY_IDS, filter_stale, vertical_spreads
+from .screener import MAX_PAIRS_PER_SECTION, STRATEGIES, STRATEGY_IDS, filter_stale, pair_search_report, vertical_spreads
 
 SCHEMA_VERSION = "1.0"
 
@@ -384,6 +384,61 @@ class _Context:
     limits: ScanLimits
     counter: _Counter
     on_ticker_error: object = None
+    #: Coverage of EVERY section the scan searched, accumulated for the whole
+    #: answer: a capped search must never be invisible just because the scan
+    #: loops over many expiries and titles.
+    search_coverage: dict | None = None
+    #: The tally above is written by up to DEFAULT_CONCURRENCY worker threads,
+    #: so its read-modify-write runs under this lock (mirrors _Counter). Without
+    #: it a section can be counted twice or lost, and the scan would under-report
+    #: the very coverage this slice exists to make honest (Kody finding, PR #78).
+    _coverage_lock: object = field(
+        default_factory=threading.Lock, repr=False, compare=False)
+
+
+def _merke_suche(ctx, abschnitt):
+    """Add one section's coverage to the scan's own tally.
+
+    ``possible``/``enumerated`` are counts of COMBINATIONS, so adding them over
+    sections stays one unit - unlike contracts and pairs, which are never summed.
+    ``capped`` is sticky: one cut section makes the whole scan's claim false.
+    """
+    if not abschnitt:
+        return
+    gesamt = getattr(ctx, "search_coverage", None)
+    if gesamt is None:
+        return
+    # one lock for the shared tally: the workers run in parallel, and a lost
+    # update here would under-report the coverage this slice exists to report
+    with ctx._coverage_lock:
+        gesamt["sections"] = gesamt.get("sections", 0) + 1
+        gesamt["possible"] = gesamt.get("possible", 0) + int(abschnitt.get("possible") or 0)
+        gesamt["enumerated"] = gesamt.get("enumerated", 0) + int(abschnitt.get("enumerated") or 0)
+        gesamt["limit"] = abschnitt.get("limit", MAX_PAIRS_PER_SECTION)
+        # always present, so a consumer never needs a key check for "was it cut?"
+        gesamt.setdefault("capped", False)
+        gesamt.setdefault("possible_exact", True)
+        if abschnitt.get("capped"):
+            gesamt["capped"] = True
+            gesamt["possible_exact"] = False
+            gesamt["capped_sections"] = gesamt.get("capped_sections", 0) + 1
+
+
+def _coverage_total(tally):
+    """The coverage block of the answer - present even when nothing ran.
+
+    Same shape as ``/api/screen``'s coverage, so a consumer can read
+    ``pair_search["coverage"]["capped"]`` without a key check (Kody finding on
+    PR #78: the scan omitted the key when no section was searched).
+    """
+    gesamt = dict(tally or {})
+    gesamt.setdefault("sections", 0)
+    gesamt.setdefault("possible", 0)
+    gesamt.setdefault("enumerated", 0)
+    gesamt.setdefault("possible_exact", True)
+    gesamt.setdefault("capped", False)
+    gesamt.setdefault("limit", MAX_PAIRS_PER_SECTION)
+    return gesamt
 
 
 def _report(ctx, symbol, exc):
@@ -595,8 +650,14 @@ def _scan_symbol(symbol, row, ctx):
             # arithmetic raise). That is one expiry, not the scan: the boundary
             # is here, so a broken chain section cannot cancel 39 other titles.
             try:
+                # The coverage of EVERY section is collected here, so a search
+                # that hit the ceiling cannot hide in a scan that loops over
+                # dozens of expiries (Kody finding on PR #78).
+                abschnitt = {}
                 kept, dropped = vertical_spreads(per_expiry[iso], ctx.criteria,
-                                                 strategy=sid, now_fn=ctx.now_fn)
+                                                 strategy=sid, now_fn=ctx.now_fn,
+                                                 coverage=abschnitt)
+                _merke_suche(ctx, abschnitt)
             except Exception as exc:                # noqa: BLE001 - boundary by design
                 _report(ctx, symbol, exc)
                 eintrag["skipped_expirations"].append({
@@ -778,6 +839,7 @@ def scan_day(
         limits=limits,
         counter=counter,
         on_ticker_error=on_ticker_error,
+        search_coverage={},
     )
 
     eintraege = []
@@ -882,5 +944,16 @@ def scan_day(
             "source_calls": counter.as_dict(),
         },
         "counts": zaehler,
+        # The same search mode the single view uses (it travels in the criteria),
+        # and the exclusion overview per unit: stocks and expiries, never one sum.
+        # The coverage sums over EVERY section the scan searched - one unit, and
+        # `capped` is sticky (Kody finding on PR #78: a capped search used to be
+        # invisible exactly on the surface that loops over many expiries).
+        # `coverage` is ALWAYS present, like /api/screen: a consumer reading
+        # pair_search["coverage"]["capped"] must not depend on whether this scan
+        # happened to search a single section (Kody finding on PR #78).
+        "pair_search": {**pair_search_report(criteria),
+                        "coverage": _coverage_total(ctx.search_coverage)},
+        "exclusions": exclusions.summarise_scan(zaehler, eintraege, criteria),
         "entries": eintraege,
     }

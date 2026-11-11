@@ -24,6 +24,7 @@ exercised in a real browser; see docs/270_slice_O_earnings_overview.md.
 import json
 import re
 import unittest
+from datetime import date
 from pathlib import Path
 
 import paperbroker
@@ -93,6 +94,8 @@ def _query_for_all_fields():
         # the age mode travels to the scan exactly like any other criterion:
         # the multi-ticker scan must be able to run in the preparation mode
         "data_mode": "last_available",
+        # the search mode is a criteria field, so the scan must accept it too
+        "pair_mode": "within_width",
         "strategy": "bull_call_debit",
     }
     fehlend = [name for name in _panel_fields() if name not in werte]
@@ -353,3 +356,138 @@ class TestTheAgeModeInTheMultiTickerScan(unittest.TestCase):
         js = PANEL_JS.read_text(encoding="utf-8")
         self.assertIn("vorläufig (letzter verfügbarer Marktstand)", js)
         self.assertIn("state.provisional", js)
+
+
+class TestThePairSearchInTheMultiTickerScan(unittest.TestCase):
+    """The scan searches the way the request asked - same rule, same numbers.
+
+    One illiquid strike in the middle, as in the single view: the adjacent
+    search finds nothing, the bounded wide search finds the outer pair. If the
+    scan ignored the mode, this test would report 0 hits in both cases.
+    """
+
+    def _rows(self):
+        return [calendar_row("AAPL", 3_000_000)]
+
+    def _chains(self):
+        from paperbroker.tests.test_earnings_scan import quote
+
+        exp = EXP_A
+        ymd = exp[2:4] + exp[5:7] + exp[8:10]
+        kette = [
+            quote(f"AAPL{ymd}C00240000", 5.00, 5.10, oi=8000),
+            quote(f"AAPL{ymd}C00245000", 1.00, 1.10, oi=0, iv=0.0),      # illiquid
+            quote(f"AAPL{ymd}C00250000", 2.40, 2.50, oi=4000),
+        ]
+        return {"AAPL": kette}
+
+    def _scan(self, criteria):
+        return run_scan(self._chains(), self._rows(), criteria=criteria)
+
+    def test_adjacent_finds_nothing_and_the_wide_search_finds_the_pair(self):
+        eng = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None)
+        weit = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                pair_mode="within_width", pair_max_width=10.0)
+        nah = entry_of(self._scan(eng), "AAPL")["strategies"]["bull_call_debit"]
+        breit = entry_of(self._scan(weit), "AAPL")["strategies"]["bull_call_debit"]
+        self.assertEqual(0, nah["hits"])
+        self.assertGreater(breit["hits"], 0)
+        # the search mode is named in the answer, exactly as in the single view
+        body = self._scan(weit)
+        self.assertEqual("within_width", body["pair_search"]["mode"])
+        self.assertEqual("within_width", body["criteria"]["pair_mode"])
+
+
+class TestTheScanReportsACappedSearch(unittest.TestCase):
+    """Kody finding (PR #78): the scan swallowed the coverage.
+
+    The scan loops over many expiries. A section that hit MAX_PAIRS_PER_SECTION
+    used to leave no trace in the answer, so a cut search looked like a complete
+    one - on the surface with the most sections of all.
+    """
+
+    def _rows(self):
+        return [calendar_row("BIG", 3_000_000)]
+
+    def _chain(self):
+        from paperbroker.tests.test_earnings_scan import quote
+
+        ymd = EXP_A[2:4] + EXP_A[5:7] + EXP_A[8:10]
+        # 320 strikes: enough that a huge width exceeds the ceiling
+        return {"BIG": [quote(f"BIG{ymd}C{int((100.0 + i) * 1000):08d}", 2.40, 2.50, oi=4000)
+                        for i in range(320)]}
+
+    def test_a_cut_section_is_named_in_the_answer(self):
+        from unittest import mock
+
+        from paperbroker import screener as screener_mod
+
+        grenze = 500          # a small ceiling keeps the test fast
+        criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                    pair_mode="within_width",
+                                    pair_max_width=100_000.0)
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", grenze):
+            body = run_scan(self._chain(), self._rows(), criteria=criteria)
+        cov = body["pair_search"]["coverage"]
+        self.assertTrue(cov["capped"])
+        self.assertFalse(cov["possible_exact"])
+        self.assertEqual(grenze, cov["limit"])
+        # several sections per (title, expiry, strategy) - the cut ones are counted
+        self.assertGreaterEqual(cov["capped_sections"], 1)
+        self.assertLessEqual(cov["capped_sections"], cov["sections"])
+        self.assertGreaterEqual(cov["enumerated"], cov["capped_sections"] * grenze)
+
+    def test_a_complete_search_says_nothing_about_a_cap(self):
+        criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                    pair_mode="within_width", pair_max_width=3.0)
+        cov = run_scan(self._chain(), self._rows(), criteria=criteria)["pair_search"]["coverage"]
+        self.assertFalse(cov["capped"])
+        self.assertTrue(cov["possible_exact"])
+        self.assertNotIn("capped_sections", cov)
+
+
+class TestTheCoverageIsAlwaysThere(unittest.TestCase):
+    """Kody findings (PR #78) on the fix commit itself.
+
+    Two defects in the scan's coverage tally: the key was missing whenever no
+    section was searched, and the tally was written by parallel workers without
+    a lock. Both would make the very number this slice exists to report wrong.
+    """
+
+    def test_the_key_is_present_when_nothing_was_searched(self):
+        from paperbroker.tests.test_earnings_scan import quote
+
+        # one ticker, no chain at all -> no section to search
+        body = run_scan({}, [calendar_row("AAPL", 3_000_000)], criteria=ScreenerCriteria())
+        cov = body["pair_search"]["coverage"]      # must not raise
+        self.assertFalse(cov["capped"])
+        self.assertTrue(cov["possible_exact"])
+        self.assertEqual(0, cov["sections"])
+        self.assertEqual(0, cov["enumerated"])
+
+    def test_the_tally_survives_parallel_workers(self):
+        import threading as _threading
+
+        from paperbroker.earnings_scan import _Context, _coverage_total, _merke_suche
+
+        ctx = _Context(fetch_earnings=None, fetch_chain=None, strategies=(),
+                       criteria=ScreenerCriteria(), today=date(2026, 11, 11),
+                       now_fn=None, limits=None, counter=None, search_coverage={})
+        abschnitt = {"possible": 7, "enumerated": 5, "limit": 500, "capped": True}
+
+        def arbeite():
+            for _ in range(200):
+                _merke_suche(ctx, abschnitt)
+
+        fäden = [_threading.Thread(target=arbeite) for _ in range(8)]
+        for f in fäden:
+            f.start()
+        for f in fäden:
+            f.join()
+
+        gesamt = _coverage_total(ctx.search_coverage)
+        self.assertEqual(1600, gesamt["sections"])
+        self.assertEqual(1600 * 7, gesamt["possible"])
+        self.assertEqual(1600 * 5, gesamt["enumerated"])
+        self.assertEqual(1600, gesamt["capped_sections"])
+        self.assertTrue(gesamt["capped"])

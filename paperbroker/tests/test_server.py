@@ -860,7 +860,9 @@ class TestCriteriaPanel(unittest.TestCase):
         # The age mode is the 23rd criterion and travels with the object: the
         # echo of the criteria that REALLY computed, not a template copy.
         self.assertEqual(d["criteria"]["data_mode"], "fresh")
-        self.assertEqual(len(d["criteria"]), 23)
+        # the pair search mode is the 24th criterion (None = derived from the width)
+        self.assertIsNone(d["criteria"]["pair_mode"])
+        self.assertEqual(len(d["criteria"]), 24)
         picker = self._app().test_client().get(
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertNotIn("criteria", picker)                     # no picker echo
@@ -2641,11 +2643,16 @@ class TheStrategyIsTheChoice(unittest.TestCase):
         Sortieradressen entstehen aus DERSELBEN Anfrage (sort= wird ersetzt)."""
         page = self._page({"strategy": "bear_put_debit"})
         links = [h for h in re.findall(r'href="\?([^"]*)"', page) if "sort=" in h]
-        # zwei Spaltenkoepfe sind verlinkt (Rendite, BE-Abstand); `none` kennt der
-        # Helfer, die Seite bietet es nicht an
-        self.assertEqual(len(links), 2)
+        # Two column headers carry a link (Rendite, BE-Abstand) and the sort bar
+        # offers every order once - 2 + 6 addresses, none of them without the
+        # strategy the request asked for.
+        self.assertEqual(len(links), 8)
         for link in links:
             self.assertIn("strategy=bear_put_debit", link)
+        # every order the helper knows really appears as a link
+        for mode in ("rendite_desc", "be_asc", "net_ratio_desc", "net_profit_desc",
+                     "max_loss_asc", "none"):
+            self.assertTrue([h for h in links if f"sort={mode}" in h], mode)
 
     # --- das JSON nennt beides ---
 
@@ -2847,7 +2854,7 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # D11: pair_max_width stands directly behind min_volume - the order of
         # the criteria in the module, not appended at the end of the group.
         ("Liquidit\u00e4t", ("max_spread_pct", "max_spread_abs", "min_oi", "min_volume",
-                             "pair_max_width", "min_bid_size", "min_ask_size",
+                             "pair_max_width", "pair_mode", "min_bid_size", "min_ask_size",
                              "require_oi", "require_volume")),
         # The age MODE sits behind the age limit it governs: the limit is the
         # number, mode decides what that number DOES (drop or merely state).
@@ -2984,6 +2991,9 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
                     # "Aktualitaetsfilter" and "Letzter verfuegbarer
                     # Marktstand" are two explicit, selectable states
                     "data_mode": 2,
+                    # the strike search is a pair of radios as well - "adjacent"
+                    # and "within width" are two explicitly chosen searches
+                    "pair_mode": 2,
                     # D14: die Funkknoepfe tragen denselben Namen - eine
                     # EINZELNE Anzeige, nicht vier Felder; seit den
                     # Credit-Spreads sind es vier Werte
@@ -2995,8 +3005,9 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
     def test_no_control_is_added_or_lost(self):
         page = self._page()
         # +2: the two age-mode radio buttons (Aktualitaetsfilter / letzter
-        # verfuegbarer Marktstand) - the mode is chosen, not inferred
-        self.assertEqual(page.count("<input"), 34)   # D12 +4 Position, +2 Credit
+        # verfuegbarer Marktstand), +2: the two strike-search radios - both are
+        # chosen by the operator, never inferred from a leftover value
+        self.assertEqual(page.count("<input"), 36)   # D12 +4 Position, +2 Credit
         self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
         self.assertEqual(page.count("<button"), 1)
         self.assertEqual(page.count("<fieldset"), 6)  # D12 + Position, D14 + Spreads
@@ -3578,8 +3589,10 @@ class TheDefaultsAreVisible(unittest.TestCase):
     #: eine leere Breite ist die Nachbarschaft - der schnelle Modus von vorher.
     #: Es sagt seinen Standard also selbst, und mit eigenem Wortlaut.
     BREITE = "pair_max_width"
-    BREITE_TEXT = ("Standard aus (leer = nur benachbarte Strikes; "
-                   "gesetzt = alle Paare innerhalb dieser Breite)")
+    #: The width field no longer describes the search by itself - the search is
+    #: chosen with `pair_mode` next to it, so the label names that choice.
+    BREITE_TEXT = ("Standard aus (leer = Suchart »Benachbarte Strikes«; "
+                   "gesetzt = Obergrenze der Breite)")
 
     @staticmethod
     def _app(quotes=None):
@@ -3707,8 +3720,8 @@ class TheDefaultsAreVisible(unittest.TestCase):
         self.assertEqual(len(treffer), 1)
         self.assertIn('type="number"', treffer[0])
         label = self._label(page, self.BREITE)
-        self.assertIn("leer = nur benachbarte Strikes", label)
-        self.assertIn("gesetzt = alle Paare innerhalb dieser Breite", label)
+        self.assertIn("leer = Suchart »Benachbarte Strikes«", label)
+        self.assertIn("gesetzt = Obergrenze der Breite", label)
 
 
 class TestErrorBehaviour(unittest.TestCase):
