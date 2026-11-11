@@ -404,7 +404,12 @@ def summarise(ages, *, mode, max_age_min, clock):
     }
     neueste = newest(ages)
     markt = market_state(clock)
-    unproven = zaehler["total"] - zaehler[STATE_FRESH] - zaehler[STATE_UNCHECKED] > 0
+    # Only OLD or UNDATED data justifies the provisional label. A stamp in the
+    # future is a broken feed, not an old market state - it is dropped in both
+    # modes and must not be reported as "older than the limit" (Kody finding on
+    # PR #77, 2026-11-11: the earlier "everything not fresh" rule did exactly
+    # that for a chain whose only stamps lay in the future).
+    unproven = zaehler[STATE_STALE] + zaehler["undated"] > 0
     provisional = bool(mode == MODE_LAST_AVAILABLE and unproven)
     if not provisional:
         note = None

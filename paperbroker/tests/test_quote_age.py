@@ -234,6 +234,21 @@ class TestTheSharedStatusBlock(unittest.TestCase):
         self.assertFalse(block["provisional"])       # nothing old to warn about
         self.assertEqual(block["counts"]["fresh"], 1)
 
+    def test_a_future_stamp_is_never_sold_as_old_data(self):
+        """Kody finding (PR #77): a broken feed is not an old market state.
+
+        A chain whose stamps all lie in the future is dropped in BOTH modes, so
+        the provisional sentence ("older than the limit") would be false. The
+        block must stay quiet and name the real state instead.
+        """
+        ages = quote_age.assess_chain([quote("2026-11-13 14:35:00")], CLOCK, 30)
+        block = quote_age.summarise(ages, mode=quote_age.MODE_LAST_AVAILABLE,
+                                    max_age_min=30, clock=CLOCK)
+        self.assertEqual(block["counts"]["future"], 1)
+        self.assertEqual(block["counts"]["stale"], 0)
+        self.assertFalse(block["provisional"])
+        self.assertIsNone(block["note"])
+
     def test_undated_data_counts_as_unproven(self):
         ages = quote_age.assess_chain([quote(None), quote("gestern abend")], CLOCK, 30)
         block = quote_age.summarise(ages, mode=quote_age.MODE_LAST_AVAILABLE,
