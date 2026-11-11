@@ -93,6 +93,8 @@ def _query_for_all_fields():
         # the age mode travels to the scan exactly like any other criterion:
         # the multi-ticker scan must be able to run in the preparation mode
         "data_mode": "last_available",
+        # the search mode is a criteria field, so the scan must accept it too
+        "pair_mode": "within_width",
         "strategy": "bull_call_debit",
     }
     fehlend = [name for name in _panel_fields() if name not in werte]
@@ -353,3 +355,43 @@ class TestTheAgeModeInTheMultiTickerScan(unittest.TestCase):
         js = PANEL_JS.read_text(encoding="utf-8")
         self.assertIn("vorläufig (letzter verfügbarer Marktstand)", js)
         self.assertIn("state.provisional", js)
+
+
+class TestThePairSearchInTheMultiTickerScan(unittest.TestCase):
+    """The scan searches the way the request asked - same rule, same numbers.
+
+    One illiquid strike in the middle, as in the single view: the adjacent
+    search finds nothing, the bounded wide search finds the outer pair. If the
+    scan ignored the mode, this test would report 0 hits in both cases.
+    """
+
+    def _rows(self):
+        return [calendar_row("AAPL", 3_000_000)]
+
+    def _chains(self):
+        from paperbroker.tests.test_earnings_scan import quote
+
+        exp = EXP_A
+        ymd = exp[2:4] + exp[5:7] + exp[8:10]
+        kette = [
+            quote(f"AAPL{ymd}C00240000", 5.00, 5.10, oi=8000),
+            quote(f"AAPL{ymd}C00245000", 1.00, 1.10, oi=0, iv=0.0),      # illiquid
+            quote(f"AAPL{ymd}C00250000", 2.40, 2.50, oi=4000),
+        ]
+        return {"AAPL": kette}
+
+    def _scan(self, criteria):
+        return run_scan(self._chains(), self._rows(), criteria=criteria)
+
+    def test_adjacent_finds_nothing_and_the_wide_search_finds_the_pair(self):
+        eng = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None)
+        weit = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                pair_mode="within_width", pair_max_width=10.0)
+        nah = entry_of(self._scan(eng), "AAPL")["strategies"]["bull_call_debit"]
+        breit = entry_of(self._scan(weit), "AAPL")["strategies"]["bull_call_debit"]
+        self.assertEqual(0, nah["hits"])
+        self.assertGreater(breit["hits"], 0)
+        # the search mode is named in the answer, exactly as in the single view
+        body = self._scan(weit)
+        self.assertEqual("within_width", body["pair_search"]["mode"])
+        self.assertEqual("within_width", body["criteria"]["pair_mode"])

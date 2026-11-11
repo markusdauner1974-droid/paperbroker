@@ -281,6 +281,99 @@ With the real default (30 min) nothing changed: `candidates: 1`, lamp green, age
 
 
 
+## Strike search: two modes (`pair_mode`)
+
+Two searches are offered explicitly - they differ in which strike pairs are
+*formed*, never in which filters are applied afterwards:
+
+| `pair_mode` | Pairs formed | Width |
+|---|---|---|
+| `adjacent` (default) | strikes that are neighbours **in the chain** | `pair_max_width` must be empty (a leftover value is ignored and named in `pair_search.width_ignored`) |
+| `within_width` | every pair whose strike distance is inside `pair_max_width` | a **positive** width is required, otherwise the request is a `400` |
+
+`pair_mode` unset keeps the historical derivation: no width -> adjacent, a width ->
+`within_width`. That is why every existing link and API call behaves exactly as
+before.
+
+Both modes pair from the **raw** chain: a strike is never removed because it is
+illiquid, so a bad strike between two good legs cannot hide the pair
+`240 / 250`. Adjacency therefore means "next listed strike" - the feed lists no
+empty strike, and nothing else can be proven from this data.
+
+```bash
+# neighbours only (default)
+GET /api/screen?ticker=AAPL&expiration=2026-11-18
+
+# every combination up to 25 $ wide
+GET /api/screen?ticker=AAPL&expiration=2026-11-18&pair_mode=within_width&pair_max_width=25
+```
+
+The search is bounded and never silently: `MAX_PAIRS_PER_SECTION` (50 000 pairs
+of one expiry) caps the enumeration, and the answer reports the search that
+really happened:
+
+```json
+"pair_search": {"mode": "within_width", "label": "Alle Kombinationen bis maximale Breite",
+                "max_width": 25.0, "width_ignored": false,
+                "coverage": {"possible": 380, "enumerated": 380, "capped": false, "limit": 50000}}
+```
+
+Truncation keeps the **narrowest** pairs (deterministic: width, then lower
+strike) and sets `capped: true`; the page then says the search was not complete.
+Measured on local data (4 expiries, 400 strikes each, 25 $ width): 38 700 pairs in
+87 ms; the cap case (320 strikes, all widths) takes 99 ms.
+
+## Why something was excluded (per unit, never summed)
+
+`/api/screen` and the page carry an `exclusions` list with **one block per unit**:
+contracts, spread combinations, expirations, (in the earnings scan) stocks.
+
+```json
+[{"level": "contract", "unit": "Kontrakte", "counted": 95, "first_reason_only": true,
+  "first_reason_note": "Je Kontrakt zaehlt genau ein Grund: der erste Filter, der ihn abgelehnt hat. ...",
+  "categories": [{"key": "liquidity", "label": "Liquiditaet", "count": 92},
+                 {"key": "data", "label": "fehlende Daten", "count": 3}],
+  "unmapped": [], "not_checked": ["Volatilitaet", "Budget"]}]
+```
+
+Three statements the block keeps apart on purpose:
+
+* **One reason per item.** The pipeline reports the *first* filter that rejected
+  a contract or a pair; `first_reason_only` and its sentence say so in words.
+  No additional cause is claimed - a claim that was not measured is not made.
+* **No sum across units.** A dropped spread combination is two contracts and an
+  expired expiry can hide a whole chain; there is no grand total anywhere.
+* **Filters that did not run are named.** `not_checked` lists the switches that
+  were off for this request (no age guard, no IV band, no budget). A category
+  with a count really occurred; a category that never ran never appears with a
+  number.
+
+Categories: `liquidity`, `age`, `dte`, `budget`, `price` (invalid debit/credit),
+`costs`, `volatility`, `data` (a value is missing), `scan_limit` (the earnings
+scan's own budget), `other` (anything unmapped - and it is shown, not filed
+away).
+
+## Sorting (`sort`)
+
+Six orders, all deterministic:
+
+| `sort` | Order |
+|---|---|
+| `rendite_desc` (default) | gross max profit / max loss, descending |
+| `be_asc` | distance to the break-even, nearest first |
+| `net_ratio_desc` | net profit / max loss after costs, descending |
+| `net_profit_desc` | net profit potential after costs, descending |
+| `max_loss_asc` | max loss after costs, smallest first |
+| `none` | chain order |
+
+Rules: a row **without a number** sorts last in every direction (a missing
+denominator must not look like the best or the worst trade), and ties fall back
+to symbol + long strike, so the same chain always produces the same list.
+
+None of these columns is a probability or an expected return: they rank the
+payoff *at expiry* (best case / worst case) and the page says so above the
+table.
+
 ## Testing and lint
 
 ```bash

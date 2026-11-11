@@ -38,6 +38,82 @@ from .quotes import OptionQuote
 
 _PENNY_MID_THRESHOLD = 1.0  # $ mid at/below which the absolute spread bound applies
 
+# ---------------------------------------------------------------------- #
+# how the strike pairs are searched (pair_mode)
+# ---------------------------------------------------------------------- #
+
+#: Only strikes that are neighbours in the chain - the default, cheapest search.
+PAIR_SEARCH_ADJACENT = "adjacent"
+#: Every strike pair whose width is inside ``pair_max_width``. Needs a positive
+#: width: without one the search area is undefined, and "0" used to produce an
+#: empty section without a word (measured 2026-11-11: ``pair_max_width=0`` paired
+#: nothing at all).
+PAIR_SEARCH_WITHIN_WIDTH = "within_width"
+PAIR_SEARCH_MODES = (PAIR_SEARCH_ADJACENT, PAIR_SEARCH_WITHIN_WIDTH)
+PAIR_SEARCH_LABELS = {
+    PAIR_SEARCH_ADJACENT: "Benachbarte Strikes",
+    PAIR_SEARCH_WITHIN_WIDTH: "Alle Kombinationen bis maximale Breite",
+}
+
+#: Hard ceiling for the pairs of ONE section (one underlying, one expiry). The
+#: enumeration is bounded, never silently: whatever the ceiling cuts is reported
+#: as ``coverage.capped`` with the real numbers. 50 000 is far above any real
+#: chain (measured: 4 428 strikes in one expiry at 1 $ steps inside 40 $ give
+#: ~170 000 theoretical pairs, a real CBOE chain gives a few thousand) and keeps
+#: the worst case around 10 ms.
+MAX_PAIRS_PER_SECTION = 50_000
+
+
+def resolve_pair_mode(criteria):
+    """``(mode, error)`` for a criteria set - the ONE place this is decided.
+
+    ``None`` (no explicit mode) keeps the historical derivation: a width means
+    "within width", no width means "adjacent". An explicit ``within_width``
+    mode without a positive width is an ERROR - an unbounded search area is not
+    a mode, it is an accident (measured: ``pair_max_width=0`` paired nothing and
+    said nothing).
+
+    An explicit ``adjacent`` mode together with a width is NOT an error: the
+    form keeps its width field when the operator switches back to adjacent, and
+    refusing that request would turn a leftover number into a wall. The width is
+    ignored and the answer SAYS so (``pair_search.width_ignored``), which is the
+    difference between "not used" and "silently dropped".
+    """
+    mode = getattr(criteria, "pair_mode", None)
+    breite = getattr(criteria, "pair_max_width", None)
+    if mode is None:
+        return (PAIR_SEARCH_WITHIN_WIDTH if breite is not None
+                else PAIR_SEARCH_ADJACENT), None
+    if mode not in PAIR_SEARCH_MODES:
+        return None, (f"pair_mode: einer von {', '.join(PAIR_SEARCH_MODES)} "
+                      f"erwartet (ist: '{mode}').")
+    if mode == PAIR_SEARCH_WITHIN_WIDTH and (breite is None or breite <= 0):
+        return None, ("pair_mode: 'within_width' braucht eine positive maximale "
+                      f"Breite in pair_max_width (ist: {breite!r}).")
+    return mode, None
+
+
+def pair_search_report(criteria):
+    """What the search mode of this criteria set means, for page and JSON.
+
+    One dict, three surfaces: the mode, its label, the effective width, whether
+    a width was ignored, and the sentence a reader needs. The coverage of an
+    ACTUAL run (pairs possible / enumerated / capped) is added by the caller.
+    """
+    mode, error = resolve_pair_mode(criteria)
+    breite = getattr(criteria, "pair_max_width", None)
+    ignoriert = bool(mode == PAIR_SEARCH_ADJACENT and breite is not None)
+    return {
+        "mode": mode,
+        "label": PAIR_SEARCH_LABELS.get(mode),
+        "max_width": None if mode == PAIR_SEARCH_ADJACENT else breite,
+        "width_ignored": ignoriert,
+        "error": error,
+        "note": ("Die maximale Breite wird im Modus 'Benachbarte Strikes' nicht "
+                 "verwendet." if ignoriert else None),
+    }
+
+
 
 @dataclass
 class ScreenerCriteria:
@@ -78,6 +154,12 @@ class ScreenerCriteria:
     # staleness guard on quote_timestamp (minutes); None = no check
     max_quote_age_min: int | None = 30
 
+    # How the strike pairs are searched. None derives the mode from pair_max_width
+    # (the behaviour every existing link and API call has): no width = adjacent
+    # strikes, a width = every pair inside it. An explicit mode is validated
+    # against the width, so "all pairs" can never run without a positive width.
+    pair_mode: str | None = None
+
     # How the age limit acts. MODE_FRESHNESS (default) keeps every protection:
     # an old quote is dropped. MODE_LAST_AVAILABLE reads the same limit as a
     # statement instead of a rejection - old quotes may be used for a
@@ -107,6 +189,9 @@ class ScreenerCriteria:
         if self.data_mode not in AGE_MODES:
             bad.append(f"data_mode: einer von {', '.join(AGE_MODES)} erwartet "
                        f"(ist: '{self.data_mode}').")
+        _mode, mode_error = resolve_pair_mode(self)
+        if mode_error:
+            bad.append(mode_error)
         if self.iv_pref is not None and self.iv_pref not in ("high", "low"):
             bad.append(f"iv_pref: einer von high, low erwartet (ist: '{self.iv_pref}').")
         if self.max_spread_pct is not None and self.max_spread_pct < 0:
@@ -1006,22 +1091,50 @@ class VerticalPair:
 
 
 
-def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None):
-    """Adjacent-strike pairs of ONE named strategy from the RAW chain.
+def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None,
+                        mode=None, coverage=None):
+    """Strike pairs of ONE named strategy from the RAW chain.
 
     `option_type` is the legacy alias: "put" is the bear put and "call" the bull
     call. A request that names both must be consistent, otherwise ValueError -
     the same rule the web layer applies to the query string.
 
+    `mode` is :data:`PAIR_SEARCH_ADJACENT` or :data:`PAIR_SEARCH_WITHIN_WIDTH`;
+    ``None`` derives it from ``max_width`` exactly as before (no width = adjacent,
+    a width = within width). Both modes pair from the RAW chain - a strike is
+    never removed because it is illiquid, so a bad strike in the middle cannot
+    hide a pair between two good outer strikes. The liquidity decision belongs to
+    the leg checks, not to the search.
+
+    `coverage` is an optional dict the caller passes in; it is filled with the
+    search that really happened (``mode``, ``possible``, ``enumerated``,
+    ``capped``, ``limit``) so a bounded search can never look like a complete one.
+
     The iteration order IS the output order: groups ascending by
-    (underlying, expiration, option_type), strikes ascending inside a group.
+    (underlying, expiration, option_type), strikes ascending inside a group,
+    and inside the wide mode by width (smallest first), then lower strike.
     Nothing is sorted afterwards, so the order is reproducible without any
-    scoring rule.
+    scoring rule - and a truncated search keeps the NARROWEST pairs, which are
+    the ones a vertical spread is about.
     """
     strategy, _code, error = resolve_strategy(strategy, option_type)
     if error:
         raise ValueError(error)
     option_type = strategy_option_type(strategy)
+    if mode is None:
+        mode = (PAIR_SEARCH_WITHIN_WIDTH if max_width is not None
+                else PAIR_SEARCH_ADJACENT)
+    if mode not in PAIR_SEARCH_MODES:
+        raise ValueError(f"unknown pair search mode: {mode!r}")
+    if mode == PAIR_SEARCH_WITHIN_WIDTH and (max_width is None or max_width <= 0):
+        raise ValueError("pair search 'within_width' needs a positive max_width")
+    if mode == PAIR_SEARCH_ADJACENT and max_width is not None:
+        raise ValueError("pair search 'adjacent' takes no max_width")
+    # after the two checks a width only exists in the within_width mode, and it
+    # is positive - one local so the loop cannot silently compare against None
+    breite_max = 0.0 if max_width is None else float(max_width)
+    meldung = {"mode": mode, "possible": 0, "enumerated": 0,
+               "capped": False, "limit": MAX_PAIRS_PER_SECTION}
     groups = {}
     for quote in chain or []:
         asset = getattr(quote, "asset", None)
@@ -1031,6 +1144,7 @@ def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None):
                getattr(asset, "expiration_date", None),
                option_type)
         groups.setdefault(key, []).append(quote)
+
     def _paar(lower, upper):
         # D12/L: the strategy IS the trade direction. A bull call and a bull put
         # buy the LOWER strike, a bear put and a bear call buy the HIGHER one -
@@ -1040,27 +1154,38 @@ def form_vertical_pairs(chain, strategy=None, option_type=None, max_width=None):
             return VerticalPair(long=upper, short=lower, strategy=strategy)
         return VerticalPair(long=lower, short=upper, strategy=strategy)
 
-
     pairs = []
     for key in sorted(groups):
         legs = sorted(groups[key], key=lambda q: q.asset.strike)
-        if max_width is None:
-            # fast mode (default): adjacent strikes only
-            pairs.extend(_paar(lower, upper)
-                         for lower, upper in zip(legs, legs[1:], strict=False))
-            continue
-        # D11: every pair inside an explicitly bounded width. Measured on a live chain
-        # (442 contracts): 220 adjacent pairs, 2880 inside 25 $ - both under 1 ms, so
-        # the wider search costs nothing. What grows is the NUMBER of results, which is
-        # why this is opt-in: an illiquid contract between two good legs no longer hides
-        # the wider spread (review finding 4). Every pair still runs through the same
-        # leg and pair checks as the list.
-        for i, lower in enumerate(legs):
-            for upper in legs[i + 1:]:
-                breite = float(upper.asset.strike) - float(lower.asset.strike)
-                if breite > max_width:
-                    break
-                pairs.append(_paar(lower, upper))
+        if mode == PAIR_SEARCH_ADJACENT:
+            # neighbours in the CHAIN, which is the only adjacency this data can
+            # prove: the feed lists no empty strike, so "adjacent" means "next
+            # listed strike", and that is what the mode says on the page.
+            neu = list(zip(legs, legs[1:], strict=False))
+            meldung["possible"] += len(neu)
+        else:
+            neu = []
+            for i, lower in enumerate(legs):
+                for upper in legs[i + 1:]:
+                    breite = float(upper.asset.strike) - float(lower.asset.strike)
+                    if breite > breite_max:
+                        break
+                    neu.append((lower, upper))
+            neu.sort(key=lambda lager: (float(lager[1].asset.strike)
+                                        - float(lager[0].asset.strike),
+                                        float(lager[0].asset.strike)))
+            meldung["possible"] += len(neu)
+        rest = MAX_PAIRS_PER_SECTION - len(pairs)
+        if len(neu) > rest:
+            # the ceiling bites: take what fits, SAY that it was cut
+            meldung["capped"] = True
+            neu = neu[:max(0, rest)]
+        pairs.extend(_paar(lower, upper) for lower, upper in neu)
+        if meldung["capped"]:
+            break
+    meldung["enumerated"] = len(pairs)
+    if coverage is not None:
+        coverage.update(meldung)
     return pairs
 
 
@@ -1082,7 +1207,8 @@ def leg_drop_reason(leg, criteria, now_fn=None):
     return f"strike {leg.asset.strike} {leg.asset.option_type}: {dropped[0][1]}"
 
 
-def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=None):
+def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=None,
+                     coverage=None):
     """(kept pairs, dropped pairs with reason) under the SAME criteria as the list.
 
     D7: the spread list used to run fixed leg rules of its own (both sides
@@ -1132,8 +1258,17 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
             return [], [(None, f"Verfall: Laufzeit {tage} Tage außerhalb "
                               f"[{criteria.dte_min}, {criteria.dte_max}]")]
         chain = gefiltert
-    for pair in form_vertical_pairs(chain, strategy=strategy,
-                                   max_width=criteria.pair_max_width):
+    pair_mode, _mode_error = resolve_pair_mode(criteria)
+    # an adjacent search takes no width: the number is reported as ignored by
+    # pair_search_report() instead of being pushed into the pairing
+    such_breite = criteria.pair_max_width if pair_mode == PAIR_SEARCH_WITHIN_WIDTH else None
+    if coverage is not None:
+        coverage["width_ignored"] = bool(
+            pair_mode == PAIR_SEARCH_ADJACENT and criteria.pair_max_width is not None)
+    such_meldung = coverage if coverage is not None else {}
+    paare = form_vertical_pairs(chain, strategy=strategy, max_width=such_breite,
+                                mode=pair_mode, coverage=such_meldung)
+    for pair in paare:
         # Credit spreads: the collected premium decides everything below, so it is
         # checked BEFORE any cost arithmetic. An unpriceable credit is no trade,
         # and formatting a None into the drop text would not be a reason either.

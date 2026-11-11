@@ -48,11 +48,11 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 
-from . import quote_age
+from . import exclusions, quote_age
 from .assets import calendar_days_between
 from .earnings_calendar import combine_earnings_and_expirations
 from .earnings_day_calendar import rank_rows
-from .screener import STRATEGIES, STRATEGY_IDS, filter_stale, vertical_spreads
+from .screener import STRATEGIES, STRATEGY_IDS, filter_stale, pair_search_report, vertical_spreads
 
 SCHEMA_VERSION = "1.0"
 
@@ -882,5 +882,9 @@ def scan_day(
             "source_calls": counter.as_dict(),
         },
         "counts": zaehler,
+        # The same search mode the single view uses (it travels in the criteria),
+        # and the exclusion overview per unit: stocks and expiries, never one sum.
+        "pair_search": pair_search_report(criteria),
+        "exclusions": exclusions.summarise_scan(zaehler, eintraege, criteria),
         "entries": eintraege,
     }

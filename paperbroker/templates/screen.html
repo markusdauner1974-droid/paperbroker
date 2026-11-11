@@ -131,6 +131,22 @@
       font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
     .stats b{color:var(--ink);font-weight:600}
 
+    /* Sortierleiste: eine Zeile mit allen Ordnungen, die aktive ist markiert.
+       Die Spaltenkoepfe behalten ihre zwei Links - beide Wege sind derselbe. */
+    .sortbar{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;
+      font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;
+      text-transform:uppercase;color:var(--faint);margin:0}
+    .sortbar a{color:var(--muted);border-bottom:1px dotted var(--hair)}
+    .sortbar a:hover{color:var(--ink)}
+    .sortbar a.aktiv{color:var(--ink);border-bottom:1px solid var(--primary)}
+    /* Ausschlussuebersicht: je Einheit EINE Zeile - Kontrakte, Kombinationen,
+       Verfälle und Aktien werden nie zu einer Summe addiert. */
+    .excl{border-left:2px solid var(--hair);padding:2px 0 2px 12px}
+    .excl h3{font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;
+      text-transform:uppercase;color:var(--faint);margin:0 0 8px;font-weight:600}
+    .excl-unit{font-size:12.5px;color:var(--muted);margin:0 0 2px}
+    .excl-unit b{color:var(--ink);font-family:var(--font-mono);font-size:12px}
+    .excl-note{font-size:11px;color:var(--faint);margin:0 0 10px}
     .dropped-summary{border-top:1px dotted var(--hair);border-radius:0;background:none;padding:0}
     .dropped-summary summary{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
       text-transform:uppercase;color:var(--muted);cursor:pointer;padding:12px 0;list-style:none}
@@ -475,7 +491,10 @@
       <label>Spread max ($) · Standard 0.1 · greift nur bei Kursmitte ≤ 1 $ (Penny-Zone) <input type="number" step="0.01" name="max_spread_abs" min="0" value="{{ request.args.get('max_spread_abs') or (criteria.max_spread_abs if criteria.max_spread_abs is not none else '') }}"></label>
       <label>OI min · Standard 500 <input type="number" name="min_oi" min="0" value="{{ request.args.get('min_oi') or (criteria.min_oi if criteria.min_oi is not none else '') }}"></label>
       <label>Volumen min · Standard 0 · schließt Werte ≤ Grenze aus (strikt größer) <input type="number" name="min_volume" min="0" value="{{ request.args.get('min_volume') or (criteria.min_volume if criteria.min_volume is not none else '') }}"></label>
-      <label>Paar-Breite max ($) · Standard aus (leer = nur benachbarte Strikes; gesetzt = alle Paare innerhalb dieser Breite) <input type="number" step="0.5" name="pair_max_width" min="0" value="{{ request.args.get('pair_max_width') or (criteria.pair_max_width if criteria.pair_max_width is not none else '') }}"></label>
+      <label>Paar-Breite max ($) · Standard aus (leer = Suchart »Benachbarte Strikes«; gesetzt = Obergrenze der Breite) <input type="number" step="0.5" name="pair_max_width" min="0" value="{{ request.args.get('pair_max_width') or (criteria.pair_max_width if criteria.pair_max_width is not none else '') }}"></label>
+      <span>Suche nach Strike-Kombinationen
+        <label><input type="radio" name="pair_mode" value="adjacent" {% if pair_search.mode != 'within_width' %}checked{% endif %}> Benachbarte Strikes — nur die direkt aufeinanderfolgenden Strikes der Kette</label>
+        <label><input type="radio" name="pair_mode" value="within_width" {% if pair_search.mode == 'within_width' %}checked{% endif %}> Alle Kombinationen bis maximale Breite — braucht eine positive Breite, überspringt auch belegte Strikes dazwischen</label></span>
       <label>Geld-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_bid_size" min="0" value="{{ request.args.get('min_bid_size') or (criteria.min_bid_size if criteria.min_bid_size is not none else '') }}"></label>
       <label>Brief-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_ask_size" min="0" value="{{ request.args.get('min_ask_size') or (criteria.min_ask_size if criteria.min_ask_size is not none else '') }}"></label>
       <span>OI-Pflicht
@@ -588,6 +607,12 @@
       {% if dte is not none %}<span>DTE {{ dte }} (Tage ab heute)</span>{% endif %}
       {% if feed_time %}<span>Kursdatum {{ feed_time }}</span>{% endif %}
     </div>
+    {# Suchart und Umfang stehen VOR dem Abschnitt: auch (und gerade) wenn kein
+       Spread uebrig bleibt, muss der Leser sehen, welche Suche lief und wie viele
+       Kombinationen sie geprueft hat. #}
+    {% if pair_search %}
+      <p class="note" id="pair-search">Suchart: <strong>{{ pair_search.label }}</strong>{% if pair_search.max_width %} · maximale Breite {{ pair_search.max_width }} $ · nur Kombinationen innerhalb dieser Breite{% endif %}{% if pair_search.coverage and pair_search.coverage.possible %} · geprüft {{ pair_search.coverage.enumerated }} von {{ pair_search.coverage.possible }} Kombinationen{% if pair_search.coverage.capped %} — <strong>gekappt</strong> bei {{ pair_search.coverage.limit }}; die Suche ist damit NICHT vollständig{% endif %}{% endif %}{% if pair_search.width_ignored %} · {{ pair_search.note }}{% endif %}</p>
+    {% endif %}
     {% if verticals %}
       <h2>{{ strategy_label or 'Spreads' }}</h2>
       <p class="note">Die gewählte Strategie: {{ strategy_buy }}, {{ strategy_sell }}. Der Basiswert
@@ -604,6 +629,14 @@
         Verlust nach Multiplikator, Stückzahl und Gebühren ((Breite − Credit) × Multiplikator ×
         Stückzahl + Gebühren) — eine eigene Rechnung aus den Kursen, <strong>keine Broker-Margin</strong>.
         Der Credit bleibt der Wert je Einheit.{% else %}Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.{% endif %}</p>
+      <p class="note sortbar" id="sortbar">Sortierung:
+        {% for mode in sort_modes %}<a href="?{{ sort_links[mode] }}"{% if mode == sort_mode %} class="aktiv" aria-current="true"{% endif %}>{{ sort_labels[mode] }}</a>{% if not loop.last %}<span>·</span>{% endif %}{% endfor %}
+      </p>
+      <p class="note">Keine Spalte ist eine Gewinnwahrscheinlichkeit oder eine erwartete Rendite:
+        die Zahlen beschreiben die Auszahlung <em>bei Verfall</em> (best case / worst case) und
+        ordnen sie; wie wahrscheinlich ein Ausgang ist, sagt hier nichts und wird auch nicht behauptet.
+        Zeilen ohne belastbaren Nenner (kein Break-even, kein Kurs, kein Restsaldo) stehen am Ende
+        und tragen einen Strich.</p>
       <div class="tbl"><table>
         <thead><tr>
           <th>Spread</th><th>Verfall</th><th>Breite</th><th>{% if strategy_kind == 'credit' %}Credit (je Einheit){% else %}Debit (je Einheit){% endif %}</th><th>{% if strategy_kind == 'credit' %}Risikobudget ($){% else %}Position ($){% endif %}</th><th>max Verlust<br>(je Einheit, brutto)</th><th>max Gewinn<br>(je Einheit, brutto)</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite<br>(brutto)</a></th><th>Breakeven<br>(brutto)</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>{% if strategy_kind == 'credit' %}Credit/Breite %{% else %}Debit/Breite %{% endif %}</th><th>Hinweis</th>
@@ -651,6 +684,19 @@
       </table></div></div>
     {% else %}
       <p class="note">Keine Kontrakte haben die Kriterien bestanden.</p>
+    {% endif %}
+    {# Ausschlussuebersicht: JE EINHEIT eine Zeile, keine Gesamtsumme. Eine
+       gestrichene Kombination sind zwei Kontrakte, und ein Verfall kann die
+       ganze Kette verbergen - eine Addition waere eine Zahl ohne Bedeutung. #}
+    {% if exclusions %}
+      <div class="excl" id="exclusions">
+        <h3>Ausschlüsse nach Einheit</h3>
+        {% for block in exclusions %}
+          <p class="excl-unit" data-unit="{{ block.level }}"><b>{{ block.unit }}: {{ block.counted }}</b>
+            {%- for c in block.categories %} · {{ c.label }} {{ c.count }}{% endfor %}</p>
+          <p class="excl-note">{{ block.first_reason_note }}{% if block.not_checked %} Nicht geprüft wurden: {{ block.not_checked|join(', ') }}.{% endif %}{% if block.unmapped %} Nicht zugeordnete Gründe: {{ block.unmapped|join(' · ') }}.{% endif %}</p>
+        {% endfor %}
+      </div>
     {% endif %}
     {% if dropped_reasons %}
       <details class="dropped-summary">
