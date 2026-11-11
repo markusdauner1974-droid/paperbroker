@@ -24,6 +24,7 @@ exercised in a real browser; see docs/270_slice_O_earnings_overview.md.
 import json
 import re
 import unittest
+from datetime import date
 from pathlib import Path
 
 import paperbroker
@@ -443,3 +444,50 @@ class TestTheScanReportsACappedSearch(unittest.TestCase):
         self.assertFalse(cov["capped"])
         self.assertTrue(cov["possible_exact"])
         self.assertNotIn("capped_sections", cov)
+
+
+class TestTheCoverageIsAlwaysThere(unittest.TestCase):
+    """Kody findings (PR #78) on the fix commit itself.
+
+    Two defects in the scan's coverage tally: the key was missing whenever no
+    section was searched, and the tally was written by parallel workers without
+    a lock. Both would make the very number this slice exists to report wrong.
+    """
+
+    def test_the_key_is_present_when_nothing_was_searched(self):
+        from paperbroker.tests.test_earnings_scan import quote
+
+        # one ticker, no chain at all -> no section to search
+        body = run_scan({}, [calendar_row("AAPL", 3_000_000)], criteria=ScreenerCriteria())
+        cov = body["pair_search"]["coverage"]      # must not raise
+        self.assertFalse(cov["capped"])
+        self.assertTrue(cov["possible_exact"])
+        self.assertEqual(0, cov["sections"])
+        self.assertEqual(0, cov["enumerated"])
+
+    def test_the_tally_survives_parallel_workers(self):
+        import threading as _threading
+
+        from paperbroker.earnings_scan import _Context, _coverage_total, _merke_suche
+
+        ctx = _Context(fetch_earnings=None, fetch_chain=None, strategies=(),
+                       criteria=ScreenerCriteria(), today=date(2026, 11, 11),
+                       now_fn=None, limits=None, counter=None, search_coverage={})
+        abschnitt = {"possible": 7, "enumerated": 5, "limit": 500, "capped": True}
+
+        def arbeite():
+            for _ in range(200):
+                _merke_suche(ctx, abschnitt)
+
+        fäden = [_threading.Thread(target=arbeite) for _ in range(8)]
+        for f in fäden:
+            f.start()
+        for f in fäden:
+            f.join()
+
+        gesamt = _coverage_total(ctx.search_coverage)
+        self.assertEqual(1600, gesamt["sections"])
+        self.assertEqual(1600 * 7, gesamt["possible"])
+        self.assertEqual(1600 * 5, gesamt["enumerated"])
+        self.assertEqual(1600, gesamt["capped_sections"])
+        self.assertTrue(gesamt["capped"])

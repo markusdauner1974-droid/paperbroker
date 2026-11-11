@@ -45,7 +45,7 @@ import re
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date
 
 from . import exclusions, quote_age
@@ -388,6 +388,12 @@ class _Context:
     #: answer: a capped search must never be invisible just because the scan
     #: loops over many expiries and titles.
     search_coverage: dict | None = None
+    #: The tally above is written by up to DEFAULT_CONCURRENCY worker threads,
+    #: so its read-modify-write runs under this lock (mirrors _Counter). Without
+    #: it a section can be counted twice or lost, and the scan would under-report
+    #: the very coverage this slice exists to make honest (Kody finding, PR #78).
+    _coverage_lock: object = field(
+        default_factory=threading.Lock, repr=False, compare=False)
 
 
 def _merke_suche(ctx, abschnitt):
@@ -402,17 +408,37 @@ def _merke_suche(ctx, abschnitt):
     gesamt = getattr(ctx, "search_coverage", None)
     if gesamt is None:
         return
-    gesamt["sections"] = gesamt.get("sections", 0) + 1
-    gesamt["possible"] = gesamt.get("possible", 0) + int(abschnitt.get("possible") or 0)
-    gesamt["enumerated"] = gesamt.get("enumerated", 0) + int(abschnitt.get("enumerated") or 0)
-    gesamt["limit"] = abschnitt.get("limit", MAX_PAIRS_PER_SECTION)
-    # always present, so a consumer never needs a key check for "was it cut?"
-    gesamt.setdefault("capped", False)
+    # one lock for the shared tally: the workers run in parallel, and a lost
+    # update here would under-report the coverage this slice exists to report
+    with ctx._coverage_lock:
+        gesamt["sections"] = gesamt.get("sections", 0) + 1
+        gesamt["possible"] = gesamt.get("possible", 0) + int(abschnitt.get("possible") or 0)
+        gesamt["enumerated"] = gesamt.get("enumerated", 0) + int(abschnitt.get("enumerated") or 0)
+        gesamt["limit"] = abschnitt.get("limit", MAX_PAIRS_PER_SECTION)
+        # always present, so a consumer never needs a key check for "was it cut?"
+        gesamt.setdefault("capped", False)
+        gesamt.setdefault("possible_exact", True)
+        if abschnitt.get("capped"):
+            gesamt["capped"] = True
+            gesamt["possible_exact"] = False
+            gesamt["capped_sections"] = gesamt.get("capped_sections", 0) + 1
+
+
+def _coverage_total(tally):
+    """The coverage block of the answer - present even when nothing ran.
+
+    Same shape as ``/api/screen``'s coverage, so a consumer can read
+    ``pair_search["coverage"]["capped"]`` without a key check (Kody finding on
+    PR #78: the scan omitted the key when no section was searched).
+    """
+    gesamt = dict(tally or {})
+    gesamt.setdefault("sections", 0)
+    gesamt.setdefault("possible", 0)
+    gesamt.setdefault("enumerated", 0)
     gesamt.setdefault("possible_exact", True)
-    if abschnitt.get("capped"):
-        gesamt["capped"] = True
-        gesamt["possible_exact"] = False
-        gesamt["capped_sections"] = gesamt.get("capped_sections", 0) + 1
+    gesamt.setdefault("capped", False)
+    gesamt.setdefault("limit", MAX_PAIRS_PER_SECTION)
+    return gesamt
 
 
 def _report(ctx, symbol, exc):
@@ -923,9 +949,11 @@ def scan_day(
         # The coverage sums over EVERY section the scan searched - one unit, and
         # `capped` is sticky (Kody finding on PR #78: a capped search used to be
         # invisible exactly on the surface that loops over many expiries).
+        # `coverage` is ALWAYS present, like /api/screen: a consumer reading
+        # pair_search["coverage"]["capped"] must not depend on whether this scan
+        # happened to search a single section (Kody finding on PR #78).
         "pair_search": {**pair_search_report(criteria),
-                        **({"coverage": dict(ctx.search_coverage)}
-                           if ctx.search_coverage else {})},
+                        "coverage": _coverage_total(ctx.search_coverage)},
         "exclusions": exclusions.summarise_scan(zaehler, eintraege, criteria),
         "entries": eintraege,
     }
