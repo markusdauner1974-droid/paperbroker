@@ -327,6 +327,35 @@ def _option_note(applied, hidden, stale):
     return satz
 
 
+_FAILURE_REASONS = {
+    "source_blocked": "Quelle blockt die Anfrage",
+    "source_throttled": "Quelle drosselt die Anfragen",
+    "source_unreachable": "Quelle nicht erreichbar",
+    "invalid_payload": "Quelle liefert unbrauchbare Daten",
+    "invalid_json": "Quelle liefert kein JSON",
+    "recent_failure": "letzter Versuch gerade gescheitert",
+}
+
+
+def _failure_reason(error):
+    """One German clause naming WHY a source query failed, or ``None``.
+
+    A block is not a silent source: the source answered 403, and a note that
+    says only "does not answer" would describe the wrong event. The code stays
+    visible next to the wording so the log and the page agree.
+    """
+    if not isinstance(error, dict):
+        return None
+    code = str(error.get("code") or "").strip()
+    if not code:
+        return None
+    text = _FAILURE_REASONS.get(code, f"Quelle meldet {code}")
+    status = error.get("http_status")
+    if status:
+        text = f"{text} (HTTP {status})"
+    return text
+
+
 def _calendar_failure(error, day):
     """``(source_code, http_status, message)`` for a day the calendar did not deliver.
 
@@ -1122,6 +1151,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 zeilen = [dict(zeile, session_text=_SESSION_TEXT.get(zeile.get("session"), _SESSION_UNKNOWN_TEXT))
                           for zeile in gruppe["rows"]]
                 zustand = tageszustand.get(gruppe["key"], "unavailable")
+                meldung = roh.get(tage.get(gruppe["key"]))
+                grund = None
+                if zustand == "unavailable" and isinstance(meldung, dict):
+                    grund = _failure_reason(meldung.get("error"))
                 gruppen.append(dict(
                     gruppe,
                     rows=zeilen,
@@ -1135,6 +1168,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                     tab_counter=None if zustand == "unavailable" else gruppe["total"],
                     unavailable=zustand == "unavailable",
                     stale=zustand == "stale",
+                    # WHY the day is missing, when the source said so (a block
+                    # and a timeout are different events and must not read
+                    # alike). Empty when the answer carries no reason.
+                    failure_reason=grund,
                 ))
 
             # The page opens on exactly ONE day, so that day must be the one
@@ -1183,6 +1220,20 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                     saetze.append(f"{ausgefallen} Tage konnten nicht abgerufen werden")
                 if letzter_stand:
                     saetze.append("letzter Stand, Quelle antwortet nicht")
+                # One reason per distinct failure, named next to the sentence:
+                # "does not answer" alone hides that the source DID answer 403.
+                gruende = []
+                for key, tag in tage.items():
+                    if tageszustand.get(key) != "unavailable":
+                        continue
+                    meldung = roh.get(tag)
+                    grund = _failure_reason(
+                        meldung.get("error") if isinstance(meldung, dict) else None
+                    )
+                    if grund and grund not in gruende:
+                        gruende.append(grund)
+                if gruende:
+                    saetze.append("Grund: " + " · ".join(gruende))
                 note = " · ".join(saetze) or None
 
             return {
