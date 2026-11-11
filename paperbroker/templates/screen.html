@@ -393,8 +393,10 @@
           </div>
           {% elif g.unavailable %}
           {# Kein belegter Inhalt: "keine Einträge" waere hier eine erfundene
-             Aussage - die Quelle hat den Tag gar nicht beantwortet. #}
-          <p class="note">Tag nicht abrufbar</p>
+             Aussage - die Quelle hat den Tag gar nicht beantwortet. Nennt die
+             Antwort einen Grund (Block, Drosselung, Timeout), steht er daneben:
+             ein 403 ist eine Antwort, kein Schweigen. #}
+          <p class="note">Tag nicht abrufbar{% if g.failure_reason %} · {{ g.failure_reason }}{% endif %}</p>
           {% else %}
           <p class="note">keine Einträge</p>
           {% endif %}

@@ -57,6 +57,8 @@ import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 
+import requests
+
 from ...earnings_calendar import (
     CONFIRMATION_UNKNOWN,
     CONFIRMATIONS,
@@ -91,15 +93,30 @@ CALENDAR_URL = "https://api.nasdaq.com/api/calendar/earnings?date={date}"
 # requests were throttled with HTTP 429. This download (5415 rows, 388 KB,
 # 2.3-3.9 s) answers "has options?" for every title at once.
 OPTIONABLE_SYMBOLS_URL = "https://www.cboe.com/us/options/symboldir/equity_index_options/?download=csv"
-# Measured against api.nasdaq.com on 2026-11-08: this minimal user agent
-# answered in 0.06-0.16 s per request, while a full Chrome string cost
-# 1.06-2.11 s for BYTE-IDENTICAL bodies (54137 bytes for the calendar, 354
-# bytes for /analyst/AAPL/earnings-date, HTTP 200 on both). Nothing in the
-# answer depends on the browser string, so the cheap one is used - no retry
-# logic hides the cost.
+# Measured against api.nasdaq.com on 2026-11-11, all clients from the same
+# address within the same second, byte-identical URL
+# (/api/analyst/NVDA/earnings-date?assetclass=stocks):
+#
+#   client                                    result
+#   curl -A 'Mozilla/5.0'                     HTTP 200, 616 B
+#   requests.get(..., UA Mozilla/5.0)         HTTP 200, 616 B
+#   urllib.request (UA Mozilla/5.0)           HTTP 403 "Access Denied" (Akamai)
+#   urllib.request (Chrome string, gzip,
+#                   Connection: keep-alive)   HTTP 403
+#   http.client (UA / requests-like headers)  HTTP 403
+#
+# The block therefore sits on the Python STDLIB http stack, not on the address,
+# the URL or the User-Agent value - which is why the headers below keep the
+# minimal string and the transport changed instead (``requests_transport``).
+# The earlier comment here (2026-11-08: 0.06-0.16 s minimal versus 1.06-2.11 s
+# Chrome string, HTTP 200 on both) is OBSOLETE: it was taken while the stdlib
+# stack was still answered, and its latency difference is no argument for
+# keeping a client that is now refused outright.
 _HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nasdaq.com/",
 }
 # The symbol list is a CSV download, not JSON - the Accept header says so.
 _CSV_HEADERS = {
@@ -169,6 +186,37 @@ def urllib_transport(url, headers, timeout):
             return resp.status, resp.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
+
+
+def requests_transport(url, headers, timeout):
+    """(status, body) via ``requests`` - the stdlib stack is refused (see above).
+
+    Same contract as ``urllib_transport``: an HTTP status is RETURNED, not
+    raised, so exactly one place classifies it. Only a transport failure (DNS,
+    connect, read timeout) raises, and ``_get_json`` turns that into
+    ``source_unreachable``.
+    """
+    antwort = requests.get(url, headers=headers, timeout=timeout)
+    return antwort.status_code, antwort.content
+
+
+def _status_error(status):
+    """The stable code for a non-200 answer, with the status kept.
+
+    403 and 429 are not "some HTTP error": both are the source SPEAKING about
+    this client - it blocked it or throttled it. A caller that only sees
+    ``http_error`` cannot tell that apart from a broken endpoint, so the two
+    get their own codes and the status stays in the record.
+    """
+    if status == 403:
+        return EarningsSourceError(
+            "source_blocked", "the source blocked this client with HTTP 403", status
+        )
+    if status == 429:
+        return EarningsSourceError(
+            "source_throttled", "the source throttled this client with HTTP 429", status
+        )
+    return EarningsSourceError("http_error", f"the source answered HTTP {status}", status)
 
 
 class EarningsCache:
@@ -577,8 +625,15 @@ class NasdaqEarningsAdapter:
         failure_retry_seconds=DEFAULT_FAILURE_RETRY_SECONDS,
         optionable_store=None,
         optionable_ttl_seconds=DEFAULT_OPTIONABLE_TTL_SECONDS,
+        text_transport=None,
     ):
-        self._transport = transport or urllib_transport
+        # Nasdaq answers ``requests`` and refuses the stdlib stack (see
+        # ``_HEADERS``); the CBOE CSV download is a different host and works
+        # over urllib, so it keeps that transport. An INJECTED transport still
+        # serves both paths - that is the contract the tests and the callers
+        # rely on, and it is the only way to drive the adapter offline.
+        self._transport = transport or requests_transport
+        self._text_transport = text_transport or transport or urllib_transport
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
         self._cache = cache if cache is not None else EarningsCache()
         self._calendar_store = calendar_store if calendar_store is not None else DayCalendarStore()
@@ -616,7 +671,7 @@ class NasdaqEarningsAdapter:
         except Exception as exc:  # noqa: BLE001 - every transport failure is one class here
             raise EarningsSourceError("source_unreachable", f"{type(exc).__name__}: {exc}") from exc
         if status != 200:
-            raise EarningsSourceError("http_error", f"the source answered HTTP {status}", status)
+            raise _status_error(status)
         try:
             return json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body)
         except (ValueError, UnicodeDecodeError) as exc:
@@ -626,10 +681,12 @@ class NasdaqEarningsAdapter:
         """A text answer (the CBOE CSV), with the same failure classes as JSON.
 
         ``utf-8-sig`` strips the BOM the measured file carries; a body that is
-        not UTF-8 is an unusable answer, not a half-parsed list.
+        not UTF-8 is an unusable answer, not a half-parsed list. The transport
+        here is the CSV one (``urllib`` by default): a different host, measured
+        as working, and deliberately NOT switched with the Nasdaq path.
         """
         try:
-            status, body = self._transport(url, dict(headers), self.timeout_seconds)
+            status, body = self._text_transport(url, dict(headers), self.timeout_seconds)
         except Exception as exc:  # noqa: BLE001 - every transport failure is one class here
             raise EarningsSourceError("source_unreachable", f"{type(exc).__name__}: {exc}") from exc
         if status != 200:

@@ -327,6 +327,55 @@ def _option_note(applied, hidden, stale):
     return satz
 
 
+_FAILURE_REASONS = {
+    "source_blocked": "Quelle blockt die Anfrage",
+    "source_throttled": "Quelle drosselt die Anfragen",
+    "source_unreachable": "Quelle nicht erreichbar",
+    "invalid_payload": "Quelle liefert unbrauchbare Daten",
+    "invalid_json": "Quelle liefert kein JSON",
+    "recent_failure": "letzter Versuch gerade gescheitert",
+}
+
+
+def _failure_reason(error):
+    """One German clause naming WHY a source query failed, or ``None``.
+
+    A block is not a silent source: the source answered 403, and a note that
+    says only "does not answer" would describe the wrong event. The code stays
+    visible next to the wording so the log and the page agree.
+    """
+    if not isinstance(error, dict):
+        return None
+    code = str(error.get("code") or "").strip()
+    if not code:
+        return None
+    text = _FAILURE_REASONS.get(code, f"Quelle meldet {code}")
+    status = error.get("http_status")
+    if status:
+        text = f"{text} (HTTP {status})"
+    return text
+
+
+def _calendar_failure(error, day):
+    """``(source_code, http_status, message)`` for a day the calendar did not deliver.
+
+    The scan route answers 503 in both cases, but the sentence may not be the
+    same: "did not answer" is false once the source has answered 403 or 429.
+    The upstream code and status travel in the message and in the error object,
+    so a caller never has to guess which of the two happened.
+    """
+    error = error if isinstance(error, dict) else {}
+    source_code = str(error.get("code") or "").strip() or None
+    status = error.get("http_status")
+    if status:
+        message = f"the earnings calendar answered HTTP {status} for {day} ({source_code})"
+    elif source_code:
+        message = f"the earnings calendar did not answer for {day} ({source_code})"
+    else:
+        message = f"the earnings calendar did not answer for {day}"
+    return source_code, status, message
+
+
 def _earnings_source_from_env():
     """Which earnings source create_app wires when none is injected.
 
@@ -687,11 +736,19 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # expirations this chain really lists and the deterministic decision. #
     # Neither route places an order, and neither invents a date.          #
     # ------------------------------------------------------------------ #
-    def _earnings_error(status, code, message):
+    def _earnings_error(status, code, message, *, source_code=None, source_status=None):
         from paperbroker.earnings_calendar import SCHEMA_VERSION as _EARNINGS_SCHEMA
 
+        fehler = {"code": code, "message": message}
+        # The upstream code and status stay separate fields: the route's own
+        # code says WHAT this endpoint could not do, these two say what the
+        # source did. Absent when there is nothing to report.
+        if source_code:
+            fehler["source_code"] = source_code
+        if source_status is not None:
+            fehler["http_status"] = source_status
         return (
-            jsonify(schema_version=_EARNINGS_SCHEMA, error={"code": code, "message": message}),
+            jsonify(schema_version=_EARNINGS_SCHEMA, error=fehler),
             status,
         )
 
@@ -936,9 +993,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             )
         if not isinstance(tag, dict):
             # No entry for the requested day is no answer - not an empty day.
+            quell_code, quell_status, message = _calendar_failure(
+                antwort.get("error") if isinstance(antwort, dict) else None, day
+            )
             return _earnings_error(
-                503, "calendar_unavailable",
-                f"the earnings calendar did not answer for {day}",
+                503, "calendar_unavailable", message,
+                source_code=quell_code, source_status=quell_status,
             )
         zustand = str(tag.get("state") or gesamt or "unavailable")
         zeilen = tag.get("rows") or []
@@ -948,9 +1008,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 "no earnings source is configured - there is nothing to scan",
             )
         if zustand == "unavailable" or not isinstance(zeilen, list):
+            # The day failed. The message must name what the source DID: a 403
+            # or 429 is an answer, and "did not answer" would hide the reason.
+            quell_code, quell_status, message = _calendar_failure(tag.get("error"), day)
             return _earnings_error(
-                503, "calendar_unavailable",
-                f"the earnings calendar did not answer for {day}",
+                503, "calendar_unavailable", message,
+                source_code=quell_code, source_status=quell_status,
             )
 
         try:
@@ -1088,6 +1151,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 zeilen = [dict(zeile, session_text=_SESSION_TEXT.get(zeile.get("session"), _SESSION_UNKNOWN_TEXT))
                           for zeile in gruppe["rows"]]
                 zustand = tageszustand.get(gruppe["key"], "unavailable")
+                meldung = roh.get(tage.get(gruppe["key"]))
+                grund = None
+                if zustand == "unavailable" and isinstance(meldung, dict):
+                    grund = _failure_reason(meldung.get("error"))
                 gruppen.append(dict(
                     gruppe,
                     rows=zeilen,
@@ -1101,6 +1168,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                     tab_counter=None if zustand == "unavailable" else gruppe["total"],
                     unavailable=zustand == "unavailable",
                     stale=zustand == "stale",
+                    # WHY the day is missing, when the source said so (a block
+                    # and a timeout are different events and must not read
+                    # alike). Empty when the answer carries no reason.
+                    failure_reason=grund,
                 ))
 
             # The page opens on exactly ONE day, so that day must be the one
@@ -1149,6 +1220,20 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                     saetze.append(f"{ausgefallen} Tage konnten nicht abgerufen werden")
                 if letzter_stand:
                     saetze.append("letzter Stand, Quelle antwortet nicht")
+                # One reason per distinct failure, named next to the sentence:
+                # "does not answer" alone hides that the source DID answer 403.
+                gruende = []
+                for key, tag in tage.items():
+                    if tageszustand.get(key) != "unavailable":
+                        continue
+                    meldung = roh.get(tag)
+                    grund = _failure_reason(
+                        meldung.get("error") if isinstance(meldung, dict) else None
+                    )
+                    if grund and grund not in gruende:
+                        gruende.append(grund)
+                if gruende:
+                    saetze.append("Grund: " + " · ".join(gruende))
                 note = " · ".join(saetze) or None
 
             return {
