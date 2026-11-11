@@ -267,6 +267,28 @@ class TestTheMarketState(unittest.TestCase):
         self.assertEqual((feiertag["state"], feiertag["reason"]),
                          (quote_age.MARKET_CLOSED, "holiday"))
 
+    def test_a_missing_timezone_database_degrades_to_unknown(self):
+        """No tz data? Then no market claim - never a guess.
+
+        The slim Docker image may ship without ``/usr/share/zoneinfo``. The
+        session times cannot be derived without it, so the state is reported as
+        ``unknown`` and the provisional sentence falls back to the age rule
+        instead of inventing "the market is open".
+        """
+        from unittest import mock
+
+        with mock.patch.object(quote_age, "ZoneInfo", side_effect=OSError("no tzdata")):
+            markt = quote_age.market_state(CLOCK)
+        self.assertEqual(markt["state"], quote_age.MARKET_UNKNOWN)
+        self.assertIsNone(markt["reason"])
+
+        with mock.patch.object(quote_age, "ZoneInfo", side_effect=OSError("no tzdata")):
+            ages = quote_age.assess_chain([quote("2026-11-11 12:00:00")], CLOCK, 30)
+            block = quote_age.summarise(ages, mode=quote_age.MODE_LAST_AVAILABLE,
+                                        max_age_min=30, clock=CLOCK)
+        self.assertTrue(block["provisional"])
+        self.assertNotIn("Markt geschlossen", block["note"])   # no invented session
+
     def test_the_provisional_note_names_a_closed_market(self):
         samstag = datetime(2026, 11, 14, 16, 0, tzinfo=UTC)
         ages = quote_age.assess_chain([quote("2026-11-13 20:00:00")], samstag, 30)
