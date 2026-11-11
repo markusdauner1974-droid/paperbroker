@@ -103,6 +103,12 @@
       align-items:start;justify-items:start}
 
     .err,.warn,.hint{padding:12px 14px;border:1px dotted;border-radius:0;font-size:12.5px}
+    /* Datenmodus "Letzter verfügbarer Marktstand": der Block steht ueber dem
+       Ergebnis und ist nicht zu uebersehen - Vorlaeufigkeit ist eine Eigenschaft
+       der ganzen Antwort, keine Randnotiz. */
+    .provisional{padding:10px 14px;border:1px dotted rgba(217,164,65,.6);
+      background:rgba(217,164,65,.08);color:var(--ink);font-size:12.5px;margin:0 0 14px}
+    .provisional b{color:var(--warn);letter-spacing:.06em;text-transform:uppercase;font-size:11px}
     .err{border-color:rgba(224,85,52,.55);background:rgba(224,85,52,.08);color:#f7d3c9}
     .warn{border-color:rgba(217,164,65,.5);background:rgba(217,164,65,.07);color:#f0dfba}
     .hint{border-color:var(--hair);background:var(--panel);color:var(--muted)}
@@ -281,11 +287,32 @@
     {% endif %}
     {% if feed_stamp %}<span class="badge">Kursdatum {{ feed_stamp }}</span>{% endif %}
   {% endif %}
+  {# Datenmodus und Datenstand: der Modus ist eine Angabe des Bedieners, der
+     Quellzeitpunkt eine der Quelle - und der Abrufzeitpunkt eine dritte. Alle
+     drei stehen nebeneinander, damit keiner den anderen ersetzt. ACHTUNG: eine
+     Quelle ohne Zonenangabe bekommt hier KEIN "UTC" angehaengt. #}
+  {% if data_state %}
+    <span class="badge">Modus: {{ data_state.mode_label }}</span>
+    {% if data_state.source_timestamp_raw %}
+    <span class="badge">Datenstand {{ data_state.source_timestamp_raw }}{% if data_state.source_timestamp_zone == 'assumed_utc' %} · ohne Zonenangabe{% endif %}</span>
+    {% else %}
+    <span class="badge">Datenstand unbekannt</span>
+    {% endif %}
+    {% if data_state.fetched_text %}<span class="badge">Abruf {{ data_state.fetched_text }}</span>{% endif %}
+  {% endif %}
   {% if trend %}
     <span class="badge">Trend: {{ trend.label }}{% if trend.note %} - {{ trend.note }}{% endif %}</span>
   {% endif %}
 </header>
 <main>
+  {# Vorlaeufigkeit ist eine Eigenschaft der ganzen Antwort, nicht einer Zeile:
+     deshalb steht der Satz ueber allem anderen. Er behauptet ausdruecklich
+     NICHT, dass irgendetwas handelbar ist. #}
+  {% if data_state and data_state.provisional %}
+  <p class="provisional" role="status" id="provisional-note">
+    <b>Vorläufig</b> {{ data_state.provisional_note }}{% if data_state.note %} {{ data_state.note }}{% endif %}
+  </p>
+  {% endif %}
   {% if calendar %}
   {# Der Kalender ist eine Zugabe: fehlt die Quelle, steht hier ein Satz -
      keine erfundenen Zeilen, kein Absturz des Screener-Formulars darunter. #}
@@ -464,6 +491,9 @@
       <label>DTE bis (Tage) · Standard 45 <input type="number" name="dte_max" min="0" value="{{ request.args.get('dte_max') or (criteria.dte_max if criteria.dte_max is not none else '') }}"></label>
       <label>Alter max (min) · Standard 30 <input type="number" name="max_quote_age_min" min="0" value="{{ request.args.get('max_quote_age_min') or (criteria.max_quote_age_min if criteria.max_quote_age_min is not none else '') }}" {% if age_off %}disabled{% endif %}> <small class="warn-min">0 streicht alle Kurse (nicht »aus«)</small></label>
       <label><input type="checkbox" name="ignore_quote_age" value="1" {% if age_off %}checked{% endif %}> Alter-Grenze aus</label>
+      <span>Datenmodus
+        <label><input type="radio" name="data_mode" value="fresh" {% if criteria.data_mode != 'last_available' %}checked{% endif %}> Aktualitätsfilter (Standard) — die Altersgrenze streicht ältere Kurse</label>
+        <label><input type="radio" name="data_mode" value="last_available" {% if criteria.data_mode == 'last_available' %}checked{% endif %}> Letzter verfügbarer Marktstand — ältere Kurse zur vorläufigen Vorbereitung, klar als vorläufig gekennzeichnet</label></span>
     </fieldset>
     <fieldset class="crit">
       <legend>Volatilität</legend>

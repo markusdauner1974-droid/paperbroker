@@ -188,6 +188,9 @@ GET /api/screen?ticker=SPY&expiration=2026-11-20&strategy=bear_call_credit
 * The JSON carries `strategy`, `strategy_label` and - unchanged - `spread_type` (`call`/`put`), the
   derived chain side. Inside every row `long_symbol` is the leg that is **bought**, `short_symbol`
   the leg that is **sold**; the page spells that out per row.
+* `data_mode=fresh|last_available` picks what the age limit does (see
+  [Quote age](#quote-age-two-modes-one-rule-data_mode)); the default `fresh` is the previous
+  behaviour. All other filters in the same request are untouched by it.
 
 ### JSON fields of a vertical row
 
@@ -214,6 +217,68 @@ Added for the credit spreads (additive, no existing key changed meaning):
 
 `max_loss`, `max_profit` and `breakeven` are strategy-dependent: a credit row carries
 `width − credit`, the credit itself, and the break-even off the **sold** strike.
+
+
+## Quote age: two modes, one rule (`data_mode`)
+
+The CBOE payload names **no timezone**. Its envelope stamp (`"2026-11-11 16:11:19"`) is a naive
+string, and `arrow` 0.10 reads a naive string as UTC — so `.to("UTC")` converted nothing while
+looking like a conversion. Measured 2026-11-11: that stamp answered `16:12:25 UTC` requests with
+`16:11:19` and, 75 s later, `16:14:19`, i.e. it tracks UTC wall clock (a New York stamp would have
+been four to five hours behind). An age is therefore computable — but it is an **assumption**, and
+`paperbroker/quote_age.py` is the single place that says so:
+
+| Field | Meaning |
+|---|---|
+| `zone` | `"stated"` when the value carries `Z` or an explicit offset, `"assumed_utc"` when it does not, `"none"` when there is nothing to read |
+| `age_proven` | `true` **only** for a stated zone — an assumption is never presented as a measurement |
+| `source_timestamp_raw` | the value as the source delivered it |
+| `source_timestamp_utc` | a UTC value **only** when the zone was stated, else `null` |
+| `fetched_at_utc` | when *we* fetched — deliberately a different fact from the source time |
+
+The same rule answers all four surfaces (page, `/api/screen`, `/api/v1/option-chain`, the earnings
+scan); `option_chain_api` keeps reporting `SOURCE_TIMEZONE_UNKNOWN` for the same reason.
+
+`data_mode` selects what the age limit **does** — it never changes any other filter:
+
+- `fresh` (default, unchanged): a quote older than `max_quote_age_min` is dropped with its own
+  reason (`veraltet: 275 Min.`). A quote whose age cannot be established is dropped too — fail-closed.
+- `last_available`: the limit becomes a statement instead of a rejection. An old quote may be used
+  for a provisional preparation, every other filter stays active, and the answer is marked
+  provisional. **Not** relaxed: a missing, unreadable or future stamp is dropped in this mode as
+  well — the mode admits older data, not undated data.
+
+```bash
+# default: the age limit decides
+curl 'http://127.0.0.1:8090/api/screen?ticker=AAPL&expiration=2026-11-18'
+
+# preparation outside trading hours: old data may be used, clearly labelled
+curl 'http://127.0.0.1:8090/api/screen?ticker=AAPL&expiration=2026-11-18&data_mode=last_available'
+```
+
+Both answers carry one `data_state` block (identical shape on `/api/screen` and on
+`/api/v1/earnings-scan`):
+
+```json
+{"mode": "last_available", "mode_label": "Letzter verfügbarer Marktstand",
+ "provisional": true, "provisional_note": "Vorläufig: … nicht ein aktueller Kurs. Keine Aussage über aktuelle Handelbarkeit.",
+ "fetched_at_utc": "2026-11-11T16:30:13Z",
+ "source_timestamp_raw": "2026-11-11 16:29:20", "source_timestamp_utc": null,
+ "source_timestamp_zone": "assumed_utc", "source_age_minutes": 0.9, "age_proven": false,
+ "max_age_min": 30, "counts": {"total": 96, "fresh": 0, "stale": 96, "future": 0, "undated": 0},
+ "market": {"state": "open", "reason": null, "exchange_day": "2026-11-11", "exchange_time": "11:29"}}
+```
+
+`market` comes from the calendar this project already had (`earnings_calendar.is_us_trading_day`
+plus the 09:30–16:00 New York session), so a weekend or an NYSE holiday is named as the reason the
+data is old instead of being guessed. `provisional` is `true` only when the mode is `last_available`
+**and** at least one quote is old or undated — fresh data is never dressed up as provisional.
+
+Measured end to end against the live feed (2026-11-11, market open, `max_quote_age_min=0`):
+default mode `candidates: 0` with 77 × `veraltet: 1 Min.`; the same request with
+`data_mode=last_available` gives `candidates: 1`, `provisional: true` and the **same** source stamp.
+With the real default (30 min) nothing changed: `candidates: 1`, lamp green, age 0.89 min.
+
 
 
 ## Testing and lint

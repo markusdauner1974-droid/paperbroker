@@ -26,6 +26,7 @@ from urllib.parse import urlencode
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
 
+from . import quote_age
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
@@ -56,6 +57,7 @@ from .earnings_scan import (
 )
 from .eva_quality import assess_source_quality, snapshot_identity
 from .PaperBroker import PaperBroker
+from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
 from .screener import (
     DEFAULT_STRATEGY,
     FUTURE_TOLERANCE_S,
@@ -113,7 +115,11 @@ _CRITERIA_INT_FIELDS = ("dte_min", "dte_max", "min_oi", "min_volume", "max_quote
 _CRITERIA_FLOAT_FIELDS = ("max_spread_pct", "max_spread_abs", "pair_max_width", "iv_min", "iv_max",
                           "weight_spread", "weight_oi", "weight_iv", "fees", "budget")
 _CRITERIA_BOOL_FIELDS = ("require_oi", "require_volume")
-_CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low")}
+_CRITERIA_CHOICE_FIELDS = {"iv_pref": ("high", "low"),
+                           # the age MODE is a choice, not a switch: "fresh" is
+                           # the default and keeps every protection, the second
+                           # value admits older data for a provisional run
+                           "data_mode": AGE_MODES}
 _CRITERIA_FIELDS = (_CRITERIA_INT_FIELDS + _CRITERIA_FLOAT_FIELDS
                     + _CRITERIA_BOOL_FIELDS + tuple(_CRITERIA_CHOICE_FIELDS))
 _CRITERIA_ECHO_FIELDS = tuple(ScreenerCriteria.__dataclass_fields__)
@@ -457,6 +463,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                            listed_dates=selectable, results=[], freshness=None,
                            dropped_reasons=[], verticals=[],
                            vertical_drops=[], trend=None,
+                           # no chain was read: the block is present and empty,
+                           # so a consumer never needs a key check
+                           data_state=_data_state(None, criteria, now_fn),
                            # no snapshot was screened, so there is nothing to
                            # certify - the key is present but empty
                            eva_quality=None)
@@ -506,6 +515,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             freshness_limit=criteria.max_quote_age_min,
             age_within_limit=_age_within_limit(quotes, criteria, now_fn=now_fn),
             feed_stamp=_feed_stamp(quotes),
+            # The mode, the data state and the provisional marker. Same object
+            # the page renders - one rule, two surfaces.
+            data_state=_data_state(quotes, criteria, now_fn),
             # B (Ausbau-Slice B): vertical CALL spreads from the RAW chain.
             # They are deliberately not built from `results` - the eight
             # single-option filters do not preserve strike adjacency
@@ -1240,6 +1252,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             for v in sorted(vertical_kept, key=_vertical_sort_key(sort_mode))
         ]
         age_min = _newest_quote_age_min(lamp_source, now_fn=now_fn)
+        # Datenmodus + Datenstand + Vorlaeufig-Marker. Dasselbe Objekt liefert
+        # /api/screen - die Seite rechnet nichts nach.
+        zustand = _data_state(lamp_source, criteria, now_fn)
+        zustand["fetched_text"] = _german_stamp(zustand["fetched_at_utc"])
         # D (Ausbau-Slice 3): the row order is a property of the RESULT, not
         # of the template. Sorting here keeps the order checkable in the test
         # client (there is no JS runner) and it is the order every consumer
@@ -1301,7 +1317,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             # The day scan is the page's second action: what it may send and
             # what its table is called come from one server-side table.
             scan=scan_view_data(),
-            feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit")
+            feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit",
+            data_state=zustand)
 
     return app
 
@@ -1474,25 +1491,39 @@ def _newest_quote_age_min(quotes, now_fn=None):
 
     UX-1: this is the single place where the age is computed - the lamp
     colour and the minutes shown in the header come from the same value.
+
+    The computation itself is ``quote_age`` - the same rule the filter uses,
+    so the number on the page cannot disagree with the number that dropped
+    the contract. A broken clock returns None here (a label must not raise);
+    the filter names the clock error itself.
     """
     if not quotes:
         return None
-    now = now_fn() if now_fn is not None else arrow.get()
-    newest = None
-    for item in quotes:
-        q = getattr(item, "quote", item)  # ScreenResult or OptionQuote
-        ts = getattr(q, "quote_timestamp", None)
-        if ts is None:
-            continue
-        try:
-            t = arrow.get(str(ts).replace(" ", "T"))
-        except Exception:
-            continue
-        if newest is None or t > newest:
-            newest = t
-    if newest is None:
+    try:
+        clock = quote_age.clock_utc(now_fn)
+    except Exception:                       # noqa: BLE001 - a label must not raise
         return None
-    return (now - newest).total_seconds() / 60.0
+    neueste = quote_age.newest(quote_age.assess_chain(quotes, clock, None))
+    return None if neueste is None or neueste.age_minutes is None else neueste.age_minutes
+
+
+def _data_state(quotes, criteria, now_fn=None):
+    """The age-mode / data-state block shared by the page and the API.
+
+    ONE object with the mode, the provisional flag, the raw source stamp, the
+    (only-if-proven) UTC value, the age with its ``age_proven`` flag, the fetch
+    time, the counts per state and the market state. The page renders it and
+    ``/api/screen`` returns it unchanged - that is what keeps the two surfaces
+    on the same status rules instead of one sentence in HTML and another in JSON.
+    """
+    try:
+        clock = quote_age.clock_utc(now_fn)
+    except Exception:                       # noqa: BLE001 - the page must render
+        clock = quote_age.clock_utc(None)
+    mode = getattr(criteria, "data_mode", MODE_FRESHNESS) if criteria is not None else MODE_FRESHNESS
+    max_age = None if criteria is None else criteria.max_quote_age_min
+    ages = quote_age.assess_chain(quotes or (), clock, max_age)
+    return quote_age.summarise(ages, mode=mode, max_age_min=max_age, clock=clock)
 
 
 def _spread_return_pct(v):

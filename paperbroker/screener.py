@@ -13,7 +13,9 @@
     - IV filters are direction-agnostic; the strategy decides whether
       high IV (theta_sell) or low IV (momentum_buy) is preferred
     - TrendProvider protocol decides call/put side only, never IV direction
-    - staleness guard via quote_timestamp (configurable max age)
+    - staleness guard via quote_timestamp (configurable max age), with ONE
+      implementation in quote_age.py - shared with the page, the API and the
+      earnings scan
 
     Units follow the adapter conventions: prices in dollars, IV/greeks
     stored as percentages (CBOE decimal 0.25 -> stored 25).
@@ -22,6 +24,16 @@ import math
 from dataclasses import dataclass, field, fields
 from typing import Optional, Protocol
 
+from . import quote_age
+from .quote_age import (
+    AGE_MODES,
+    FUTURE_TOLERANCE_S,
+    MODE_FRESHNESS,
+    MODE_LAST_AVAILABLE,
+    STATE_FRESH,
+    STATE_STALE,
+    STATE_UNCHECKED,
+)
 from .quotes import OptionQuote
 
 _PENNY_MID_THRESHOLD = 1.0  # $ mid at/below which the absolute spread bound applies
@@ -66,6 +78,14 @@ class ScreenerCriteria:
     # staleness guard on quote_timestamp (minutes); None = no check
     max_quote_age_min: int | None = 30
 
+    # How the age limit acts. MODE_FRESHNESS (default) keeps every protection:
+    # an old quote is dropped. MODE_LAST_AVAILABLE reads the same limit as a
+    # statement instead of a rejection - old quotes may be used for a
+    # provisional preparation and every result is marked as provisional. The
+    # other filters of the pipeline are untouched by either mode, and neither
+    # mode ever admits a quote whose stamp cannot be dated (see quote_age.py).
+    data_mode: str = MODE_FRESHNESS
+
     # tri-state handling
     require_oi: bool = True                       # missing OI -> exclude
     require_volume: bool = False                  # missing volume -> skip filter
@@ -84,6 +104,9 @@ class ScreenerCriteria:
         reported, not only the first: one round trip has to be enough.
         """
         bad = []
+        if self.data_mode not in AGE_MODES:
+            bad.append(f"data_mode: einer von {', '.join(AGE_MODES)} erwartet "
+                       f"(ist: '{self.data_mode}').")
         if self.iv_pref is not None and self.iv_pref not in ("high", "low"):
             bad.append(f"iv_pref: einer von high, low erwartet (ist: '{self.iv_pref}').")
         if self.max_spread_pct is not None and self.max_spread_pct < 0:
@@ -323,21 +346,32 @@ def filter_sizes(quotes, criteria: ScreenerCriteria):
 # minute in the FUTURE is a broken feed, not a fast clock - and the plain
 # `age_s > max_age_s` check could never see it, because a future timestamp
 # makes the age negative. Shared with the freshness lamp so both sides read
-# one rule instead of two.
-FUTURE_TOLERANCE_S = 60
-
-
+# one rule instead of two. The value itself lives in quote_age.py, which the
+# page, the API and the earnings scan read as well; the name stays importable
+# from here because that is where callers always took it.
 def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
-    """max_quote_age_min uses quote_timestamp. Fail-closed: when the guard
-    is enabled, a quote whose age cannot be established (missing or
-    unparseable timestamp) is dropped with a distinct reason - unknown
-    freshness must not silently pass a 30-minute guard.
+    """Split a chain by the age rule in ``criteria.max_quote_age_min``.
 
-    B-17: the clock call is checked SEPARATELY. A failing now_fn() is an
-    internal error, not an unreadable timestamp - the reason text is shown
-    on the page, so it must not lie. Measured 2026-10-10: a caller passing
-    an arrow object instead of a function got 'unparseable timestamp' for
-    contracts although all 104 carried a valid timestamp.
+    The verdict per quote is ``quote_age.assess`` - ONE implementation for the
+    page, ``/api/screen``, ``/api/v1/option-chain`` and the earnings scan.
+    What differs between the two modes is only what happens to an old quote:
+
+    * ``MODE_FRESHNESS`` (default, unchanged): an old quote is dropped with its
+      own reason, exactly as before.
+    * ``MODE_LAST_AVAILABLE``: an old quote is KEPT (it is the last available
+      market state) and every other filter still applies. A quote that cannot be
+      dated at all is dropped in this mode too - the mode admits older data, not
+      undated data.
+
+    Fail-closed stays: when the guard is enabled, a quote whose age cannot be
+    established (missing or unparseable timestamp) is dropped with a distinct
+    reason - unknown freshness must not silently pass a 30-minute guard.
+
+    B-17: the clock is checked SEPARATELY and ONCE per call. A failing now_fn()
+    is an internal error, not an unreadable timestamp - the reason text is shown
+    on the page, so it must not lie. Measured 2026-10-10: a caller passing an
+    arrow object instead of a function got 'unparseable timestamp' for contracts
+    although all 104 carried a valid timestamp.
 
     Slice J: a timestamp AFTER the clock yields a NEGATIVE age, so the plain
     `age_s > max_age_s` check let every such quote through - measured: +1 s,
@@ -346,53 +380,22 @@ def filter_stale(quotes, criteria: ScreenerCriteria, now_fn=None):
     dropped and named as such; the tolerance covers clock skew of seconds and
     nothing else. With the guard switched off nothing is checked here.
     """
-    from datetime import datetime
-
-    import arrow
     if criteria.max_quote_age_min is None:
         return quotes, []
-    if now_fn is None:
-        now_fn = lambda: arrow.get()  # noqa: E731
-    max_age_s = criteria.max_quote_age_min * 60
+    try:
+        clock = quote_age.clock_utc(now_fn)
+    except Exception:                       # noqa: BLE001 - internal error, named as one
+        return [], [(q, quote_age.REASON_CLOCK) for q in quotes]
+    mode = getattr(criteria, "data_mode", MODE_FRESHNESS)
     kept, dropped = [], []
     for q in quotes:
-        ts = getattr(q, "quote_timestamp", None)
-        if ts is None:
-            dropped.append((q, "Aktualität unbekannt (kein Zeitstempel)"))
-            continue
-        try:
-            now_v = now_fn()
-            if now_v is None:
-                raise ValueError("clock returned None")
-            if getattr(now_v, 'tzinfo', None) is not None or isinstance(now_v, arrow.Arrow):
-                now_naive = arrow.get(now_v).to('UTC').naive
-            elif isinstance(now_v, datetime):
-                now_naive = now_v
-            else:
-                raise TypeError(f"unsupported clock value: {type(now_v).__name__}")
-        except Exception:
-            # internal error, NOT an unreadable timestamp (B-17)
-            dropped.append((q, "Aktualität unbekannt (Uhrfehler)"))
-            continue
-        try:
-            # normalize both sides to UTC, THEN strip the offset: arrow
-            # timestamps carry UTC, callers may pass aware arrows in any
-            # timezone, .naive alone drops the offset WITHOUT conversion
-            # (a 14:35-04:00 clock read against a 14:30 UTC stamp would
-            # look 5 min old instead of 5 h 5 min) - so to('UTC') first
-            ts_naive = arrow.get(str(ts).replace(' ', 'T')).to('UTC').naive
-            age_s = (now_naive - ts_naive).total_seconds()
-        except Exception:
-            dropped.append((q, "Aktualität unbekannt (Zeitstempel unlesbar)"))
-            continue
-        if age_s < -FUTURE_TOLERANCE_S:
-            # the wording keeps the rounding of the stale branch below: the
-            # existing edge (30 min + 1 s reads "stale 30 min") must not move
-            dropped.append((q, f"Zeitstempel in der Zukunft (+{(-age_s)/60:.0f} Min.)"))
-        elif age_s > max_age_s:
-            dropped.append((q, f"veraltet: {age_s/60:.0f} Min."))
-        else:
+        alter = quote_age.assess(quote_age.stamp_of(q), clock, criteria.max_quote_age_min)
+        if alter.state in (STATE_FRESH, STATE_UNCHECKED):
             kept.append(q)
+        elif alter.state == STATE_STALE and mode == MODE_LAST_AVAILABLE:
+            kept.append(q)
+        else:
+            dropped.append((q, alter.reason))
     return kept, dropped
 
 

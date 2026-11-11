@@ -27,13 +27,16 @@ import unittest
 from pathlib import Path
 
 import paperbroker
+from paperbroker import quote_age
 from paperbroker.earnings_scan import STATUSES
+from paperbroker.screener import ScreenerCriteria
 from paperbroker.server import (
     _CRITERIA_FIELDS,
     create_app,
     scan_view_data,
 )
 from paperbroker.tests.test_earnings_scan import (
+    _LOOSE,
     CLOCK,
     EXP_A,
     TODAY,
@@ -41,6 +44,8 @@ from paperbroker.tests.test_earnings_scan import (
     FakeEarningsAdapter,
     calendar_row,
     call_pair,
+    entry_of,
+    run_scan,
 )
 
 TODAY_ISO = TODAY.isoformat()
@@ -85,6 +90,9 @@ def _query_for_all_fields():
         "dte_max": "45",
         "max_quote_age_min": "30",
         "ignore_quote_age": "1",
+        # the age mode travels to the scan exactly like any other criterion:
+        # the multi-ticker scan must be able to run in the preparation mode
+        "data_mode": "last_available",
         "strategy": "bull_call_debit",
     }
     fehlend = [name for name in _panel_fields() if name not in werte]
@@ -269,3 +277,79 @@ class TestTheClockOfThePage(unittest.TestCase):
         tage = re.findall(r'data-scan-day="([0-9-]{10})"', seite)
         self.assertEqual(sorted(tage), ["2026-10-06", "2026-10-07", "2026-10-08"])
 
+
+
+class TestTheAgeModeInTheMultiTickerScan(unittest.TestCase):
+    """The day scan reads the SAME age rule as the single-ticker view.
+
+    One day, two tickers, one old chain. The default mode finds nothing and
+    says why; the preparation mode finds the same pairs, marks the hits
+    provisional and returns the same ``data_state`` block the single view
+    returns - one rule, one block, three surfaces.
+    """
+
+    ALT = "2026-10-07 10:00:00"          # 275 min before the pinned clock
+
+    def _chains(self, stamp=ALT):
+        return {"AAPL": call_pair("AAPL", EXP_A, quote_timestamp=stamp),
+                "MSFT": call_pair("MSFT", EXP_A, quote_timestamp=stamp)}
+
+    def _rows(self):
+        return [calendar_row("AAPL", 3_000_000), calendar_row("MSFT", 2_000_000)]
+
+    def _body(self, mode=None, stamp=ALT):
+        criteria = _LOOSE
+        if mode is not None:
+            criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                        data_mode=mode)
+        return run_scan(self._chains(stamp), self._rows(), criteria=criteria)
+
+    def test_the_default_mode_reports_stale_data_instead_of_hits(self):
+        body = self._body()
+        aapl = entry_of(body, "AAPL")
+        self.assertEqual("stale_data", aapl["strategies"]["bull_call_debit"]["status"])
+        self.assertEqual(0, aapl["strategies"]["bull_call_debit"]["hits"])
+        self.assertEqual("stale", aapl["data"]["freshness"])
+        self.assertEqual("assumed_utc", aapl["data"]["chain_quote_zone"])
+        self.assertFalse(aapl["data"]["chain_quote_age_proven"])
+        self.assertIsNone(aapl["data"]["chain_quote_timestamp_utc"])
+        self.assertFalse(body["data_state"]["provisional"])
+
+    def test_the_preparation_mode_finds_the_same_pairs_and_marks_them(self):
+        body = self._body(quote_age.MODE_LAST_AVAILABLE)
+        aapl = entry_of(body, "AAPL")
+        bull = aapl["strategies"]["bull_call_debit"]
+        self.assertEqual("hits", bull["status"])
+        self.assertGreater(bull["hits"], 0)
+        self.assertTrue(bull["provisional"])          # old data, clearly labelled
+        # the freshness WORD does not change with the mode: the quotes are old,
+        # the mode only decides whether they may be used
+        self.assertEqual("stale", aapl["data"]["freshness"])
+        state = body["data_state"]
+        self.assertEqual(quote_age.MODE_LAST_AVAILABLE, state["mode"])
+        self.assertTrue(state["provisional"])
+        self.assertEqual(self.ALT, state["source_timestamp_raw"])
+        self.assertEqual("2026-10-07T14:35:00Z", state["fetched_at_utc"])
+
+    def test_the_scan_and_the_single_view_agree_on_the_block(self):
+        """Same clock, same stamps, same rule - the two blocks must match."""
+        from paperbroker.server import _data_state
+        from paperbroker.tests.test_earnings_scan import FRESH
+
+        kette = self._chains(FRESH)["AAPL"]
+        criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
+                                    data_mode=quote_age.MODE_LAST_AVAILABLE)
+        einzeln = _data_state(kette, criteria, now_fn=CLOCK)
+        body = run_scan(self._chains(FRESH), self._rows(), criteria=criteria)
+        self.assertEqual(einzeln["mode"], body["data_state"]["mode"])
+        self.assertEqual(einzeln["fetched_at_utc"], body["data_state"]["fetched_at_utc"])
+        self.assertEqual(einzeln["source_timestamp_raw"],
+                         body["data_state"]["source_timestamp_raw"])
+        # fresh data stays fresh on both surfaces - no provisional theatre
+        self.assertFalse(einzeln["provisional"])
+        self.assertFalse(body["data_state"]["provisional"])
+
+    def test_the_panel_says_the_word_provisional(self):
+        js = PANEL_JS.read_text(encoding="utf-8")
+        self.assertIn("vorläufig (letzter verfügbarer Marktstand)", js)
+        self.assertIn("state.provisional", js)

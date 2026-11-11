@@ -48,6 +48,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date
 
+from . import quote_age
 from .assets import calendar_days_between
 from .earnings_calendar import combine_earnings_and_expirations
 from .earnings_day_calendar import rank_rows
@@ -248,43 +249,59 @@ def _reason_groups(dropped):
     return out
 
 
+def _newest_age(quotes, now_fn):
+    """The youngest :class:`quote_age.QuoteAge` of a chain (or None)."""
+    if not quotes:
+        return None
+    try:
+        clock = quote_age.clock_utc(now_fn)
+    except Exception:                               # noqa: BLE001 - a broken clock dates nothing
+        return None
+    return quote_age.newest(quote_age.assess_chain(quotes, clock, None))
+
+
 def _age_minutes(stamp, now_fn):
     """Quote age in minutes, or None when either side cannot be read.
 
-    Reporting only - the DECISION about staleness is ``screener.filter_stale``,
-    which this module calls rather than re-deriving. Both normalise to UTC
-    before subtracting; a naive clock value is read as UTC exactly as the
-    filter reads it.
+    Reporting only - the DECISION about staleness is ``quote_age.assess``, which
+    the single-ticker view, ``/api/screen`` and this scan all read (the shared
+    rule lives in quote_age.py). The number here is the same number: an unzoned
+    stamp is read under the documented feed assumption, and the caller is told
+    so by ``quote_age``'s ``zone``/``age_proven``.
     """
     if stamp is None:
         return None
+    if isinstance(stamp, quote_age.QuoteAge):       # already assessed
+        return None if stamp.age_minutes is None else round(stamp.age_minutes, 1)
     try:
-        import arrow
-
-        jetzt = arrow.get(now_fn()).to("UTC").naive
-        gestempelt = arrow.get(str(stamp).replace(" ", "T")).to("UTC").naive
+        clock = quote_age.clock_utc(now_fn)
     except Exception:                               # noqa: BLE001 - a stamp we cannot date
         return None
-    return round((jetzt - gestempelt).total_seconds() / 60.0, 1)
+    alter = quote_age.assess(stamp, clock, None)
+    return None if alter.age_minutes is None else round(alter.age_minutes, 1)
 
 
 def _freshness(quotes, criteria, now_fn):
     """``fresh`` / ``partial`` / ``stale`` / ``unchecked`` / ``unknown`` for a quote set.
 
-    The decision is ``screener.filter_stale`` - the single-ticker view's own rule.
-    Called twice on purpose: once over the WHOLE chain (what the reader is told
-    about the data) and once over the quotes a strategy really looked at (what
-    decides its status). A stale contract on an expiry that was skipped for
-    another reason must not turn a fresh, empty result into "too old".
+    The rule is ``quote_age`` - the same one the single-ticker view applies, so
+    the two answers cannot drift. Deliberately NOT ``filter_stale``'s two lists
+    any more: in the preparation mode the filter KEEPS an old quote, and a
+    "fresh" verdict for a chain of old quotes would be a lie. The state of the
+    quotes is a property of the quotes, not of the mode.
     """
     if criteria.max_quote_age_min is None:
         return "unchecked"
     if not quotes:
         return "unknown"
-    frisch, veraltet = filter_stale(quotes, criteria, now_fn)
-    if not frisch:
-        return "stale"
-    return "partial" if veraltet else "fresh"
+    try:
+        clock = quote_age.clock_utc(now_fn)
+    except Exception:                               # noqa: BLE001 - a broken clock dates nothing
+        return "unknown"
+    return quote_age.freshness_verdict(
+        quote_age.assess_chain(quotes, clock, criteria.max_quote_age_min),
+        criteria.max_quote_age_min,
+    )
 
 
 #: The per-expiry verdicts, folded back into the verdict of a set of expiries.
@@ -444,14 +461,12 @@ def _scan_symbol(symbol, row, ctx):
     buckets = _bucket_quotes(quotes)
     verfaelle = sorted(date.fromisoformat(schluessel) for schluessel in buckets)
 
-    # --- 3. freshness, decided by the screener's own rule -----------------
-    # filter_stale is the function the single-ticker view uses; calling it here
-    # means "too old" means the same thing in both places.
+    # --- 3. freshness, decided by the shared rule -------------------------
+    # quote_age is the same rule the single-ticker view and /api/screen read:
+    # "too old" means the same thing on every surface, and the zone of the stamp
+    # is named here exactly as it is named there.
     freshness = _freshness(quotes, ctx.criteria, ctx.now_fn)
-
-    stempel = [str(q.quote_timestamp) for q in quotes
-               if getattr(q, "quote_timestamp", None) is not None]
-    neuester = max(stempel) if stempel else None
+    neueste = _newest_age(quotes, ctx.now_fn)
 
     flags = []
     completeness = "complete"
@@ -468,8 +483,13 @@ def _scan_symbol(symbol, row, ctx):
         "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
         "chain_contracts": len(quotes),
         "chain_skipped_contracts": uebersprungen,
-        "chain_quote_timestamp_raw": neuester,
-        "chain_quote_age_minutes": _age_minutes(neuester, ctx.now_fn),
+        "chain_quote_timestamp_raw": None if neueste is None else neueste.source_timestamp_raw,
+        # UTC only when the SOURCE stated a zone - an unzoned feed stamp stays
+        # raw and says so through chain_quote_zone
+        "chain_quote_timestamp_utc": None if neueste is None else neueste.source_timestamp_utc,
+        "chain_quote_zone": None if neueste is None else neueste.zone,
+        "chain_quote_age_proven": bool(neueste is not None and neueste.age_proven),
+        "chain_quote_age_minutes": None if neueste is None else _age_minutes(neueste, ctx.now_fn),
         "freshness": freshness,
         "completeness": completeness,
         "listed_expirations": [d.isoformat() for d in verfaelle],
@@ -629,6 +649,12 @@ def _scan_symbol(symbol, row, ctx):
         eintrag["strategies"][sid] = {
             "status": status,
             "hits": treffer,
+            # A hit is provisional exactly when the quotes this strategy looked
+            # at are older than the limit and the operator chose the preparation
+            # mode. Never derived from the mode alone: fresh data stays fresh.
+            "provisional": bool(ctx.criteria.data_mode == quote_age.MODE_LAST_AVAILABLE
+                                and treffer
+                                and geprueft_freshness in ("stale", "partial")),
             "best": None if bestes is None else _best_payload(bestes, ctx.criteria,
                                                              dte_by_expiry),
             "checked_expirations": geprueft,
@@ -667,10 +693,37 @@ def _empty_strategies(strategies, status, criteria):
     """Strategy stubs for a ticker that was not checked - nothing was read, so
     the freshness is derived (``unknown``, or ``unchecked`` without a guard)."""
     leer = _empty_freshness(criteria)
-    return {sid: {"status": status, "hits": 0, "best": None,
+    return {sid: {"status": status, "hits": 0, "best": None, "provisional": False,
                   "checked_expirations": [], "checked_freshness": leer,
                   "drop_reasons": []}
             for sid in strategies}
+
+
+def _scan_data_state(eintraege, criteria, now_fn):
+    """The ``data_state`` block of a whole scan: mode, stamp, age, market.
+
+    Built from the stamps the scanned tickers really reported - one assessment
+    per ticker, then the SAME ``quote_age.summarise`` the single-ticker answer
+    uses. A scan of 40 titles therefore has one honest data state instead of 40
+    opinions in the page's JavaScript.
+    """
+    try:
+        clock = quote_age.clock_utc(now_fn)
+    except Exception:                               # noqa: BLE001 - the answer must render
+        clock = quote_age.clock_utc(None)
+    max_age = criteria.max_quote_age_min
+    alter = []
+    for eintrag in eintraege or ():
+        daten = eintrag.get("data") or {}
+        roh = daten.get("chain_quote_timestamp_raw")
+        if roh is not None:
+            alter.append(quote_age.assess(roh, clock, max_age))
+    return quote_age.summarise(
+        alter,
+        mode=getattr(criteria, "data_mode", quote_age.MODE_FRESHNESS),
+        max_age_min=max_age,
+        clock=clock,
+    )
 
 
 def scan_day(
@@ -798,6 +851,10 @@ def scan_day(
         "day": day,
         "strategies": list(auswahl),
         "best_sort": BEST_SORT,
+        # The age mode and the data state of the WHOLE scan - the same block
+        # shape the single-ticker view returns, built by the same rule. One
+        # block per answer, so the page never has to assemble a second opinion.
+        "data_state": _scan_data_state(eintraege, criteria, now_fn),
         "criteria": {
             name: getattr(criteria, name) for name in criteria.__dataclass_fields__
         },
