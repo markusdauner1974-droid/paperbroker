@@ -401,16 +401,21 @@ class TestRequestHeaders(unittest.TestCase):
     """The request headers must never regress to empty or missing values."""
 
     def test_the_request_names_a_user_agent_and_asks_for_json(self):
-        # A live measurement: api.nasdaq.com answers byte-identical bodies to
-        # a minimal user agent (0.06-0.16 s) and to a Chrome string (1-2 s),
-        # so the minimal one is used - but it must be present and non-empty.
-        self.assertEqual(sorted(_HEADERS), ["Accept", "User-Agent"])
+        # Measured 2026-11-11: the refusal hits the Python stdlib http stack,
+        # not the client string (curl and requests answered 200 with the SAME
+        # bytes). The minimal user agent therefore stays, and the two headers a
+        # browser sends alongside it are added. None of them may be empty - an
+        # empty value changes what the source sees, and an absent one reads
+        # like a script.
+        self.assertEqual(sorted(_HEADERS),
+                         ["Accept", "Accept-Language", "Referer", "User-Agent"])
         for name, wert in _HEADERS.items():
             with self.subTest(header=name):
                 self.assertIsInstance(wert, str)
                 self.assertTrue(wert.strip())
         self.assertEqual(_HEADERS["User-Agent"], "Mozilla/5.0")
         self.assertEqual(_HEADERS["Accept"], "application/json")
+        self.assertEqual(_HEADERS["Referer"], "https://www.nasdaq.com/")
 
 
 class TestNullAdapter(unittest.TestCase):

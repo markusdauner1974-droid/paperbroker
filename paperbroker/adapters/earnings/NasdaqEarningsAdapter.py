@@ -115,6 +115,8 @@ OPTIONABLE_SYMBOLS_URL = "https://www.cboe.com/us/options/symboldir/equity_index
 _HEADERS = {
     "User-Agent": "Mozilla/5.0",
     "Accept": "application/json",
+    "Accept-Language": "en-US,en;q=0.9",
+    "Referer": "https://www.nasdaq.com/",
 }
 # The symbol list is a CSV download, not JSON - the Accept header says so.
 _CSV_HEADERS = {
