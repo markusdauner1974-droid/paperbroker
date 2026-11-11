@@ -317,8 +317,17 @@
         link.href = singleUrl(entry.symbol, spec.id, s.best && s.best.expiration);
         link.textContent = String(n(s.hits));
         link.title = 'Einzelscan: ' + entry.symbol + ' · ' + spec.label
-          + (s.best && s.best.expiration ? ' · Verfall ' + s.best.expiration : '');
+          + (s.best && s.best.expiration ? ' · Verfall ' + s.best.expiration : '')
+          + (s.provisional ? ' · vorläufig: ältere Kurse, kein aktueller Kurs' : '');
         zelle.appendChild(link);
+        if (s.provisional) {
+          // Der Treffer bleibt stehen, wird aber als vorlaeufig gekennzeichnet:
+          // die Zahl stammt aus dem letzten verfuegbaren Marktstand.
+          var marke = document.createElement('span');
+          marke.className = 'escan-sub';
+          marke.textContent = 'vorläufig';
+          zelle.appendChild(marke);
+        }
       } else if (s.status === 'no_match') {
         zelle.textContent = '0';
         zelle.title = 'geprüft — kein Spread hat die Filter bestanden';
@@ -373,6 +382,9 @@
       if (typeof daten.chain_contracts === 'number') {
         teile.push(daten.chain_contracts + ' Kontrakte');
       }
+      // Eine Quelle ohne Zonenangabe wird benannt, nicht zu UTC erklaert: der
+      // Datenstand steht als Rohwert in chain_quote_timestamp_raw.
+      if (daten.chain_quote_zone === 'assumed_utc') teile.push('Zeitstempel ohne Zonenangabe');
       tdData.textContent = teile.join(' · ');
       if (typeof daten.chain_quote_age_minutes === 'number') {
         tdData.title = 'neuester Kurs ' + daten.chain_quote_age_minutes + ' min alt';
@@ -380,6 +392,14 @@
     }
     row.appendChild(tdData);
     return row;
+  }
+
+  // Der Datenmodus des Scans: der Server schickt den Block, das Panel haengt nur
+  // das Wort daran. Ein vorlaeufiger Scan behauptet nie einen aktuellen Kurs -
+  // die Zahlen stammen aus dem letzten verfuegbaren Marktstand.
+  function provisionalSuffix(state) {
+    if (!state || !state.provisional) return '';
+    return ' · vorläufig (letzter verfügbarer Marktstand)';
   }
 
   function coverageText(day, cov, counts) {
@@ -470,7 +490,7 @@
     setStale(current.version !== formVersion);
     var namen = activeSpecs().map(function (spec) { return spec.short; }).join(', ');
     el.state.textContent = 'Stand ' + clock(current.at) + ' · ' + entries.length
-      + ' Zeilen · ' + namen;
+      + ' Zeilen · ' + namen + provisionalSuffix(body.data_state);
     applyFilter();
   }
 

@@ -857,7 +857,10 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertEqual(d["criteria"]["quantity"], 1)
         self.assertEqual(d["criteria"]["fees"], 0.0)
         self.assertIsNone(d["criteria"]["budget"])
-        self.assertEqual(len(d["criteria"]), 22)
+        # The age mode is the 23rd criterion and travels with the object: the
+        # echo of the criteria that REALLY computed, not a template copy.
+        self.assertEqual(d["criteria"]["data_mode"], "fresh")
+        self.assertEqual(len(d["criteria"]), 23)
         picker = self._app().test_client().get(
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertNotIn("criteria", picker)                     # no picker echo
@@ -2846,8 +2849,10 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         ("Liquidit\u00e4t", ("max_spread_pct", "max_spread_abs", "min_oi", "min_volume",
                              "pair_max_width", "min_bid_size", "min_ask_size",
                              "require_oi", "require_volume")),
+        # The age MODE sits behind the age limit it governs: the limit is the
+        # number, mode decides what that number DOES (drop or merely state).
         ("Laufzeit und Frische", ("dte_min", "dte_max", "max_quote_age_min",
-                                  "ignore_quote_age")),
+                                  "ignore_quote_age", "data_mode")),
         ("Volatilit\u00e4t", ("iv_min", "iv_max", "iv_pref")),
         ("Bewertung", ("weight_spread", "weight_oi", "weight_iv")),
         # D14: which side of the chain the spread section trades. It does not
@@ -2975,6 +2980,10 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # Feld laesst sich nicht durch Textsuche finden
         erwartet = {"ticker": 1, "expiration": 1, "require_oi": 2,
                     "require_volume": 2, "iv_pref": 3, "ignore_quote_age": 1,
+                    # the age mode is a pair of radio buttons, not a switch:
+                    # "Aktualitaetsfilter" and "Letzter verfuegbarer
+                    # Marktstand" are two explicit, selectable states
+                    "data_mode": 2,
                     # D14: die Funkknoepfe tragen denselben Namen - eine
                     # EINZELNE Anzeige, nicht vier Felder; seit den
                     # Credit-Spreads sind es vier Werte
@@ -2985,7 +2994,9 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
 
     def test_no_control_is_added_or_lost(self):
         page = self._page()
-        self.assertEqual(page.count("<input"), 32)   # D12 +4 Position, +2 Credit
+        # +2: the two age-mode radio buttons (Aktualitaetsfilter / letzter
+        # verfuegbarer Marktstand) - the mode is chosen, not inferred
+        self.assertEqual(page.count("<input"), 34)   # D12 +4 Position, +2 Credit
         self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
         self.assertEqual(page.count("<button"), 1)
         self.assertEqual(page.count("<fieldset"), 6)  # D12 + Position, D14 + Spreads
@@ -3981,3 +3992,148 @@ class TheFontsComeFromThePackage(unittest.TestCase):
             block = [b for b in re.findall(r"@font-face \{(.*?)\}", css, re.S)
                      if f"'{familie}'" in b and f"font-weight: {gewicht};" in b]
             self.assertTrue(block, f"{familie} {gewicht} fehlt")
+
+
+class TheAgeModeOnBothSurfaces(unittest.TestCase):
+    """Both age modes, measured through /api/screen AND through the page.
+
+    One chain, two requests. The preparation mode must keep what the default
+    mode drops, the answer must say which mode produced it, the source time and
+    the fetch time must stay two separate facts - and the page must show the
+    same block the JSON carries, because both read ``server._data_state``.
+    """
+
+    ALT = "2026-10-07 10:00:00"     # 275 min before the pinned clock (limit 30)
+
+    def _chain(self, stamp=None):
+        kette = make()
+        for q in kette:
+            q.quote_timestamp = self.ALT if stamp is None else stamp
+        return kette
+
+    def _app(self, criteria=None, stamp=None):
+        adapter = _MockAdapter(self._chain(stamp))
+        adapter.expirations = ["2026-10-16"]
+        app = create_app(quote_adapter=adapter,
+                         screener=OptionScreener(criteria or _LOOSE),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        return app
+
+    def _json(self, params=None, criteria=None, stamp=None):
+        return self._app(criteria, stamp).test_client().get(
+            "/api/screen",
+            query_string={"ticker": "AAPL", "expiration": "2026-10-16", **(params or {})},
+        ).get_json()
+
+    def _page(self, params=None):
+        return self._app().test_client().get(
+            "/",
+            query_string={"ticker": "AAPL", "expiration": "2026-10-16", **(params or {})},
+        ).get_data(as_text=True)
+
+    # --- the decision itself ---
+
+    def test_the_default_mode_drops_the_old_chain(self):
+        body = self._json()
+        self.assertEqual(0, body["candidates"])
+        self.assertEqual("fresh", body["data_state"]["mode"])
+        self.assertFalse(body["data_state"]["provisional"])
+        self.assertGreater(body["data_state"]["counts"]["stale"], 0)
+
+    def test_the_preparation_mode_keeps_the_same_chain(self):
+        body = self._json({"data_mode": "last_available"})
+        self.assertGreater(body["candidates"], 0)
+        state = body["data_state"]
+        self.assertEqual("last_available", state["mode"])
+        self.assertEqual("Letzter verfügbarer Marktstand", state["mode_label"])
+        self.assertTrue(state["provisional"])
+        self.assertIn("nicht ein aktueller Kurs", state["provisional_note"])
+        # the JSON echoes the mode that REALLY computed
+        self.assertEqual("last_available", body["criteria"]["data_mode"])
+
+    def test_the_mode_is_the_only_difference_between_the_two_answers(self):
+        """Same chain, same filters: the mode decides, nothing else.
+
+        The preparation mode on OLD data must find exactly what the default
+        mode finds on FRESH data - otherwise the mode would change the result
+        beyond the age rule.
+        """
+        alt = self._json()
+        vorbereitung = self._json({"data_mode": "last_available"})
+        frisch = self._json(stamp="2026-10-07 14:30:00")     # 5 min, default mode
+        self.assertEqual(frisch["candidates"], vorbereitung["candidates"])
+        self.assertNotEqual(alt["candidates"], vorbereitung["candidates"])
+        self.assertEqual(
+            [r["symbol"] for r in frisch["results"]],
+            [r["symbol"] for r in vorbereitung["results"]],
+        )
+
+    # --- the data state: source time vs fetch time vs zone ---
+
+    def test_the_answer_separates_source_time_from_fetch_time(self):
+        state = self._json({"data_mode": "last_available"})["data_state"]
+        self.assertEqual(self.ALT, state["source_timestamp_raw"])
+        # the CBOE stamp names no zone: no UTC value may be invented for it
+        self.assertIsNone(state["source_timestamp_utc"])
+        self.assertEqual("assumed_utc", state["source_timestamp_zone"])
+        self.assertFalse(state["age_proven"])
+        self.assertIn("ohne Zeitzonenangabe", state["source_timestamp_zone_note"])
+        # the fetch time is a real UTC instant and is reported as one
+        self.assertEqual("2026-10-07T14:35:00Z", state["fetched_at_utc"])
+        self.assertAlmostEqual(275.0, state["source_age_minutes"], places=1)
+
+    def test_an_unknown_mode_is_a_client_error_not_a_silent_default(self):
+        antwort = self._app().test_client().get(
+            "/api/screen",
+            query_string={"ticker": "AAPL", "expiration": "2026-10-16",
+                          "data_mode": "irgendwas"},
+        )
+        self.assertEqual(400, antwort.status_code)
+        self.assertIn("data_mode", antwort.get_json()["error"])
+
+    def test_the_preparation_mode_does_not_rescue_undated_data(self):
+        """No stamp is not "old data" - the mode must not admit it.
+
+        The reason text is the one the page shows, so it is pinned verbatim.
+        """
+        kette = self._chain()
+        for q in kette:
+            q.quote_timestamp = None
+        adapter = _MockAdapter(kette)
+        adapter.expirations = ["2026-10-16"]
+        app = create_app(quote_adapter=adapter, screener=OptionScreener(_LOOSE),
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        body = app.test_client().get(
+            "/api/screen",
+            query_string={"ticker": "AAPL", "expiration": "2026-10-16",
+                          "data_mode": "last_available"},
+        ).get_json()
+        self.assertEqual(0, body["candidates"])
+        gruende = {g["reason"] for g in body["dropped_reasons"]}
+        self.assertIn("Aktualität unbekannt (kein Zeitstempel)", gruende)
+        # an undated contract is never dropped as "too old" - the labels stay apart
+        self.assertFalse([g for g in gruende if g.startswith("veraltet")])
+        state = body["data_state"]
+        self.assertIsNone(state["source_timestamp_raw"])
+        self.assertGreater(state["counts"]["undated"], 0)
+
+    # --- the page renders the same block ---
+
+    def test_the_page_marks_a_preparation_run_as_provisional(self):
+        seite = self._page({"data_mode": "last_available"})
+        self.assertIn('id="provisional-note"', seite)
+        self.assertIn("Vorläufig", seite)
+        self.assertIn("Modus: Letzter verfügbarer Marktstand", seite)
+        # the source stamp is shown raw and called what it is
+        self.assertIn(f"Datenstand {self.ALT}", seite)
+        self.assertIn("ohne Zonenangabe", seite)
+        self.assertIn("Abruf 07.10.2026 14:35 UTC", seite)
+        # a claim of tradability is exactly what this block must not contain
+        self.assertNotIn("handelbar", seite)
+
+    def test_the_default_page_has_no_provisional_block(self):
+        seite = self._page()
+        self.assertNotIn('id="provisional-note"', seite)
+        self.assertIn("Modus: Aktualitätsfilter", seite)
