@@ -200,6 +200,25 @@ def requests_transport(url, headers, timeout):
     return antwort.status_code, antwort.content
 
 
+def _status_error(status):
+    """The stable code for a non-200 answer, with the status kept.
+
+    403 and 429 are not "some HTTP error": both are the source SPEAKING about
+    this client - it blocked it or throttled it. A caller that only sees
+    ``http_error`` cannot tell that apart from a broken endpoint, so the two
+    get their own codes and the status stays in the record.
+    """
+    if status == 403:
+        return EarningsSourceError(
+            "source_blocked", "the source blocked this client with HTTP 403", status
+        )
+    if status == 429:
+        return EarningsSourceError(
+            "source_throttled", "the source throttled this client with HTTP 429", status
+        )
+    return EarningsSourceError("http_error", f"the source answered HTTP {status}", status)
+
+
 class EarningsCache:
     """One JSON file, one entry per ticker, written atomically.
 
@@ -652,7 +671,7 @@ class NasdaqEarningsAdapter:
         except Exception as exc:  # noqa: BLE001 - every transport failure is one class here
             raise EarningsSourceError("source_unreachable", f"{type(exc).__name__}: {exc}") from exc
         if status != 200:
-            raise EarningsSourceError("http_error", f"the source answered HTTP {status}", status)
+            raise _status_error(status)
         try:
             return json.loads(body.decode("utf-8") if isinstance(body, (bytes, bytearray)) else body)
         except (ValueError, UnicodeDecodeError) as exc:
