@@ -22,9 +22,10 @@ What the tests are here to prove, in the order of the requirement:
 import json
 import unittest
 from dataclasses import FrozenInstanceError, dataclass
-from datetime import date
+from datetime import date, timedelta
 
 from paperbroker.gap_scan import (
+    DEFAULT_LIMIT,
     STRATEGY_BEAR_PUT_DEBIT,
     STRATEGY_BULL_CALL_DEBIT,
     GapBar,
@@ -32,12 +33,18 @@ from paperbroker.gap_scan import (
     NasdaqHistoryAdapter,
     classify_gap,
     compute_gap,
+    fetch_gaps,
     parse_nasdaq_history,
+    reaction_day_rows,
+    scan_gaps,
     select_candidates,
     strategy_for_direction,
 )
 
 REACTION = date(2026, 11, 11)
+PREVIOUS = date(2026, 11, 10)
+# The window the fetch asks for: 30 calendar days before the reaction session.
+PREVIOUS_WINDOW = REACTION - timedelta(days=30)
 
 
 def row(day, open_="$10.00", close="$10.00", volume="1,000,000"):
@@ -420,6 +427,290 @@ class NasdaqHistoryParsingTest(unittest.TestCase):
 
         with self.assertRaises(FrozenInstanceError):
             bar.close = 9.9  # pyright: ignore[reportAttributeAccessIssue] - the point of the test
+
+
+class StubHistoryAdapter:
+    """An adapter with ``fetch_daily``'s signature - answers per symbol, no network.
+
+    ``bars[symbol]`` are the bars it returns and ``errors[symbol]`` the
+    ``GapSourceError`` it raises instead, so one test can break one title
+    without a transport, a server or a monkeypatch.
+    """
+
+    def __init__(self, bars=None, errors=None):
+        self.bars = bars or {}
+        self.errors = errors or {}
+        self.calls = []
+
+    def fetch_daily(self, symbol, fromdate, limit=DEFAULT_LIMIT):
+        self.calls.append({"symbol": symbol, "fromdate": fromdate, "limit": limit})
+        error = self.errors.get(symbol)
+        if error is not None:
+            raise error
+        return list(self.bars.get(symbol, []))
+
+
+def calendar_row(symbol, session=None, name=None, market_cap=None):
+    """One calendar row of ``earnings_day_calendar`` - keys, not classes."""
+    return {
+        "symbol": symbol,
+        "name": name if name is not None else f"{symbol} Inc.",
+        "session": session,
+        "market_cap": market_cap,
+    }
+
+
+def bars_for(reaction, close=11.0, previous_close=10.0, volume=1_000_000.0):
+    """Two bars: the reaction session and the session before it."""
+    return [
+        GapBar(session_date=reaction, open=close, close=close, volume=volume),
+        GapBar(
+            session_date=reaction - timedelta(days=1),
+            open=previous_close,
+            close=previous_close,
+            volume=volume,
+        ),
+    ]
+
+
+class ReactionDayRowsTest(unittest.TestCase):
+    """Who of a reaction day is even asked for a gap."""
+
+    def test_the_previous_day_joins_the_set_without_a_proven_session(self):
+        previous = [
+            calendar_row("AAA", session="before_market"),
+            calendar_row("BBB", session="unknown"),
+            calendar_row("CCC", session=None),
+        ]
+        day = [
+            calendar_row("DDD", session="before_market"),
+            calendar_row("EEE", session="before_market"),
+            calendar_row("FFF", session="after_market"),
+            calendar_row("GGG", session="after_market"),
+        ]
+
+        rows = reaction_day_rows(previous, day, previous_date=PREVIOUS, day_date=REACTION)
+
+        # 3 + 2: the two after_market titles of the day have no gap yet.
+        self.assertEqual(len(rows), 5)
+        self.assertEqual([row["symbol"] for row in rows], ["DDD", "EEE", "AAA", "BBB", "CCC"])
+        # Nasdaq deletes past sessions: "unknown" is a doubt, not "after close".
+        self.assertFalse(by_symbol(rows)["AAA"]["session_uncertain"])
+        self.assertTrue(by_symbol(rows)["BBB"]["session_uncertain"])
+        self.assertTrue(by_symbol(rows)["CCC"]["session_uncertain"])
+        self.assertEqual(by_symbol(rows)["CCC"]["session"], "unknown")
+        # The date travels per day, because the two halves come from two days.
+        self.assertEqual(by_symbol(rows)["DDD"]["earnings_date"], "2026-11-11")
+        self.assertEqual(by_symbol(rows)["AAA"]["earnings_date"], "2026-11-10")
+
+    def test_only_the_pre_market_rows_of_the_reaction_day_qualify(self):
+        day = [
+            calendar_row("PRE1", session="before_market", name="Pre One", market_cap=1234),
+            calendar_row("AFTER1", session="after_market"),
+            calendar_row("PRE2", session="before_market"),
+            calendar_row("AFTER2", session="after_market"),
+        ]
+
+        rows = reaction_day_rows([], day, previous_date=PREVIOUS, day_date=REACTION)
+
+        self.assertEqual([row["symbol"] for row in rows], ["PRE1", "PRE2"])
+        for row in rows:
+            self.assertFalse(row["session_uncertain"])
+            self.assertEqual(row["session"], "before_market")
+            self.assertEqual(row["earnings_date"], "2026-11-11")
+        # Every field the caller needs survives; nothing is invented.
+        self.assertEqual(rows[0]["name"], "Pre One")
+        self.assertEqual(rows[0]["market_cap"], 1234)
+        self.assertIsNone(rows[1]["market_cap"])
+
+    def test_a_symbol_reported_twice_appears_once_with_the_known_session(self):
+        previous = [calendar_row("DUAL", session="unknown"), calendar_row("ONLY", session="unknown")]
+        day = [calendar_row("DUAL", session="before_market")]
+
+        rows = reaction_day_rows(previous, day, previous_date=PREVIOUS, day_date=REACTION)
+
+        self.assertEqual([row["symbol"] for row in rows], ["DUAL", "ONLY"])
+        # The reaction day wins: it is the row whose session is KNOWN.
+        self.assertEqual(by_symbol(rows)["DUAL"]["session"], "before_market")
+        self.assertFalse(by_symbol(rows)["DUAL"]["session_uncertain"])
+        self.assertEqual(by_symbol(rows)["DUAL"]["earnings_date"], "2026-11-11")
+
+    def test_a_row_without_a_symbol_is_dropped(self):
+        rows = reaction_day_rows(
+            [{"symbol": "", "session": "unknown"}, {"name": "no symbol", "session": "unknown"}],
+            [calendar_row("AAA", session="before_market")],
+            previous_date=PREVIOUS,
+            day_date=REACTION,
+        )
+
+        self.assertEqual([row["symbol"] for row in rows], ["AAA"])
+
+
+class FetchGapsTest(unittest.TestCase):
+    """The parallel fetch: what it measures, what it names, what it never does."""
+
+    def test_a_failing_symbol_does_not_cost_the_others(self):
+        adapter = StubHistoryAdapter(
+            bars={"AAA": bars_for(REACTION), "CCC": bars_for(REACTION, close=9.0)},
+            errors={"X": GapSourceError("http_error", "the source answered HTTP 429", 429)},
+        )
+
+        result = fetch_gaps(["AAA", "X", "CCC"], REACTION, adapter=adapter)
+
+        self.assertEqual(result.failures, {"X": "http_error"})
+        self.assertEqual([row["symbol"] for row in result.rows], ["AAA", "CCC"])
+        # Input order, no sort: the selection sorts, this does not.
+        self.assertEqual([row["gap_pct"] for row in result.rows], [10.0, -10.0])
+        self.assertEqual(result.rows[0]["close"], 11.0)
+        self.assertEqual(result.rows[0]["volume"], 1_000_000.0)
+        # Every symbol was asked with the documented window and limit.
+        self.assertEqual({call["limit"] for call in adapter.calls}, {10})
+        self.assertEqual({call["fromdate"] for call in adapter.calls}, {PREVIOUS_WINDOW})
+
+    def test_a_missing_reaction_bar_is_named(self):
+        # Bars exist, but only from BEFORE the reaction session.
+        stale = [GapBar(session_date=PREVIOUS, open=10.0, close=10.0, volume=1_000_000.0)]
+        adapter = StubHistoryAdapter(bars={"LATE": stale, "OK": bars_for(REACTION)})
+
+        result = fetch_gaps(["LATE", "OK"], REACTION, adapter=adapter)
+
+        self.assertEqual(result.failures, {"LATE": "no_reaction_bar"})
+        self.assertEqual([row["symbol"] for row in result.rows], ["OK"])
+
+    def test_an_unexpected_adapter_failure_is_named_not_raised(self):
+        adapter = StubHistoryAdapter(errors={"BOOM": RuntimeError("adapter broke")})
+
+        result = fetch_gaps(["BOOM"], REACTION, adapter=adapter)
+
+        self.assertEqual(result.failures, {"BOOM": "unexpected_error"})
+        self.assertEqual(result.rows, [])
+
+    def test_no_symbols_is_no_work_and_no_adapter(self):
+        transport = StubTransport(answer=body(row("11/11/2026", close="$17.82")))
+        adapter = NasdaqHistoryAdapter(transport=transport)
+
+        result = fetch_gaps([], REACTION, adapter=adapter)
+
+        self.assertEqual(result.rows, [])
+        self.assertEqual(result.failures, {})
+        self.assertEqual(transport.calls, [])
+
+
+class ScanGapsTest(unittest.TestCase):
+    """The whole day: candidate set, fetch, selection and the numbers in between."""
+
+    def test_the_counts_add_up_to_the_rows_that_were_checked(self):
+        day = [
+            calendar_row("BIG1", session="before_market"),
+            calendar_row("BIG2", session="before_market"),
+            calendar_row("BIG3", session="before_market"),
+            calendar_row("SMALL1", session="before_market"),
+            calendar_row("SMALL2", session="before_market"),
+        ]
+        adapter = StubHistoryAdapter(
+            bars={
+                # 3 x above 2 % with turnover over 5 M USD ...
+                "BIG1": bars_for(REACTION, close=11.0),                  # +10 %, 11 M
+                "BIG2": bars_for(REACTION, close=9.0),                   # -10 %,  9 M
+                "BIG3": bars_for(REACTION, close=10.5, volume=2_000_000),  # +5 %, 21 M
+                # ... and 2 x under the threshold.
+                "SMALL1": bars_for(REACTION, close=10.1),
+                "SMALL2": bars_for(REACTION, close=9.95),
+            }
+        )
+
+        result = scan_gaps([], day, REACTION, previous_date=PREVIOUS, adapter=adapter)
+
+        self.assertEqual(result.counts["candidate_rows"], 5)
+        self.assertEqual(result.counts["gaps_computed"], 5)
+        self.assertEqual(result.counts["over_threshold"], 3)
+        self.assertEqual(result.counts["turnover_passed"], 3)
+        self.assertEqual(result.counts["selected"], 3)
+        self.assertEqual(result.counts["failures"], 0)
+        self.assertEqual(len(result.candidates), 3)
+        # The numbers are consistent with the rows they describe.
+        self.assertEqual(
+            result.counts["candidate_rows"],
+            result.counts["gaps_computed"] + result.counts["failures"],
+        )
+        self.assertEqual(result.counts["gaps_computed"], len(result.gap_rows))
+        self.assertEqual(result.counts["candidate_rows"], len(result.candidate_rows))
+        self.assertEqual([c.symbol for c in result.candidates], ["BIG1", "BIG2", "BIG3"])
+        self.assertEqual(result.failures, {})
+
+    def test_a_missing_bar_and_a_broken_symbol_are_counted_as_failures(self):
+        day = [
+            calendar_row("OK", session="before_market"),
+            calendar_row("LATE", session="before_market"),
+            calendar_row("BROKEN", session="before_market"),
+        ]
+        adapter = StubHistoryAdapter(
+            bars={"OK": bars_for(REACTION), "LATE": [GapBar(session_date=PREVIOUS, open=1.0, close=1.0, volume=1.0)]},
+            errors={"BROKEN": GapSourceError("no_data", "no rows")},
+        )
+
+        result = scan_gaps([], day, REACTION, previous_date=PREVIOUS, adapter=adapter)
+
+        self.assertEqual(result.counts["candidate_rows"], 3)
+        self.assertEqual(result.counts["gaps_computed"], 1)
+        self.assertEqual(result.counts["failures"], 2)
+        self.assertEqual(result.failures, {"LATE": "no_reaction_bar", "BROKEN": "no_data"})
+        # The one good title survives a day where two others failed.
+        self.assertEqual([c.symbol for c in result.candidates], ["OK"])
+
+    def test_the_selection_caps_at_thirty_after_the_turnover_hurdle(self):
+        day = [calendar_row(f"S{index:02d}", session="before_market") for index in range(40)]
+        adapter = StubHistoryAdapter(
+            bars={
+                f"S{index:02d}": bars_for(REACTION, close=50.0 + index, volume=1_000_000)
+                for index in range(40)
+            }
+        )
+
+        result = scan_gaps([], day, REACTION, previous_date=PREVIOUS, adapter=adapter)
+
+        # All 40 clear the threshold AND the 5 M turnover hurdle (50 M each) ...
+        self.assertEqual(result.counts["candidate_rows"], 40)
+        self.assertEqual(result.counts["over_threshold"], 40)
+        self.assertEqual(result.counts["turnover_passed"], 40)
+        # ... and exactly 30 survive the cap, the biggest moves first.
+        self.assertEqual(result.counts["selected"], 30)
+        self.assertEqual(len(result.candidates), 30)
+        self.assertEqual(result.candidates[0].symbol, "S39")
+        self.assertNotIn("S00", [c.symbol for c in result.candidates])
+
+    def test_the_turnover_hurdle_is_not_a_threshold_only_test(self):
+        # 10 % on 0.4 M USD: over the threshold, nowhere near tradable.
+        day = [calendar_row("THIN", session="before_market")]
+        adapter = StubHistoryAdapter(
+            bars={"THIN": bars_for(REACTION, close=11.0, previous_close=10.0, volume=40_000)}
+        )
+
+        result = scan_gaps([], day, REACTION, previous_date=PREVIOUS, adapter=adapter)
+
+        self.assertEqual(result.counts["over_threshold"], 1)
+        # A title that fails the turnover hurdle did NOT pass it.
+        self.assertEqual(result.counts["turnover_passed"], 0)
+        self.assertEqual(result.counts["selected"], 0)
+        self.assertEqual(result.candidates, [])
+
+    def test_the_previous_day_reaches_the_scan_as_an_uncertain_candidate(self):
+        previous = [calendar_row("OLD", session="unknown")]
+        day = [calendar_row("NEW", session="before_market")]
+        adapter = StubHistoryAdapter(
+            bars={"OLD": bars_for(REACTION), "NEW": bars_for(REACTION, close=9.0)}
+        )
+
+        result = scan_gaps(previous, day, REACTION, previous_date=PREVIOUS, adapter=adapter)
+
+        self.assertEqual([row["symbol"] for row in result.candidate_rows], ["NEW", "OLD"])
+        self.assertEqual(by_symbol(result.candidate_rows)["OLD"]["earnings_date"], "2026-11-10")
+        self.assertTrue(by_symbol(result.candidate_rows)["OLD"]["session_uncertain"])
+        self.assertEqual(sorted(c.symbol for c in result.candidates), ["NEW", "OLD"])
+
+
+def by_symbol(rows):
+    return {row["symbol"]: row for row in rows}
 
 
 if __name__ == "__main__":

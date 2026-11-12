@@ -45,6 +45,15 @@ UCL +21.7 % at a 0.23 USD price) - a gap you cannot get filled is not a
 signal. Both stages are pure functions over plain data so a caller can test
 the day's selection without a network.
 
+From a calendar day to that list
+--------------------------------
+``reaction_day_rows`` decides WHO is asked: every title the calendar listed on
+the previous day (its session is usually gone, so the row says
+``session_uncertain``) plus the ``before_market`` titles of the reaction day.
+``fetch_gaps`` asks in parallel, because 220 titles serially is not a scan but a
+wait. ``scan_gaps`` runs both and keeps every intermediate row and count, so a
+day that yields three candidates can be explained instead of just accepted.
+
 Clock
 -----
 ``NasdaqHistoryAdapter`` accepts ``now_fn`` like its earnings sibling. This
@@ -61,8 +70,9 @@ import re
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 
 import requests
 
@@ -87,6 +97,21 @@ DEFAULT_LIMIT = 10
 DEFAULT_THRESHOLD_PCT = 2.0
 DEFAULT_MIN_TURNOVER_USD = 5_000_000.0
 DEFAULT_MAX_CANDIDATES = 30
+DEFAULT_MAX_WORKERS = 8
+# Measured: 151 titles at 8 in parallel took 45 s against the live endpoint. The
+# window is 30 calendar days because the source rows are daily sessions - a
+# reaction day plus its reference close always fits, and a wider window would
+# only buy rows nobody reads.
+GAP_LOOKBACK_DAYS = 30
+
+# The three session tokens a calendar row carries, spelled here rather than
+# imported: this module deliberately imports nothing from earnings_calendar /
+# earnings_scan (see the slice-1 decision), and the values are part of the
+# calendar's JSON shape, not of its code. A row with anything else - including
+# a missing session - is "unknown" and therefore uncertain.
+SESSION_BEFORE = "before_market"
+SESSION_AFTER = "after_market"
+SESSION_UNKNOWN = "unknown"
 
 GAP_UP = "up"
 GAP_DOWN = "down"
@@ -472,3 +497,246 @@ def select_candidates(
         )
     candidates.sort(key=lambda candidate: (-abs(candidate.gap_pct), candidate.symbol))
     return candidates[: max(0, int(max_candidates))]
+
+
+# --- the day: candidate set, fetch, scan ----------------------------------- #
+@dataclass(frozen=True)
+class GapFetchResult:
+    """What a parallel fetch of one reaction day produced.
+
+    ``rows`` are the measured titles in input order, ``failures`` names every
+    other symbol with the code that stopped it. The two lists are disjoint on
+    purpose: a title is either measured or explained, never both and never
+    silently missing.
+    """
+
+    rows: list[dict]
+    failures: dict[str, str]
+
+
+@dataclass(frozen=True)
+class GapScanResult:
+    """One whole reaction day: who was a candidate, who had a gap, who is left."""
+
+    candidates: list[Candidate]
+    candidate_rows: list[dict]
+    gap_rows: list[dict]
+    failures: dict[str, str]
+    counts: dict[str, int]
+
+
+def _calendar_iso(value, name):
+    """The ISO string of a calendar day - ``ValueError``, never a guessed day.
+
+    A wrong date silently shifted by a day would put the whole scan on the
+    wrong session, and nothing downstream could tell.
+    """
+    day = _as_date(value)
+    if day is None:
+        raise ValueError(f"{name} is not a date: {value!r}")
+    return day.isoformat()
+
+
+def _calendar_row(row, earnings_date, session_uncertain):
+    """One calendar row in the shape the scan works with - a NEW dict, never a copy.
+
+    ``session_uncertain`` is set here and not inferred later: the source deletes
+    past sessions, so "no session" must travel with the row as a doubt, not be
+    read downstream as "after the close".
+    """
+    return {
+        "symbol": _text(_field(row, "symbol")).upper(),
+        "name": _text(_field(row, "name")),
+        "session": _text(_field(row, "session")) or SESSION_UNKNOWN,
+        "session_uncertain": bool(session_uncertain),
+        "earnings_date": earnings_date,
+        "market_cap": _field(row, "market_cap"),
+    }
+
+
+def reaction_day_rows(previous_rows, day_rows, *, previous_date, day_date):
+    """The titles a reaction day can be traded on, and nothing else.
+
+    The set is the union of two statements:
+
+    * EVERY title the calendar listed on the previous day - those are the
+      releases that happened after that session closed. Their session is
+      usually gone (``unknown``), so the row carries ``session_uncertain``
+      instead of pretending to know when the numbers came out,
+    * only the ``before_market`` titles of the reaction day itself: a title
+      releasing after the close of that day has no gap YET.
+
+    A symbol listed on both days appears ONCE, with the reaction day's row -
+    that is the one with a known session. Nothing is merged field by field: a
+    half-and-half row would look like evidence nobody has. Titles without a
+    symbol are dropped, and the order is stable: reaction day first, then the
+    previous day, each in input order.
+    """
+    day_iso = _calendar_iso(day_date, "day_date")
+    previous_iso = _calendar_iso(previous_date, "previous_date")
+
+    rows = []
+    seen = set()
+    for row in day_rows or ():
+        if _text(_field(row, "session")) != SESSION_BEFORE:
+            continue
+        candidate = _calendar_row(row, day_iso, session_uncertain=False)
+        if not candidate["symbol"] or candidate["symbol"] in seen:
+            continue
+        seen.add(candidate["symbol"])
+        rows.append(candidate)
+
+    for row in previous_rows or ():
+        known = _text(_field(row, "session"))
+        candidate = _calendar_row(
+            row,
+            previous_iso,
+            session_uncertain=known not in (SESSION_BEFORE, SESSION_AFTER),
+        )
+        if not candidate["symbol"] or candidate["symbol"] in seen:
+            continue
+        seen.add(candidate["symbol"])
+        rows.append(candidate)
+
+    return rows
+
+
+def _fetch_one(source, symbol, reaction, fromdate):
+    """``(symbol, gap, failure_code)`` - exactly one of gap/code is set.
+
+    No exception leaves this function: the caller runs it in a pool, and one
+    title that fails must not cost the other 219. An adapter that breaks its own
+    contract (anything but ``GapSourceError``) is named ``unexpected_error``
+    rather than being allowed to take the pool down.
+    """
+    try:
+        bars = source.fetch_daily(symbol, fromdate, DEFAULT_LIMIT)
+        gap = compute_gap(bars, reaction)
+    except GapSourceError as exc:
+        return symbol, None, exc.code
+    except Exception:  # noqa: BLE001 - one broken symbol must not cost the day
+        # An adapter that breaks its own contract still gets a STABLE code, so a
+        # caller can switch on it without meeting a class name one day.
+        return symbol, None, "unexpected_error"
+    if gap is None:
+        # The rows came back but the reaction session is not among them: the
+        # title could not be measured, it did not "not move".
+        return symbol, None, "no_reaction_bar"
+    return symbol, gap, None
+
+
+def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_WORKERS):
+    """Measure every symbol against ``reaction_date`` - in parallel, one by one.
+
+    Serial fetching is not an option: the measured day had 220 titles, and the
+    answer for one title is independent of every other, so the pool is the
+    whole point. ``rows`` keeps the order of ``symbols`` (the selection sorts
+    later, on purpose), and every symbol that produced no gap ends up in
+    ``failures`` with the code that stopped it - ``unsupported_symbol``,
+    ``http_error``, ``no_data``, ``no_reaction_bar`` or ``transport_error``.
+    """
+    reaction = _as_date(reaction_date)
+    if reaction is None:
+        raise GapSourceError("invalid_fromdate", f"{reaction_date!r} is not a date")
+    fromdate = reaction - timedelta(days=GAP_LOOKBACK_DAYS)
+    source = adapter or NasdaqHistoryAdapter()
+
+    wanted = [_text(symbol).upper() for symbol in symbols or ()]
+    if not wanted:
+        return GapFetchResult(rows=[], failures={})
+
+    with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as pool:
+        # map keeps the input order, so the rows below are stable without a sort.
+        results = list(pool.map(lambda symbol: _fetch_one(source, symbol, reaction, fromdate), wanted))
+
+    rows = []
+    failures = {}
+    for symbol, gap, code in results:
+        if code is not None or gap is None:
+            failures[symbol] = code if code is not None else "no_reaction_bar"
+            continue
+        rows.append({"symbol": symbol, "gap_pct": gap.gap_pct, "close": gap.close, "volume": gap.volume})
+    return GapFetchResult(rows=rows, failures=failures)
+
+
+def _counts(candidate_rows, gap_rows, candidates, failures, threshold_pct, min_turnover_usd):
+    """The numbers of a run, computed from the rows themselves - not from hopes.
+
+    ``turnover_passed`` counts titles that cleared BOTH hurdles, because that is
+    what the word promises: a title that moved 10 % on 0.4 M USD did not pass
+    the turnover hurdle.
+    """
+    over_threshold = 0
+    turnover_passed = 0
+    for row in gap_rows:
+        gap_pct = _number(row.get("gap_pct"))
+        close = _number(row.get("close"))
+        volume = _number(row.get("volume"))
+        if gap_pct is None or classify_gap(gap_pct, threshold_pct) == GAP_NONE:
+            continue
+        over_threshold += 1
+        if close is not None and volume is not None and close * volume >= min_turnover_usd:
+            turnover_passed += 1
+    return {
+        "candidate_rows": len(candidate_rows),
+        "gaps_computed": len(gap_rows),
+        "over_threshold": over_threshold,
+        "turnover_passed": turnover_passed,
+        "selected": len(candidates),
+        "failures": len(failures),
+    }
+
+
+def scan_gaps(
+    previous_rows,
+    day_rows,
+    reaction_date,
+    *,
+    previous_date,
+    threshold_pct=DEFAULT_THRESHOLD_PCT,
+    min_turnover_usd=DEFAULT_MIN_TURNOVER_USD,
+    max_candidates=DEFAULT_MAX_CANDIDATES,
+    adapter=None,
+    max_workers=DEFAULT_MAX_WORKERS,
+):
+    """One reaction day from the calendar rows to the trading candidates.
+
+    Three steps, each already testable on its own: build the candidate set,
+    fetch the gaps in parallel, select. The result keeps the intermediate
+    stages - ``candidate_rows`` before the gap check, ``gap_rows`` after it -
+    so a caller can show WHY a day produced three candidates instead of thirty,
+    and ``counts`` says the same in numbers.
+    """
+    candidate_rows = reaction_day_rows(
+        previous_rows,
+        day_rows,
+        previous_date=previous_date,
+        day_date=reaction_date,
+    )
+    fetched = fetch_gaps(
+        [row["symbol"] for row in candidate_rows],
+        reaction_date,
+        adapter=adapter,
+        max_workers=max_workers,
+    )
+    candidates = select_candidates(
+        fetched.rows,
+        threshold_pct=threshold_pct,
+        min_turnover_usd=min_turnover_usd,
+        max_candidates=max_candidates,
+    )
+    counts = _counts(
+        candidate_rows,
+        fetched.rows,
+        candidates,
+        fetched.failures,
+        threshold_pct,
+        min_turnover_usd,
+    )
+    return GapScanResult(
+        candidates=candidates,
+        candidate_rows=candidate_rows,
+        gap_rows=fetched.rows,
+        failures=fetched.failures,
+        counts=counts,
+    )
