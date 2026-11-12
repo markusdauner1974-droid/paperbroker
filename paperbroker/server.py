@@ -1105,6 +1105,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # weekend plus the longest NYSE closure (a holiday and a broken bridge).
     # Beyond that the calendar is not believable and the answer is a 503.
     _GAP_PREVIOUS_LOOKBACK_DAYS = 10
+    # The regular US session closes at 16:00 in New York. A reaction day is only
+    # measurable once its close exists, so today is allowed from this hour on -
+    # refusing the whole day would make the evening scan of the day that just
+    # closed impossible, which is the normal use.
+    _US_CLOSE_HOUR_ET = 16
 
     def _gap_scan_error(status, code, message=None, *, source_code=None, source_status=None):
         """Flat JSON error of this route: ``{"error": <code>}`` plus what is known.
@@ -1156,7 +1161,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         a finished reaction session on both sides, and a day that is still
         running (or in the future) has no close to measure: answering 200 with
         ``selected: 0`` and every symbol in ``failures`` would be a quiet day
-        nobody can tell apart from a real one.
+        nobody can tell apart from a real one. The test is the CLOSE, not the
+        date: today is allowed once the New York clock is past
+        ``_US_CLOSE_HOUR_ET`` - the evening scan of the day that just closed is
+        the normal use, and a date-only check would forbid exactly that.
         """
         erlaubt = {"day"} | set(_GAP_SCAN_PARAMETERS)
         unbekannt = sorted(set(request.args) - erlaubt)
@@ -1183,10 +1191,19 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
 
         # The calendar's own "today" (New York), never the UTC date: after
         # 19:00 ET a UTC date is already the next day.
-        if reaction >= _us_today(now_fn):
+        heute = _us_today(now_fn)
+        if reaction > heute:
             return None, _gap_scan_error(
-                400, "invalid_day", "the reaction session has not closed yet"
+                400, "invalid_day", "the reaction day lies in the future"
             )
+        if reaction == heute:
+            # Same date is not the same session: before the close the day has
+            # no close to measure, from 16:00 ET on it does.
+            jetzt_et = arrow.get(now_fn()).to("America/New_York")
+            if jetzt_et.hour < _US_CLOSE_HOUR_ET:
+                return None, _gap_scan_error(
+                    400, "invalid_day", "the reaction session has not closed yet"
+                )
 
         limits = {}
         for name, default, ceiling, integer, minimum in (

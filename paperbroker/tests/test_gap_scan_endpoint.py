@@ -14,8 +14,9 @@ What is pinned, in the order of the requirement:
   gap yet and is not even asked,
 * a row of the previous day whose session the source deleted is uncertain,
 * a day that is no date is a 400 that never reaches the calendar,
-* a day that has not closed yet (New York) is a 400 with a message, not a
-  quiet 200 - and it costs no source call either,
+* a day that is still OPEN in New York is a 400 with a message, not a quiet
+  200 - and it costs no source call either; the same day after 16:00 ET is
+  scanned, because that session has a close,
 * the previous day is the previous TRADING day: a Monday is measured against
   its Friday, a day after Thanksgiving against the Wednesday before it,
 * a calendar that cannot answer is a 503 - with the upstream code and status
@@ -40,6 +41,11 @@ from paperbroker.server import create_app
 # endpoint refuses a day that has not closed, so the fixture day must lie in the
 # past: a pinned clock is a fact of this file, not a convenience.
 CLOCK = lambda: arrow.get("2026-11-12T21:00:00Z")  # noqa: E731
+# 16:00 ET is the close itself: from this hour on the day HAS a close.
+# 21:30Z is 16:30 ET (22:30 CET) - the evening scan of the day that just closed.
+AFTER_CLOSE_CLOCK = lambda: arrow.get("2026-11-12T21:30:00Z")  # noqa: E731
+# 18:00Z is 13:00 ET (19:00 CET) - the same New York day, still open.
+BEFORE_CLOSE_CLOCK = lambda: arrow.get("2026-11-12T18:00:00Z")  # noqa: E731
 # A clock the day AFTER the two edge cases below, so both are closed days:
 # 2026-11-09 is a Monday, 2026-11-27 the session after Thanksgiving.
 MONDAY_CLOCK = lambda: arrow.get("2026-11-10T21:00:00Z")   # noqa: E731
@@ -404,22 +410,62 @@ class GapScanEndpointTest(unittest.TestCase):
         self.assertNotIn("2026-11-26", angefragt.values())
         self.assertNotIn("2026-11-22", angefragt.values())
 
-    def test_today_is_not_a_closed_reaction_day(self):
-        # CLOCK is 16:00 New York on 2026-11-12: that session has not closed,
-        # and the 13th is the future. Both are client errors, not quiet days.
+    def test_today_after_the_close_can_be_scanned(self):
+        # The evening scan of the day that just closed: 22:30 CET is 16:30 ET,
+        # and 16:00 ET itself is the close, not "still running". Both are 200.
+        heute, gestern = "2026-11-12", "2026-11-11"
+        for uhr, now_fn in (("16:00 ET", CLOCK), ("16:30 ET", AFTER_CLOSE_CLOCK)):
+            with self.subTest(uhr=uhr):
+                kalender = _FakeCalendar(rows_by_day={
+                    gestern: [calendar_row("BBB", session="before_market")],
+                    heute: [calendar_row("CCC", session="before_market")],
+                })
+                quelle = _History(bars={
+                    "BBB": bars(10.4, reaction=date(2026, 11, 12)),
+                    "CCC": bars(9.0, reaction=date(2026, 11, 12)),
+                })
+
+                antwort = _client(kalender, quelle, now_fn=now_fn).get(
+                    f"/api/v1/gap-scan?day={heute}"
+                )
+
+                self.assertEqual(antwort.status_code, 200)
+                koerper = antwort.get_json()
+                self.assertEqual(koerper["day"], heute)
+                # The reaction day is measured against the session before it.
+                self.assertEqual(sorted((kalender.last_days or {}).values()), [gestern, heute])
+                self.assertEqual(koerper["counts"]["candidate_rows"], 2)
+                self.assertEqual(koerper["counts"]["selected"], 2)
+
+    def test_today_before_the_close_is_refused(self):
+        # 19:00 CET is 13:00 ET on the 12th: same date, but the session has no
+        # close yet - a 400, and it costs no source call.
         kalender = _calendar()
         quelle = _history()
-        client = _client(kalender, quelle)
 
-        for day in ("2026-11-12", "2026-11-13"):
-            with self.subTest(day=day):
-                antwort = client.get(f"/api/v1/gap-scan?day={day}")
-                koerper = antwort.get_json()
-                self.assertEqual(antwort.status_code, 400)
-                self.assertEqual(koerper["error"], "invalid_day")
-                self.assertEqual(koerper["message"],
-                                 "the reaction session has not closed yet")
-        # Refused BEFORE the sources: no calendar call, no history call.
+        antwort = _client(kalender, quelle, now_fn=BEFORE_CLOSE_CLOCK).get(
+            "/api/v1/gap-scan?day=2026-11-12"
+        )
+
+        self.assertEqual(antwort.status_code, 400)
+        koerper = antwort.get_json()
+        self.assertEqual(koerper["error"], "invalid_day")
+        self.assertEqual(koerper["message"], "the reaction session has not closed yet")
+        self.assertEqual(kalender.calls, 0)
+        self.assertEqual(quelle.calls, [])
+
+    def test_a_future_day_is_refused(self):
+        # The 13th is the day after the pinned clock: no session at all, and a
+        # different reason than "today, still open".
+        kalender = _calendar()
+        quelle = _history()
+
+        antwort = _client(kalender, quelle).get("/api/v1/gap-scan?day=2026-11-13")
+
+        self.assertEqual(antwort.status_code, 400)
+        koerper = antwort.get_json()
+        self.assertEqual(koerper["error"], "invalid_day")
+        self.assertEqual(koerper["message"], "the reaction day lies in the future")
         self.assertEqual(kalender.calls, 0)
         self.assertEqual(quelle.calls, [])
 
