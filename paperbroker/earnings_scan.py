@@ -560,6 +560,49 @@ def earnings_from_calendar_row(row, day, day_state):
     return record
 
 
+def _cannot_authorise_a_window(earnings):
+    """True when the record ALONE already fixes the window negatively.
+
+    The fail-closed gate authorises only a ``STATUS_FRESH`` record whose
+    ``date_confirmation`` is not ``unknown`` - every other state is stale,
+    unrecognised or unconfirmed there, no matter what the chain lists. Mirroring
+    exactly those two conditions is what makes it safe to decide the window
+    BEFORE spending the chain request.
+    """
+    return (earnings.get("status") != STATUS_FRESH
+            or earnings.get("date_confirmation") == CONFIRMATION_UNKNOWN)
+
+
+def _apply_window(eintrag, fenster, flags):
+    """Write the gate's verdict into the entry; True when it is not eligible.
+
+    ONE implementation for both callers - the record-only path and the
+    chain-backed one - so a blocked or undecidable row cannot carry a different
+    payload depending on whether the chain happened to be read.
+    """
+    entscheidung = fenster["decision"]
+    eintrag["window"] = {
+        "status": entscheidung["status"],
+        "eligible": entscheidung["eligible"],
+        "planned_last_exit_date": fenster["exit"]["planned_last_exit_date"],
+        "remaining_trading_days": fenster["exit"]["remaining_trading_days"],
+        "selected_expiration": fenster["expirations"]["selected"],
+        "reasons": [dict(g) for g in entscheidung["reasons"]],
+    }
+    if entscheidung["eligible"]:
+        return False
+    # A blocked or undecidable window is not "no hits": it is a verdict
+    # about the trade itself, and it is reported as such.
+    unklar = entscheidung["status"] == "unknown"
+    eintrag["status"] = STATUS_WINDOW_UNKNOWN if unklar else STATUS_WINDOW_BLOCKED
+    eintrag["exclusion"] = _exclusion(
+        "earnings_window_" + ("unknown" if unklar else "blocked"),
+        "; ".join(g["message"] for g in entscheidung["reasons"]),
+    )
+    eintrag["quality_flags"] = flags
+    return True
+
+
 def _scan_symbol(symbol, row, ctx):
     """One ticker, every selected strategy, inside its own failure boundary.
 
@@ -606,6 +649,40 @@ def _scan_symbol(symbol, row, ctx):
             )
             return eintrag
 
+    # --- 1b. a record that cannot authorise a window costs no chain --------
+    # The gate below only ever authorises a FRESH, confirmed record, so for any
+    # other record the verdict is already fixed before a single quote is read.
+    # Asking the chain for it was pure cost: up to max_symbols chain requests on
+    # a stale calendar day for an answer that cannot change. The window is
+    # therefore decided here from the record alone - ``None`` expiries means
+    # "none known", which the gate names as such - and nothing about a chain is
+    # claimed: every chain_* field stays at "not read".
+    if _cannot_authorise_a_window(earnings):
+        fenster = combine_earnings_and_expirations(earnings, None, today=ctx.today)
+        eintrag["data"] = {
+            "earnings_status": earnings.get("status"),
+            "earnings_date": earnings.get("next_earnings_date"),
+            "earnings_source": earnings.get("source"),
+            "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
+            # Says the omission was a decision, not a missing chain.
+            "chain_requested": False,
+            "chain_contracts": 0,
+            "chain_skipped_contracts": 0,
+            "chain_quote_timestamp_raw": None,
+            "chain_quote_timestamp_utc": None,
+            "chain_quote_zone": None,
+            "chain_quote_age_proven": False,
+            "chain_quote_age_minutes": None,
+            "freshness": _empty_freshness(ctx.criteria),
+            "completeness": "unknown",
+            "listed_expirations": [],
+        }
+        if _apply_window(eintrag, fenster, []):
+            return eintrag
+        # Not reachable while the predicate and the gate share one rule. If they
+        # ever drift, the entry takes the unchanged path below instead of
+        # skipping a call it turns out to need.
+
     # --- 2. the chain (ONE request covers every expiry of this underlying)
     try:
         chain = ctx.fetch_chain(symbol)
@@ -649,6 +726,9 @@ def _scan_symbol(symbol, row, ctx):
         # per-ticker lookup. Additive, so existing keys keep their meaning.
         "earnings_source": earnings.get("source"),
         "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
+        # The chain WAS asked on this path - the counterpart of the record-only
+        # path's False above.
+        "chain_requested": True,
         "chain_contracts": len(quotes),
         "chain_skipped_contracts": uebersprungen,
         "chain_quote_timestamp_raw": None if neueste is None else neueste.source_timestamp_raw,
@@ -667,26 +747,7 @@ def _scan_symbol(symbol, row, ctx):
     fenster = combine_earnings_and_expirations(
         earnings, [d.isoformat() for d in verfaelle], today=ctx.today
     )
-    entscheidung = fenster["decision"]
-    eintrag["window"] = {
-        "status": entscheidung["status"],
-        "eligible": entscheidung["eligible"],
-        "planned_last_exit_date": fenster["exit"]["planned_last_exit_date"],
-        "remaining_trading_days": fenster["exit"]["remaining_trading_days"],
-        "selected_expiration": fenster["expirations"]["selected"],
-        "reasons": [dict(g) for g in entscheidung["reasons"]],
-    }
-    if not entscheidung["eligible"]:
-        # A blocked or undecidable window is not "no hits": it is a verdict
-        # about the trade itself, and it is reported as such.
-        eintrag["status"] = (STATUS_WINDOW_UNKNOWN
-                             if entscheidung["status"] == "unknown"
-                             else STATUS_WINDOW_BLOCKED)
-        eintrag["exclusion"] = _exclusion(
-            "earnings_window_" + ("unknown" if entscheidung["status"] == "unknown" else "blocked"),
-            "; ".join(g["message"] for g in entscheidung["reasons"]),
-        )
-        eintrag["quality_flags"] = flags
+    if _apply_window(eintrag, fenster, flags):
         return eintrag
 
     # --- 5. which listed expiries are worth checking ----------------------

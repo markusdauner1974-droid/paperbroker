@@ -511,16 +511,29 @@ class TestEveryStateIsReachable(unittest.TestCase):
         self.assertEqual(koerper["coverage"]["source_calls"],
                          {"earnings": 0, "chains": 0})
 
-    def test_a_stale_earnings_record_blocks_the_window(self):
+    def test_a_stale_earnings_record_cannot_authorise_a_window(self):
         rows = [calendar_row("AAPL", 30)]
         adapter = FakeEarningsAdapter(rows, earnings_status=STATUS_STALE)
         # The record has to come from the adapter, so this scan carries no day.
+        chain = FakeChainAdapter({"AAPL": call_pair("AAPL", EXP_A)})
         koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
-                           fetch_earnings=adapter.get_earnings, day=None)
+                           fetch_earnings=adapter.get_earnings, day=None,
+                           adapter=chain)
         aapl = entry_of(koerper, "AAPL")
-        self.assertEqual(aapl["status"], STATUS_WINDOW_BLOCKED)
+        # A stale record can never authorise a window, so the chain is not
+        # requested at all and the record decides alone. Without expiries the
+        # gate also names ``expirations_unavailable``, which is why the verdict
+        # reads "unknown" (undecidable) instead of the "blocked" a chain used to
+        # supply - the entry is ineligible either way, and nothing was spent on
+        # an answer that could not change.
+        self.assertEqual(aapl["status"], STATUS_WINDOW_UNKNOWN)
         self.assertFalse(aapl["window"]["eligible"])
-        self.assertEqual(aapl["window"]["status"], "blocked")
+        self.assertEqual(aapl["window"]["status"], "unknown")
+        codes = [g["code"] for g in aapl["window"]["reasons"]]
+        self.assertIn("earnings_data_stale", codes)
+        self.assertIn("expirations_unavailable", codes)
+        self.assertIs(aapl["data"]["chain_requested"], False)
+        self.assertEqual(chain.calls, [])
         self.assertEqual(aapl["strategies"], {})
 
     def test_an_unknown_earnings_record_is_not_a_blocked_one(self):
@@ -533,9 +546,10 @@ class TestEveryStateIsReachable(unittest.TestCase):
         aapl = entry_of(koerper, "AAPL")
         self.assertEqual(aapl["status"], STATUS_WINDOW_UNKNOWN)
         self.assertEqual(aapl["window"]["status"], "unknown")
-        # Still named: the fallback found no date, so the reason says exactly that.
+        # Still named: the fallback found no date, so the reason says exactly
+        # that - and the second code says no expiry list was read either.
         self.assertEqual([g["code"] for g in aapl["window"]["reasons"]],
-                         ["earnings_date_unknown"])
+                         ["earnings_date_unknown", "expirations_unavailable"])
 
     def test_an_expiry_outside_the_window_is_named(self):
         rows = [calendar_row("AAPL", 30)]
@@ -936,6 +950,77 @@ class TestTheScannedDaySuppliesTheRecord(unittest.TestCase):
                          koerper["coverage"]["processed"])
         for eintrag in koerper["entries"]:
             self.assertNotEqual(eintrag["status"], STATUS_WINDOW_UNKNOWN)
+
+
+class TestAnUnprovenRecordCostsNoChain(unittest.TestCase):
+    """Kody finding on PR #80: the chain is the expensive call of a scan, and a
+    record that can never authorise a window does not need it.
+
+    Measured before this: every row of a stale calendar day paid one chain
+    request, up to ``max_symbols`` of them, for a verdict the record alone
+    already fixed.
+    """
+
+    def _stale_scan(self):
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        chains = {
+            "AAPL": call_pair("AAPL", EXP_A),
+            "MSFT": call_pair("MSFT", EXP_A),
+        }
+        adapter = FakeChainAdapter(chains)
+        return run_scan(chains, rows, day_state="stale", adapter=adapter), adapter
+
+    def test_an_unproven_record_costs_no_chain_request(self):
+        koerper, adapter = self._stale_scan()
+        # Not one chain was asked for: the record decided on its own.
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(koerper["coverage"]["source_calls"]["chains"], 0)
+        for symbol in ("AAPL", "MSFT"):
+            eintrag = entry_of(koerper, symbol)
+            self.assertEqual(eintrag["data"]["earnings_status"], STATUS_STALE)
+            # The omission is visible and deliberate, not a missing chain.
+            self.assertIs(eintrag["data"]["chain_requested"], False)
+            self.assertFalse(eintrag["window"]["eligible"])
+            self.assertIn(eintrag["status"],
+                          (STATUS_WINDOW_UNKNOWN, STATUS_WINDOW_BLOCKED))
+            self.assertNotEqual(eintrag["status"], STATUS_HITS)
+            # Nothing about a chain is claimed: no contracts, no stamp, no scan.
+            self.assertEqual(eintrag["data"]["chain_contracts"], 0)
+            self.assertIsNone(eintrag["data"]["chain_quote_timestamp_raw"])
+            self.assertEqual(eintrag["checked_expirations"], [])
+            self.assertEqual(eintrag["skipped_expirations"], [])
+            self.assertEqual(eintrag["strategies"], {})
+
+    def test_an_unproven_record_keeps_the_counts_adding_up(self):
+        koerper, _adapter = self._stale_scan()
+        self.assertEqual(sum(koerper["counts"].values()),
+                         koerper["coverage"]["processed"])
+        self.assertEqual(koerper["coverage"]["processed"], 2)
+        # The same counter as before: an undecidable window is a verdict about
+        # the trade, never "not checked" and never a silent gap.
+        self.assertEqual(koerper["counts"][STATUS_WINDOW_UNKNOWN], 2)
+        self.assertEqual(koerper["counts"][STATUS_NOT_CHECKED], 0)
+        for eintrag in koerper["entries"]:
+            self.assertIsNotNone(eintrag["data"])
+
+    def test_a_fresh_record_still_fetches_the_chain(self):
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        chains = {
+            "AAPL": call_pair("AAPL", EXP_A),
+            "MSFT": call_pair("MSFT", EXP_A),
+        }
+        adapter = FakeChainAdapter(chains)
+        koerper = run_scan(chains, rows, adapter=adapter)
+        # One request per title - the fresh path is untouched.
+        self.assertEqual(sorted(symbol for symbol, _exp in adapter.calls),
+                         ["AAPL", "MSFT"])
+        self.assertEqual(koerper["coverage"]["source_calls"]["chains"], 2)
+        for symbol in ("AAPL", "MSFT"):
+            eintrag = entry_of(koerper, symbol)
+            self.assertIs(eintrag["data"]["chain_requested"], True)
+            self.assertTrue(eintrag["window"]["eligible"])
+            self.assertEqual(eintrag["status"], STATUS_HITS)
+            self.assertGreater(eintrag["data"]["chain_contracts"], 0)
 
 
 class TestTheRoute(unittest.TestCase):
