@@ -1022,6 +1022,38 @@ class TestAnUnprovenRecordCostsNoChain(unittest.TestCase):
             self.assertEqual(eintrag["status"], STATUS_HITS)
             self.assertGreater(eintrag["data"]["chain_contracts"], 0)
 
+    def test_a_missing_confirmation_costs_no_chain_request(self):
+        # Kody's third finding: a FRESH record that simply does not state its
+        # confirmation passed the record-only precheck, paid a chain request and
+        # was blocked by the gate only afterwards. ``None`` and ``""`` must be
+        # read as "unknown" here, exactly as the gate reads them.
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        chains = {
+            "AAPL": call_pair("AAPL", EXP_A),
+            "MSFT": call_pair("MSFT", EXP_A),
+        }
+        for fehlend in (None, ""):
+            with self.subTest(date_confirmation=fehlend):
+                adapter = FakeChainAdapter(chains)
+
+                def antwort(symbol, _fehlend=fehlend):
+                    koerper = FakeEarningsAdapter(rows).get_earnings(symbol)
+                    koerper["earnings"]["date_confirmation"] = _fehlend
+                    return koerper
+
+                koerper = run_scan(chains, rows, fetch_earnings=antwort,
+                                   adapter=adapter, day=None)
+                # The record alone already refuses: not one chain was asked.
+                self.assertEqual(adapter.calls, [])
+                self.assertEqual(koerper["coverage"]["source_calls"]["chains"], 0)
+                for symbol in ("AAPL", "MSFT"):
+                    eintrag = entry_of(koerper, symbol)
+                    self.assertEqual(eintrag["data"]["earnings_status"], STATUS_FRESH)
+                    self.assertIs(eintrag["data"]["chain_requested"], False)
+                    self.assertFalse(eintrag["window"]["eligible"])
+                    self.assertIn(eintrag["status"],
+                                  (STATUS_WINDOW_UNKNOWN, STATUS_WINDOW_BLOCKED))
+
 
 class TestTheRoute(unittest.TestCase):
     def _rows(self):

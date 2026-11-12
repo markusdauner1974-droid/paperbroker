@@ -567,10 +567,13 @@ def _cannot_authorise_a_window(earnings):
     ``date_confirmation`` is not ``unknown`` - every other state is stale,
     unrecognised or unconfirmed there, no matter what the chain lists. Mirroring
     exactly those two conditions is what makes it safe to decide the window
-    BEFORE spending the chain request.
+    BEFORE spending the chain request. The missing-value coercion below is
+    deliberately identical to the gate's (earnings_calendar.py:495), so ``None``
+    and ``""`` are refused here for the same reason they are refused there.
     """
+    confirmation = earnings.get("date_confirmation") or CONFIRMATION_UNKNOWN
     return (earnings.get("status") != STATUS_FRESH
-            or earnings.get("date_confirmation") == CONFIRMATION_UNKNOWN)
+            or confirmation == CONFIRMATION_UNKNOWN)
 
 
 def _apply_window(eintrag, fenster, flags):
