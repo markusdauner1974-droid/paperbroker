@@ -16,6 +16,8 @@ What is pinned here, in the order of the requirement:
 * ``session_uncertain`` is in the answer and NOT in the display (Markus'
   decision: the session is not a criterion),
 * ``selected: 0`` names "Kein Kandidat" together with the number of failures,
+* ``result_state: "history_not_published"`` names the late closes in the panel's
+  note - no rows, no error,
 * ``invalid_day`` and ``calendar_unavailable`` name themselves in their own
   words and leave the rest of the page alone,
 * ``day_state: "stale"`` is flagged while the rows stay visible,
@@ -38,7 +40,7 @@ from datetime import date, timedelta
 from pathlib import Path
 
 import paperbroker
-from paperbroker.gap_scan import GapSourceError
+from paperbroker.gap_scan import GapBar, GapSourceError
 from paperbroker.tests.test_gap_scan_endpoint import (
     DAY,
     _calendar,
@@ -373,6 +375,34 @@ class TestTheListSpeaksTheAnswer(unittest.TestCase):
         self.assertIn("3 Fehlschläge", panel["empty"])
         self.assertTrue(panel["tableHidden"])
         self.assertEqual([], panel["rows"])
+
+    def test_an_unpublished_day_is_named(self):
+        # Der Fall vom 12.11. 17:00 ET: der Kalender listet den Tag, die
+        # Tagestabelle hat den Schluss noch nicht. Die Anzeige darf das nicht
+        # als ruhigen Tag verkaufen - und nicht als Fehler.
+        vorlauf = _History(bars={
+            symbol: [GapBar(session_date=date(2026, 11, 10), open=10.0, close=10.0,
+                            volume=1_000_000.0)]
+            for symbol in ("AAA", "BBB", "CCC")
+        })
+        antwort, koerper, _kalender, _quelle = _scan(history=vorlauf)
+        self.assertEqual(200, antwort.status_code)
+        self.assertEqual("history_not_published", koerper["result_state"])
+
+        panel = _render(_answer(200, koerper), click=True)
+
+        self.assertIn("Tagesschlusskurse", panel["empty"])
+        self.assertIn("noch nicht veröffentlicht", panel["empty"])
+        self.assertIn("erneut scannen", panel["empty"])
+        # Keine erfundene Zeile, kein Fehlerzustand - die Zaehlerzeile bleibt.
+        self.assertEqual([], panel["rows"])
+        self.assertTrue(panel["tableHidden"])
+        self.assertIsNone(panel["error"])
+        self.assertIn("Tag " + DAY, panel["counts"])
+        self.assertIn("geprüft 0", panel["counts"])
+        self.assertIn("angezeigt 0", panel["counts"])
+        # Nicht der Text des leeren Ergebnisses: "kein Kandidat" waere hier falsch.
+        self.assertNotIn("Kein Kandidat", panel["empty"])
 
     def test_the_open_button_carries_the_strategy(self):
         antwort, koerper = _three_candidates()

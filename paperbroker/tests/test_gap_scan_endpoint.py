@@ -22,6 +22,9 @@ What is pinned, in the order of the requirement:
 * a calendar that cannot answer is a 503 - with the upstream code and status
   when it answered 403 instead of staying silent,
 * a day where every symbol fails is still a 200 with ``selected: 0``,
+* a day whose closes are not published yet (the calendar lists the titles, the
+  daily table has no reaction bar) is a 200 named ``history_not_published`` -
+  an outage with per-title codes is not,
 * two requests for the same day read the history ONCE (shared adapter + cache).
 """
 
@@ -350,6 +353,39 @@ class GapScanEndpointTest(unittest.TestCase):
         self.assertEqual(sorted(koerper["failures"]), ["AAA", "BBB", "CCC"])
         self.assertEqual(set(koerper["failures"].values()), {"http_error"})
         self.assertEqual(sorted(quelle.calls), ["AAA", "BBB", "CCC"])
+
+    def test_an_unpublished_day_names_itself(self):
+        # 17:00 ET on a running day: the calendar knows the titles, the daily
+        # table does not carry the session yet. Every title answers with rows
+        # that stop at the day before - no reaction bar, so no gap.
+        vorlauf = _History(bars={
+            symbol: [GapBar(session_date=BEFORE, open=10.0, close=10.0, volume=1_000_000.0)]
+            for symbol in ("AAA", "BBB", "CCC")
+        })
+        antwort, koerper, _kalender, quelle = _scan(history=vorlauf)
+
+        # Valid request, real run, nothing measurable - still a 200.
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["result_state"], "history_not_published")
+        self.assertEqual(koerper["counts"]["candidate_rows"], 3)
+        self.assertEqual(koerper["counts"]["gaps_computed"], 0)
+        self.assertEqual(koerper["counts"]["selected"], 0)
+        self.assertEqual(koerper["candidates"], [])
+        # The titles WERE asked: "not published" is not "not looked at".
+        self.assertEqual(sorted(quelle.calls), ["AAA", "BBB", "CCC"])
+        self.assertEqual(set(koerper["failures"].values()), {"no_reaction_bar"})
+
+    def test_a_source_outage_is_not_a_late_publication(self):
+        # Every title failing with a source error is an outage, not a day whose
+        # closes are late: the state stays "ok" and ``failures`` names the codes.
+        kaputt = _History(errors={
+            symbol: GapSourceError("http_error", "the source answered HTTP 429", 429)
+            for symbol in ("AAA", "BBB", "CCC")
+        })
+        _antwort, koerper, _kalender, _quelle = _scan(history=kaputt)
+
+        self.assertEqual(koerper["result_state"], "ok")
+        self.assertEqual(set(koerper["failures"].values()), {"http_error"})
 
     def test_a_stale_day_is_not_upgraded_to_live(self):
         stale = _calendar(state_by_day={DAY: "stale"})

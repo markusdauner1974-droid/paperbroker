@@ -53,6 +53,10 @@
   };
   var DIRECTION = { up: '↑', down: '↓' };
   var DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
+  // Der Kalender kennt den Tag, die Tagestabelle noch nicht: das ist kein
+  // ruhiger Tag, sondern ein Zustand der QUELLE - und wird als solcher benannt.
+  var UNPUBLISHED = 'Tagesschlusskurse für diesen Tag sind noch nicht '
+    + 'veröffentlicht — bitte später oder am nächsten Tag erneut scannen.';
 
   var generation = 0;      // nur die neueste Anfrage darf zeichnen
   var timer = null;
@@ -359,7 +363,11 @@
 
     if (!entries.length) {
       el.wrap.hidden = true;
-      el.empty.textContent = emptyText(counts);
+      // Ein Tag, dessen Tagesschlusskurse noch nicht veroeffentlicht sind, ist
+      // NICHT "nichts hat sich bewegt": die Route sagt es (``result_state``),
+      // und hier steht der Grund statt eines erfundenen ruhigen Tages.
+      el.empty.textContent = body.result_state === 'history_not_published'
+        ? UNPUBLISHED : emptyText(counts);
       el.empty.hidden = false;
     } else {
       el.empty.hidden = true;

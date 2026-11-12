@@ -1360,6 +1360,23 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             args["min_turnover_usd"],
         )
 
+        # A day whose closes are not published yet is NOT a quiet day. Measured
+        # on 2026-11-12 17:00 ET: the calendar listed 214 titles for the running
+        # day, the daily table carried no bar for it yet, and the answer was a
+        # silent ``selected: 0``. The request is valid and the run happened, so
+        # the status stays 200 - but the reason is a fact about the SOURCE, and
+        # it is named here so nobody reads it as "nothing moved".
+        #
+        # Only a day that was ASKED and answered without the reaction bar counts:
+        # a run whose titles all failed with a source error (``http_error``,
+        # ``deadline_exceeded``, ...) is an outage, not a late publication, and
+        # the per-symbol codes in ``failures`` already name it.
+        result_state = "ok"
+        if zaehler["candidate_rows"] > 0 and zaehler["gaps_computed"] == 0:
+            codes = set(gemessen.failures.values())
+            if not codes or codes == {"no_reaction_bar"}:
+                result_state = "history_not_published"
+
         nach_symbol = {zeile["symbol"]: zeile for zeile in kandidatenzeilen}
         kandidaten = []
         for kandidat in ausgewaehlt:
@@ -1385,6 +1402,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             # "live": a stale calendar answers 200 with ``day_state: stale``,
             # because the rows are old, not because they are missing.
             day_state=gelesen[DAY_TODAY]["state"],
+            # ``ok`` or ``history_not_published``: the counts can be zero for two
+            # very different reasons, and the answer must not leave the reader to
+            # guess which one it is.
+            result_state=result_state,
             threshold_pct=args["gap_threshold_pct"],
             min_turnover_usd=args["min_turnover_usd"],
             max_candidates=args["max_candidates"],
