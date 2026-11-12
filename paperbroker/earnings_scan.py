@@ -50,7 +50,16 @@ from datetime import date
 
 from . import exclusions, quote_age
 from .assets import calendar_days_between
-from .earnings_calendar import combine_earnings_and_expirations
+from .earnings_calendar import (
+    CONFIRMATION_CONFIRMED,
+    FLAG_SESSION_UNKNOWN,
+    SESSION_AFTER,
+    SESSION_BEFORE,
+    SESSION_UNKNOWN,
+    STATUS_FRESH,
+    combine_earnings_and_expirations,
+    empty_earnings,
+)
 from .earnings_day_calendar import rank_rows
 from .screener import MAX_PAIRS_PER_SECTION, STRATEGIES, STRATEGY_IDS, filter_stale, pair_search_report, vertical_spreads
 
@@ -117,6 +126,16 @@ MAX_SYMBOLS_CEILING = 200
 MAX_EXPIRATIONS_CEILING = 40
 MAX_SECONDS_CEILING = 300.0
 CONCURRENCY_CEILING = 8
+
+# --- where an entry's earnings date came from ----------------------------- #
+#: The scanned calendar row itself. A row of day D is the source's structured
+#: statement that this symbol reports ON D - not a claim about the future, so
+#: it needs no second lookup (and no confirmation guess) to be usable.
+SOURCE_CALENDAR_ROW = "nasdaq_calendar_row"
+FLAG_CALENDAR_ROW_SOURCE = "earnings_date_from_calendar_row"
+#: A calendar row carries no timestamp of its own. The record says so instead
+#: of borrowing the scan's clock, which would look like a checked proof.
+FLAG_CALENDAR_ROW_WITHOUT_TIMESTAMP = "calendar_row_without_timestamp"
 
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
@@ -384,6 +403,11 @@ class _Context:
     limits: ScanLimits
     counter: _Counter
     on_ticker_error: object = None
+    #: The calendar day this scan runs for. The rows ARE that day's listing, so
+    #: this is what lets an entry derive its earnings record from its own row
+    #: instead of paying one lookup per ticker. ``None`` means "not known" and
+    #: keeps the per-ticker lookup.
+    day: object = None
     #: Coverage of EVERY section the scan searched, accumulated for the whole
     #: answer: a capped search must never be invisible just because the scan
     #: loops over many expiries and titles.
@@ -456,6 +480,66 @@ def _report(ctx, symbol, exc):
         pass
 
 
+def _day_of(value):
+    """The scanned day as a ``date``, or ``None`` when it is not one."""
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def earnings_from_calendar_row(row, day):
+    """The earnings record a calendar row of ``day`` proves on its own.
+
+    Returns the unchanged ``empty_earnings()`` shape, or ``None`` when no day
+    can be established - then the caller keeps the per-ticker lookup, because
+    nothing here may be guessed.
+
+    Why the row settles the question
+    --------------------------------
+    The scan runs for exactly ONE calendar day and its rows came from that
+    day's listing, so the row already answers "when does this symbol report?":
+    on ``day``. Asking the single-ticker endpoint again cannot improve that
+    answer - and for a title reporting TODAY Nasdaq answers "hasn't provided us
+    with the upcoming earnings report date", which used to turn every row of
+    the running day into ``window_unknown``. The row is a statement about a
+    day, not a forecast, which is why ``date_confirmation`` is ``confirmed``:
+    no window rule is loosened by this, the exit day still has to lie before
+    the date and still has to be in the future.
+
+    Nothing is invented: a row carries no timestamp (``source_checked_at_utc``
+    stays ``None`` and a flag names why) and a session the source did not state
+    stays ``unknown`` with ``release_session_unknown``.
+    """
+    termin = _day_of(day)
+    if termin is None:
+        return None
+    zeile = row if isinstance(row, dict) else {}
+    sitzung = zeile.get("session")
+    flags = [FLAG_CALENDAR_ROW_SOURCE, FLAG_CALENDAR_ROW_WITHOUT_TIMESTAMP]
+    if sitzung not in (SESSION_BEFORE, SESSION_AFTER):
+        # "unknown" and anything unstated stay unknown - a default of "after
+        # the close" would be an invented fact.
+        sitzung = SESSION_UNKNOWN
+        flags.append(FLAG_SESSION_UNKNOWN)
+    record = empty_earnings(zeile.get("symbol"))
+    record.update({
+        "next_earnings_date": termin.isoformat(),
+        "release_session": sitzung,
+        "date_confirmation": CONFIRMATION_CONFIRMED,
+        "source": SOURCE_CALENDAR_ROW,
+        "source_checked_at_utc": None,
+        "retrieved_at_utc": None,
+        "status": STATUS_FRESH,
+        "quality_flags": flags,
+    })
+    return record
+
+
 def _scan_symbol(symbol, row, ctx):
     """One ticker, every selected strategy, inside its own failure boundary.
 
@@ -478,23 +562,29 @@ def _scan_symbol(symbol, row, ctx):
     }
 
     # --- 1. the earnings record ------------------------------------------
-    try:
-        koerper = ctx.fetch_earnings(symbol)
-        earnings = koerper.get("earnings") if isinstance(koerper, dict) else None
-        if not isinstance(earnings, dict):
-            raise ValueError("earnings answer carries no record")
-        ctx.counter.count_earnings()
-    except Exception as exc:                        # noqa: BLE001 - one ticker, one verdict
-        # No exception text and no class name in the 200 body: the code below
-        # names WHICH call failed, and that is the actionable part for the
-        # caller. The type goes to the caller's log (``on_ticker_error``).
-        _report(ctx, symbol, exc)
-        eintrag["status"] = STATUS_FETCH_FAILED
-        eintrag["exclusion"] = _exclusion(
-            "earnings_fetch_failed",
-            "earnings lookup failed",
-        )
-        return eintrag
+    # The row belongs to the ONE day this scan runs for, so it already carries
+    # the answer: "this symbol reports on ctx.day". Deriving it costs nothing
+    # and calls nothing - the per-ticker lookup below stays for the case the
+    # row cannot settle (no day, or a caller that scans without one).
+    earnings = earnings_from_calendar_row(row, ctx.day)
+    if earnings is None:
+        try:
+            koerper = ctx.fetch_earnings(symbol)
+            earnings = koerper.get("earnings") if isinstance(koerper, dict) else None
+            if not isinstance(earnings, dict):
+                raise ValueError("earnings answer carries no record")
+            ctx.counter.count_earnings()
+        except Exception as exc:                    # noqa: BLE001 - one ticker, one verdict
+            # No exception text and no class name in the 200 body: the code below
+            # names WHICH call failed, and that is the actionable part for the
+            # caller. The type goes to the caller's log (``on_ticker_error``).
+            _report(ctx, symbol, exc)
+            eintrag["status"] = STATUS_FETCH_FAILED
+            eintrag["exclusion"] = _exclusion(
+                "earnings_fetch_failed",
+                "earnings lookup failed",
+            )
+            return eintrag
 
     # --- 2. the chain (ONE request covers every expiry of this underlying)
     try:
@@ -535,6 +625,9 @@ def _scan_symbol(symbol, row, ctx):
     eintrag["data"] = {
         "earnings_status": earnings.get("status"),
         "earnings_date": earnings.get("next_earnings_date"),
+        # WHICH record the date above came from: the scanned calendar row or a
+        # per-ticker lookup. Additive, so existing keys keep their meaning.
+        "earnings_source": earnings.get("source"),
         "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
         "chain_contracts": len(quotes),
         "chain_skipped_contracts": uebersprungen,
@@ -806,7 +899,10 @@ def scan_day(
     ``rows`` is the day's list exactly as the source delivered it (before any
     ranking). ``fetch_earnings(symbol)`` and ``fetch_chain(symbol)`` are the
     only ways out of this module - both cached inside their adapters, which is
-    why a repeated scan inside their TTLs costs no request at all.
+    why a repeated scan inside their TTLs costs no request at all. Because the
+    rows ARE ``day``'s listing, ``day`` also answers the earnings question: the
+    record is derived from the row (``earnings_from_calendar_row``) and no
+    per-ticker lookup is paid. ``day=None`` keeps the lookup path.
 
     ``optionable`` is the CBOE symbol set; ``None`` means "not available" and
     the scan then runs unfiltered and says so.
@@ -839,6 +935,7 @@ def scan_day(
         limits=limits,
         counter=counter,
         on_ticker_error=on_ticker_error,
+        day=day,
         search_coverage={},
     )
 
