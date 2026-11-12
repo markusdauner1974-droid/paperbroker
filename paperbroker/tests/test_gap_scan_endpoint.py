@@ -1,0 +1,315 @@
+"""Offline tests for the closing-gap scan as an endpoint (GET /api/v1/gap-scan).
+
+``test_gap_scan.py`` owns the measurement and the selection; this file owns the
+HTTP contract around them. Both sources are faked - the calendar from a dict of
+rows, the history from a dict of bars - so no test here touches the network, and
+every test runs against the pinned clock.
+
+What is pinned, in the order of the requirement:
+
+* the answer names its mode and the day it measured,
+* ``counts`` has exactly the six agreed fields and describes the WHOLE day even
+  when ``max_candidates`` shows only the best few (the gap stage has no cap),
+* a pre-market row of the reaction day is certain, an after-market row has no
+  gap yet and is not even asked,
+* a row of the previous day whose session the source deleted is uncertain,
+* a day that is no date is a 400 that never reaches the calendar,
+* a calendar that cannot answer is a 503 - with the upstream code and status
+  when it answered 403 instead of staying silent,
+* a day where every symbol fails is still a 200 with ``selected: 0``.
+"""
+
+import unittest
+from datetime import date
+
+import arrow
+
+from paperbroker.gap_scan import DEFAULT_LIMIT, GapBar, GapSourceError
+from paperbroker.server import create_app
+
+# 2026-11-11 21:00 UTC is 16:00 in New York - the US day is still the 11th.
+CLOCK = lambda: arrow.get("2026-11-11T21:00:00Z")  # noqa: E731
+
+DAY = "2026-11-11"
+PREVIOUS = "2026-11-10"
+REACTION = date(2026, 11, 11)
+BEFORE = date(2026, 11, 10)
+
+
+def calendar_row(symbol, session=None, name=None):
+    """One calendar row in the adapter's shape: keys, not classes."""
+    return {
+        "symbol": symbol,
+        "name": name if name is not None else f"{symbol} Inc.",
+        "session": session,
+        "eps_forecast": "$1.10",
+        "market_cap": 1000,
+        "fiscal_quarter_ending": "Sep/2026",
+    }
+
+
+class _FakeCalendar:
+    """A calendar adapter that answers from memory and counts its calls.
+
+    ``state_by_day`` overrides ``state`` for single days, ``omit`` leaves days
+    out of the answer entirely (the shape a caller has to read as "not
+    answered"), and ``error_by_day`` records what the source DID when it
+    blocked a day - a 403 is an answer, not silence.
+    """
+
+    _RANG = {"live": 0, "stale": 1, "unavailable": 2}
+
+    def __init__(self, rows_by_day=None, state="live", state_by_day=None, boom=False,
+                 omit=(), error_by_day=None):
+        self.rows_by_day = rows_by_day or {}
+        self.state = state
+        self.state_by_day = dict(state_by_day or {})
+        self.boom = boom
+        self.omit = tuple(omit)
+        self.error_by_day = dict(error_by_day or {})
+        self.calls = 0
+        self.last_days = None
+
+    def get_calendar_days(self, days):
+        self.calls += 1
+        self.last_days = dict(days)
+        if self.boom:
+            raise RuntimeError("calendar adapter exploded")
+        geliefert = {}
+        for _label, tag in days.items():
+            if tag in self.omit:
+                continue
+            zustand = self.state_by_day.get(tag, self.state)
+            eintrag = {
+                "date": tag,
+                "rows": list(self.rows_by_day.get(tag, [])),
+                "state": zustand,
+                "fetched_at_utc": "2026-11-11T20:00:00Z" if zustand in ("live", "stale") else None,
+                "payload_ok": zustand in ("live", "stale"),
+                "skipped": 0,
+            }
+            if tag in self.error_by_day and zustand == "unavailable":
+                eintrag["error"] = dict(self.error_by_day[tag])
+                eintrag["live_query_failed"] = True
+            geliefert[tag] = eintrag
+        gesamt = "unavailable"
+        if geliefert:
+            gesamt = max((e["state"] for e in geliefert.values()),
+                         key=lambda z: self._RANG.get(z, 2))
+        return {"days": geliefert, "state": gesamt, "fetched_at_utc": None}
+
+
+class _History:
+    """A history adapter with ``fetch_daily``'s signature - one answer per symbol.
+
+    ``errors[symbol]`` is a ``GapSourceError`` raised INSTEAD of the bars, so
+    one test can break one title (or all of them) without a transport.
+    """
+
+    def __init__(self, bars=None, errors=None):
+        self.bars = bars or {}
+        self.errors = errors or {}
+        self.calls = []
+
+    def fetch_daily(self, symbol, fromdate, limit=DEFAULT_LIMIT):
+        self.calls.append(symbol)
+        error = self.errors.get(symbol)
+        if error is not None:
+            raise error
+        return list(self.bars.get(symbol, []))
+
+
+def bars(close, previous_close=10.0, volume=1_000_000.0):
+    """Two sessions: the reaction day and the session before it."""
+    return [
+        GapBar(session_date=REACTION, open=close, close=close, volume=volume),
+        GapBar(session_date=BEFORE, open=previous_close, close=previous_close, volume=volume),
+    ]
+
+
+def _history():
+    """Three measurable titles: AAA +10 %, BBB +4 %, CCC -10 %."""
+    return _History(bars={
+        # AAA comes from the PREVIOUS day: its session is gone (unknown).
+        "AAA": bars(11.0, volume=2_000_000.0),
+        "BBB": bars(10.4),
+        "CCC": bars(9.0, volume=1_500_000.0),
+    })
+
+
+def _calendar(state="live", **kwargs):
+    return _FakeCalendar(
+        rows_by_day={
+            PREVIOUS: [
+                calendar_row("AAA", session=None),          # session deleted
+                calendar_row("BBB", session="before_market"),
+            ],
+            DAY: [
+                calendar_row("CCC", session="before_market", name="Cee Corporation"),
+                calendar_row("DDD", session="after_market"),  # no gap yet
+            ],
+        },
+        state=state,
+        **kwargs,
+    )
+
+
+def _client(calendar=None, history=None):
+    return create_app(
+        quote_adapter=object(),
+        earnings_adapter=calendar or _calendar(),
+        gap_adapter=history or _history(),
+        now_fn=CLOCK,
+    ).test_client()
+
+
+def _scan(query=f"?day={DAY}", calendar=None, history=None):
+    """One gap-scan request, plus the two fakes so a test can inspect them."""
+    kalender = calendar or _calendar()
+    quelle = history or _history()
+    antwort = _client(kalender, quelle).get(f"/api/v1/gap-scan{query}")
+    return antwort, antwort.get_json(), kalender, quelle
+
+
+def _by_symbol(candidates):
+    return {eintrag["symbol"]: eintrag for eintrag in candidates}
+
+
+class GapScanEndpointTest(unittest.TestCase):
+    def test_the_scan_names_its_mode_and_the_day(self):
+        antwort, koerper, kalender, _quelle = _scan()
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["mode"], "post_earnings_gap")
+        self.assertEqual(koerper["day"], DAY)
+        self.assertEqual(koerper["day_state"], "live")
+        self.assertEqual(koerper["threshold_pct"], 2.0)
+        self.assertEqual(koerper["min_turnover_usd"], 5_000_000.0)
+        self.assertEqual(koerper["max_candidates"], 30)
+        # Both calendar days were asked for, in one call: the reaction day and
+        # the calendar day before it.
+        self.assertEqual(kalender.calls, 1)
+        self.assertEqual(sorted((kalender.last_days or {}).values()), [PREVIOUS, DAY])
+
+    def test_the_counts_describe_what_was_checked(self):
+        antwort, koerper, _kalender, _quelle = _scan()
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(
+            sorted(koerper["counts"]),
+            sorted(["candidate_rows", "gaps_computed", "over_threshold", "turnover_passed",
+                    "selected", "failures"]),
+        )
+        self.assertEqual(koerper["counts"], {
+            "candidate_rows": 3,   # AAA, BBB, CCC - DDD is after the close
+            "gaps_computed": 3,
+            "over_threshold": 3,
+            "turnover_passed": 3,
+            "selected": 3,
+            "failures": 0,
+        })
+        self.assertEqual([e["symbol"] for e in koerper["candidates"]], ["AAA", "CCC", "BBB"])
+
+    def test_the_cap_limits_the_answer_not_the_measurement(self):
+        # The whole point of "no cap on the gap stage": asking for two entries
+        # must still measure all three titles.
+        antwort, koerper, _kalender, quelle = _scan(f"?day={DAY}&max_candidates=2")
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["counts"]["candidate_rows"], 3)
+        self.assertEqual(koerper["counts"]["gaps_computed"], 3)
+        self.assertEqual(koerper["counts"]["selected"], 2)
+        self.assertEqual(len(koerper["candidates"]), 2)
+        self.assertEqual(sorted(quelle.calls), ["AAA", "BBB", "CCC"])
+
+    def test_a_pre_market_row_of_the_day_is_certain(self):
+        _antwort, koerper, _kalender, quelle = _scan()
+
+        ccc = _by_symbol(koerper["candidates"])["CCC"]
+        self.assertFalse(ccc["session_uncertain"])
+        self.assertEqual(ccc["session"], "before_market")
+        self.assertEqual(ccc["earnings_date"], DAY)
+        self.assertEqual(ccc["name"], "Cee Corporation")
+        self.assertEqual(ccc["direction"], "down")
+        self.assertEqual(ccc["strategy"], "bear_put_debit")
+        # The after-market row of the same day has no gap YET - it is not asked.
+        self.assertNotIn("DDD", quelle.calls)
+
+    def test_a_row_of_the_previous_day_without_a_session_is_marked_uncertain(self):
+        _antwort, koerper, _kalender, _quelle = _scan()
+        kandidaten = _by_symbol(koerper["candidates"])
+
+        aaa = kandidaten["AAA"]
+        self.assertTrue(aaa["session_uncertain"])
+        self.assertEqual(aaa["session"], "unknown")
+        self.assertEqual(aaa["earnings_date"], PREVIOUS)
+        self.assertEqual(aaa["direction"], "up")
+        self.assertEqual(aaa["strategy"], "bull_call_debit")
+        # A session the calendar DID report on the previous day stays certain.
+        bbb = kandidaten["BBB"]
+        self.assertFalse(bbb["session_uncertain"])
+        self.assertEqual(bbb["session"], "before_market")
+
+    def test_an_invalid_day_is_a_client_error(self):
+        for query in ("?day=kein-datum", "?day=2026-02-30", "", "?day="):
+            with self.subTest(query=query):
+                kalender = _calendar()
+                antwort = _client(kalender).get(f"/api/v1/gap-scan{query}")
+                self.assertEqual(antwort.status_code, 400)
+                self.assertEqual(antwort.get_json(), {"error": "invalid_day"})
+                # Validated BEFORE the source: a bad day costs no query.
+                self.assertEqual(kalender.calls, 0)
+
+    def test_an_unavailable_calendar_is_a_server_error(self):
+        antwort, koerper, _kalender, _quelle = _scan(calendar=_calendar(state="unavailable"))
+        self.assertEqual(antwort.status_code, 503)
+        self.assertEqual(koerper["error"], "calendar_unavailable")
+
+        # No source configured is the same answer: there is no candidate set.
+        antwort, koerper, _kalender, _quelle = _scan(calendar=_calendar(state="not_configured"))
+        self.assertEqual(antwort.status_code, 503)
+        self.assertEqual(koerper["error"], "calendar_unavailable")
+        self.assertEqual(koerper["source_code"], "not_configured")
+
+        # An exploding adapter is an outage, not a traceback.
+        antwort, koerper, _kalender, _quelle = _scan(calendar=_calendar(boom=True))
+        self.assertEqual(antwort.status_code, 503)
+        self.assertEqual(koerper["error"], "calendar_unavailable")
+
+        # A blocked day names what the source DID instead of "did not answer".
+        blockiert = _calendar(state="unavailable", error_by_day={
+            DAY: {"code": "source_blocked", "message": "HTTP 403", "http_status": 403},
+        })
+        antwort, koerper, _kalender, _quelle = _scan(calendar=blockiert)
+        self.assertEqual(antwort.status_code, 503)
+        self.assertEqual(koerper["error"], "calendar_unavailable")
+        self.assertEqual(koerper["source_code"], "source_blocked")
+        self.assertEqual(koerper["http_status"], 403)
+        self.assertIn("403", koerper["message"])
+
+    def test_every_symbol_failing_still_answers(self):
+        kaputt = _History(errors={
+            symbol: GapSourceError("http_error", "the source answered HTTP 429", 429)
+            for symbol in ("AAA", "BBB", "CCC")
+        })
+        antwort, koerper, _kalender, quelle = _scan(history=kaputt)
+
+        # An answer, not an error: the run happened and produced nothing.
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["candidates"], [])
+        self.assertEqual(koerper["counts"]["selected"], 0)
+        self.assertEqual(koerper["counts"]["gaps_computed"], 0)
+        self.assertEqual(koerper["counts"]["candidate_rows"], 3)
+        self.assertEqual(koerper["counts"]["failures"], 3)
+        self.assertEqual(sorted(koerper["failures"]), ["AAA", "BBB", "CCC"])
+        self.assertEqual(set(koerper["failures"].values()), {"http_error"})
+        self.assertEqual(sorted(quelle.calls), ["AAA", "BBB", "CCC"])
+
+    def test_a_stale_day_is_not_upgraded_to_live(self):
+        stale = _calendar(state_by_day={DAY: "stale"})
+        antwort, koerper, _kalender, _quelle = _scan(calendar=stale)
+
+        self.assertEqual(antwort.status_code, 200)
+        # The reaction day's own state, passed through - old rows are old.
+        self.assertEqual(koerper["day_state"], "stale")
+        self.assertEqual(koerper["counts"]["selected"], 3)

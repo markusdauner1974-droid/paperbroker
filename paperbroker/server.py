@@ -57,6 +57,20 @@ from .earnings_scan import (
 )
 from .eva_quality import assess_source_quality, snapshot_identity
 from .exclusions import LEVEL_CONTRACT, LEVEL_EXPIRY, LEVEL_PAIR, LEVEL_SYMBOL
+from .gap_scan import (
+    DEFAULT_MAX_CANDIDATES,
+    DEFAULT_MIN_TURNOVER_USD,
+    DEFAULT_THRESHOLD_PCT,
+    NasdaqHistoryAdapter,
+    fetch_gaps,
+    reaction_day_rows,
+    select_candidates,
+)
+
+# The numbers of a run have ONE definition (``gap_scan._counts``), so this route
+# cannot drift from ``scan_gaps``: it imports the helper instead of re-deriving
+# "selected" or "turnover_passed" from the rows a second time.
+from .gap_scan import _counts as gap_run_counts
 from .PaperBroker import PaperBroker
 from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
 from .screener import (
@@ -88,6 +102,10 @@ _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 # static banner, not as a red state.
 _FRESH_GREEN_MIN = 30
 _FRESH_YELLOW_MIN = 120
+
+# The gap scan answers one shape of run and says so: the closing gap after an
+# earnings release, measured on the CLOSE of the reaction session.
+GAP_SCAN_MODE = "post_earnings_gap"
 
 # UX-1 (Ausbau-Slice 1): the screener hands back one free-text reason per
 # dropped contract ("veraltet: 257 Min.", "OI 7 < 500"). Counting the raw texts
@@ -392,12 +410,19 @@ def _us_today(now_fn):
     return arrow.get(now_fn()).to("America/New_York").date()
 
 
-def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=None):
+def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=None,
+               gap_adapter=None):
     """now_fn: injectable clock for tests (default: real arrow.get).
 
     The screener's 30-min-stale guard compares quote_timestamp against
     now() - a hardcoded fixture timestamp goes stale in real time, so
     tests MUST pin the clock instead of freezing the fixtures.
+
+    ``gap_adapter`` is the SECOND source: daily closes for the closing-gap
+    scan (``GET /api/v1/gap-scan``). Separate from ``earnings_adapter`` on
+    purpose - the calendar says WHO reacted, the history says HOW FAR, and the
+    two fail for different reasons. ``None`` means the real Nasdaq history
+    adapter, built per request (it holds no state worth keeping).
     """
     app = Flask(__name__, template_folder="templates")
     if now_fn is None:
@@ -1047,6 +1072,240 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         koerper["option_filter"]["state"] = option_state
         koerper["option_filter"]["fetched_at_utc"] = option_fetched
         return jsonify(koerper)
+
+    # ------------------------------------------------------------------ #
+    # The closing gap of one reaction day (GET /api/v1/gap-scan).         #
+    #                                                                     #
+    # The scan above positions BEFORE the numbers. This one measures what #
+    # the market did AFTER them: the close of the reaction session against #
+    # the close before it. Two sources, two questions - the earnings      #
+    # calendar says WHO released (its rows of the previous day and the    #
+    # pre-market rows of the day), the daily closes say HOW FAR. Nothing  #
+    # here prices an option, reads a chain or places an order.            #
+    # ------------------------------------------------------------------ #
+    _GAP_SCAN_PARAMETERS = ("gap_threshold_pct", "min_turnover_usd", "max_candidates")
+    # The output cap is bounded like every other limit: 5000 titles in one
+    # answer is not a bigger result, it is a response nobody reads. The
+    # MEASUREMENT is never capped - every candidate is fetched and checked.
+    _GAP_MAX_CANDIDATES_CEILING = 500
+
+    def _gap_scan_error(status, code, message=None, *, source_code=None, source_status=None):
+        """Flat JSON error of this route: ``{"error": <code>}`` plus what is known.
+
+        Flat on purpose and different from ``_earnings_error``: the agreed
+        contract of this endpoint names the code in ``error`` itself, so a
+        client switches on ONE field instead of unpacking ``error.code``. The
+        upstream code and status of a calendar that BLOCKED the request travel
+        next to it, for the same reason as in ``_calendar_failure``: the
+        message may not say "did not answer" when the source answered 403.
+        """
+        koerper = {"error": code}
+        if message:
+            koerper["message"] = message
+        if source_code:
+            koerper["source_code"] = source_code
+        if source_status is not None:
+            koerper["http_status"] = source_status
+        return jsonify(koerper), status
+
+    def _gap_scan_args():
+        """``day`` and the three numbers of one gap scan, or a ready JSON error.
+
+        The day is validated before it touches the calendar: a string that is
+        no date would otherwise be asked for and come back as "no rows", i.e.
+        as a quiet day instead of as a bad request.
+        """
+        erlaubt = {"day"} | set(_GAP_SCAN_PARAMETERS)
+        unbekannt = sorted(set(request.args) - erlaubt)
+        if unbekannt:
+            return None, _gap_scan_error(
+                400, "unknown_parameter",
+                f"unknown parameter(s): {', '.join(unbekannt)}. Allowed: day, "
+                f"{', '.join(_GAP_SCAN_PARAMETERS)}",
+            )
+        doppelt = sorted(name for name in erlaubt if len(request.args.getlist(name)) > 1)
+        if doppelt:
+            return None, _gap_scan_error(
+                400, "duplicate_parameter", f"duplicate parameter(s): {', '.join(doppelt)}"
+            )
+
+        day = (request.args.get("day") or "").strip()
+        # Exactly the agreed shape: the code alone, nothing to explain.
+        if not day or not _DATE_RE.match(day):
+            return None, _gap_scan_error(400, "invalid_day")
+        try:
+            reaction = datetime.strptime(day, "%Y-%m-%d").date()
+        except ValueError:
+            return None, _gap_scan_error(400, "invalid_day")
+
+        limits = {}
+        for name, default, ceiling, integer, minimum in (
+            ("gap_threshold_pct", DEFAULT_THRESHOLD_PCT, 100.0, False, 0.0),
+            ("min_turnover_usd", DEFAULT_MIN_TURNOVER_USD, 1e12, False, 0.0),
+            ("max_candidates", DEFAULT_MAX_CANDIDATES, _GAP_MAX_CANDIDATES_CEILING, True, 1),
+        ):
+            wert, fehler = _scan_limit(name, request.args.get(name), default, ceiling,
+                                       integer=integer, minimum=minimum)
+            if fehler is not None:
+                return None, _gap_scan_error(400, "invalid_limit", fehler)
+            limits[name] = wert
+
+        return {"day": day, "reaction": reaction, **limits}, None
+
+    @app.get("/api/v1/gap-scan")
+    def api_gap_scan():
+        """The closing gaps of one finished reaction day, as tradable candidates.
+
+        ``day`` is the reaction session whose close is measured - not "today":
+        a gap needs a finished session on both sides.
+
+        WHO is asked comes from the calendar: every title of the previous
+        calendar day (its numbers came out after that close) plus the
+        PRE-MARKET titles of ``day`` itself. The two halves come from two
+        calendar days and are not merged - ``reaction_day_rows`` owns that
+        rule, including the ``session_uncertain`` doubt for a row whose session
+        the source has already deleted.
+
+        HOW FAR is a second source, one daily-history request per title, run in
+        parallel. Its failures are per title: a symbol that cannot be measured
+        ends in ``failures`` with the code that stopped it, and a day where
+        every symbol fails is still an ANSWER (200, ``selected: 0``) - the run
+        happened, it just produced nothing. Only a calendar that cannot be read
+        is a 503, because then there is no candidate set at all.
+
+        ``max_candidates`` caps the returned list, never the measurement: all
+        candidates are fetched and checked, so ``counts`` describes the whole
+        day while ``candidates`` shows the biggest moves.
+        """
+        args, fehler = _gap_scan_args()
+        if fehler is not None:
+            return fehler
+        day = args["day"]
+        reaction = args["reaction"]
+        previous = reaction - timedelta(days=1)
+        tage = {DAY_PREV: previous.isoformat(), DAY_TODAY: day}
+
+        try:
+            antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("gap scan: calendar failed for %s and %s",
+                                 tage[DAY_PREV], day)
+            return _gap_scan_error(
+                503, "calendar_unavailable", "the earnings calendar could not be read"
+            )
+        roh = antwort.get("days") if isinstance(antwort, dict) else None
+        roh = roh if isinstance(roh, dict) else {}
+        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
+        if gesamt == "not_configured":
+            # Setup fact, not an outage - and it is the same answer as no
+            # calendar at all: there is no candidate set to build.
+            return _gap_scan_error(
+                503, "calendar_unavailable",
+                "no earnings source is configured - there is nothing to scan",
+                source_code="not_configured",
+            )
+
+        # The reaction day is checked FIRST: it is the subject of the request,
+        # so its failure is the one worth naming. Both days must be readable -
+        # half a candidate set would look like a quiet day, not like a hole.
+        gelesen = {}
+        for schluessel in (DAY_TODAY, DAY_PREV):
+            iso = tage[schluessel]
+            eintrag = roh.get(iso)
+            if not isinstance(eintrag, dict):
+                # No entry for a requested day is no answer, not an empty day.
+                quell_code, quell_status, message = _calendar_failure(
+                    antwort.get("error") if isinstance(antwort, dict) else None, iso
+                )
+                return _gap_scan_error(
+                    503, "calendar_unavailable", message,
+                    source_code=quell_code, source_status=quell_status,
+                )
+            zustand = str(eintrag.get("state") or gesamt or "unavailable")
+            zeilen = eintrag.get("rows") or []
+            if zustand == "not_configured":
+                return _gap_scan_error(
+                    503, "calendar_unavailable",
+                    "no earnings source is configured - there is nothing to scan",
+                    source_code="not_configured",
+                )
+            if zustand == "unavailable" or not isinstance(zeilen, list):
+                quell_code, quell_status, message = _calendar_failure(eintrag.get("error"), iso)
+                return _gap_scan_error(
+                    503, "calendar_unavailable", message,
+                    source_code=quell_code, source_status=quell_status,
+                )
+            gelesen[schluessel] = {"state": zustand, "rows": zeilen}
+
+        kandidatenzeilen = reaction_day_rows(
+            gelesen[DAY_PREV]["rows"],
+            gelesen[DAY_TODAY]["rows"],
+            previous_date=previous,
+            day_date=reaction,
+        )
+
+        quelle = gap_adapter if gap_adapter is not None else NasdaqHistoryAdapter()
+        try:
+            gemessen = fetch_gaps(
+                [zeile["symbol"] for zeile in kandidatenzeilen], reaction, adapter=quelle
+            )
+        except Exception:  # noqa: BLE001 - a broken pool must not become an HTML 500
+            # Per-symbol failures never reach this line: ``fetch_gaps`` turns
+            # each of them into a code. Only the run itself can break here.
+            app.logger.exception("gap scan: measurement failed for %s", day)
+            return _gap_scan_error(
+                503, "gap_source_failed", "the gap source could not be read"
+            )
+
+        ausgewaehlt = select_candidates(
+            gemessen.rows,
+            threshold_pct=args["gap_threshold_pct"],
+            min_turnover_usd=args["min_turnover_usd"],
+            max_candidates=args["max_candidates"],
+        )
+        # One definition of the numbers (``gap_scan._counts``), so this answer
+        # and ``scan_gaps`` can never disagree about what "selected" counts.
+        zaehler = gap_run_counts(
+            kandidatenzeilen,
+            gemessen.rows,
+            ausgewaehlt,
+            gemessen.failures,
+            args["gap_threshold_pct"],
+            args["min_turnover_usd"],
+        )
+
+        nach_symbol = {zeile["symbol"]: zeile for zeile in kandidatenzeilen}
+        kandidaten = []
+        for kandidat in ausgewaehlt:
+            zeile = nach_symbol.get(kandidat.symbol) or {}
+            kandidaten.append({
+                "symbol": kandidat.symbol,
+                "name": zeile.get("name"),
+                "session": zeile.get("session"),
+                "session_uncertain": bool(zeile.get("session_uncertain")),
+                "earnings_date": zeile.get("earnings_date"),
+                "gap_pct": kandidat.gap_pct,
+                "direction": kandidat.direction,
+                "strategy": kandidat.strategy,
+                "close": kandidat.close,
+                "volume": kandidat.volume,
+                "turnover_usd": kandidat.turnover_usd,
+            })
+
+        return jsonify(
+            mode=GAP_SCAN_MODE,
+            day=day,
+            # The reaction day's OWN state, passed through - never upgraded to
+            # "live": a stale calendar answers 200 with ``day_state: stale``,
+            # because the rows are old, not because they are missing.
+            day_state=gelesen[DAY_TODAY]["state"],
+            threshold_pct=args["gap_threshold_pct"],
+            min_turnover_usd=args["min_turnover_usd"],
+            max_candidates=args["max_candidates"],
+            counts=zaehler,
+            candidates=kandidaten,
+            failures=dict(gemessen.failures),
+        )
 
     def _earnings_view(ticker, expirations, offered):
         """What the page shows - derived from the same calls the API makes.
