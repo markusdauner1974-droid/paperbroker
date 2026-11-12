@@ -3007,11 +3007,20 @@ class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
         # +2: the two age-mode radio buttons (Aktualitaetsfilter / letzter
         # verfuegbarer Marktstand), +2: the two strike-search radios - both are
         # chosen by the operator, never inferred from a leftover value
-        self.assertEqual(page.count("<input"), 36)   # D12 +4 Position, +2 Credit
-        self.assertEqual(page.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
-        self.assertEqual(page.count("<button"), 1)
-        self.assertEqual(page.count("<fieldset"), 6)  # D12 + Position, D14 + Spreads
-        self.assertEqual(page.count("<legend>"), 6)
+        #
+        # Gezaehlt wird das FORMULAR, nicht die Seite: die Seite traegt seit dem
+        # Gap-Scan einen eigenen Abschnitt mit eigenem Datumsfeld und eigenem
+        # Knopf. Ein Seitenzaehler braeche bei jedem neuen Abschnitt, ohne ueber
+        # das Formular etwas auszusagen - gemeint war immer das Formular
+        # (siehe test_the_controls_stay_outside_the_groups).
+        treffer = re.search(r"<form.*?</form>", page, re.S)
+        self.assertIsNotNone(treffer, "die Seite traegt kein Formular")
+        form = treffer.group(0) if treffer else ""
+        self.assertEqual(form.count("<input"), 36)   # D12 +4 Position, +2 Credit
+        self.assertEqual(form.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
+        self.assertEqual(form.count("<button"), 1)
+        self.assertEqual(form.count("<fieldset"), 6)  # D12 + Position, D14 + Spreads
+        self.assertEqual(form.count("<legend>"), 6)
 
     def test_the_controls_stay_outside_the_groups(self):
         # Ticker, Verfallsauswahl und der Scan-Knopf gehoeren NICHT in eine
