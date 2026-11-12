@@ -36,6 +36,7 @@ from .earnings_calendar import (
     SESSION_AFTER,
     SESSION_BEFORE,
     combine_earnings_and_expirations,
+    is_us_trading_day,
 )
 from .earnings_day_calendar import (
     DAY_NEXT,
@@ -61,6 +62,7 @@ from .gap_scan import (
     DEFAULT_MAX_CANDIDATES,
     DEFAULT_MIN_TURNOVER_USD,
     DEFAULT_THRESHOLD_PCT,
+    BoundedCache,
     NasdaqHistoryAdapter,
     fetch_gaps,
     reaction_day_rows,
@@ -422,7 +424,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     scan (``GET /api/v1/gap-scan``). Separate from ``earnings_adapter`` on
     purpose - the calendar says WHO reacted, the history says HOW FAR, and the
     two fail for different reasons. ``None`` means the real Nasdaq history
-    adapter, built per request (it holds no state worth keeping).
+    adapter, built ONCE here with a bounded cache: a past close never changes,
+    so a second request for the same day must not load the whole day again.
+    An injected ``gap_adapter`` wins over that default (tests, other sources).
     """
     app = Flask(__name__, template_folder="templates")
     if now_fn is None:
@@ -432,6 +436,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         quote_adapter = CBOEQuoteAdapter()
     if screener is None:
         screener = OptionScreener(ScreenerCriteria())
+    if gap_adapter is None:
+        # One adapter for the lifetime of the app, one cache with a ceiling -
+        # not a fresh, memoryless adapter per request.
+        gap_adapter = NasdaqHistoryAdapter(cache=BoundedCache())
     if earnings_adapter is None:
         # Fail-closed default: no source configured -> UNKNOWN, never a guess.
         if _earnings_source_from_env() == "nasdaq":
@@ -1088,6 +1096,15 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # answer is not a bigger result, it is a response nobody reads. The
     # MEASUREMENT is never capped - every candidate is fetched and checked.
     _GAP_MAX_CANDIDATES_CEILING = 500
+    # The whole run's budget, in seconds. Not a cap on the titles - every
+    # candidate is still asked - but a request may not hold a worker for the
+    # worst case (220 titles x 6 s / 8 workers = ~165 s). What did not finish
+    # is named ``deadline_exceeded`` in ``failures``, never dropped.
+    _GAP_DEADLINE_SECONDS = 120
+    # How far back the previous TRADING day may lie: ten calendar days cover a
+    # weekend plus the longest NYSE closure (a holiday and a broken bridge).
+    # Beyond that the calendar is not believable and the answer is a 503.
+    _GAP_PREVIOUS_LOOKBACK_DAYS = 10
 
     def _gap_scan_error(status, code, message=None, *, source_code=None, source_status=None):
         """Flat JSON error of this route: ``{"error": <code>}`` plus what is known.
@@ -1108,12 +1125,38 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             koerper["http_status"] = source_status
         return jsonify(koerper), status
 
+    def _gap_previous_trading_day(reaction):
+        """The last NYSE session before ``reaction``, or ``None``.
+
+        A calendar day is NOT a session: Nasdaq answers a Sunday with an empty
+        rows list, so ``reaction - 1 day`` would silently drop every Friday
+        report released after the close - and the same for a holiday. The
+        calendar decides here, not ``weekday() >= 5``: Thanksgiving is a closed
+        day with a normal weekday.
+
+        ``None`` means no session was found within the lookback window; the
+        caller answers 503 instead of falling back to the calendar day, because
+        a wrong "previous day" looks exactly like a quiet day.
+        """
+        kandidat = reaction - timedelta(days=1)
+        for _schritt in range(_GAP_PREVIOUS_LOOKBACK_DAYS):
+            if is_us_trading_day(kandidat):
+                return kandidat
+            kandidat -= timedelta(days=1)
+        return None
+
     def _gap_scan_args():
         """``day`` and the three numbers of one gap scan, or a ready JSON error.
 
         The day is validated before it touches the calendar: a string that is
         no date would otherwise be asked for and come back as "no rows", i.e.
         as a quiet day instead of as a bad request.
+
+        A day that has not CLOSED yet is refused the same way. The scan measures
+        a finished reaction session on both sides, and a day that is still
+        running (or in the future) has no close to measure: answering 200 with
+        ``selected: 0`` and every symbol in ``failures`` would be a quiet day
+        nobody can tell apart from a real one.
         """
         erlaubt = {"day"} | set(_GAP_SCAN_PARAMETERS)
         unbekannt = sorted(set(request.args) - erlaubt)
@@ -1138,6 +1181,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         except ValueError:
             return None, _gap_scan_error(400, "invalid_day")
 
+        # The calendar's own "today" (New York), never the UTC date: after
+        # 19:00 ET a UTC date is already the next day.
+        if reaction >= _us_today(now_fn):
+            return None, _gap_scan_error(
+                400, "invalid_day", "the reaction session has not closed yet"
+            )
+
         limits = {}
         for name, default, ceiling, integer, minimum in (
             ("gap_threshold_pct", DEFAULT_THRESHOLD_PCT, 100.0, False, 0.0),
@@ -1157,21 +1207,30 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         """The closing gaps of one finished reaction day, as tradable candidates.
 
         ``day`` is the reaction session whose close is measured - not "today":
-        a gap needs a finished session on both sides.
+        a gap needs a finished session on both sides, so a day that has not
+        closed (in New York) is a 400, not an empty answer.
 
         WHO is asked comes from the calendar: every title of the previous
-        calendar day (its numbers came out after that close) plus the
-        PRE-MARKET titles of ``day`` itself. The two halves come from two
-        calendar days and are not merged - ``reaction_day_rows`` owns that
-        rule, including the ``session_uncertain`` doubt for a row whose session
-        the source has already deleted.
+        TRADING day (its numbers came out after that close) plus the
+        PRE-MARKET titles of ``day`` itself. The previous day is resolved
+        through the trading calendar, never as "one calendar day back" - that
+        would be Sunday after a Monday, or a holiday, and Nasdaq answers both
+        with an empty rows list (i.e. Friday's reports would vanish). The two
+        halves come from two calendar days and are not merged -
+        ``reaction_day_rows`` owns that rule, including the ``session_uncertain``
+        doubt for a row whose session the source has already deleted.
 
         HOW FAR is a second source, one daily-history request per title, run in
-        parallel. Its failures are per title: a symbol that cannot be measured
-        ends in ``failures`` with the code that stopped it, and a day where
-        every symbol fails is still an ANSWER (200, ``selected: 0``) - the run
-        happened, it just produced nothing. Only a calendar that cannot be read
-        is a 503, because then there is no candidate set at all.
+        parallel. The adapter and its bounded cache are shared across requests
+        (built once in ``create_app``), so a second scan of the same day reads
+        no history again, and the run has a whole-run deadline: a title that has
+        not finished by then is named ``deadline_exceeded`` in ``failures``
+        rather than holding the request. Its failures are per title: a symbol
+        that cannot be measured ends in ``failures`` with the code that stopped
+        it, and a day where every symbol fails is still an ANSWER (200,
+        ``selected: 0``) - the run happened, it just produced nothing. Only a
+        calendar that cannot be read is a 503, because then there is no
+        candidate set at all.
 
         ``max_candidates`` caps the returned list, never the measurement: all
         candidates are fetched and checked, so ``counts`` describes the whole
@@ -1182,7 +1241,16 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             return fehler
         day = args["day"]
         reaction = args["reaction"]
-        previous = reaction - timedelta(days=1)
+        previous = _gap_previous_trading_day(reaction)
+        if previous is None:
+            # No session inside the window is no answer: the calendar is not
+            # believable, and a calendar-day fallback would hide Friday's rows.
+            app.logger.error("gap scan: no trading day before %s", day)
+            return _gap_scan_error(
+                503, "calendar_unavailable",
+                f"no US trading day within {_GAP_PREVIOUS_LOOKBACK_DAYS} days "
+                f"before {day} - the trading calendar is unusable",
+            )
         tage = {DAY_PREV: previous.isoformat(), DAY_TODAY: day}
 
         try:
@@ -1244,10 +1312,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             day_date=reaction,
         )
 
-        quelle = gap_adapter if gap_adapter is not None else NasdaqHistoryAdapter()
+        quelle = gap_adapter
         try:
             gemessen = fetch_gaps(
-                [zeile["symbol"] for zeile in kandidatenzeilen], reaction, adapter=quelle
+                [zeile["symbol"] for zeile in kandidatenzeilen], reaction, adapter=quelle,
+                deadline_seconds=_GAP_DEADLINE_SECONDS,
             )
         except Exception:  # noqa: BLE001 - a broken pool must not become an HTML 500
             # Per-symbol failures never reach this line: ``fetch_gaps`` turns

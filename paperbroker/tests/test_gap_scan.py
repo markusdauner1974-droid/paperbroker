@@ -20,6 +20,8 @@ What the tests are here to prove, in the order of the requirement:
 """
 
 import json
+import threading
+import time
 import unittest
 from dataclasses import FrozenInstanceError, dataclass
 from datetime import date, timedelta
@@ -28,6 +30,7 @@ from paperbroker.gap_scan import (
     DEFAULT_LIMIT,
     STRATEGY_BEAR_PUT_DEBIT,
     STRATEGY_BULL_CALL_DEBIT,
+    BoundedCache,
     GapBar,
     GapSourceError,
     NasdaqHistoryAdapter,
@@ -360,6 +363,34 @@ class NasdaqHistoryAdapterTest(unittest.TestCase):
         adapter.fetch_daily("AAPL", REACTION, limit=10)
         self.assertEqual(len(transport.calls), 2)
 
+    def test_the_bounded_cache_evicts_the_oldest_entry(self):
+        # The endpoint shares one adapter across requests, so its cache needs a
+        # ceiling. FIFO by insertion: the oldest key leaves first, no TTL.
+        transport = StubTransport(answer=body(row("11/11/2026", close="$17.82")))
+        cache = BoundedCache(max_entries=2)
+        adapter = NasdaqHistoryAdapter(transport=transport, cache=cache)
+
+        for symbol in ("AAA", "BBB", "CCC"):
+            adapter.fetch_daily(symbol, REACTION)
+
+        self.assertEqual(len(cache), 2)
+        # The ceiling holds and it is the OLDEST entry that went, not any entry.
+        self.assertEqual([key[0] for key in cache], ["BBB", "CCC"])
+        self.assertNotIn(("AAA", "2026-11-11", DEFAULT_LIMIT), cache)
+
+        # The evicted title is asked again, because nothing remembers it ...
+        adapter.fetch_daily("AAA", REACTION)
+        self.assertEqual(len(transport.calls), 4)
+        # ... and its insertion displaces the next oldest one, not a random key.
+        self.assertEqual([key[0] for key in cache], ["CCC", "AAA"])
+        # The survivor still answers from memory.
+        adapter.fetch_daily("CCC", REACTION)
+        self.assertEqual(len(transport.calls), 4)
+        # The displaced BBB is a miss: the order is the eviction order.
+        adapter.fetch_daily("BBB", REACTION)
+        self.assertEqual(len(transport.calls), 5)
+        self.assertEqual([key[0] for key in cache], ["AAA", "BBB"])
+
     def test_the_error_carries_a_code_a_message_and_no_status_by_default(self):
         error = GapSourceError("no_data", "the source answered no usable history rows")
 
@@ -546,8 +577,49 @@ class ReactionDayRowsTest(unittest.TestCase):
         self.assertEqual([row["symbol"] for row in rows], ["AAA"])
 
 
+class BlockingHistoryAdapter:
+    """An adapter that answers only when the test releases it.
+
+    Used to prove the RUN's deadline: a fetch that is still inside
+    ``fetch_daily`` when the deadline expires must be reported, not awaited.
+    """
+
+    def __init__(self, release, bars=None):
+        self.release = release
+        self.bars = bars or {}
+        self.calls = []
+
+    def fetch_daily(self, symbol, fromdate, limit=DEFAULT_LIMIT):
+        self.calls.append(symbol)
+        self.release.wait(10)
+        return list(self.bars.get(symbol, []))
+
+
 class FetchGapsTest(unittest.TestCase):
     """The parallel fetch: what it measures, what it names, what it never does."""
+
+    def test_a_deadline_reports_the_unmeasured_symbols(self):
+        release = threading.Event()
+        adapter = BlockingHistoryAdapter(release, bars={"AAA": bars_for(REACTION)})
+
+        try:
+            result = fetch_gaps(["AAA", "BBB"], REACTION, adapter=adapter,
+                                deadline_seconds=0.1)
+        finally:
+            release.set()
+
+        # The run is bounded: nothing measured, everything NAMED - no exception,
+        # no silently missing symbol, and no row invented for a title that was
+        # never answered.
+        self.assertEqual(result.rows, [])
+        self.assertEqual(result.failures, {"AAA": "deadline_exceeded",
+                                           "BBB": "deadline_exceeded"})
+        # Both titles were still ASKED: the deadline ends the waiting, not the
+        # measurement of the day.
+        ende = time.monotonic() + 2.0
+        while len(adapter.calls) < 2 and time.monotonic() < ende:
+            time.sleep(0.01)
+        self.assertEqual(sorted(adapter.calls), ["AAA", "BBB"])
 
     def test_a_failing_symbol_does_not_cost_the_others(self):
         adapter = StubHistoryAdapter(

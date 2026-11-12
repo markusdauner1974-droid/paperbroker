@@ -14,25 +14,41 @@ What is pinned, in the order of the requirement:
   gap yet and is not even asked,
 * a row of the previous day whose session the source deleted is uncertain,
 * a day that is no date is a 400 that never reaches the calendar,
+* a day that has not closed yet (New York) is a 400 with a message, not a
+  quiet 200 - and it costs no source call either,
+* the previous day is the previous TRADING day: a Monday is measured against
+  its Friday, a day after Thanksgiving against the Wednesday before it,
 * a calendar that cannot answer is a 503 - with the upstream code and status
   when it answered 403 instead of staying silent,
-* a day where every symbol fails is still a 200 with ``selected: 0``.
+* a day where every symbol fails is still a 200 with ``selected: 0``,
+* two requests for the same day read the history ONCE (shared adapter + cache).
 """
 
+import json
 import unittest
-from datetime import date
+from datetime import date, timedelta
+from unittest import mock
 
 import arrow
 
+from paperbroker.earnings_day_calendar import DAY_PREV
 from paperbroker.gap_scan import DEFAULT_LIMIT, GapBar, GapSourceError
 from paperbroker.server import create_app
 
-# 2026-11-11 21:00 UTC is 16:00 in New York - the US day is still the 11th.
-CLOCK = lambda: arrow.get("2026-11-11T21:00:00Z")  # noqa: E731
+# 2026-11-12 21:00 UTC is 16:00 in New York - the US day is still the 12th, so
+# the measured reaction day (11th) is one CLOSED session behind the clock. The
+# endpoint refuses a day that has not closed, so the fixture day must lie in the
+# past: a pinned clock is a fact of this file, not a convenience.
+CLOCK = lambda: arrow.get("2026-11-12T21:00:00Z")  # noqa: E731
+# A clock the day AFTER the two edge cases below, so both are closed days:
+# 2026-11-09 is a Monday, 2026-11-27 the session after Thanksgiving.
+MONDAY_CLOCK = lambda: arrow.get("2026-11-10T21:00:00Z")   # noqa: E731
+HOLIDAY_CLOCK = lambda: arrow.get("2026-11-30T21:00:00Z")  # noqa: E731
 
 DAY = "2026-11-11"
 PREVIOUS = "2026-11-10"
 REACTION = date(2026, 11, 11)
+# The session before the fixture reaction day - what ``bars`` builds.
 BEFORE = date(2026, 11, 10)
 
 
@@ -119,11 +135,12 @@ class _History:
         return list(self.bars.get(symbol, []))
 
 
-def bars(close, previous_close=10.0, volume=1_000_000.0):
+def bars(close, previous_close=10.0, volume=1_000_000.0, reaction=REACTION):
     """Two sessions: the reaction day and the session before it."""
     return [
-        GapBar(session_date=REACTION, open=close, close=close, volume=volume),
-        GapBar(session_date=BEFORE, open=previous_close, close=previous_close, volume=volume),
+        GapBar(session_date=reaction, open=close, close=close, volume=volume),
+        GapBar(session_date=reaction - timedelta(days=1), open=previous_close,
+               close=previous_close, volume=volume),
     ]
 
 
@@ -154,12 +171,12 @@ def _calendar(state="live", **kwargs):
     )
 
 
-def _client(calendar=None, history=None):
+def _client(calendar=None, history=None, now_fn=CLOCK):
     return create_app(
         quote_adapter=object(),
         earnings_adapter=calendar or _calendar(),
         gap_adapter=history or _history(),
-        now_fn=CLOCK,
+        now_fn=now_fn,
     ).test_client()
 
 
@@ -173,6 +190,29 @@ def _scan(query=f"?day={DAY}", calendar=None, history=None):
 
 def _by_symbol(candidates):
     return {eintrag["symbol"]: eintrag for eintrag in candidates}
+
+
+class _CountingTransport:
+    """The transport of the REAL adapter, for the tests about the real adapter.
+
+    ``create_app`` builds its own shared adapter when no ``gap_adapter`` is
+    injected, so its cache cannot be proven with a fake adapter - but no test
+    may touch the network either. This transport counts the requests and answers
+    one fixed Nasdaq payload: the counter IS the assertion.
+    """
+
+    def __init__(self):
+        self.calls = []
+
+    def __call__(self, url, headers, timeout):
+        self.calls.append(url)
+        rows = [
+            {"date": "11/11/2026", "open": "$11.00", "high": "$11.00", "low": "$11.00",
+             "close": "$11.00", "volume": "2,000,000"},
+            {"date": "11/10/2026", "open": "$10.00", "high": "$10.00", "low": "$10.00",
+             "close": "$10.00", "volume": "2,000,000"},
+        ]
+        return 200, json.dumps({"data": {"tradesTable": {"rows": rows}}}).encode("utf-8")
 
 
 class GapScanEndpointTest(unittest.TestCase):
@@ -313,3 +353,92 @@ class GapScanEndpointTest(unittest.TestCase):
         # The reaction day's own state, passed through - old rows are old.
         self.assertEqual(koerper["day_state"], "stale")
         self.assertEqual(koerper["counts"]["selected"], 3)
+
+    def test_a_monday_reaction_day_finds_fridays_reports(self):
+        # The bug this pins: "one calendar day back" is Sunday after a Monday,
+        # and Nasdaq answers a Sunday with an empty rows list - so every Friday
+        # report after the close would be missing from a 200 that looks quiet.
+        monday = date(2026, 11, 9)
+        friday = "2026-11-06"
+        kalender = _FakeCalendar(rows_by_day={
+            friday: [calendar_row("FRI", session=None)],
+            "2026-11-09": [calendar_row("MON", session="before_market")],
+        })
+        quelle = _History(bars={
+            "FRI": bars(12.0, reaction=monday),
+            "MON": bars(9.0, reaction=monday),
+        })
+
+        antwort = _client(kalender, quelle, now_fn=MONDAY_CLOCK).get(
+            "/api/v1/gap-scan?day=2026-11-09"
+        )
+        koerper = antwort.get_json()
+
+        self.assertEqual(antwort.status_code, 200)
+        # Asked for the FRIDAY, in one calendar pair - not for the Sunday.
+        angefragt = kalender.last_days or {}
+        self.assertEqual(angefragt[DAY_PREV], friday)
+        self.assertNotIn("2026-11-08", angefragt.values())
+        kandidaten = _by_symbol(koerper["candidates"])
+        self.assertEqual(sorted(kandidaten), ["FRI", "MON"])
+        self.assertEqual(kandidaten["FRI"]["earnings_date"], friday)
+        self.assertEqual(koerper["counts"]["candidate_rows"], 2)
+        self.assertEqual(koerper["failures"], {})
+
+    def test_a_holiday_is_not_the_previous_day(self):
+        # 2026-11-27 is the session after Thanksgiving: the day before it is a
+        # holiday, so the previous session is the Wednesday (25th), not the 26th.
+        kalender = _FakeCalendar(rows_by_day={
+            "2026-11-25": [calendar_row("WED", session=None)],
+            "2026-11-27": [],
+        })
+
+        antwort = _client(kalender, _History(), now_fn=HOLIDAY_CLOCK).get(
+            "/api/v1/gap-scan?day=2026-11-27"
+        )
+
+        self.assertEqual(antwort.status_code, 200)
+        angefragt = kalender.last_days or {}
+        self.assertEqual(angefragt[DAY_PREV], "2026-11-25")
+        # Neither the holiday (26th) nor the Sunday (22nd) is ever asked for.
+        self.assertNotIn("2026-11-26", angefragt.values())
+        self.assertNotIn("2026-11-22", angefragt.values())
+
+    def test_today_is_not_a_closed_reaction_day(self):
+        # CLOCK is 16:00 New York on 2026-11-12: that session has not closed,
+        # and the 13th is the future. Both are client errors, not quiet days.
+        kalender = _calendar()
+        quelle = _history()
+        client = _client(kalender, quelle)
+
+        for day in ("2026-11-12", "2026-11-13"):
+            with self.subTest(day=day):
+                antwort = client.get(f"/api/v1/gap-scan?day={day}")
+                koerper = antwort.get_json()
+                self.assertEqual(antwort.status_code, 400)
+                self.assertEqual(koerper["error"], "invalid_day")
+                self.assertEqual(koerper["message"],
+                                 "the reaction session has not closed yet")
+        # Refused BEFORE the sources: no calendar call, no history call.
+        self.assertEqual(kalender.calls, 0)
+        self.assertEqual(quelle.calls, [])
+
+    def test_a_second_request_reuses_the_history(self):
+        transport = _CountingTransport()
+        with mock.patch("paperbroker.gap_scan.requests_transport", transport):
+            # No gap_adapter on purpose: create_app builds the shared one.
+            client = create_app(
+                quote_adapter=object(), earnings_adapter=_calendar(), now_fn=CLOCK
+            ).test_client()
+            erster = client.get(f"/api/v1/gap-scan?day={DAY}")
+            nach_erstem = len(transport.calls)
+            zweiter = client.get(f"/api/v1/gap-scan?day={DAY}")
+
+        self.assertEqual(erster.status_code, 200)
+        self.assertEqual(zweiter.status_code, 200)
+        # Three titles, three history requests - the first run really asked.
+        self.assertEqual(nach_erstem, 3)
+        self.assertEqual(erster.get_json()["failures"], {})
+        # The second run asked for NOTHING: the shared adapter's cache answered.
+        self.assertEqual(len(transport.calls), nach_erstem)
+        self.assertEqual(zweiter.get_json()["counts"]["gaps_computed"], 3)

@@ -67,10 +67,11 @@ from __future__ import annotations
 import json
 import math
 import re
+import threading
 import urllib.error
 import urllib.request
 from collections.abc import Mapping
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 
@@ -103,6 +104,10 @@ DEFAULT_MAX_WORKERS = 8
 # reaction day plus its reference close always fits, and a wider window would
 # only buy rows nobody reads.
 GAP_LOOKBACK_DAYS = 30
+# The shared cache of the endpoint keeps one entry per (symbol, fromdate, limit).
+# 5000 entries cover several days of the whole calendar and stay small in RAM;
+# a past close never changes, so entries are never aged out - only displaced.
+DEFAULT_CACHE_ENTRIES = 5000
 
 # The three session tokens a calendar row carries, spelled here rather than
 # imported: this module deliberately imports nothing from earnings_calendar /
@@ -333,6 +338,47 @@ def _iso_day(value):
         ) from exc
 
 
+class BoundedCache(dict):
+    """A mapping with a hard ceiling for the shared history cache.
+
+    ``NasdaqHistoryAdapter`` accepts any mutable mapping, so the bound lives
+    here instead of inside the adapter: a caller that shares one adapter across
+    requests needs a store that cannot grow without end, and a caller that wants
+    no caching still passes ``None``.
+
+    Eviction is FIFO by insertion order - the oldest entry leaves when a new one
+    would exceed ``max_entries``. There is no TTL on purpose: the close of a past
+    session never changes, so age is not a reason to forget; pressure is. A
+    second assignment for an existing key refreshes the value in place and does
+    NOT make it young, because insertion order is the whole policy here.
+
+    Writes are serialised: the endpoint's fetch pool calls the shared adapter
+    from several threads, and an eviction is a read-then-delete - two of them
+    interleaving could delete the wrong entry or raise. A read of a key that is
+    evicted at that exact moment is the caller's concern (``dict.get`` is a
+    single lookup and answers ``None``, which the adapter treats as a miss).
+    """
+
+    def __init__(self, max_entries=DEFAULT_CACHE_ENTRIES, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.max_entries = max(0, int(max_entries))
+        self._lock = threading.Lock()
+        while len(self) > self.max_entries:
+            del self[next(iter(self))]
+
+    def __setitem__(self, key, value):
+        with self._lock:
+            if key in self:
+                # Order is the policy: refreshing a value does not make it young.
+                super().__setitem__(key, value)
+                return
+            super().__setitem__(key, value)
+            while len(self) > self.max_entries:
+                # The oldest key is the first one in insertion order - and it is
+                # never the key just written, unless the ceiling is 0.
+                del self[next(iter(self))]
+
+
 class NasdaqHistoryAdapter:
     """Daily closes from Nasdaq, with an optional caller-supplied cache.
 
@@ -362,8 +408,12 @@ class NasdaqHistoryAdapter:
         day = _iso_day(fromdate)
         count = max(1, int(limit))
         key = (symbol, day, count)
-        if self._cache is not None and key in self._cache:
-            return list(self._cache[key])
+        if self._cache is not None:
+            # One lookup, not "in" then "[]": a shared cache may evict the key
+            # between the two, and a KeyError here would cost the title a gap.
+            cached = self._cache.get(key)
+            if cached is not None:
+                return list(cached)
 
         url = HISTORY_URL.format(symbol=symbol, fromdate=day, limit=count)
         try:
@@ -625,7 +675,8 @@ def _fetch_one(source, symbol, reaction, fromdate):
     return symbol, gap, None
 
 
-def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_WORKERS):
+def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_WORKERS,
+               deadline_seconds=None):
     """Measure every symbol against ``reaction_date`` - in parallel, one by one.
 
     Serial fetching is not an option: the measured day had 220 titles, and the
@@ -634,6 +685,14 @@ def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_
     later, on purpose), and every symbol that produced no gap ends up in
     ``failures`` with the code that stopped it - ``unsupported_symbol``,
     ``http_error``, ``no_data``, ``no_reaction_bar`` or ``transport_error``.
+
+    ``deadline_seconds`` is the whole run's budget, not a per-title timeout
+    (the adapter has its own). ``None`` waits for every title, which is the
+    original behaviour. With a deadline, the titles that are not finished when
+    it expires answer ``failures[symbol] = "deadline_exceeded"`` instead of
+    being dropped: the day stays countable, and a request cannot occupy a
+    worker for as long as the slowest batch of fetches. Nothing is raised and
+    nothing is capped - every symbol is still ASKED, only the waiting ends.
     """
     reaction = _as_date(reaction_date)
     if reaction is None:
@@ -645,13 +704,28 @@ def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_
     if not wanted:
         return GapFetchResult(rows=[], failures={})
 
-    with ThreadPoolExecutor(max_workers=max(1, int(max_workers))) as pool:
-        # map keeps the input order, so the rows below are stable without a sort.
-        results = list(pool.map(lambda symbol: _fetch_one(source, symbol, reaction, fromdate), wanted))
+    frist = None if deadline_seconds is None else max(0.0, float(deadline_seconds))
+    pool = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
+    paare = []
+    try:
+        # One future per symbol, kept in input order: the rows below stay stable
+        # without a sort, exactly like ``pool.map`` did.
+        paare = [(symbol, pool.submit(_fetch_one, source, symbol, reaction, fromdate))
+                 for symbol in wanted]
+        fertig, _offen = wait([future for _symbol, future in paare], timeout=frist)
+    finally:
+        # Waiting for the pool on an expired deadline would undo the deadline:
+        # the unanswered titles are already accounted for as failures, so the
+        # running fetches finish in the background and are not awaited.
+        pool.shutdown(wait=frist is None, cancel_futures=frist is not None)
 
     rows = []
     failures = {}
-    for symbol, gap, code in results:
+    for symbol, future in paare:
+        if future not in fertig:
+            failures[symbol] = "deadline_exceeded"
+            continue
+        symbol, gap, code = future.result()
         if code is not None or gap is None:
             failures[symbol] = code if code is not None else "no_reaction_bar"
             continue
