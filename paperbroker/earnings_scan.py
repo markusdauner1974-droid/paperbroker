@@ -52,11 +52,13 @@ from . import exclusions, quote_age
 from .assets import calendar_days_between
 from .earnings_calendar import (
     CONFIRMATION_CONFIRMED,
+    CONFIRMATION_UNKNOWN,
     FLAG_SESSION_UNKNOWN,
     SESSION_AFTER,
     SESSION_BEFORE,
     SESSION_UNKNOWN,
     STATUS_FRESH,
+    STATUS_STALE,
     combine_earnings_and_expirations,
     empty_earnings,
 )
@@ -136,6 +138,10 @@ FLAG_CALENDAR_ROW_SOURCE = "earnings_date_from_calendar_row"
 #: A calendar row carries no timestamp of its own. The record says so instead
 #: of borrowing the scan's clock, which would look like a checked proof.
 FLAG_CALENDAR_ROW_WITHOUT_TIMESTAMP = "calendar_row_without_timestamp"
+#: The day itself was not live (a cached, stale or unknown day). The row then
+#: still NAMES a date, but it proves nothing about today - so the record is
+#: stale and unconfirmed, and the flag says which part failed.
+FLAG_CALENDAR_ROW_STALE_DAY = "calendar_row_from_stale_day"
 
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
@@ -402,6 +408,10 @@ class _Context:
     now_fn: object
     limits: ScanLimits
     counter: _Counter
+    #: The state of the scanned day as the caller established it (``live``,
+    #: ``stale``, ...). Required, never defaulted to "live": a caller that does
+    #: not know the state must not silently claim a fresh proof.
+    day_state: str
     on_ticker_error: object = None
     #: The calendar day this scan runs for. The rows ARE that day's listing, so
     #: this is what lets an entry derive its earnings record from its own row
@@ -492,7 +502,7 @@ def _day_of(value):
     return None
 
 
-def earnings_from_calendar_row(row, day):
+def earnings_from_calendar_row(row, day, day_state):
     """The earnings record a calendar row of ``day`` proves on its own.
 
     Returns the unchanged ``empty_earnings()`` shape, or ``None`` when no day
@@ -511,6 +521,13 @@ def earnings_from_calendar_row(row, day):
     no window rule is loosened by this, the exit day still has to lie before
     the date and still has to be in the future.
 
+    ``day_state`` is what keeps that argument honest: it settles the DATE, but
+    it can only be a fresh proof when the day it came from was ``live``. A
+    cached/stale (or otherwise unknown) listing still names a day, yet proves
+    nothing about today, so the record is ``stale`` and unconfirmed and carries
+    ``FLAG_CALENDAR_ROW_STALE_DAY``. The fail-closed window gate then blocks
+    instead of authorising a window on an old cache entry.
+
     Nothing is invented: a row carries no timestamp (``source_checked_at_utc``
     stays ``None`` and a flag names why) and a session the source did not state
     stays ``unknown`` with ``release_session_unknown``.
@@ -520,7 +537,10 @@ def earnings_from_calendar_row(row, day):
         return None
     zeile = row if isinstance(row, dict) else {}
     sitzung = zeile.get("session")
+    live = str(day_state or "").strip().lower() == "live"
     flags = [FLAG_CALENDAR_ROW_SOURCE, FLAG_CALENDAR_ROW_WITHOUT_TIMESTAMP]
+    if not live:
+        flags.append(FLAG_CALENDAR_ROW_STALE_DAY)
     if sitzung not in (SESSION_BEFORE, SESSION_AFTER):
         # "unknown" and anything unstated stay unknown - a default of "after
         # the close" would be an invented fact.
@@ -530,11 +550,11 @@ def earnings_from_calendar_row(row, day):
     record.update({
         "next_earnings_date": termin.isoformat(),
         "release_session": sitzung,
-        "date_confirmation": CONFIRMATION_CONFIRMED,
+        "date_confirmation": CONFIRMATION_CONFIRMED if live else CONFIRMATION_UNKNOWN,
         "source": SOURCE_CALENDAR_ROW,
         "source_checked_at_utc": None,
         "retrieved_at_utc": None,
-        "status": STATUS_FRESH,
+        "status": STATUS_FRESH if live else STATUS_STALE,
         "quality_flags": flags,
     })
     return record
@@ -566,7 +586,7 @@ def _scan_symbol(symbol, row, ctx):
     # the answer: "this symbol reports on ctx.day". Deriving it costs nothing
     # and calls nothing - the per-ticker lookup below stays for the case the
     # row cannot settle (no day, or a caller that scans without one).
-    earnings = earnings_from_calendar_row(row, ctx.day)
+    earnings = earnings_from_calendar_row(row, ctx.day, ctx.day_state)
     if earnings is None:
         try:
             koerper = ctx.fetch_earnings(symbol)
@@ -888,6 +908,7 @@ def scan_day(
     criteria,
     strategies=None,
     day,
+    day_state,
     today,
     now_fn,
     limits=None,
@@ -903,6 +924,12 @@ def scan_day(
     rows ARE ``day``'s listing, ``day`` also answers the earnings question: the
     record is derived from the row (``earnings_from_calendar_row``) and no
     per-ticker lookup is paid. ``day=None`` keeps the lookup path.
+
+    ``day_state`` is the state the CALLER established for that day (``live``,
+    ``stale``, ...) and is required - there is no default, because a caller
+    that does not know the state must not silently claim a fresh proof. Only a
+    ``live`` day turns its rows into a fresh, confirmed record; anything else
+    yields a stale, unconfirmed one and the window stays blocked.
 
     ``optionable`` is the CBOE symbol set; ``None`` means "not available" and
     the scan then runs unfiltered and says so.
@@ -936,6 +963,7 @@ def scan_day(
         counter=counter,
         on_ticker_error=on_ticker_error,
         day=day,
+        day_state=day_state,
         search_coverage={},
     )
 

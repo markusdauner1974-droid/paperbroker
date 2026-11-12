@@ -1026,6 +1026,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 criteria=args["criteria"],
                 strategies=args["strategies"],
                 day=day,
+                # The state the cache reported for THIS day travels with the
+                # rows: only a live day may turn a row into a fresh proof.
+                day_state=zustand,
                 today=_us_today(now_fn),
                 now_fn=now_fn,
                 limits=args["limits"],
