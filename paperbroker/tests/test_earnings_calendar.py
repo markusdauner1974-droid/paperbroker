@@ -35,6 +35,7 @@ from paperbroker.earnings_calendar import (
     is_us_trading_day,
     last_trading_day_before,
     merge_calendar_check,
+    next_trading_day_after,
     parse_nasdaq_calendar_row,
     parse_nasdaq_earnings_date,
     remaining_trading_days,
@@ -251,6 +252,22 @@ class TestTradingCalendar(unittest.TestCase):
     def test_exit_day_is_none_for_a_non_date(self):
         self.assertIsNone(last_trading_day_before("2026-11-02"))
         self.assertIsNone(last_trading_day_before(None))
+
+    def test_next_trading_day_after_a_friday_is_the_monday(self):
+        # The day tabs: a Friday must lead to Monday, never to a Saturday.
+        self.assertEqual(next_trading_day_after(date(2026, 11, 13)), date(2026, 11, 16))
+
+    def test_next_trading_day_skips_the_thanksgiving_holiday(self):
+        # Wednesday 25 Nov 2026 -> Friday 27 Nov (Thursday is closed).
+        self.assertEqual(next_trading_day_after(date(2026, 11, 25)), date(2026, 11, 27))
+
+    def test_next_trading_day_is_strictly_after_and_bounded(self):
+        # A trading day is never its own successor; a calendar that cannot
+        # answer inside the bound yields None rather than a guessed date.
+        self.assertEqual(next_trading_day_after(date(2026, 11, 12)), date(2026, 11, 13))
+        self.assertIsNone(next_trading_day_after("2026-11-13"))
+        self.assertIsNone(next_trading_day_after(None))
+        self.assertIsNone(next_trading_day_after(date(2026, 11, 13), max_lookahead_days=1))
 
 
 class TestWindowRule(unittest.TestCase):

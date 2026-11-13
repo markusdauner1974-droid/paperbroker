@@ -420,6 +420,30 @@ def last_trading_day_before(day, max_lookback_days=10):
     return None
 
 
+def next_trading_day_after(day, max_lookahead_days=10):
+    """The first US trading day strictly after ``day``, or None.
+
+    The mirror of ``last_trading_day_before`` and built the same way: one
+    calendar (``is_us_trading_day``), a bounded search, ``None`` when no trading
+    day is found - never a guessed date. The day tabs need it because a Friday
+    is followed by a Monday; ``day + 1`` would offer a Saturday nobody trades.
+
+    The walk adds offsets instead of mutating a date, because ``day + 1`` at
+    ``date.max`` raises OverflowError and a calendar question must not crash a
+    page.
+    """
+    if not isinstance(day, date):
+        return None
+    for versatz in range(1, max_lookahead_days + 1):
+        try:
+            kandidat = day + timedelta(days=versatz)
+        except OverflowError:
+            return None
+        if is_us_trading_day(kandidat):
+            return kandidat
+    return None
+
+
 def remaining_trading_days(today, exit_day, max_calendar_days=400):
     """Trading days from ``today`` (exclusive) to ``exit_day`` (inclusive).
 

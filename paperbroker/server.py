@@ -37,6 +37,8 @@ from .earnings_calendar import (
     SESSION_BEFORE,
     combine_earnings_and_expirations,
     is_us_trading_day,
+    last_trading_day_before,
+    next_trading_day_after,
 )
 from .earnings_day_calendar import (
     DAY_NEXT,
@@ -268,7 +270,6 @@ def _criteria_echo(criteria):
 _SESSION_TEXT = {SESSION_BEFORE: "vorbörslich", SESSION_AFTER: "nachbörslich"}
 _SESSION_UNKNOWN_TEXT = "Zeitpunkt unbekannt"
 _CONFIRMATION_TEXT = {CONFIRMATION_CONFIRMED: "bestätigt", CONFIRMATION_ESTIMATED: "geschätzt"}
-_CALENDAR_DAY_LABEL = {DAY_PREV: "gestern", DAY_TODAY: "heute", DAY_NEXT: "morgen"}
 
 
 def _german_date(iso_text):
@@ -300,6 +301,29 @@ def _short_day(iso_text):
     except (TypeError, ValueError):
         return None
     return f"{_WEEKDAY_SHORT_DE[wert.weekday()]} {wert.strftime('%d.%m.')}"
+
+
+def _calendar_day_label(iso_text, today_iso):
+    """The tab text for a day: ``gestern · Do 12.11.`` / ``heute · Fr 13.11.``.
+
+    Date-based on purpose. With trading-day tabs the group after a Friday is a
+    Monday, so the word "morgen" would promise a day two nights away and
+    "gestern" would name a Friday as yesterday on a Monday. The word is used
+    only where it is literally true (the calendar neighbour); every other day
+    names itself with weekday and date. ``None`` when the date is unusable -
+    the caller then renders no date rather than a guessed one.
+    """
+    kurz = _short_day(iso_text)
+    if kurz is None:
+        return None
+    try:
+        heute = datetime.strptime(str(today_iso), "%Y-%m-%d").date()
+        tag = datetime.strptime(str(iso_text), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return kurz
+    versatz = (tag - heute).days
+    wort = {-1: "gestern", 0: "heute", 1: "morgen"}.get(versatz)
+    return f"{wort} · {kurz}" if wort else kurz
 
 
 def _option_symbols(adapter):
@@ -1538,10 +1562,20 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         """
         try:
             heute = _us_today(now_fn)
+            heute_iso = heute.isoformat() if heute is not None else ""
+            # The three tabs are TRADING days, never calendar neighbours: on a
+            # Friday the next tab used to be a Saturday with 0 rows the UI could
+            # not leave. Each day is asked of the one US calendar; a day it
+            # cannot name (``None``) falls out of the answer instead of being
+            # replaced by ``heute ± 1``. The keys stay DAY_PREV/DAY_TODAY/
+            # DAY_NEXT - only the dates they point at change.
+            tag_prev = last_trading_day_before(heute)
+            tag_today = heute if is_us_trading_day(heute) else next_trading_day_after(heute)
+            tag_next = next_trading_day_after(tag_today) if tag_today is not None else None
             tage = {
-                DAY_PREV: (heute - timedelta(days=1)).isoformat(),
-                DAY_TODAY: heute.isoformat(),
-                DAY_NEXT: (heute + timedelta(days=1)).isoformat(),
+                key: tag.isoformat()
+                for key, tag in ((DAY_PREV, tag_prev), (DAY_TODAY, tag_today), (DAY_NEXT, tag_next))
+                if tag is not None
             }
             antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
             roh = antwort.get("days") if isinstance(antwort, dict) else None
@@ -1580,7 +1614,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 gruppen.append(dict(
                     gruppe,
                     rows=zeilen,
-                    label=_CALENDAR_DAY_LABEL.get(gruppe["key"], ""),
+                    label=_calendar_day_label(gruppe["date"], heute_iso) or "",
                     date_text=_german_date(gruppe["date"]),
                     short_day=_short_day(gruppe["date"]),
                     counter=f"{len(zeilen)} von {gruppe['total']}",
