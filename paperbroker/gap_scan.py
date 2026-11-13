@@ -94,7 +94,13 @@ _HEADERS = {
     "Referer": "https://www.nasdaq.com/",
 }
 DEFAULT_TIMEOUT_SECONDS = 6.0
-DEFAULT_LIMIT = 10
+# The source returns at most ``limit`` rows counted FROM ``fromdate`` onward, so
+# the limit - not the fromdate - decides how wide the asked window really is.
+# ``GAP_LOOKBACK_DAYS`` calendar days are ~22 sessions (weekends and holidays);
+# a limit of 10 ended after ten of them and left a reaction day that lay 10+
+# sessions into the window outside its OWN window. 32 covers the 30 days with
+# room, without asking for rows nobody reads.
+DEFAULT_LIMIT = 32
 DEFAULT_THRESHOLD_PCT = 2.0
 DEFAULT_MIN_TURNOVER_USD = 5_000_000.0
 DEFAULT_MAX_CANDIDATES = 30
@@ -102,7 +108,10 @@ DEFAULT_MAX_WORKERS = 8
 # Measured: 151 titles at 8 in parallel took 45 s against the live endpoint. The
 # window is 30 calendar days because the source rows are daily sessions - a
 # reaction day plus its reference close always fits, and a wider window would
-# only buy rows nobody reads.
+# only buy rows nobody reads. ``DEFAULT_LIMIT`` must cover this window (see
+# there): the source counts its rows from ``fromdate``, not from the reaction
+# day, so a limit below the number of sessions in the window truncates exactly
+# the day that was asked for.
 GAP_LOOKBACK_DAYS = 30
 # The shared cache of the endpoint keeps one entry per (symbol, fromdate, limit).
 # 5000 entries cover several days of the whole calendar and stay small in RAM;
@@ -399,7 +408,12 @@ class NasdaqHistoryAdapter:
         self._now_fn = now_fn or (lambda: datetime.now(UTC))
 
     def fetch_daily(self, symbol, fromdate, limit=DEFAULT_LIMIT):
-        """The daily bars from ``fromdate`` on, newest first.
+        """The daily bars from ``fromdate`` on, newest first - at most ``limit``.
+
+        The window is only as wide as ``limit`` allows: ``fromdate`` opens it and
+        the count closes it, so ``DEFAULT_LIMIT`` has to cover the whole
+        ``GAP_LOOKBACK_DAYS`` window or the reaction day falls out of its own
+        question (see ``DEFAULT_LIMIT``).
 
         Every failure is a ``GapSourceError`` with a stable code: the caller
         must be able to say WHY a title has no gap instead of showing 0 %.

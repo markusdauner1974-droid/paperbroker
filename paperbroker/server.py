@@ -62,6 +62,7 @@ from .gap_scan import (
     DEFAULT_MAX_CANDIDATES,
     DEFAULT_MIN_TURNOVER_USD,
     DEFAULT_THRESHOLD_PCT,
+    GAP_LOOKBACK_DAYS,
     BoundedCache,
     NasdaqHistoryAdapter,
     fetch_gaps,
@@ -1157,6 +1158,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         no date would otherwise be asked for and come back as "no rows", i.e.
         as a quiet day instead of as a bad request.
 
+        A day the market was CLOSED on is refused the same way, through the
+        trading calendar rather than the weekday: the calendar answers such a
+        day with ``rows: null``, so every symbol would end in
+        ``no_reaction_bar`` and the answer would be a 200 that reads as a quiet
+        day. A holiday is a weekday, which is why ``is_us_trading_day`` decides
+        here and not ``date.weekday()``.
+
         A day that has not CLOSED yet is refused the same way. The scan measures
         a finished reaction session on both sides, and a day that is still
         running (or in the future) has no close to measure: answering 200 with
@@ -1195,6 +1203,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         if reaction > heute:
             return None, _gap_scan_error(
                 400, "invalid_day", "the reaction day lies in the future"
+            )
+        # A closed market has no session to measure. Checked BEFORE the close
+        # check below, because "Saturday, still open" is the wrong sentence for
+        # a day that never opened at all.
+        if not is_us_trading_day(reaction):
+            return None, _gap_scan_error(
+                400, "invalid_day", "the reaction day is no US trading day"
             )
         if reaction == heute:
             # Same date is not the same session: before the close the day has
@@ -1371,11 +1386,22 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         # a run whose titles all failed with a source error (``http_error``,
         # ``deadline_exceeded``, ...) is an outage, not a late publication, and
         # the per-symbol codes in ``failures`` already name it.
+        #
+        # And "not published yet" is only a believable claim inside the window
+        # the run actually asked for: ``fetch_gaps`` opens it at
+        # ``reaction - GAP_LOOKBACK_DAYS``. A day older than that was not
+        # measurable HERE - its closes are long published, the run simply never
+        # looked at them - so it gets its own, honest state instead of being
+        # told to wait for a publication that already happened.
         result_state = "ok"
         if zaehler["candidate_rows"] > 0 and zaehler["gaps_computed"] == 0:
             codes = set(gemessen.failures.values())
             if not codes or codes == {"no_reaction_bar"}:
-                result_state = "history_not_published"
+                fenster_start = _us_today(now_fn) - timedelta(days=GAP_LOOKBACK_DAYS)
+                result_state = (
+                    "history_not_published" if reaction >= fenster_start
+                    else "day_outside_history_window"
+                )
 
         nach_symbol = {zeile["symbol"]: zeile for zeile in kandidatenzeilen}
         kandidaten = []
@@ -1402,9 +1428,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             # "live": a stale calendar answers 200 with ``day_state: stale``,
             # because the rows are old, not because they are missing.
             day_state=gelesen[DAY_TODAY]["state"],
-            # ``ok`` or ``history_not_published``: the counts can be zero for two
-            # very different reasons, and the answer must not leave the reader to
-            # guess which one it is.
+            # ``ok``, ``history_not_published`` or ``day_outside_history_window``:
+            # the counts can be zero for three very different reasons, and the
+            # answer must not leave the reader to guess which one it is.
             result_state=result_state,
             threshold_pct=args["gap_threshold_pct"],
             min_turnover_usd=args["min_turnover_usd"],

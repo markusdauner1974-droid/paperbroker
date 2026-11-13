@@ -26,8 +26,10 @@ import unittest
 from dataclasses import FrozenInstanceError, dataclass
 from datetime import date, timedelta
 
+from paperbroker.earnings_calendar import is_us_trading_day
 from paperbroker.gap_scan import (
     DEFAULT_LIMIT,
+    GAP_LOOKBACK_DAYS,
     STRATEGY_BEAR_PUT_DEBIT,
     STRATEGY_BULL_CALL_DEBIT,
     BoundedCache,
@@ -636,8 +638,31 @@ class FetchGapsTest(unittest.TestCase):
         self.assertEqual(result.rows[0]["close"], 11.0)
         self.assertEqual(result.rows[0]["volume"], 1_000_000.0)
         # Every symbol was asked with the documented window and limit.
-        self.assertEqual({call["limit"] for call in adapter.calls}, {10})
+        self.assertEqual({call["limit"] for call in adapter.calls}, {DEFAULT_LIMIT})
         self.assertEqual({call["fromdate"] for call in adapter.calls}, {PREVIOUS_WINDOW})
+
+    def test_the_history_window_covers_the_lookback(self):
+        # The source counts its ``limit`` rows from ``fromdate`` ONWARD, so the
+        # window is only as wide as the limit makes it. GAP_LOOKBACK_DAYS = 30
+        # calendar days hold ~22 sessions; a limit of 10 ended after ten of them
+        # and left a reaction day that lay deeper in the window outside its OWN
+        # window - every symbol answered no_reaction_bar although the closes
+        # were there. The limit must cover every session the lookback holds.
+        handelstage = sum(
+            1
+            for schritt in range(GAP_LOOKBACK_DAYS + 1)
+            if is_us_trading_day(PREVIOUS_WINDOW + timedelta(days=schritt))
+        )
+        adapter = StubHistoryAdapter(bars={"AAA": bars_for(REACTION)})
+
+        fetch_gaps(["AAA"], REACTION, adapter=adapter)
+
+        self.assertEqual(len(adapter.calls), 1)
+        self.assertEqual(adapter.calls[0]["limit"], DEFAULT_LIMIT)
+        self.assertEqual(adapter.calls[0]["fromdate"], PREVIOUS_WINDOW)
+        self.assertGreaterEqual(DEFAULT_LIMIT, handelstage)
+        # The measured floor: 30 calendar days are at least 22 sessions.
+        self.assertGreaterEqual(DEFAULT_LIMIT, 22)
 
     def test_a_missing_reaction_bar_is_named(self):
         # Bars exist, but only from BEFORE the reaction session.

@@ -14,6 +14,8 @@ What is pinned, in the order of the requirement:
   gap yet and is not even asked,
 * a row of the previous day whose session the source deleted is uncertain,
 * a day that is no date is a 400 that never reaches the calendar,
+* a day the market was CLOSED on (a weekend, a holiday) is the same 400 - a
+  weekday is not a session, and the trading calendar decides,
 * a day that is still OPEN in New York is a 400 with a message, not a quiet
   200 - and it costs no source call either; the same day after 16:00 ET is
   scanned, because that session has a close,
@@ -24,7 +26,9 @@ What is pinned, in the order of the requirement:
 * a day where every symbol fails is still a 200 with ``selected: 0``,
 * a day whose closes are not published yet (the calendar lists the titles, the
   daily table has no reaction bar) is a 200 named ``history_not_published`` -
-  an outage with per-title codes is not,
+  an outage with per-title codes is not, and neither is a day older than the
+  asked window (``day_outside_history_window``: its closes ARE published, this
+  run just did not look that far back),
 * two requests for the same day read the history ONCE (shared adapter + cache).
 """
 
@@ -35,8 +39,9 @@ from unittest import mock
 
 import arrow
 
+from paperbroker.earnings_calendar import is_us_trading_day
 from paperbroker.earnings_day_calendar import DAY_PREV
-from paperbroker.gap_scan import DEFAULT_LIMIT, GapBar, GapSourceError
+from paperbroker.gap_scan import DEFAULT_LIMIT, GAP_LOOKBACK_DAYS, GapBar, GapSourceError
 from paperbroker.server import create_app
 
 # 2026-11-12 21:00 UTC is 16:00 in New York - the US day is still the 12th, so
@@ -504,6 +509,80 @@ class GapScanEndpointTest(unittest.TestCase):
         self.assertEqual(koerper["message"], "the reaction day lies in the future")
         self.assertEqual(kalender.calls, 0)
         self.assertEqual(quelle.calls, [])
+
+    def test_a_weekend_is_refused(self):
+        # 2026-11-08 is a Sunday. The calendar answers a non-session with
+        # ``rows: null``, so every symbol would end in ``no_reaction_bar`` and
+        # the 200 would read as a quiet day - a day that never traded cannot
+        # have a gap. Refused before any source is asked.
+        sonntag = date(2026, 11, 8)
+        self.assertEqual(sonntag.weekday(), 6)
+        self.assertFalse(is_us_trading_day(sonntag))
+        kalender = _calendar()
+        quelle = _history()
+
+        antwort = _client(kalender, quelle).get("/api/v1/gap-scan?day=2026-11-08")
+
+        self.assertEqual(antwort.status_code, 400)
+        koerper = antwort.get_json()
+        self.assertEqual(koerper["error"], "invalid_day")
+        self.assertEqual(koerper["message"], "the reaction day is no US trading day")
+        self.assertEqual(kalender.calls, 0)
+        self.assertEqual(quelle.calls, [])
+
+    def test_a_holiday_is_refused(self):
+        # A holiday is a WEEKDAY - a weekday test alone would let it through.
+        # The date is found with the calendar function itself, so this test
+        # cannot drift with a holiday list it guessed.
+        feiertag = date(2026, 11, 11)
+        while feiertag.weekday() >= 5 or is_us_trading_day(feiertag):
+            feiertag -= timedelta(days=1)
+        self.assertLess(feiertag.weekday(), 5)
+        self.assertFalse(is_us_trading_day(feiertag))
+        # Before the pinned clock, or the 400 would be the future, not the day.
+        self.assertLess(feiertag, date(2026, 11, 12))
+        kalender = _calendar()
+        quelle = _history()
+
+        antwort = _client(kalender, quelle).get(f"/api/v1/gap-scan?day={feiertag.isoformat()}")
+
+        self.assertEqual(antwort.status_code, 400)
+        koerper = antwort.get_json()
+        self.assertEqual(koerper["error"], "invalid_day")
+        self.assertEqual(koerper["message"], "the reaction day is no US trading day")
+        self.assertEqual(kalender.calls, 0)
+        self.assertEqual(quelle.calls, [])
+
+    def test_an_old_day_is_not_called_unpublished(self):
+        # A day further back than the window the run asks for. Its closes are
+        # long published, so "not published yet" would be a lie: what is true is
+        # that this run never covered the day.
+        alt = date(2026, 9, 15)
+        while not is_us_trading_day(alt):
+            alt -= timedelta(days=1)
+        self.assertGreater((date(2026, 11, 12) - alt).days, GAP_LOOKBACK_DAYS)
+
+        kalender = _FakeCalendar(rows_by_day={
+            alt.isoformat(): [calendar_row("OLD", session="before_market")],
+        })
+        # The source answers, but its rows stop before the reaction session -
+        # the shape a day outside the asked window produces.
+        quelle = _History(bars={"OLD": [
+            GapBar(session_date=alt - timedelta(days=1), open=10.0, close=10.0,
+                   volume=1_000_000.0),
+        ]})
+
+        antwort = _client(kalender, quelle).get(f"/api/v1/gap-scan?day={alt.isoformat()}")
+        koerper = antwort.get_json()
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["result_state"], "day_outside_history_window")
+        self.assertEqual(koerper["counts"]["candidate_rows"], 1)
+        self.assertEqual(koerper["counts"]["gaps_computed"], 0)
+        self.assertEqual(koerper["candidates"], [])
+        # Asked, not skipped: the state is about the window, not about a run
+        # that never happened.
+        self.assertEqual(quelle.calls, ["OLD"])
 
     def test_a_second_request_reuses_the_history(self):
         transport = _CountingTransport()
