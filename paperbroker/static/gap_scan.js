@@ -148,11 +148,20 @@
     return 'HTTP ' + status;
   }
 
-  function countsText(day, counts) {
+  // Die Zaehlerzeile nennt jede Huerde, die der Lauf gestellt hat - die
+  // Kurshuerde eingeschlossen. Sie steht ZWISCHEN Umsatz und "angezeigt", weil
+  // sie genau dort greift: ein Titel kann 5 Mio USD Umsatz ueber das Volumen
+  // schaffen und trotzdem unter dem Mindestkurs liegen. Den Wert liefert die
+  // Antwort (``min_price``), hier steht kein zweiter Standardwert.
+  function countsText(day, counts, minPrice) {
+    var kurs = (typeof minPrice === 'number' && isFinite(minPrice))
+      ? ' · über Kurshürde (' + money(minPrice) + ') ' + n(counts.price_passed)
+      : '';
     return 'Tag ' + day
       + ' · geprüft ' + n(counts.gaps_computed)
       + ' · über Schwelle ' + n(counts.over_threshold)
       + ' · über Umsatzhürde ' + n(counts.turnover_passed)
+      + kurs
       + ' · angezeigt ' + n(counts.selected);
   }
 
@@ -355,7 +364,7 @@
       el.tbody.appendChild(buildRow(entry, index));
     });
 
-    el.counts.textContent = countsText(current.day, counts);
+    el.counts.textContent = countsText(current.day, counts, body.min_price);
     el.counts.hidden = false;
     el.error.hidden = true;
 

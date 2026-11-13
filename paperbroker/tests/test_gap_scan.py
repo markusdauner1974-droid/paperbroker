@@ -270,6 +270,38 @@ class CandidateSelectionTest(unittest.TestCase):
         self.assertEqual(select_candidates([]), [])
         self.assertEqual(select_candidates(None), [])
 
+    def test_a_price_hurdle_removes_penny_stocks(self):
+        # Measured on 2026-11-12: these four prices were IN the 30 candidates,
+        # because the 5 M USD turnover hurdle is ``close * volume`` and volume
+        # carries a cheap title over it on its own. The option chains of such a
+        # price are not tradable, so the price is a hurdle of its own.
+        rows = [
+            MeasuredRow("SES", 8.0, 0.58, 10_000_000),       # 5.8 M USD turnover
+            MeasuredRow("ICMB", 7.0, 1.06, 6_000_000),       # 6.4 M USD
+            MeasuredRow("TGEN", 6.0, 2.22, 3_000_000),       # 6.7 M USD
+            MeasuredRow("CENN", 5.0, 9.19, 1_000_000),       # 9.2 M USD
+        ]
+
+        candidates = select_candidates(rows)
+
+        # Only the title above 5 USD survives - the other three DID pass the
+        # turnover, so nothing but the price hurdle can have removed them.
+        self.assertEqual([c.symbol for c in candidates], ["CENN"])
+        self.assertEqual(candidates[0].close, 9.19)
+
+    def test_a_missing_close_is_no_price_of_zero(self):
+        # ``close is None`` already leaves before the hurdles: "not measured"
+        # must not be read as "too cheap" and must not become a candidate.
+        broken = {"symbol": "GAP", "gap_pct": 9.0, "close": None, "volume": 1_000_000}
+
+        self.assertEqual(select_candidates([broken]), [])
+
+    def test_the_price_hurdle_is_inclusive(self):
+        # Exactly 5.00 USD is a candidate - the hurdle is a floor, not a taste.
+        candidates = select_candidates([MeasuredRow("EDGE", 3.0, 5.0, 1_000_000)])
+
+        self.assertEqual([c.symbol for c in candidates], ["EDGE"])
+
 
 class NasdaqHistoryAdapterTest(unittest.TestCase):
     """The source access: what it names, what it refuses, what it remembers."""
@@ -776,6 +808,67 @@ class ScanGapsTest(unittest.TestCase):
         self.assertEqual(result.failures, {"LATE": "no_reaction_bar", "BROKEN": "no_data"})
         # The one good title survives a day where two others failed.
         self.assertEqual([c.symbol for c in result.candidates], ["OK"])
+
+    def test_the_price_hurdle_counts_into_the_counts(self):
+        # Three hurdles, three counters, in a chain: a title that fails one is
+        # NOT counted in the next. THIN clears the price and fails the turnover,
+        # CHEAP clears the turnover and fails the price - so ``price_passed``
+        # can only be 1 if it really counts "all three taken".
+        day = [
+            calendar_row("CHEAP", session="before_market"),
+            calendar_row("THIN", session="before_market"),
+            calendar_row("RICH", session="before_market"),
+        ]
+        adapter = StubHistoryAdapter(
+            bars={
+                # 2.22 USD on 6.7 M USD: over the turnover, under the price.
+                "CHEAP": bars_for(REACTION, close=2.22, previous_close=2.0,
+                                  volume=3_000_000),
+                # 11.00 USD on 0.44 M USD: over the price, under the turnover.
+                "THIN": bars_for(REACTION, close=11.0, previous_close=10.0, volume=40_000),
+                # 9.19 USD on 9.2 M USD: the only title past all three.
+                "RICH": bars_for(REACTION, close=9.19, previous_close=8.0),
+            }
+        )
+
+        result = scan_gaps([], day, REACTION, previous_date=PREVIOUS, adapter=adapter)
+
+        self.assertEqual(result.counts["over_threshold"], 3)
+        self.assertEqual(result.counts["turnover_passed"], 2)
+        self.assertEqual(result.counts["price_passed"], 1)
+        self.assertEqual(result.counts["selected"], 1)
+        self.assertEqual([c.symbol for c in result.candidates], ["RICH"])
+        # The one invariant the chain must never break.
+        self.assertEqual(result.counts["selected"], len(result.candidates))
+        # Order matters: the counters have to read as a narrowing chain.
+        self.assertEqual(
+            list(result.counts),
+            ["candidate_rows", "gaps_computed", "over_threshold", "turnover_passed",
+             "price_passed", "selected", "failures"],
+        )
+
+    def test_the_price_hurdle_can_be_turned_off(self):
+        # ``min_price=0`` is the documented off switch: every title that clears
+        # the threshold AND the turnover is a candidate again, the chain simply
+        # does not narrow at the price.
+        day = [
+            calendar_row("CHEAP", session="before_market"),
+            calendar_row("RICH", session="before_market"),
+        ]
+        adapter = StubHistoryAdapter(
+            bars={
+                "CHEAP": bars_for(REACTION, close=2.22, previous_close=2.0, volume=3_000_000),
+                "RICH": bars_for(REACTION, close=9.19, previous_close=8.0),
+            }
+        )
+
+        result = scan_gaps([], day, REACTION, previous_date=PREVIOUS, adapter=adapter,
+                           min_price=0)
+
+        self.assertEqual(result.counts["turnover_passed"], 2)
+        self.assertEqual(result.counts["price_passed"], 2)
+        self.assertEqual(result.counts["selected"], 2)
+        self.assertEqual(sorted(c.symbol for c in result.candidates), ["CHEAP", "RICH"])
 
     def test_the_selection_caps_at_thirty_after_the_turnover_hurdle(self):
         day = [calendar_row(f"S{index:02d}", session="before_market") for index in range(40)]

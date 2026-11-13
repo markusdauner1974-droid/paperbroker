@@ -60,6 +60,7 @@ from .eva_quality import assess_source_quality, snapshot_identity
 from .exclusions import LEVEL_CONTRACT, LEVEL_EXPIRY, LEVEL_PAIR, LEVEL_SYMBOL
 from .gap_scan import (
     DEFAULT_MAX_CANDIDATES,
+    DEFAULT_MIN_PRICE,
     DEFAULT_MIN_TURNOVER_USD,
     DEFAULT_THRESHOLD_PCT,
     BoundedCache,
@@ -1094,11 +1095,16 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # pre-market rows of the day), the daily closes say HOW FAR. Nothing  #
     # here prices an option, reads a chain or places an order.            #
     # ------------------------------------------------------------------ #
-    _GAP_SCAN_PARAMETERS = ("gap_threshold_pct", "min_turnover_usd", "max_candidates")
+    _GAP_SCAN_PARAMETERS = ("gap_threshold_pct", "min_turnover_usd", "max_candidates",
+                            "min_price")
     # The output cap is bounded like every other limit: 5000 titles in one
     # answer is not a bigger result, it is a response nobody reads. The
     # MEASUREMENT is never capped - every candidate is fetched and checked.
     _GAP_MAX_CANDIDATES_CEILING = 500
+    # The price hurdle is a filter, not a universe: a "price" of a million USD
+    # would empty every day without saying so. The ceiling keeps the number a
+    # price, and it is validated like the other limits instead of trusted.
+    _GAP_MAX_PRICE_CEILING = 1_000_000.0
     # The whole run's budget, in seconds. Not a cap on the titles - every
     # candidate is still asked - but a request may not hold a worker for the
     # worst case (220 titles x 6 s / 8 workers = ~165 s). What did not finish
@@ -1160,7 +1166,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         return None
 
     def _gap_scan_args():
-        """``day`` and the three numbers of one gap scan, or a ready JSON error.
+        """``day`` and the four numbers of one gap scan, or a ready JSON error.
 
         The day is validated before it touches the calendar: a string that is
         no date would otherwise be asked for and come back as "no rows", i.e.
@@ -1229,15 +1235,20 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 )
 
         limits = {}
-        for name, default, ceiling, integer, minimum in (
-            ("gap_threshold_pct", DEFAULT_THRESHOLD_PCT, 100.0, False, 0.0),
-            ("min_turnover_usd", DEFAULT_MIN_TURNOVER_USD, 1e12, False, 0.0),
-            ("max_candidates", DEFAULT_MAX_CANDIDATES, _GAP_MAX_CANDIDATES_CEILING, True, 1),
+        for name, default, ceiling, integer, minimum, code in (
+            ("gap_threshold_pct", DEFAULT_THRESHOLD_PCT, 100.0, False, 0.0, "invalid_limit"),
+            ("min_turnover_usd", DEFAULT_MIN_TURNOVER_USD, 1e12, False, 0.0, "invalid_limit"),
+            ("max_candidates", DEFAULT_MAX_CANDIDATES, _GAP_MAX_CANDIDATES_CEILING, True, 1,
+             "invalid_limit"),
+            # The price hurdle has its OWN code: "invalid_limit" would send the
+            # caller looking at the threshold, turnover or cap instead.
+            ("min_price", DEFAULT_MIN_PRICE, _GAP_MAX_PRICE_CEILING, False, 0.0,
+             "invalid_min_price"),
         ):
             wert, fehler = _scan_limit(name, request.args.get(name), default, ceiling,
                                        integer=integer, minimum=minimum)
             if fehler is not None:
-                return None, _gap_scan_error(400, "invalid_limit", fehler)
+                return None, _gap_scan_error(400, code, fehler)
             limits[name] = wert
 
         return {"day": day, "reaction": reaction, **limits}, None
@@ -1275,6 +1286,13 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         ``max_candidates`` caps the returned list, never the measurement: all
         candidates are fetched and checked, so ``counts`` describes the whole
         day while ``candidates`` shows the biggest moves.
+
+        ``min_price`` is the third hurdle beside the threshold and the turnover.
+        The turnover is ``close * volume``, so VOLUME alone carries a penny stock
+        over 5 M USD - measured on 2026-11-12, four of the 30 candidates traded
+        between 0.18 and 2.22 USD, where no tradable option spread exists. The
+        floor is a request parameter (``min_price=0`` switches it off) and it is
+        repeated in the answer next to the other numbers of the run.
         """
         args, fehler = _gap_scan_args()
         if fehler is not None:
@@ -1371,6 +1389,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             threshold_pct=args["gap_threshold_pct"],
             min_turnover_usd=args["min_turnover_usd"],
             max_candidates=args["max_candidates"],
+            min_price=args["min_price"],
         )
         # One definition of the numbers (``gap_scan._counts``), so this answer
         # and ``scan_gaps`` can never disagree about what "selected" counts.
@@ -1381,6 +1400,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             gemessen.failures,
             args["gap_threshold_pct"],
             args["min_turnover_usd"],
+            args["min_price"],
         )
 
         # A day whose closes are not published yet is NOT a quiet day. Measured
@@ -1444,6 +1464,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             threshold_pct=args["gap_threshold_pct"],
             min_turnover_usd=args["min_turnover_usd"],
             max_candidates=args["max_candidates"],
+            min_price=args["min_price"],
             counts=zaehler,
             candidates=kandidaten,
             failures=dict(gemessen.failures),

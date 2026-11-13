@@ -102,6 +102,13 @@ DEFAULT_TIMEOUT_SECONDS = 6.0
 DEFAULT_LIMIT = 32
 DEFAULT_THRESHOLD_PCT = 2.0
 DEFAULT_MIN_TURNOVER_USD = 5_000_000.0
+# A price hurdle BESIDE the turnover hurdle, because turnover alone does not
+# filter out what cannot be traded: it is ``close * volume``, and volume carries
+# a penny stock over 5 M USD on its own. Measured on 2026-11-12, four of the 30
+# candidates were ICMB at 1.06 USD, SES at 0.58, CENN at 0.18 and TGEN at 2.22 -
+# titles whose option chains exist on paper but have no tradable spread. Five
+# dollars is the floor under which that is the case, not a taste.
+DEFAULT_MIN_PRICE = 5.0
 DEFAULT_MAX_CANDIDATES = 30
 DEFAULT_MAX_WORKERS = 8
 # Measured: 151 titles at 8 in parallel took 45 s against the live endpoint. The
@@ -526,14 +533,19 @@ def select_candidates(
     threshold_pct=DEFAULT_THRESHOLD_PCT,
     min_turnover_usd=DEFAULT_MIN_TURNOVER_USD,
     max_candidates=DEFAULT_MAX_CANDIDATES,
+    min_price=DEFAULT_MIN_PRICE,
 ):
     """The tradable gaps of a day, biggest move first.
 
     A title qualifies when its move clears ``threshold_pct`` AND its session
-    turnover (``close * volume``) reaches ``min_turnover_usd``: the biggest gaps
-    of a day are regularly penny stocks that cannot be filled. Sorting is by
+    turnover (``close * volume``) reaches ``min_turnover_usd`` AND its close is
+    at least ``min_price``: the biggest gaps of a day are regularly penny stocks
+    that cannot be filled. The threshold and the turnover are two different
+    questions and the price is a third one - a title that trades 20 M USD at
+    0.58 USD passes the turnover and still has no tradable option. Sorting is by
     ``abs(gap_pct)`` descending, ties by ``symbol`` ascending, so the result is
-    stable and reproducible.
+    stable and reproducible. ``min_price=0`` turns the price hurdle off and
+    keeps every title the other two hurdles let through.
 
     Never padded: fewer qualifying titles means fewer candidates. ``max_candidates``
     is a cap, not a target.
@@ -551,6 +563,10 @@ def select_candidates(
             continue
         turnover = close * volume
         if turnover < min_turnover_usd:
+            continue
+        # A close below the hurdle is no candidate - but a MISSING close already
+        # left above: "not measured" is not "too cheap".
+        if close < min_price:
             continue
         candidates.append(
             Candidate(
@@ -759,15 +775,21 @@ def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_
     return GapFetchResult(rows=rows, failures=failures)
 
 
-def _counts(candidate_rows, gap_rows, candidates, failures, threshold_pct, min_turnover_usd):
+def _counts(candidate_rows, gap_rows, candidates, failures, threshold_pct, min_turnover_usd,
+            min_price=DEFAULT_MIN_PRICE):
     """The numbers of a run, computed from the rows themselves - not from hopes.
 
     ``turnover_passed`` counts titles that cleared BOTH hurdles, because that is
     what the word promises: a title that moved 10 % on 0.4 M USD did not pass
-    the turnover hurdle.
+    the turnover hurdle. ``price_passed`` counts the same way one hurdle further:
+    only a title that cleared the threshold, the turnover AND the price is
+    counted, so the counters read as a chain
+    (over_threshold -> turnover_passed -> price_passed -> selected) and a title
+    can never be counted as having passed a hurdle it never reached.
     """
     over_threshold = 0
     turnover_passed = 0
+    price_passed = 0
     for row in gap_rows:
         gap_pct = _number(row.get("gap_pct"))
         close = _number(row.get("close"))
@@ -775,13 +797,18 @@ def _counts(candidate_rows, gap_rows, candidates, failures, threshold_pct, min_t
         if gap_pct is None or classify_gap(gap_pct, threshold_pct) == GAP_NONE:
             continue
         over_threshold += 1
-        if close is not None and volume is not None and close * volume >= min_turnover_usd:
-            turnover_passed += 1
+        if close is None or volume is None or close * volume < min_turnover_usd:
+            continue
+        turnover_passed += 1
+        if close < min_price:
+            continue
+        price_passed += 1
     return {
         "candidate_rows": len(candidate_rows),
         "gaps_computed": len(gap_rows),
         "over_threshold": over_threshold,
         "turnover_passed": turnover_passed,
+        "price_passed": price_passed,
         "selected": len(candidates),
         "failures": len(failures),
     }
@@ -796,6 +823,7 @@ def scan_gaps(
     threshold_pct=DEFAULT_THRESHOLD_PCT,
     min_turnover_usd=DEFAULT_MIN_TURNOVER_USD,
     max_candidates=DEFAULT_MAX_CANDIDATES,
+    min_price=DEFAULT_MIN_PRICE,
     adapter=None,
     max_workers=DEFAULT_MAX_WORKERS,
 ):
@@ -805,7 +833,9 @@ def scan_gaps(
     fetch the gaps in parallel, select. The result keeps the intermediate
     stages - ``candidate_rows`` before the gap check, ``gap_rows`` after it -
     so a caller can show WHY a day produced three candidates instead of thirty,
-    and ``counts`` says the same in numbers.
+    and ``counts`` says the same in numbers. ``min_price`` is the price hurdle
+    next to the turnover: a penny stock can clear 5 M USD of turnover on volume
+    alone and still have no tradable option.
     """
     candidate_rows = reaction_day_rows(
         previous_rows,
@@ -824,6 +854,7 @@ def scan_gaps(
         threshold_pct=threshold_pct,
         min_turnover_usd=min_turnover_usd,
         max_candidates=max_candidates,
+        min_price=min_price,
     )
     counts = _counts(
         candidate_rows,
@@ -832,6 +863,7 @@ def scan_gaps(
         fetched.failures,
         threshold_pct,
         min_turnover_usd,
+        min_price,
     )
     return GapScanResult(
         candidates=candidates,

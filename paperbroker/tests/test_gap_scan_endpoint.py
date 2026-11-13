@@ -41,7 +41,13 @@ import arrow
 
 from paperbroker.earnings_calendar import is_us_trading_day
 from paperbroker.earnings_day_calendar import DAY_PREV
-from paperbroker.gap_scan import DEFAULT_LIMIT, GAP_LOOKBACK_DAYS, GapBar, GapSourceError
+from paperbroker.gap_scan import (
+    DEFAULT_LIMIT,
+    DEFAULT_MIN_PRICE,
+    GAP_LOOKBACK_DAYS,
+    GapBar,
+    GapSourceError,
+)
 from paperbroker.server import create_app
 
 # 2026-11-12 21:00 UTC is 16:00 in New York - the US day is still the 12th, so
@@ -272,6 +278,7 @@ class GapScanEndpointTest(unittest.TestCase):
         self.assertEqual(koerper["threshold_pct"], 2.0)
         self.assertEqual(koerper["min_turnover_usd"], 5_000_000.0)
         self.assertEqual(koerper["max_candidates"], 30)
+        self.assertEqual(koerper["min_price"], 5.0)
         # Both calendar days were asked for, in one call: the reaction day and
         # the calendar day before it.
         self.assertEqual(kalender.calls, 1)
@@ -284,13 +291,14 @@ class GapScanEndpointTest(unittest.TestCase):
         self.assertEqual(
             sorted(koerper["counts"]),
             sorted(["candidate_rows", "gaps_computed", "over_threshold", "turnover_passed",
-                    "selected", "failures"]),
+                    "price_passed", "selected", "failures"]),
         )
         self.assertEqual(koerper["counts"], {
             "candidate_rows": 3,   # AAA, BBB, CCC - DDD is after the close
             "gaps_computed": 3,
             "over_threshold": 3,
             "turnover_passed": 3,
+            "price_passed": 3,
             "selected": 3,
             "failures": 0,
         })
@@ -307,6 +315,45 @@ class GapScanEndpointTest(unittest.TestCase):
         self.assertEqual(koerper["counts"]["selected"], 2)
         self.assertEqual(len(koerper["candidates"]), 2)
         self.assertEqual(sorted(quelle.calls), ["AAA", "BBB", "CCC"])
+
+    def test_the_answer_names_the_price_hurdle(self):
+        # The hurdle is a NUMBER of the run, like the threshold and the
+        # turnover: whoever reads the counts must be able to see the floor the
+        # run applied instead of guessing it.
+        antwort, koerper, _kalender, _quelle = _scan()
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["min_price"], 5.0)
+        self.assertEqual(DEFAULT_MIN_PRICE, 5.0)
+        self.assertIn("price_passed", koerper["counts"])
+
+    def test_a_given_price_hurdle_changes_the_selection(self):
+        # The parameter reaches the selection and the answer repeats the value
+        # that was used: a floor of 10.35 USD keeps AAA (11.00) and BBB (10.40)
+        # and drops CCC (9.00) - which passed threshold and turnover.
+        antwort, koerper, _kalender, _quelle = _scan(f"?day={DAY}&min_price=10.35")
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["min_price"], 10.35)
+        # AAA (11.00) and BBB (10.40) stay, CCC (9.00) falls below the floor.
+        self.assertEqual([e["symbol"] for e in koerper["candidates"]], ["AAA", "BBB"])
+        self.assertEqual(koerper["counts"]["turnover_passed"], 3)
+        self.assertEqual(koerper["counts"]["price_passed"], 2)
+        self.assertEqual(koerper["counts"]["selected"], 2)
+
+    def test_an_invalid_price_hurdle_is_a_client_error(self):
+        # Its OWN code: ``invalid_limit`` would send the caller to the
+        # threshold, the turnover or the cap instead of to the price.
+        for query in ("abc", "-1", "nan", "inf"):
+            with self.subTest(min_price=query):
+                kalender = _calendar()
+                antwort = _client(kalender).get(f"/api/v1/gap-scan?day={DAY}&min_price={query}")
+                koerper = antwort.get_json()
+                self.assertEqual(antwort.status_code, 400)
+                self.assertEqual(koerper["error"], "invalid_min_price")
+                self.assertIn("min_price", koerper["message"])
+                # Validated BEFORE the source: a bad number costs no query.
+                self.assertEqual(kalender.calls, 0)
 
     def test_a_pre_market_row_of_the_day_is_certain(self):
         _antwort, koerper, _kalender, quelle = _scan()

@@ -490,6 +490,53 @@ class TestTheListSpeaksTheAnswer(unittest.TestCase):
         self.assertTrue(panel["tableHidden"])
         self.assertIsNone(panel["error"])
 
+    def test_the_counts_line_names_the_price_hurdle(self):
+        # The counter line names EVERY hurdle of the run. The price belongs
+        # between turnover and "angezeigt", because that is where it acts: a
+        # title can clear 5 M USD on volume and still be too cheap to trade.
+        antwort, koerper = _three_candidates()
+        self.assertEqual(koerper["min_price"], 5.0)
+        panel = _render(antwort, click=True)
+
+        self.assertIn("über Kurshürde (5.00) 3", panel["counts"])
+        umsatz = panel["counts"].index("über Umsatzhürde")
+        kurs = panel["counts"].index("über Kurshürde")
+        angezeigt = panel["counts"].index("angezeigt")
+        self.assertLess(umsatz, kurs)
+        self.assertLess(kurs, angezeigt)
+        # The value comes from the answer, not from a second default in the panel.
+        self.assertIn("(5.00)", panel["counts"])
+
+    def test_a_price_hurdle_keeps_penny_stocks_out_of_the_list(self):
+        # A day that answers with a cheap title AND a tradable one: the cheap
+        # one is no row, and the line says where it went.
+        koerper = {
+            "mode": "gap_scan",
+            "day": DAY,
+            "day_state": "live",
+            "result_state": "ok",
+            "threshold_pct": 2.0,
+            "min_turnover_usd": 5_000_000.0,
+            "min_price": 5.0,
+            "max_candidates": 30,
+            "counts": {"candidate_rows": 2, "gaps_computed": 2, "over_threshold": 2,
+                       "turnover_passed": 2, "price_passed": 1, "selected": 1,
+                       "failures": 0},
+            "candidates": [{
+                "symbol": "RICH", "name": "Rich Corp", "session": "before_market",
+                "session_uncertain": False, "earnings_date": DAY, "gap_pct": 6.0,
+                "direction": "up", "strategy": "bull_call_debit", "close": 9.19,
+                "volume": 1_000_000.0, "turnover_usd": 9_190_000.0,
+            }],
+            "failures": {},
+        }
+
+        panel = _render(_answer(200, koerper), click=True)
+
+        self.assertEqual(["RICH"], [r["symbol"] for r in panel["rows"]])
+        self.assertIn("über Umsatzhürde 2 · über Kurshürde (5.00) 1 · angezeigt 1",
+                      panel["counts"])
+
     def test_the_open_button_carries_the_strategy(self):
         antwort, koerper = _three_candidates()
         # Zeile 0 ist der Aufwaerts-Gap (AAA), Zeile 1 der Abwaerts-Gap (CCC).
