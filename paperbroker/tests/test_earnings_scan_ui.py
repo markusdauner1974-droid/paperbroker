@@ -255,6 +255,25 @@ class TestTheStatesKeepTheirOwnWords(unittest.TestCase):
         self.assertNotEqual(tabelle["hits"][1], tabelle["not_checked"][1])
 
 
+class TestTheCellsSayWhatHappened(unittest.TestCase):
+    """A missing chain and a throttled chain are different events."""
+
+    def _quelle(self):
+        return PANEL_JS.read_text(encoding="utf-8")
+
+    def test_a_deliberately_unread_chain_says_so_instead_of_kette_leer(self):
+        quelle = self._quelle()
+        self.assertIn("daten.chain_requested === false", quelle)
+        self.assertIn("nicht geladen (Fenster verhindert)", quelle)
+
+    def test_a_throttled_call_is_labelled_gedrosselt_not_abruffehler(self):
+        quelle = self._quelle()
+        self.assertIn("entry.exclusion.reason === 'throttled'", quelle)
+        self.assertIn("text: 'gedrosselt'", quelle)
+        # The class travels in the tooltip next to the German sentence.
+        self.assertIn("entry.exclusion.reason", quelle)
+
+
 class TestThePanelKeepsTheOldPromises(unittest.TestCase):
     """The calendar and the single view are untouched by the new block."""
 

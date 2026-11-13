@@ -21,6 +21,7 @@ from paperbroker import server as server_module
 from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
     CboeNotFoundError,
     CboeRequestError,
+    CboeUnusableChainError,
 )
 from paperbroker.assets import asset_factory
 from paperbroker.screener import OptionScreener, ScreenerCriteria, TrendSignal, VerticalPair
@@ -3866,6 +3867,20 @@ class TestApiErrorContract(unittest.TestCase):
         def get_options(self, underlying_asset=None, expiration_date=None):
             raise CboeRequestError("CBOE feed unreachable")
 
+    class _UnusableChain:
+        """The chain arrived and was read, but no contract of it could be built.
+
+        Not an unknown symbol: the source knows the ticker and answered. It is
+        a source-side failure (503) and must say so in its own words.
+        """
+
+        def get_expiration_dates(self, underlying_asset=None):
+            return ["2026-10-16"]
+
+        def get_options(self, underlying_asset=None, expiration_date=None):
+            raise CboeUnusableChainError(
+                "all 4314 contracts of ZZZZZZ unusable", attempts=2)
+
     def _screen(self, adapter):
         app = server_module.create_app(quote_adapter=adapter,
                                        screener=OptionScreener(_LOOSE),
@@ -3895,6 +3910,37 @@ class TestApiErrorContract(unittest.TestCase):
     def test_a_feed_outage_answers_503_json_with_market_data_unavailable(self):
         self._assert_json_error(self._FeedDown(), 503,
                                 "market data unavailable")
+
+    def test_an_unusable_chain_is_not_a_404(self):
+        """A delivered chain that yielded no contract is no unknown symbol.
+
+        Before, the adapter raised CboeNotFoundError for it, so this route
+        answered 404 "unknown symbol" for a ticker the source had just
+        answered for. Status, content type and body text are pinned together -
+        an assertion on a missing word alone also passes on an HTML page.
+        """
+        body = self._assert_json_error(self._UnusableChain(), 503,
+                                       "chain unreadable")
+        self.assertEqual(body["ticker"], "ZZZZZZ")
+        self.assertNotEqual(body["error"], "unknown symbol")
+
+    def test_the_unusable_chain_answer_stays_a_source_failure(self):
+        """503, not 404: nothing about the request was wrong."""
+        res = self._screen(self._UnusableChain())
+        self.assertEqual(res.status_code, 503,
+                         res.get_data(as_text=True)[:200])
+        self.assertNotIn("unknown symbol", res.get_data(as_text=True))
+        # the source detail (contract counts) stays in the log, not the body
+        self.assertNotIn("4314", res.get_data(as_text=True))
+
+    def test_an_unknown_symbol_stays_a_404_next_to_the_unusable_one(self):
+        """The two answers must stay distinguishable, not both become 503."""
+        unbekannt = self._screen(self._UnknownSymbol())
+        unbrauchbar = self._screen(self._UnusableChain())
+        self.assertEqual(unbekannt.status_code, 404)
+        self.assertEqual(unbrauchbar.status_code, 503)
+        self.assertNotEqual(unbekannt.get_json()["error"],
+                            unbrauchbar.get_json()["error"])
 
     def test_an_unknown_strategy_answers_400_json_with_the_two_ids(self):
         """L: eine unbekannte Strategie ist der Fehler des Aufrufers. Status,

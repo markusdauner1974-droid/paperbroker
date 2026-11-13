@@ -61,6 +61,7 @@ from .earnings_calendar import (
     STATUS_STALE,
     combine_earnings_and_expirations,
     empty_earnings,
+    window_precheck,
 )
 from .earnings_day_calendar import rank_rows
 from .screener import MAX_PAIRS_PER_SECTION, STRATEGIES, STRATEGY_IDS, filter_stale, pair_search_report, vertical_spreads
@@ -169,6 +170,35 @@ class ScanLimits:
 
 def _exclusion(code, message):
     return {"code": code, "message": message}
+
+
+#: German sentence per chain-failure class. The class lives in the adapter
+#: (``CboeChainError.reason``); the wording lives HERE, next to the other
+#: exclusion texts - and never the exception text, which carries URLs and
+#: socket details into a 200 body.
+CHAIN_REASON_TEXT = {
+    "not_listed": "Die Quelle listet für diesen Titel keine Optionskette.",
+    "blocked": "Die Quelle blockt den Abruf (HTTP 403).",
+    "throttled": "Die Quelle drosselt den Abruf (HTTP 429) — später erneut versuchen.",
+    "unreachable": "Die Optionskette war nicht erreichbar.",
+    "malformed": "Die Antwort der Quelle war nicht lesbar.",
+    "unusable": "Die Kette wurde gelesen, aber kein Kontrakt ist brauchbar.",
+}
+
+
+def _chain_exclusion(exc):
+    """``exclusion`` for a failed chain call: stable code, stable reason.
+
+    ``reason`` is additive to the existing ``{code, message}`` pair: a caller
+    can distinguish an unlisted symbol from a throttle without parsing German.
+    An exception that does not name a class (a fake, a bug) keeps the old
+    message - it is not upgraded to a claim about the source.
+    """
+    reason = getattr(exc, "reason", None)
+    if reason in CHAIN_REASON_TEXT:
+        return {"code": "chain_fetch_failed", "reason": reason,
+                "message": CHAIN_REASON_TEXT[reason]}
+    return _exclusion("chain_fetch_failed", "option chain could not be read")
 
 
 def _expiration_of(quote):
@@ -387,9 +417,15 @@ class _Counter:
         with self._lock:
             self.earnings += 1
 
-    def count_chain(self):
+    def count_chain(self, attempts=1):
+        """Count the requests one chain call really cost.
+
+        A retried call is not one source call: the adapter names its attempt
+        count and a cache hit names 0. Default 1 keeps adapters that cannot
+        report it at the old meaning.
+        """
         with self._lock:
-            self.chains += 1
+            self.chains += int(attempts)
 
     def as_dict(self):
         with self._lock:
@@ -686,19 +722,51 @@ def _scan_symbol(symbol, row, ctx):
         # ever drift, the entry takes the unchanged path below instead of
         # skipping a call it turns out to need.
 
+    # --- 1c. a window already closed by the CALENDAR costs no chain --------
+    # Measured 2026-11-13: a scan of "today" spent 32 chain requests in 5.5 s on
+    # rows that all failed the window afterwards, because the exit day (the last
+    # trading day before the report) is in the past the moment the report is
+    # today. The record and today settle that before any quote is read; the
+    # expired rows keep chain_requested=False and the gate's own window block.
+    vorab = window_precheck(earnings, ctx.today)
+    if vorab["decision"]["precheck"]:
+        eintrag["data"] = {
+            "earnings_status": earnings.get("status"),
+            "earnings_date": earnings.get("next_earnings_date"),
+            "earnings_source": earnings.get("source"),
+            "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
+            # A decision, not a failed read - and the UI says so in words.
+            "chain_requested": False,
+            "chain_contracts": None,
+            "chain_note": "nicht geladen (Fenster verhindert)",
+            "chain_skipped_contracts": None,
+            "chain_quote_timestamp_raw": None,
+            "chain_quote_timestamp_utc": None,
+            "chain_quote_zone": None,
+            "chain_quote_age_proven": False,
+            "chain_quote_age_minutes": None,
+            "freshness": _empty_freshness(ctx.criteria),
+            "completeness": "unknown",
+            "listed_expirations": [],
+        }
+        _apply_window(eintrag, vorab, [])
+        return eintrag
+
     # --- 2. the chain (ONE request covers every expiry of this underlying)
     try:
         chain = ctx.fetch_chain(symbol)
         quotes = [q for q in (chain or []) if _expiration_of(q) is not None]
         uebersprungen = int(getattr(chain, "skipped", 0) or 0)
-        ctx.counter.count_chain()
+        # Every attempt counts, not every symbol: a throttled call that needed
+        # three requests says three, a cache hit says zero.
+        ctx.counter.count_chain(getattr(chain, "attempts", 1))
     except Exception as exc:                        # noqa: BLE001 - one ticker, one verdict
+        # The failed attempt was still spent - and the class of the failure is
+        # the actionable part, so the row names it instead of "could not read".
+        ctx.counter.count_chain(getattr(exc, "attempts", 1))
         _report(ctx, symbol, exc)
         eintrag["status"] = STATUS_FETCH_FAILED
-        eintrag["exclusion"] = _exclusion(
-            "chain_fetch_failed",
-            "option chain could not be read",
-        )
+        eintrag["exclusion"] = _chain_exclusion(exc)
         return eintrag
 
     # One key pass for the whole ticker: the listing and every expiry slice come

@@ -376,7 +376,7 @@
     <div class="cal-groups" id="cal-groups">
       <div class="cal-tabs" role="tablist">
         {% for g in calendar.groups %}
-        <button type="button" class="cal-tab{% if g.is_default %} is-active{% endif %}" data-day="{{ g.date }}" role="tab" aria-selected="{{ 'true' if g.is_default else 'false' }}" aria-controls="cal-body-{{ g.key }}">{{ g.label }} · {{ g.short_day or 'Datum unbekannt' }} · {{ g.tab_counter if g.tab_counter is not none else '–' }}</button>
+        <button type="button" class="cal-tab{% if g.is_default %} is-active{% endif %}" data-day="{{ g.date }}" role="tab" aria-selected="{{ 'true' if g.is_default else 'false' }}" aria-controls="cal-body-{{ g.key }}">{{ g.label }}{% if g.label %} · {% endif %}{{ g.tab_counter if g.tab_counter is not none else '–' }}</button>
         {% endfor %}
       </div>
       {% for g in calendar.groups %}

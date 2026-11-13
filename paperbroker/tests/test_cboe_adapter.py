@@ -8,13 +8,26 @@
     endpoint (AAPL: 3568 contracts, IV decimal -> x100, greeks raw -> x100,
     403 for unknown symbols, cache hit < 0.05 s).
 """
+import threading
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
+import requests
+
 from ..adapters.quotes.CBOEQuoteAdapter import (
+    CHAIN_BLOCKED,
+    CHAIN_MALFORMED,
+    CHAIN_NOT_LISTED,
+    CHAIN_REASONS,
+    CHAIN_THROTTLED,
+    CHAIN_UNREACHABLE,
+    CHAIN_UNUSABLE,
     CboeNotFoundError,
     CBOEQuoteAdapter,
     CboeRequestError,
+    CboeUnusableChainError,
+    RetryBudget,
 )
 from ..quotes import OptionQuote
 
@@ -131,10 +144,13 @@ class TestCboeAdapter(unittest.TestCase):
         self.assertEqual(q.iv, 0.0)
         self.assertIsNone(q.delta)
 
-    def test_unknown_symbol_raises_403_as_not_found(self):
+    def test_a_blocked_client_is_named_blocked_not_unknown_symbol(self):
+        # 403 is the feed refusing THIS client, not "no such symbol" - and a
+        # retry cannot change a block.
         ad = self._adapter_with({}, status=403)
-        with self.assertRaises((CboeNotFoundError, CboeRequestError)):
+        with self.assertRaises(CboeRequestError) as ctx:
             ad.get_expiration_dates("AAAANOTREAL")
+        self.assertEqual(ctx.exception.reason, CHAIN_BLOCKED)
 
     def test_get_quote_option_by_occ_symbol(self):
         payload = _chain_payload(["FAKE261016C00100000"])
@@ -248,7 +264,7 @@ class TestCboeAdapter(unittest.TestCase):
         """A totally unusable chain must not look like "no candidates"."""
         payload = _chain_payload(["FAKE260229C00100000", "FAKE260229P00110000"])
         ad = self._adapter_with(payload)
-        with self.assertRaises(CboeNotFoundError):
+        with self.assertRaises(CboeUnusableChainError):
             ad.get_options("FAKE")
 
     def test_single_option_lookup_still_reports_not_found(self):
@@ -269,6 +285,289 @@ class TestCboeAdapter(unittest.TestCase):
         payload = _chain_payload(["FAKE280229C00100000", "FAKE261016C00100000"])
         ad = self._adapter_with(payload)
         self.assertIn("2028-02-29", ad.get_expiration_dates("FAKE"))
+
+
+class TestChainFailuresAreClassified(unittest.TestCase):
+    """Each failure gets its own class, and only the retryable ones repeat.
+
+    Fake session, no network: the responses are handed out in order, the sleep
+    is recorded instead of waited, so the retry POLICY is what is asserted.
+    """
+
+    def _adapter(self, responses):
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        ad._session.get.side_effect = list(responses)
+        geschlafen = []
+        ad._sleep = geschlafen.append
+        return ad, geschlafen
+
+    @staticmethod
+    def _ok():
+        return _fake_response(_chain_payload(["FAKE261016C00100000"]))
+
+    def test_a_throttled_call_is_retried_once_and_then_succeeds(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 429), self._ok()])
+        quotes = ad.get_options("FAKE")
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(ad._session.get.call_count, 2)
+        self.assertEqual(quotes.attempts, 2)
+        # 0.4 s plus jitter, and only one wait.
+        self.assertEqual(len(geschlafen), 1)
+        self.assertAlmostEqual(geschlafen[0], 0.4, delta=0.11)
+
+    def test_a_persistent_throttle_stops_after_three_attempts(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 429)] * 3)
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_THROTTLED)
+        self.assertEqual(ctx.exception.attempts, 3)
+        self.assertEqual(ad._session.get.call_count, 3)
+        self.assertEqual(len(geschlafen), 2)
+        self.assertAlmostEqual(geschlafen[1], 1.2, delta=0.11)
+
+    def test_a_blocked_client_is_not_retried(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 403)])
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_BLOCKED)
+        self.assertEqual(ctx.exception.attempts, 1)
+        self.assertEqual(ad._session.get.call_count, 1)
+        self.assertEqual(geschlafen, [])
+
+    def test_an_unlisted_symbol_is_not_retried(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 404)])
+        with self.assertRaises(CboeNotFoundError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_NOT_LISTED)
+        self.assertEqual(ad._session.get.call_count, 1)
+        self.assertEqual(geschlafen, [])
+
+    def test_a_timeout_is_retried_and_then_succeeds(self):
+        ad, geschlafen = self._adapter([requests.Timeout("slow"), self._ok()])
+        quotes = ad.get_options("FAKE")
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(quotes.attempts, 2)
+        self.assertEqual(ad._session.get.call_count, 2)
+        self.assertEqual(len(geschlafen), 1)
+
+    def test_a_5xx_is_retried_like_an_unreachable_feed(self):
+        ad, _ = self._adapter([_fake_response({}, 503), self._ok()])
+        self.assertEqual(ad.get_options("FAKE").attempts, 2)
+
+    def test_an_unreadable_body_is_named_malformed_and_not_retried(self):
+        kaputt = MagicMock()
+        kaputt.status_code = 200
+        kaputt.json.return_value = {"data": None}
+        ad, geschlafen = self._adapter([kaputt])
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_MALFORMED)
+        self.assertEqual(ad._session.get.call_count, 1)
+        self.assertEqual(geschlafen, [])
+
+    def test_a_cache_hit_costs_no_source_call(self):
+        ad, _ = self._adapter([self._ok()])
+        self.assertEqual(ad.get_options("FAKE").attempts, 1)
+        self.assertEqual(ad.get_options("FAKE").attempts, 0)
+        self.assertEqual(ad._session.get.call_count, 1)
+
+    def test_every_class_is_reachable_and_distinct(self):
+        self.assertEqual(len({CHAIN_BLOCKED, CHAIN_THROTTLED, CHAIN_NOT_LISTED,
+                              CHAIN_UNREACHABLE, CHAIN_MALFORMED}), 5)
+
+
+class _FakeClock:
+    """A pinned, manually advanced monotonic clock (no real waiting)."""
+
+    def __init__(self, start=1_000.0):
+        self.now = float(start)
+
+    def __call__(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += float(seconds)
+
+
+class TestAnUnusableChainIsNotUnlisted(unittest.TestCase):
+    """A delivered chain with no usable row is not "no chain for this symbol".
+
+    Before, the raise used CboeNotFoundError's class reason ``not_listed``, so
+    the scan told the reader "the source lists no chain" although the source
+    had delivered one and the adapter had read it. The attempts the chain cost
+    were lost too (default 1).
+    """
+
+    @staticmethod
+    def _unusable_payload():
+        # 29 February 2026 does not exist: the OCC parse accepts it, the option
+        # constructor refuses it - so every row is skipped.
+        return _chain_payload(["FAKE260229C00100000", "FAKE260229P00110000"])
+
+    def test_an_unusable_chain_is_not_called_unlisted(self):
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        # one throttle, then the chain arrives: it cost two attempts and the
+        # error must say so instead of resetting to the default 1.
+        ad._session.get.side_effect = [
+            _fake_response({}, 429),
+            _fake_response(self._unusable_payload()),
+        ]
+        ad._sleep = lambda _seconds: None
+        with self.assertRaises(CboeUnusableChainError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_UNUSABLE)
+        self.assertNotEqual(ctx.exception.reason, CHAIN_NOT_LISTED)
+        self.assertEqual(ctx.exception.attempts, 2)
+
+    def test_an_unusable_chain_is_no_unknown_symbol(self):
+        """The class itself must carry the distinction, not the message.
+
+        A handler that classifies by ``isinstance(exc, CboeNotFoundError)``
+        answered 404 "unknown symbol" for a chain the feed had delivered and
+        the adapter had read. The raise therefore uses a class that is a
+        request error and NOT a not-found error - checked here, because the
+        handlers rely on exactly that inheritance.
+        """
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        ad._session.get.side_effect = [
+            _fake_response({}, 429),
+            _fake_response(self._unusable_payload()),
+        ]
+        ad._sleep = lambda _seconds: None
+        with self.assertRaises(CboeUnusableChainError) as ctx:
+            ad.get_options("FAKE")
+        fehler = ctx.exception
+        self.assertFalse(isinstance(fehler, CboeNotFoundError),
+                         "an unusable chain must not be classified as unknown symbol")
+        self.assertTrue(isinstance(fehler, CboeRequestError),
+                        "an unusable chain is still a request that yielded no chain")
+        self.assertEqual(fehler.reason, CHAIN_UNUSABLE)
+        # the two attempts the chain really cost survive the new class
+        self.assertEqual(fehler.attempts, 2)
+        # and it still names no URL or socket detail
+        self.assertNotIn("http", str(fehler).lower())
+
+    def test_a_real_unknown_symbol_is_still_a_not_found(self):
+        """The distinction is only worth something if 404 stays its own class."""
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        ad._session.get.side_effect = [
+            _fake_response(_chain_payload(["FAKE261016C00100000"])),
+        ]
+        ad._sleep = lambda _seconds: None
+        with self.assertRaises(CboeNotFoundError) as ctx:
+            # the chain is here, the contract asked for is not
+            ad.get_quote("FAKE261017C00100000")
+        self.assertFalse(isinstance(ctx.exception, CboeUnusableChainError))
+        self.assertEqual(ctx.exception.reason, CHAIN_NOT_LISTED)
+
+    def test_the_unusable_reason_has_its_own_text(self):
+        from ..earnings_scan import _chain_exclusion
+
+        fehler = CboeNotFoundError("all 2 contracts of FAKE unusable",
+                                   reason=CHAIN_UNUSABLE, attempts=2)
+        ausschluss = _chain_exclusion(fehler)
+        self.assertEqual(ausschluss["reason"], "unusable")
+        self.assertEqual(ausschluss["message"],
+                         "Die Kette wurde gelesen, aber kein Kontrakt ist brauchbar.")
+        self.assertNotIn("listet", ausschluss["message"])
+
+    def test_the_new_reason_is_a_class_of_its_own(self):
+        from ..earnings_scan import CHAIN_REASON_TEXT
+
+        self.assertIn(CHAIN_UNUSABLE, CHAIN_REASONS)
+        self.assertEqual(len(set(CHAIN_REASONS)), len(CHAIN_REASONS))
+        # Fail closed: a class without its own German sentence would fall back
+        # to the generic "could not be read" text and lose the distinction.
+        self.assertEqual(set(CHAIN_REASONS) - set(CHAIN_REASON_TEXT), set())
+
+
+class TestTheRetryBudgetCapsTheWaiting(unittest.TestCase):
+    """The backoff sleeps are paid from one bucket shared by all workers.
+
+    Eight permanently failing symbols used to add ~1.7 s per worker to the
+    scan's wall clock. The bucket caps the SUM; a call that finds it empty goes
+    out at once with its reason instead of retrying under throttling.
+    """
+
+    def test_a_burst_of_failures_spends_at_most_the_budget(self):
+        budget = RetryBudget(capacity_seconds=2.0, refill_per_second=0.0)
+        ad = CBOEQuoteAdapter(retry_budget=budget)
+        ad._session = MagicMock()
+        ad._session.get.side_effect = lambda url, timeout=None: _fake_response({}, 429)
+
+        geschlafen = []
+        sperre = threading.Lock()
+
+        def merken(sekunden):
+            # The fake sleep records instead of waiting, so the sum of the
+            # granted waits is exactly what the scan would have paid.
+            with sperre:
+                geschlafen.append(sekunden)
+
+        ad._sleep = merken
+
+        def lauf(symbol):
+            try:
+                ad.get_options(symbol)
+            except CboeRequestError as exc:
+                return exc
+            raise AssertionError(f"{symbol} should have failed")
+
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            futures = [pool.submit(lauf, f"SY{i:02d}") for i in range(12)]
+            ergebnisse = [f.result(timeout=10) for f in futures]
+
+        # Nobody hangs, every run fails with its own class.
+        self.assertEqual(len(ergebnisse), 12)
+        for exc in ergebnisse:
+            self.assertEqual(exc.reason, CHAIN_THROTTLED)
+        # The sum of all waits never exceeds the capacity (+ rounding).
+        self.assertLessEqual(sum(geschlafen), 2.0 + 0.01)
+        # 0.4 + 1.2 + 0.4 is the most the bucket can pay for.
+        self.assertLessEqual(len(geschlafen), 3)
+        # And the bucket really runs dry: at least one call could not wait.
+        self.assertIn(1, [exc.attempts for exc in ergebnisse])
+
+    def test_without_budget_the_call_does_not_retry(self):
+        ad = CBOEQuoteAdapter(retry_budget=RetryBudget(capacity_seconds=0,
+                                                       refill_per_second=0))
+        ad._session = MagicMock()
+        ad._session.get.return_value = _fake_response({}, 429)
+        geschlafen = []
+        ad._sleep = geschlafen.append
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_THROTTLED)
+        self.assertEqual(ctx.exception.attempts, 1)
+        self.assertEqual(ad._session.get.call_count, 1)
+        self.assertEqual(geschlafen, [])
+
+    def test_the_budget_refills_over_time(self):
+        uhr = _FakeClock()
+        budget = RetryBudget(capacity_seconds=0.5, refill_per_second=1.0, clock=uhr)
+        ad = CBOEQuoteAdapter(retry_budget=budget)
+        ad._session = MagicMock()
+        ad._sleep = lambda _seconds: None
+        ad._session.get.side_effect = [
+            _fake_response({}, 429),                                     # FAKE, attempt 1
+            _fake_response(_chain_payload(["FAKE261016C00100000"])),     # FAKE, attempt 2
+            _fake_response({}, 429),                                     # MSFT: no budget left
+            _fake_response({}, 429),                                     # MSFT again after refill
+            _fake_response(_chain_payload(["MSFT261016C00100000"])),     # MSFT, attempt 2
+        ]
+
+        self.assertEqual(ad.get_options("FAKE").attempts, 2)   # the wait was paid
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("MSFT")                             # the bucket is empty
+        self.assertEqual(ctx.exception.attempts, 1)
+
+        uhr.advance(1.0)                                       # the source calmed down
+        self.assertEqual(ad.get_options("MSFT").attempts, 2)   # a retry is possible again
+        self.assertEqual(ad._session.get.call_count, 5)
 
 
 class TestOptionQuoteExtension(unittest.TestCase):

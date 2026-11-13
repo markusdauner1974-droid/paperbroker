@@ -37,6 +37,8 @@ from .earnings_calendar import (
     SESSION_BEFORE,
     combine_earnings_and_expirations,
     is_us_trading_day,
+    last_trading_day_before,
+    next_trading_day_after,
 )
 from .earnings_day_calendar import (
     DAY_NEXT,
@@ -268,7 +270,6 @@ def _criteria_echo(criteria):
 _SESSION_TEXT = {SESSION_BEFORE: "vorbörslich", SESSION_AFTER: "nachbörslich"}
 _SESSION_UNKNOWN_TEXT = "Zeitpunkt unbekannt"
 _CONFIRMATION_TEXT = {CONFIRMATION_CONFIRMED: "bestätigt", CONFIRMATION_ESTIMATED: "geschätzt"}
-_CALENDAR_DAY_LABEL = {DAY_PREV: "gestern", DAY_TODAY: "heute", DAY_NEXT: "morgen"}
 
 
 def _german_date(iso_text):
@@ -300,6 +301,29 @@ def _short_day(iso_text):
     except (TypeError, ValueError):
         return None
     return f"{_WEEKDAY_SHORT_DE[wert.weekday()]} {wert.strftime('%d.%m.')}"
+
+
+def _calendar_day_label(iso_text, today_iso):
+    """The tab text for a day: ``gestern · Do 12.11.`` / ``heute · Fr 13.11.``.
+
+    Date-based on purpose. With trading-day tabs the group after a Friday is a
+    Monday, so the word "morgen" would promise a day two nights away and
+    "gestern" would name a Friday as yesterday on a Monday. The word is used
+    only where it is literally true (the calendar neighbour); every other day
+    names itself with weekday and date. ``None`` when the date is unusable -
+    the caller then renders no date rather than a guessed one.
+    """
+    kurz = _short_day(iso_text)
+    if kurz is None:
+        return None
+    try:
+        heute = datetime.strptime(str(today_iso), "%Y-%m-%d").date()
+        tag = datetime.strptime(str(iso_text), "%Y-%m-%d").date()
+    except (TypeError, ValueError):
+        return kurz
+    versatz = (tag - heute).days
+    wort = {-1: "gestern", 0: "heute", 1: "morgen"}.get(versatz)
+    return f"{wort} · {kurz}" if wort else kurz
 
 
 def _option_symbols(adapter):
@@ -569,10 +593,18 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         try:
             quotes = broker.get_options(ticker, expiration)
         except Exception as exc:                        # noqa: BLE001 - classified below
-            from paperbroker.adapters.quotes.CBOEQuoteAdapter import CboeNotFoundError
+            from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
+                CboeNotFoundError,
+                CboeUnusableChainError,
+            )
             if isinstance(exc, CboeNotFoundError):
                 return jsonify(error="unknown symbol", ticker=ticker), 404
             app.logger.exception("api_screen: market data failed for %s %s", ticker, expiration)
+            # A chain the feed delivered but no contract of it could be built is
+            # NOT an unknown symbol: the source knows the ticker and answered.
+            # It is a source-side failure (503) with its own wording.
+            if isinstance(exc, CboeUnusableChainError):
+                return jsonify(error="chain unreadable", ticker=ticker), 503
             return jsonify(error="market data unavailable"), 503
         trend_signal = _trend_for_screener(ticker)
         results, dropped = screen(quotes, criteria, trend=trend_signal,
@@ -667,6 +699,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
             CboeNotFoundError,
             CboeRequestError,
+            CboeUnusableChainError,
         )
         from paperbroker.option_chain_api import (
             SCHEMA_VERSION,
@@ -731,6 +764,16 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             snapshot = broker.get_option_chain_snapshot(ticker)
         except CboeNotFoundError:
             return _chain_error(404, "unknown_symbol", "the source does not know this symbol")
+        # Order matters: CboeUnusableChainError IS a CboeRequestError, so it must
+        # be caught first. The source delivered the chain - "unknown symbol"
+        # would be a false statement about the source.
+        except CboeUnusableChainError:
+            app.logger.warning("api_option_chain: chain unusable for %s", ticker)
+            return _chain_error(
+                503,
+                "chain_unreadable",
+                "the source delivered the chain, but no contract of it could be read",
+            )
         except CboeRequestError:
             app.logger.warning("api_option_chain: market data failed for %s", ticker)
             return _chain_error(
@@ -834,6 +877,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
             CboeNotFoundError,
             CboeRequestError,
+            CboeUnusableChainError,
         )
         from paperbroker.option_chain_api import listed_expirations
 
@@ -854,6 +898,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             verfaelle = listed_expirations(snapshot)
         except CboeNotFoundError:
             ketten_status = "unknown_symbol"
+        # The source knew the ticker and answered - only the mapping failed.
+        # Caught before CboeRequestError, of which it is a subclass.
+        except CboeUnusableChainError:
+            ketten_status = "chain_unreadable"
         except CboeRequestError:
             ketten_status = "market_data_unavailable"
         except Exception:                                    # noqa: BLE001 - classified here
@@ -1538,10 +1586,20 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         """
         try:
             heute = _us_today(now_fn)
+            heute_iso = heute.isoformat() if heute is not None else ""
+            # The three tabs are TRADING days, never calendar neighbours: on a
+            # Friday the next tab used to be a Saturday with 0 rows the UI could
+            # not leave. Each day is asked of the one US calendar; a day it
+            # cannot name (``None``) falls out of the answer instead of being
+            # replaced by ``heute ± 1``. The keys stay DAY_PREV/DAY_TODAY/
+            # DAY_NEXT - only the dates they point at change.
+            tag_prev = last_trading_day_before(heute)
+            tag_today = heute if is_us_trading_day(heute) else next_trading_day_after(heute)
+            tag_next = next_trading_day_after(tag_today) if tag_today is not None else None
             tage = {
-                DAY_PREV: (heute - timedelta(days=1)).isoformat(),
-                DAY_TODAY: heute.isoformat(),
-                DAY_NEXT: (heute + timedelta(days=1)).isoformat(),
+                key: tag.isoformat()
+                for key, tag in ((DAY_PREV, tag_prev), (DAY_TODAY, tag_today), (DAY_NEXT, tag_next))
+                if tag is not None
             }
             antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
             roh = antwort.get("days") if isinstance(antwort, dict) else None
@@ -1580,7 +1638,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 gruppen.append(dict(
                     gruppe,
                     rows=zeilen,
-                    label=_CALENDAR_DAY_LABEL.get(gruppe["key"], ""),
+                    label=_calendar_day_label(gruppe["date"], heute_iso) or "",
                     date_text=_german_date(gruppe["date"]),
                     short_day=_short_day(gruppe["date"]),
                     counter=f"{len(zeilen)} von {gruppe['total']}",

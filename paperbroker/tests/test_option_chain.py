@@ -47,6 +47,7 @@ from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
     CboeNotFoundError,
     CBOEQuoteAdapter,
     CboeRequestError,
+    CboeUnusableChainError,
 )
 from paperbroker.option_chain_api import SCHEMA_VERSION, listed_expirations, serialise_snapshot
 from paperbroker.server import create_app
@@ -899,6 +900,39 @@ class TestErrorContract(_ChainTestCase):
         _, client = self._app_and_client(adapter)
         res = self._chain(client, ticker="TST")
         self._assert_error(res, 503, "market_data_unavailable", "timeout")
+
+    def test_an_unusable_chain_reads_as_chain_unreadable(self):
+        """A delivered chain with no buildable contract is no unknown symbol.
+
+        CboeUnusableChainError is a CboeRequestError subclass, so the order of
+        the two handlers decides: without its own branch the caller would get
+        the generic outage code, and with only the not-found branch (the state
+        before this fix) a 404 "unknown_symbol" for a ticker the source had
+        just answered for.
+        """
+        adapter = _FakeChainAdapter(
+            error=CboeUnusableChainError("all 2 contracts of TST unusable", attempts=2))
+        _, client = self._app_and_client(adapter)
+        res = self._chain(client, ticker="TST")
+        body = self._body(res, 503)
+        self.assertEqual(body["error"]["code"], "chain_unreadable")
+        self.assertNotEqual(body["error"]["code"], "unknown_symbol")
+        self.assertNotEqual(body["error"]["code"], "market_data_unavailable")
+        self.assertEqual(body["schema_version"], SCHEMA_VERSION)
+        # the exception text stays a log detail
+        self.assertNotIn("all 2 contracts", res.get_data(as_text=True))
+
+    def test_a_real_unknown_symbol_keeps_its_404(self):
+        """The distinction must not flatten both cases into one code."""
+        unbekannt = _FakeChainAdapter(error=CboeNotFoundError("ZZZQ"))
+        unbrauchbar = _FakeChainAdapter(
+            error=CboeUnusableChainError("all 2 contracts of ZZZQ unusable"))
+        _, client_a = self._app_and_client(unbekannt)
+        _, client_b = self._app_and_client(unbrauchbar)
+        res_a = self._chain(client_a, ticker="ZZZQ")
+        res_b = self._chain(client_b, ticker="ZZZQ")
+        self._assert_error(res_a, 404, "unknown_symbol", "real unknown symbol")
+        self._assert_error(res_b, 503, "chain_unreadable", "delivered but unusable chain")
 
     def test_a_failed_source_never_reaches_the_serializer(self):
         adapter = _FakeChainAdapter(records=_messy_records(),

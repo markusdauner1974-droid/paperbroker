@@ -11,12 +11,15 @@ import unittest
 import arrow
 
 from paperbroker.adapters.earnings.NasdaqEarningsAdapter import NullEarningsAdapter
+from paperbroker.earnings_day_calendar import DAY_NEXT, DAY_PREV, DAY_TODAY
 from paperbroker.server import create_app
 
-# 2026-11-08 12:00 UTC is 07:00 in New York - the US calendar day is still the 8th.
-CLOCK = lambda: arrow.get("2026-11-08T12:00:00Z")  # noqa: E731
+# 2026-11-13 12:00 UTC is 07:00 in New York - the US calendar day is still the 13th.
+# A Friday on purpose: it is the day the tabs used to promise a Saturday, and the
+# trading-day tabs around it are Thursday / Friday / Monday.
+CLOCK = lambda: arrow.get("2026-11-13T12:00:00Z")  # noqa: E731
 
-STAMP = "2026-11-08T06:00:00Z"
+STAMP = "2026-11-13T06:00:00Z"
 
 
 def _row(symbol, cap=1000, session="before_market", eps="$1.41"):
@@ -149,23 +152,25 @@ class TestCalendarBlock(unittest.TestCase):
     def test_the_start_page_shows_three_groups_with_dates(self):
         # C1
         kalender = _FakeCalendar({
-            "2026-11-07": [_row("AAA")],
-            "2026-11-08": [_row("BBB")],
-            "2026-11-09": [_row("CCC")],
+            "2026-11-12": [_row("AAA")],
+            "2026-11-13": [_row("BBB")],
+            "2026-11-16": [_row("CCC")],
         })
         antwort = _client(kalender).get("/")
         html = antwort.get_data(as_text=True)
         self.assertEqual(antwort.status_code, 200)
         self.assertIn("Earnings-Kalender", html)
         self.assertEqual(html.count('class="cal-group"'), 3)
-        for tag in ("07.11.2026", "08.11.2026", "09.11.2026"):
+        for tag in ("12.11.2026", "13.11.2026", "16.11.2026"):
             self.assertIn(tag, html)
-        for label in ("gestern", "heute", "morgen"):
+        # The words are used where they are literally true; the third tab is a
+        # Monday, so it names itself instead of promising "morgen".
+        for label in ("gestern · Do 12.11.", "heute · Fr 13.11.", "Mo 16.11."):
             self.assertIn(label, html)
 
     def test_a_row_links_to_the_start_page_with_the_ticker(self):
         # C2
-        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]})
+        kalender = _FakeCalendar({"2026-11-13": [_row("AAPL")]})
         html = _client(kalender).get("/").get_data(as_text=True)
         self.assertIn('href="/?ticker=AAPL#screener-form"', html)
         self.assertIn('id="screener-form"', html)
@@ -174,7 +179,7 @@ class TestCalendarBlock(unittest.TestCase):
     def test_only_the_top_25_are_linked_and_the_total_is_named(self):
         # C3
         rows = [_row(f"{chr(65 + i // 26)}{chr(65 + i % 26)}", cap=(40 - i) * 1000) for i in range(40)]
-        kalender = _FakeCalendar({"2026-11-08": rows})
+        kalender = _FakeCalendar({"2026-11-13": rows})
         html = _client(kalender).get("/").get_data(as_text=True)
         self.assertEqual(html.count('href="/?ticker='), 25)
         self.assertIn("25 von 40", html)
@@ -191,7 +196,7 @@ class TestCalendarBlock(unittest.TestCase):
 
     def test_healthz_never_touches_the_calendar(self):
         # C5
-        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]})
+        kalender = _FakeCalendar({"2026-11-13": [_row("AAPL")]})
         client = _client(kalender)
         antwort = client.get("/healthz")
         self.assertEqual(antwort.status_code, 200)
@@ -211,10 +216,10 @@ class TestCalendarBlock(unittest.TestCase):
     def test_the_source_line_carries_the_timestamp(self):
         html = _client().get("/").get_data(as_text=True)
         self.assertIn("Quelle: Nasdaq", html)
-        self.assertIn("Stand 08.11.2026 06:00 UTC", html)
+        self.assertIn("Stand 13.11.2026 06:00 UTC", html)
 
     def test_a_stale_calendar_is_labelled_as_the_last_known_state(self):
-        kalender = _FakeCalendar({"2026-11-08": [_row("AAA")]}, state="stale")
+        kalender = _FakeCalendar({"2026-11-13": [_row("AAA")]}, state="stale")
         html = _client(kalender).get("/").get_data(as_text=True)
         self.assertIn("letzter Stand, Quelle antwortet nicht", html)
 
@@ -234,7 +239,7 @@ class TestCalendarBlock(unittest.TestCase):
         # assertion pass for the wrong reason.
         for wert in ("0", "false", ""):
             with self.subTest(wert=wert):
-                kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]})
+                kalender = _FakeCalendar({"2026-11-13": [_row("AAPL")]})
                 html = _client(kalender).get(f"/?no_calendar={wert}").get_data(as_text=True)
                 self.assertNotIn('id="cal-title"', html)
                 self.assertNotIn('class="cal"', html)
@@ -253,8 +258,8 @@ class TestCalendarDayOutages(unittest.TestCase):
     def test_one_failed_day_is_labelled_and_the_other_two_stay_as_they_were(self):
         rows = [_row(f"SY{i:02d}", cap=241 - i) for i in range(241)]
         kalender = _FakeCalendar(
-            {"2026-11-07": [_row("AAA")], "2026-11-09": rows},
-            state_by_day={"2026-11-08": "unavailable"},
+            {"2026-11-12": [_row("AAA")], "2026-11-16": rows},
+            state_by_day={"2026-11-13": "unavailable"},
         )
         html = _client(kalender).get("/").get_data(as_text=True)
 
@@ -271,21 +276,21 @@ class TestCalendarDayOutages(unittest.TestCase):
         self.assertIn("1 von 1", gestern)
         self.assertNotIn("Tag nicht abrufbar", gestern)
 
-        morgen = _group(html, "morgen")
-        self.assertIn("25 von 241", morgen)
-        self.assertNotIn("Tag nicht abrufbar", morgen)
-        self.assertNotIn("keine Einträge", morgen)
+        montag = _group(html, "Mo 16.11.")
+        self.assertIn("25 von 241", montag)
+        self.assertNotIn("Tag nicht abrufbar", montag)
+        self.assertNotIn("keine Einträge", montag)
 
         # The header names the single outage and does not claim a stale answer.
         self.assertIn("ein Tag konnte nicht abgerufen werden", html)
         self.assertNotIn("letzter Stand, Quelle antwortet nicht", html)
         self.assertLess(html.index("ein Tag konnte nicht abgerufen werden"), html.index('class="cal-groups"'))
 
-    def test_two_answered_empty_weekend_days_carry_no_warning(self):
-        # Regression against a standing warning: on a Saturday/Sunday the two
-        # empty days ARE the answer, and only "keine Einträge" may be shown.
+    def test_two_answered_empty_days_carry_no_warning(self):
+        # Regression against a standing warning: an empty answered day IS the
+        # answer, and only "keine Einträge" may be shown for it.
         rows = [_row(f"SY{i:02d}", cap=241 - i) for i in range(241)]
-        kalender = _FakeCalendar({"2026-11-09": rows})
+        kalender = _FakeCalendar({"2026-11-16": rows})
         html = _client(kalender).get("/").get_data(as_text=True)
 
         self.assertEqual(html.count("keine Einträge"), 2)
@@ -293,12 +298,12 @@ class TestCalendarDayOutages(unittest.TestCase):
         self.assertNotIn("konnte nicht abgerufen werden", html)
         self.assertNotIn("antwortet nicht", html)
         self.assertIn("25 von 241", html)
-        self.assertIn("Quelle: Nasdaq · Stand 08.11.2026 06:00 UTC</p>", html)
+        self.assertIn("Quelle: Nasdaq · Stand 13.11.2026 06:00 UTC</p>", html)
 
     def test_a_stale_day_shows_its_rows_and_is_named_as_the_last_state(self):
         kalender = _FakeCalendar(
-            {"2026-11-07": [_row("AAA")], "2026-11-08": [_row("BBB")], "2026-11-09": [_row("CCC")]},
-            state_by_day={"2026-11-07": "stale"},
+            {"2026-11-12": [_row("AAA")], "2026-11-13": [_row("BBB")], "2026-11-16": [_row("CCC")]},
+            state_by_day={"2026-11-12": "stale"},
         )
         html = _client(kalender).get("/").get_data(as_text=True)
 
@@ -312,8 +317,8 @@ class TestCalendarDayOutages(unittest.TestCase):
 
     def test_a_failed_and_a_stale_day_are_named_in_one_header(self):
         kalender = _FakeCalendar(
-            {"2026-11-09": [_row("CCC")]},
-            state_by_day={"2026-11-07": "stale", "2026-11-08": "unavailable"},
+            {"2026-11-16": [_row("CCC")]},
+            state_by_day={"2026-11-12": "stale", "2026-11-13": "unavailable"},
         )
         html = _client(kalender).get("/").get_data(as_text=True)
 
@@ -342,8 +347,8 @@ class TestCalendarDayOutages(unittest.TestCase):
         block = {"code": "source_blocked", "http_status": 403,
                  "message": "the source blocked this client with HTTP 403"}
         kalender = _FakeCalendar({}, state="unavailable",
-                                 error_by_day={"2026-11-07": block, "2026-11-08": block,
-                                               "2026-11-09": block})
+                                 error_by_day={"2026-11-12": block, "2026-11-13": block,
+                                               "2026-11-16": block})
         html = _client(kalender).get("/").get_data(as_text=True)
 
         self.assertIn("Quelle antwortet nicht", html)
@@ -352,14 +357,14 @@ class TestCalendarDayOutages(unittest.TestCase):
             html.count("Tag nicht abrufbar · Quelle blockt die Anfrage (HTTP 403)"), 3)
         # Nothing to scan stays nothing to scan: the button keeps its disabled
         # state and its own title.
-        self.assertEqual(html.count('data-scan-day="2026-11-08" disabled'), 1)
+        self.assertEqual(html.count('data-scan-day="2026-11-13" disabled'), 1)
 
     def test_one_blocked_day_names_its_reason_once_next_to_the_partial_sentence(self):
         block = {"code": "source_blocked", "http_status": 403,
                  "message": "the source blocked this client with HTTP 403"}
-        kalender = _FakeCalendar({"2026-11-07": [_row("AAA")], "2026-11-09": [_row("CCC")]},
-                                 state="live", state_by_day={"2026-11-08": "unavailable"},
-                                 error_by_day={"2026-11-08": block})
+        kalender = _FakeCalendar({"2026-11-12": [_row("AAA")], "2026-11-16": [_row("CCC")]},
+                                 state="live", state_by_day={"2026-11-13": "unavailable"},
+                                 error_by_day={"2026-11-13": block})
         html = _client(kalender).get("/").get_data(as_text=True)
 
         self.assertIn("ein Tag konnte nicht abgerufen werden", html)
@@ -370,8 +375,8 @@ class TestCalendarDayOutages(unittest.TestCase):
     def test_a_day_the_answer_omits_is_an_outage_not_an_empty_day(self):
         # The adapter's answer simply has no entry for yesterday: absence of an
         # answer is no answer - it may not be rendered as a day without rows.
-        kalender = _FakeCalendar({"2026-11-08": [_row("BBB")], "2026-11-09": [_row("CCC")]},
-                                 omit=("2026-11-07",))
+        kalender = _FakeCalendar({"2026-11-13": [_row("BBB")], "2026-11-16": [_row("CCC")]},
+                                 omit=("2026-11-12",))
         html = _client(kalender).get("/").get_data(as_text=True)
 
         self.assertIn("Tag nicht abrufbar", _group(html, "gestern"))
@@ -390,9 +395,9 @@ class TestCalendarTabs(unittest.TestCase):
 
     def _html(self, **kwargs):
         rows = {
-            "2026-11-07": [_row("AAA", cap=30)],
-            "2026-11-08": [_row("BBB", cap=20), _row("CCC", cap=10)],
-            "2026-11-09": [_row("DDD", cap=5)],
+            "2026-11-12": [_row("AAA", cap=30)],
+            "2026-11-13": [_row("BBB", cap=20), _row("CCC", cap=10)],
+            "2026-11-16": [_row("DDD", cap=5)],
         }
         rows.update(kwargs.pop("rows", {}))
         option_symbols = kwargs.pop("option_symbols", ["AAA", "BBB", "CCC", "DDD"])
@@ -404,19 +409,44 @@ class TestCalendarTabs(unittest.TestCase):
         # E1
         html = self._html()
         self.assertEqual(len(re.findall(r'<button[^>]*class="cal-tab[^"]*"[^>]*data-day=', html)), 3)
-        for tag in ("2026-11-07", "2026-11-08", "2026-11-09"):
+        for tag in ("2026-11-12", "2026-11-13", "2026-11-16"):
             self.assertIn(f'data-day="{tag}"', html)
         # Label + weekday/date + the number of optionable titles of that day.
-        self.assertRegex(html, r'data-day="2026-11-07"[^>]*>[^<]*gestern[^<]*· 1<')
-        self.assertRegex(html, r'data-day="2026-11-08"[^>]*>[^<]*heute[^<]*· 2<')
-        self.assertRegex(html, r'data-day="2026-11-09"[^>]*>[^<]*morgen[^<]*· 1<')
+        self.assertRegex(html, r'data-day="2026-11-12"[^>]*>[^<]*gestern[^<]*· 1<')
+        self.assertRegex(html, r'data-day="2026-11-13"[^>]*>[^<]*heute[^<]*· 2<')
+        self.assertRegex(html, r'data-day="2026-11-16"[^>]*>[^<]*Mo 16\.11\.[^<]*· 1<')
+
+    def test_a_friday_offers_thursday_and_monday_never_the_weekend(self):
+        """Measured: on a Friday the third tab read "morgen · Sa 14.11. · 0".
+
+        The three tabs are trading days. Asked for a Friday the page must ask
+        the source for Thursday / Friday / Monday - the weekend never reaches
+        the source and never reaches the page.
+        """
+        kalender = _FakeCalendar({})
+        html = _client(kalender).get("/").get_data(as_text=True)
+
+        self.assertEqual(kalender.last_days, {
+            DAY_PREV: "2026-11-12",     # Donnerstag
+            DAY_TODAY: "2026-11-13",    # Freitag
+            DAY_NEXT: "2026-11-16",     # Montag
+        })
+        for tag in ("2026-11-12", "2026-11-13", "2026-11-16"):
+            self.assertIn(f'data-day="{tag}"', html)
+        for wochenende in ("2026-11-14", "2026-11-15", "Sa 14.11.", "So 15.11."):
+            self.assertNotIn(wochenende, html)
+        # The label says "gestern" for the Thursday (it really is yesterday)
+        # and names the Monday by date - it is not tomorrow.
+        self.assertIn("gestern · Do 12.11.", html)
+        self.assertIn("Mo 16.11.", html)
+        self.assertNotIn("morgen ·", html)
 
     def test_exactly_one_day_body_is_visible_and_it_is_today(self):
         # E2
         html = self._html()
         self.assertEqual(html.count('class="cal-body show"'), 1)
         self.assertEqual(html.count('class="cal-body"'), 2)   # the two hidden ones
-        self.assertRegex(html, r'<div class="cal-body show"[^>]*data-day="2026-11-08"')
+        self.assertRegex(html, r'<div class="cal-body show"[^>]*data-day="2026-11-13"')
 
     def test_the_table_has_a_real_column_head(self):
         # E3
@@ -452,7 +482,7 @@ class TestCalendarOptionFilter(unittest.TestCase):
     def test_hidden_titles_are_counted_and_not_linked(self):
         # E6
         kalender = _FakeCalendar(
-            {"2026-11-08": [_row("AAPL", cap=2000), _row("IX", cap=5000)]},
+            {"2026-11-13": [_row("AAPL", cap=2000), _row("IX", cap=5000)]},
             option_symbols=["AAPL"],
             option_state="live",
         )
@@ -461,11 +491,11 @@ class TestCalendarOptionFilter(unittest.TestCase):
         self.assertNotIn('data-symbol="IX"', html)
         self.assertNotIn('href="/?ticker=IX#screener-form"', html)
         # The tab counter names the optionable total, not the raw day list.
-        self.assertRegex(html, r'data-day="2026-11-08"[^>]*>[^<]*· 1<')
+        self.assertRegex(html, r'data-day="2026-11-13"[^>]*>[^<]*· 1<')
 
     def test_an_unavailable_list_says_unfiltered_and_names_no_number(self):
         # E7
-        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL"), _row("IX")]})
+        kalender = _FakeCalendar({"2026-11-13": [_row("AAPL"), _row("IX")]})
         html = _client(kalender).get("/").get_data(as_text=True)
         note = _filter_note(html)
         self.assertIn("ungefiltert", note)
@@ -475,7 +505,7 @@ class TestCalendarOptionFilter(unittest.TestCase):
 
     def test_a_broken_option_list_does_not_break_the_page(self):
         # E8
-        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]}, option_boom=True)
+        kalender = _FakeCalendar({"2026-11-13": [_row("AAPL")]}, option_boom=True)
         antwort = _client(kalender).get("/")
         html = antwort.get_data(as_text=True)
         self.assertEqual(antwort.status_code, 200)
@@ -486,18 +516,18 @@ class TestCalendarOptionFilter(unittest.TestCase):
     def test_a_stale_list_filters_and_says_it_is_the_last_state(self):
         # E9
         kalender = _FakeCalendar(
-            {"2026-11-08": [_row("AAPL"), _row("IX")]},
+            {"2026-11-13": [_row("AAPL"), _row("IX")]},
             option_symbols=["AAPL"],
             option_state="stale",
         )
         html = _client(kalender).get("/").get_data(as_text=True)
         self.assertIn("Options-Liste aus letztem Stand", html)
-        self.assertIn("Options-Liste: Stand 08.11.2026 06:00 UTC", html)
+        self.assertIn("Options-Liste: Stand 13.11.2026 06:00 UTC", html)
         self.assertNotIn('data-symbol="IX"', html)
 
     def test_healthz_never_touches_the_option_list(self):
         # E10
-        kalender = _FakeCalendar({"2026-11-08": [_row("AAPL")]})
+        kalender = _FakeCalendar({"2026-11-13": [_row("AAPL")]})
         client = _client(kalender)
         self.assertEqual(client.get("/healthz").status_code, 200)
         self.assertEqual(kalender.option_calls, 0)
@@ -506,8 +536,8 @@ class TestCalendarOptionFilter(unittest.TestCase):
 class TestCalendarDefaultDay(unittest.TestCase):
     """The tab the page opens on must be the first day that has content.
 
-    A hard-wired "today" opens an empty tab on a weekend while the next day
-    lists everything - the block's only content would sit behind a tab the
+    A hard-wired "today" opens an empty tab while the next day lists
+    everything - the block's only content would sit behind a tab the
     reader never clicks. These tests pin the rule on the rendered markup,
     because that is what a reader sees: exactly one ``is-active`` tab and
     exactly one visible body, both on the same day.
@@ -538,48 +568,48 @@ class TestCalendarDefaultDay(unittest.TestCase):
         self.assertRegex(html, rf'<button[^>]*class="cal-tab is-active"[^>]*data-day="{tag}"[^>]*aria-selected="true"')
 
     def test_an_empty_today_yields_to_the_next_day_with_rows(self):
-        # The measured weekend case: 0 titles today, 191 tomorrow.
+        # The measured case: 0 titles today, 191 on the next trading day.
         rows = [_row(f"SY{i:02d}", cap=1000 - i) for i in range(191)]
-        kalender = _FakeCalendar({"2026-11-09": rows})
+        kalender = _FakeCalendar({"2026-11-16": rows})
         html = self._html(kalender)
 
-        self._assert_opens_on(html, "2026-11-09")
+        self._assert_opens_on(html, "2026-11-16")
         # The content is in the opened body, not merely reachable.
         self.assertIn('href="/?ticker=SY00#screener-form"', html)
         self.assertIn("keine Einträge", _group(html, "heute"))
-        self.assertIn("25 von 191", _group(html, "morgen"))
+        self.assertIn("25 von 191", _group(html, "Mo 16.11."))
 
     def test_a_today_with_rows_stays_the_default(self):
         # Regression: the rule must not prefer an earlier day that has rows.
-        kalender = _FakeCalendar({"2026-11-07": [_row("AAA")],
-                                  "2026-11-08": [_row("BBB")],
-                                  "2026-11-09": [_row("CCC")]})
-        self._assert_opens_on(self._html(kalender), "2026-11-08")
+        kalender = _FakeCalendar({"2026-11-12": [_row("AAA")],
+                                  "2026-11-13": [_row("BBB")],
+                                  "2026-11-16": [_row("CCC")]})
+        self._assert_opens_on(self._html(kalender), "2026-11-13")
 
     def test_an_empty_prev_day_yields_to_today(self):
         # Order check in the other direction: prev is only the fallback when
         # today is empty, never the default merely because it has rows.
-        kalender = _FakeCalendar({"2026-11-07": [_row("AAA")],
-                                  "2026-11-08": [_row("BBB")]})
-        self._assert_opens_on(self._html(kalender), "2026-11-08")
+        kalender = _FakeCalendar({"2026-11-12": [_row("AAA")],
+                                  "2026-11-13": [_row("BBB")]})
+        self._assert_opens_on(self._html(kalender), "2026-11-13")
 
     def test_three_empty_days_keep_today_as_the_default(self):
         # No content anywhere: the page still opens on "heute", it does not
         # raise and it does not leave every body hidden.
         kalender = _FakeCalendar({})
         html = self._html(kalender)
-        self._assert_opens_on(html, "2026-11-08")
+        self._assert_opens_on(html, "2026-11-13")
         self.assertEqual(html.count("keine Einträge"), 3)
 
     def test_a_failed_today_never_becomes_the_default(self):
         # "unavailable" is no answer, not an empty day: tomorrow's rows must
         # win, and the failed tab must not look active.
         kalender = _FakeCalendar(
-            {"2026-11-09": [_row("CCC")]},
-            state_by_day={"2026-11-08": "unavailable"},
+            {"2026-11-16": [_row("CCC")]},
+            state_by_day={"2026-11-13": "unavailable"},
         )
         html = self._html(kalender)
-        self._assert_opens_on(html, "2026-11-09")
+        self._assert_opens_on(html, "2026-11-16")
         self.assertIn("Tag nicht abrufbar", _group(html, "heute"))
 
 

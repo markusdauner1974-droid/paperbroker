@@ -17,7 +17,11 @@ from paperbroker.adapters.earnings.NasdaqEarningsAdapter import (
     NasdaqEarningsAdapter,
     OptionableSymbolsStore,
 )
-from paperbroker.adapters.quotes.CBOEQuoteAdapter import CboeRequestError
+from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
+    CboeNotFoundError,
+    CboeRequestError,
+    CboeUnusableChainError,
+)
 from paperbroker.earnings_calendar import (
     CONFIRMATION_ESTIMATED,
     FLAG_SOURCE_NOT_CONFIGURED,
@@ -71,8 +75,10 @@ class _ChainAdapter:
 
     EXPIRATIONS = ["2026-10-30", "2026-11-20"]
 
-    def __init__(self, fail=False):
+    def __init__(self, fail=False, error=None):
         self.fail = fail
+        #: A specific failure to raise instead of the canned outage.
+        self.error = error
 
     def get_expiration_dates(self, underlying_asset=None):
         return list(self.EXPIRATIONS)
@@ -84,6 +90,8 @@ class _ChainAdapter:
         return None
 
     def get_option_chain_snapshot(self, underlying_asset=None):
+        if self.error is not None:
+            raise self.error
         if self.fail:
             raise CboeRequestError("feed down")
         return {
@@ -258,6 +266,37 @@ class TestEarningsWindowRoute(unittest.TestCase):
         self.assertEqual(koerper["expirations"]["listed"], [])
         self.assertFalse(koerper["decision"]["eligible"])
         self.assertIn("expirations_unavailable", [g["code"] for g in koerper["decision"]["reasons"]])
+
+    def test_an_unusable_chain_is_not_an_unknown_symbol(self):
+        """The source answered; only its rows could not be mapped.
+
+        Reported as "unknown_symbol" this claimed the ticker is unlisted - the
+        opposite of what happened. The status has to name the real case while
+        the decision keeps blocking (no guessed expiration).
+        """
+        kette = _ChainAdapter(error=CboeUnusableChainError(
+            "all 2 contracts of AAPL unusable", attempts=2))
+        koerper = _client(chain=kette).get(
+            "/api/v1/earnings-window?ticker=AAPL"
+        ).get_json()
+        self.assertEqual(koerper["chain"]["status"], "chain_unreadable")
+        self.assertNotEqual(koerper["chain"]["status"], "unknown_symbol")
+        self.assertNotEqual(koerper["chain"]["status"], "market_data_unavailable")
+        self.assertFalse(koerper["chain"]["expirations_read"])
+        self.assertEqual(koerper["expirations"]["listed"], [])
+        self.assertIsNone(koerper["expirations"]["selected"])
+        self.assertFalse(koerper["decision"]["eligible"])
+        self.assertIn("expirations_unavailable",
+                      [g["code"] for g in koerper["decision"]["reasons"]])
+
+    def test_a_really_unknown_symbol_still_reads_unknown_symbol(self):
+        """Fail closed on the distinction: 404 keeps its own status word."""
+        kette = _ChainAdapter(error=CboeNotFoundError("No asset for AAPL"))
+        koerper = _client(chain=kette).get(
+            "/api/v1/earnings-window?ticker=AAPL"
+        ).get_json()
+        self.assertEqual(koerper["chain"]["status"], "unknown_symbol")
+        self.assertFalse(koerper["decision"]["eligible"])
 
     def test_a_past_earnings_date_blocks(self):
         koerper = _client(earnings=_FakeEarnings(_earnings_body(datum="2026-10-01"))).get(
