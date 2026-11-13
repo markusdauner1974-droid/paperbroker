@@ -246,6 +246,48 @@ def entry_of(body, symbol):
     raise AssertionError(f"{symbol} is not in the answer")
 
 
+class TestAReportTodayCostsNoChain(unittest.TestCase):
+    """Measured 2026-11-13: 32 chain requests, 5.5 s, for 32 rows the window
+    blocked afterwards. The calendar settles those rows before any quote."""
+
+    def test_a_report_today_is_named_and_the_chain_is_not_requested(self):
+        rows = [calendar_row("SY00", 30), calendar_row("SY01", 20)]
+        adapter = FakeChainAdapter({})
+        koerper = run_scan({}, rows, adapter=adapter, day=TODAY.isoformat())
+
+        self.assertEqual(adapter.calls, [])          # not one chain request
+        for symbol in ("SY00", "SY01"):
+            eintrag = entry_of(koerper, symbol)
+            self.assertEqual(eintrag["status"], STATUS_WINDOW_BLOCKED)
+            self.assertFalse(eintrag["data"]["chain_requested"])
+            self.assertIsNone(eintrag["data"]["chain_contracts"])
+            self.assertEqual(eintrag["data"]["chain_note"],
+                             "nicht geladen (Fenster verhindert)")
+            self.assertEqual(eintrag["window"]["reasons"][0]["code"], "earnings_today")
+            self.assertIn("Bericht ist heute", eintrag["exclusion"]["message"])
+            self.assertIsNone(eintrag["window"]["selected_expiration"])
+        self.assertEqual(koerper["coverage"]["source_calls"], {"earnings": 0, "chains": 0})
+        self.assertEqual(koerper["counts"][STATUS_WINDOW_BLOCKED], 2)
+
+    def test_a_past_report_keeps_its_own_date_reason_and_also_costs_no_chain(self):
+        adapter = FakeChainAdapter({})
+        koerper = run_scan({}, [calendar_row("OLD", 10)], adapter=adapter,
+                           day="2026-10-06")
+        eintrag = entry_of(koerper, "OLD")
+        self.assertEqual(adapter.calls, [])
+        codes = [g["code"] for g in eintrag["window"]["reasons"]]
+        self.assertIn("exit_day_in_past", codes)
+        self.assertNotIn("earnings_today", codes)
+
+    def test_a_future_report_still_reads_the_chain(self):
+        # The precheck must not become a general "skip the chain" switch.
+        kette = call_pair("AAPL", EXP_A)
+        adapter = FakeChainAdapter({"AAPL": kette})
+        koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 10)], adapter=adapter)
+        self.assertEqual([c[0] for c in adapter.calls], ["AAPL"])
+        self.assertTrue(entry_of(koerper, "AAPL")["data"]["chain_requested"])
+
+
 class TestTheScanCoversTheDay(unittest.TestCase):
     """Several tickers, several expiries, all four strategies."""
 
@@ -920,20 +962,25 @@ class TestTheScannedDaySuppliesTheRecord(unittest.TestCase):
         self.assertEqual(entry_of(koerper, "MSFT")["status"], STATUS_HITS)
         self.assertEqual(koerper["coverage"]["processed"], 1)
 
-    def test_the_running_day_blocks_at_the_past_exit_day(self):
+    def test_the_running_day_is_named_as_the_report_today(self):
         # The rule, not a bug: the planned exit day is the last trading day
         # STRICTLY before the report, so a title reporting today can no longer
-        # be entered - and that is a verdict, not "we do not know".
+        # be entered - and that is a verdict, not "we do not know". The cause is
+        # named ("report today"), the past exit day is its consequence - and the
+        # chain that cannot change the answer is not requested at all.
         rows = [calendar_row("AAPL", 30)]
+        adapter = FakeChainAdapter({"AAPL": call_pair("AAPL", EXP_A)})
         koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
-                           day=TODAY.isoformat())
+                           adapter=adapter, day=TODAY.isoformat())
         aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(adapter.calls, [])
         self.assertEqual(aapl["status"], STATUS_WINDOW_BLOCKED)
         self.assertEqual(aapl["window"]["status"], "blocked")
         self.assertEqual(aapl["window"]["planned_last_exit_date"], "2026-10-06")
         self.assertEqual(aapl["window"]["remaining_trading_days"], 0)
         self.assertEqual([g["code"] for g in aapl["window"]["reasons"]],
-                         ["exit_day_in_past"])
+                         ["earnings_today"])
+        self.assertIn("Bericht ist heute", aapl["exclusion"]["message"])
         self.assertEqual(aapl["exclusion"]["code"], "earnings_window_blocked")
 
     def test_no_row_of_a_scanned_day_is_window_unknown(self):

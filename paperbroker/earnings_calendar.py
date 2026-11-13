@@ -74,6 +74,10 @@ REASON_TEXT = {
     "earnings_data_stale": "Der Earnings-Nachweis ist zu alt - er darf keinen Handel freigeben.",
     "earnings_status_unknown": "Der Prüfstatus des Earnings-Eintrags ist unbekannt - ohne belegten Status keine Freigabe.",
     "earnings_status_unrecognised": "Der Prüfstatus ist ein unbekannter Wert - keine Freigabe.",
+    # Cause before consequence: a report TODAY is why the exit day is already
+    # past. The derived date reasons below stay for the cases where the report
+    # was yesterday or earlier.
+    "earnings_today": "Der Bericht ist heute — ein Einstieg vor dem Termin ist nicht mehr möglich.",
     "earnings_date_in_past": "Der Earnings-Termin liegt in der Vergangenheit.",
     "date_confirmation_unknown": "Der Termin ist weder bestätigt noch als Schätzung belegt.",
     "expirations_unavailable": "Die gelisteten Verfallstermine konnten nicht gelesen werden.",
@@ -99,6 +103,20 @@ UNKNOWN_REASONS = frozenset({
 })
 
 EXIT_RULE = "letzter US-Handelstag strikt vor dem Earnings-Termin"
+
+# --- precheck: what the record alone can settle --------------------------- #
+# Reasons about a CHAIN, not about the record. A precheck reads no chain, so
+# these are not findings there - the row says "not loaded" instead of claiming
+# the chain was unreadable, empty or carried nothing after the report.
+_CHAIN_DEPENDENT_REASONS = frozenset({
+    "expirations_unavailable",
+    "no_expirations_listed",
+    "no_listed_expiration_after_earnings",
+})
+
+#: Reason codes that close the window from the calendar alone. No chain and no
+#: listed expiration can reopen them.
+_CLOSED_BY_CALENDAR = ("earnings_today", "earnings_date_in_past", "exit_day_in_past")
 
 _US_DATE_RE = re.compile(r"(\d{1,2})/(\d{1,2})/(\d{4})")
 _ESTIMATE_RE = re.compile(r"expected\s*\*|\*\s*(?:for|to)\b|is\s+estimated|are\s+estimated|derived\s+from\s+an\s+algorithm")
@@ -645,6 +663,56 @@ def combine_earnings_and_expirations(earnings, expirations, *, today):
         },
         "as_of": today.isoformat() if isinstance(today, date) else None,
     }
+
+
+def window_precheck(earnings, today):
+    """The window as the RECORD plus ``today`` decide it - before any chain read.
+
+    Built on ``combine_earnings_and_expirations`` with no expirations at all, so
+    there is exactly ONE window rule: the exit day, the past-date checks and the
+    status classes are not re-implemented here. What this wrapper drops is the
+    answer to a question nobody asked - with no chain read, "the chain lists
+    nothing" is not a finding. The chain-dependent reasons are removed and the
+    status is re-derived from the remaining codes with the same
+    ``UNKNOWN_REASONS`` rule the gate uses, so a new unknown reason cannot
+    silently turn into "blocked" here.
+
+    A report dated TODAY is named ``earnings_today`` instead of the derived
+    ``exit_day_in_past``: the exit day (the last trading day before the report)
+    lies in the past BECAUSE the report is today. The cause is named first; the
+    date reasons that follow are its consequence.
+
+    Returns the gate's shape with ``decision.precheck`` naming the verdict:
+    ``True`` when the calendar alone already closed the window - then no chain
+    request can change the answer - and ``False`` when the chain is still
+    needed. A precheck never authorises a window on its own.
+    """
+    fenster = combine_earnings_and_expirations(earnings, [], today=today)
+    entscheidung = dict(fenster["decision"])
+    gruende = [dict(g) for g in entscheidung["reasons"]
+               if g["code"] not in _CHAIN_DEPENDENT_REASONS]
+
+    bericht = earnings.get("next_earnings_date") if isinstance(earnings, dict) else None
+    heute = today.isoformat() if isinstance(today, date) else None
+    if heute is not None and isinstance(bericht, str) and bericht.strip() == heute:
+        gruende = [
+            {"code": "earnings_today", "message": REASON_TEXT["earnings_today"]}
+            if g["code"] == "exit_day_in_past" else g
+            for g in gruende
+        ]
+
+    codes = [g["code"] for g in gruende]
+    entschieden = any(code in _CLOSED_BY_CALENDAR for code in codes)
+    if not entschieden:
+        # The record alone says nothing final: the chain still decides.
+        status = "unknown"
+    elif any(code in UNKNOWN_REASONS for code in codes):
+        status = "unknown"
+    else:
+        status = "blocked"
+    entscheidung.update(eligible=False, status=status, reasons=gruende,
+                        precheck=entschieden)
+    return dict(fenster, decision=entscheidung)
 
 
 def _notes(entscheidung, ausgewaehlt, termin, session, confirmation):

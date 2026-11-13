@@ -29,6 +29,7 @@ from paperbroker.earnings_calendar import (
     STATUS_STALE,
     STATUS_UNAVAILABLE,
     STATUS_UNKNOWN,
+    UNKNOWN_REASONS,
     combine_earnings_and_expirations,
     easter_sunday,
     empty_earnings,
@@ -40,6 +41,7 @@ from paperbroker.earnings_calendar import (
     parse_nasdaq_earnings_date,
     remaining_trading_days,
     us_market_holidays,
+    window_precheck,
 )
 
 TODAY = date(2026, 10, 24)
@@ -268,6 +270,41 @@ class TestTradingCalendar(unittest.TestCase):
         self.assertIsNone(next_trading_day_after("2026-11-13"))
         self.assertIsNone(next_trading_day_after(None))
         self.assertIsNone(next_trading_day_after(date(2026, 11, 13), max_lookahead_days=1))
+
+
+class TestWindowPrecheck(unittest.TestCase):
+    """What the record ALONE settles - the cheap half of the window decision."""
+
+    def test_a_report_today_is_named_before_the_date_reason_it_causes(self):
+        # The exit day (last trading day before the report) is already past
+        # BECAUSE the report is today. The cause is named, not its consequence.
+        ergebnis = window_precheck(_record(datum=TODAY.isoformat()), TODAY)
+        self.assertTrue(ergebnis["decision"]["precheck"])
+        self.assertEqual(_codes(ergebnis), ["earnings_today"])
+        self.assertEqual(ergebnis["decision"]["status"], "blocked")
+        self.assertFalse(ergebnis["decision"]["eligible"])
+        self.assertNotIn("earnings_today", UNKNOWN_REASONS)
+
+    def test_a_past_report_keeps_its_own_date_reason(self):
+        ergebnis = window_precheck(_record(datum="2026-10-20"), TODAY)
+        self.assertTrue(ergebnis["decision"]["precheck"])
+        self.assertIn("exit_day_in_past", _codes(ergebnis))
+        self.assertNotIn("earnings_today", _codes(ergebnis))
+
+    def test_a_future_report_leaves_the_window_to_the_chain_and_claims_nothing(self):
+        ergebnis = window_precheck(_record(datum="2026-11-02"), TODAY)
+        self.assertFalse(ergebnis["decision"]["precheck"])
+        self.assertFalse(ergebnis["decision"]["eligible"])
+        # No chain was read, so no chain reason is reported either.
+        self.assertEqual(_codes(ergebnis), [])
+        self.assertEqual(ergebnis["decision"]["status"], "unknown")
+
+    def test_the_chain_dependent_reasons_are_not_a_precheck_finding(self):
+        # An empty record cannot be closed by a calendar: it stays undecided.
+        ergebnis = window_precheck(empty_earnings("AAPL"), TODAY)
+        self.assertFalse(ergebnis["decision"]["precheck"])
+        for code in _codes(ergebnis):
+            self.assertNotIn(code, ("no_expirations_listed", "expirations_unavailable"))
 
 
 class TestWindowRule(unittest.TestCase):

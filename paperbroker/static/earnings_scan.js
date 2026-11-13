@@ -375,6 +375,13 @@
       tdData.textContent = 'keine Daten';
       tdData.className = 'st-unchecked';
       tdData.title = 'Für diese Aktie wurde keine Kette gelesen';
+    } else if (daten.chain_requested === false) {
+      // Die Kette wurde NICHT geladen, weil das Fenster schon vorher feststand
+      // (z. B. Bericht heute). "Kette leer/unbekannt" waere hier eine Aussage
+      // ueber eine Kette, die niemand gelesen hat - der Text nennt den Grund.
+      tdData.textContent = daten.chain_note || 'nicht geladen (Fenster verhindert)';
+      tdData.className = 'st-blocked';
+      tdData.title = 'Keine Kette gelesen: der Kettenabruf konnte das Fenster nicht mehr aendern';
     } else {
       var teile = [];
       if (daten.freshness) teile.push(FRESHNESS[daten.freshness] || daten.freshness);

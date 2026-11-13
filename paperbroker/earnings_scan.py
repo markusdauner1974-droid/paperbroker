@@ -61,6 +61,7 @@ from .earnings_calendar import (
     STATUS_STALE,
     combine_earnings_and_expirations,
     empty_earnings,
+    window_precheck,
 )
 from .earnings_day_calendar import rank_rows
 from .screener import MAX_PAIRS_PER_SECTION, STRATEGIES, STRATEGY_IDS, filter_stale, pair_search_report, vertical_spreads
@@ -685,6 +686,36 @@ def _scan_symbol(symbol, row, ctx):
         # Not reachable while the predicate and the gate share one rule. If they
         # ever drift, the entry takes the unchanged path below instead of
         # skipping a call it turns out to need.
+
+    # --- 1c. a window already closed by the CALENDAR costs no chain --------
+    # Measured 2026-11-13: a scan of "today" spent 32 chain requests in 5.5 s on
+    # rows that all failed the window afterwards, because the exit day (the last
+    # trading day before the report) is in the past the moment the report is
+    # today. The record and today settle that before any quote is read; the
+    # expired rows keep chain_requested=False and the gate's own window block.
+    vorab = window_precheck(earnings, ctx.today)
+    if vorab["decision"]["precheck"]:
+        eintrag["data"] = {
+            "earnings_status": earnings.get("status"),
+            "earnings_date": earnings.get("next_earnings_date"),
+            "earnings_source": earnings.get("source"),
+            "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
+            # A decision, not a failed read - and the UI says so in words.
+            "chain_requested": False,
+            "chain_contracts": None,
+            "chain_note": "nicht geladen (Fenster verhindert)",
+            "chain_skipped_contracts": None,
+            "chain_quote_timestamp_raw": None,
+            "chain_quote_timestamp_utc": None,
+            "chain_quote_zone": None,
+            "chain_quote_age_proven": False,
+            "chain_quote_age_minutes": None,
+            "freshness": _empty_freshness(ctx.criteria),
+            "completeness": "unknown",
+            "listed_expirations": [],
+        }
+        _apply_window(eintrag, vorab, [])
+        return eintrag
 
     # --- 2. the chain (ONE request covers every expiry of this underlying)
     try:
