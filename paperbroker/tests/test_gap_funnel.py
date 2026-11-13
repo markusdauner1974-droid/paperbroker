@@ -1,0 +1,618 @@
+"""Offline tests for the gap -> debit-spread funnel (GET /api/v1/gap-spreads).
+
+No test touches the network. The chain comes from ``OptionQuote`` objects built
+from real OCC symbols, the report dates from a dict, and the endpoint runs
+against fakes for all four sources (calendar, daily closes, chain, Finnhub).
+The screener's own arithmetic is not re-tested here - what is pinned is the
+FUNNEL: which expiry, which pair, which label, which reason.
+
+Pinned, in the order of the requirement:
+
+* an unsorted Finnhub answer yields the EARLIEST date at or after today
+  (``test_next_earnings.py`` owns the source; here the date arrives as a value),
+* the expiry is the first LISTED series strictly after the report - with the
+  measured fixture 2026-11-20 / 2026-12-18 / 2027-03-19 and a report on
+  2027-02-01 that is 2027-03-19, and a series ON the report day does not count,
+* the pair is the best reward/risk of the whole expiry: 1:1.8 loses against
+  1:2.3, a long-leg delta of 15 is out, a net debit of 0.40 USD is out,
+* open interest and bid-ask decide ``thin`` / ``full``, and 100 is the candidate
+  floor while 500 + a 10 % spread is the ``full`` floor,
+* the counters chain the stages and every excluded title names its reason,
+* the endpoint answers the agreed JSON contract, sorted by |gap_pct| descending,
+* a title without a report date costs NO chain request.
+"""
+
+import json
+import time
+import unittest
+from datetime import date, datetime, timedelta
+
+import arrow
+
+from paperbroker.assets import asset_factory
+from paperbroker.gap_funnel import (
+    DEFAULT_MIN_OI,
+    DEFAULT_RR_MIN,
+    LIQUIDITY_FULL,
+    LIQUIDITY_THIN,
+    REASON_NO_EXPIRY,
+    REASON_NO_NEXT_EARNINGS,
+    REASON_NO_SPREAD,
+    REASON_NOT_OPTIONABLE,
+    best_spread,
+    bid_ask_pct,
+    criteria_for,
+    expirations_in,
+    liquidity_of,
+    pick_expiration,
+    run_funnel,
+    slice_chain,
+)
+from paperbroker.gap_scan import GapBar
+from paperbroker.next_earnings import CODE_NO_API_KEY, NextEarningsError
+from paperbroker.quotes import OptionQuote
+from paperbroker.screener import BULL_CALL_DEBIT, VerticalPair
+from paperbroker.server import create_app
+
+NOW = lambda: arrow.get("2026-11-12T21:00:00Z")  # noqa: E731
+CLOCK = lambda: arrow.get("2026-11-14T21:00:00Z")  # noqa: E731
+DAY = "2026-11-12"
+PREVIOUS = "2026-11-11"
+REACTION = date(2026, 11, 12)
+BEFORE = date(2026, 11, 11)
+
+#: The measured expiry ladder of the requirement.
+LADDER = ("2026-11-20", "2026-12-18", "2027-03-19")
+
+
+# --- fixtures -------------------------------------------------------------- #
+def occ(symbol, expiry, option_type, strike):
+    """A real OCC symbol for one contract (the asset factory parses it back)."""
+    year, month, day = str(expiry).split("-")
+    kind = "C" if option_type == "call" else "P"
+    return f"{symbol}{year[2:]}{month}{day}{kind}{int(round(strike * 1000)):08d}"
+
+
+def leg(symbol, expiry, option_type, strike, bid, ask, oi=1000, delta=50.0,
+        iv=30.0, volume=100, bid_size=50, ask_size=50):
+    """One chain row as the CBOE adapter delivers it (greeks from the feed)."""
+    return OptionQuote(
+        quote_date="2026-11-12 20:00:00",
+        asset=asset_factory(occ(symbol, expiry, option_type, strike)),
+        price=(bid + ask) / 2,
+        bid=bid, ask=ask, bid_size=bid_size, ask_size=ask_size,
+        delta=delta, iv=iv, gamma=1.0, vega=1.0, theta=-1.0, rho=0.1,
+        underlying_price=100.0, open_interest=oi, volume=volume,
+        greeks_source="adapter",
+    )
+
+
+def call(symbol, expiry, strike, bid, ask, **kwargs):
+    return leg(symbol, expiry, "call", strike, bid, ask, **kwargs)
+
+
+def put(symbol, expiry, strike, bid, ask, **kwargs):
+    return leg(symbol, expiry, "put", strike, bid, ask, **kwargs)
+
+
+def ladder_chain(symbol="AAA", expiry="2027-03-19"):
+    """Four call pairs of ONE expiry - the R/R fixture of the requirement.
+
+    ``net_debit = long.ask - short.bid`` (buy at ask, sell at bid), so with a
+    bought 100 call at 4.00 all four pairs share the same risk and differ in
+    what they can make:
+
+    =============  ============  =========  ======  =====================
+    short strike   net debit     width      R/R     fate
+    =============  ============  =========  ======  =====================
+    102.80         1.00          2.80       1.8     loses against 2.3
+    103.30         1.00          3.30       2.3     the winner
+    105.00         1.00          5.00       4.0     long delta 15 - out
+    101.32         0.40          1.32       2.3     debit < 0.50 - out
+    =============  ============  =========  ======  =====================
+    """
+    return [
+        call(symbol, expiry, 100.0, 3.90, 4.00, delta=55.0, oi=1200),
+        call(symbol, expiry, 102.80, 3.00, 3.10, delta=35.0, oi=900),
+        call(symbol, expiry, 103.30, 3.00, 3.10, delta=30.0, oi=800),
+        # The 4.0 pair exists to prove the DELTA hurdle is real: without it the
+        # best ratio of the chain would be chosen.
+        call(symbol, expiry, 105.00, 3.55, 3.65, delta=15.0, oi=700),
+        # The 2.3-with-40-cents pair proves the DEBIT hurdle is real.
+        call(symbol, expiry, 101.32, 3.60, 3.70, delta=45.0, oi=700),
+    ]
+
+
+# --- expiry ---------------------------------------------------------------- #
+class ExpiryTests(unittest.TestCase):
+    def test_first_listed_series_after_the_report(self):
+        self.assertEqual(pick_expiration(LADDER, date(2027, 2, 1)), date(2027, 3, 19))
+
+    def test_a_series_on_the_report_day_does_not_count(self):
+        self.assertEqual(pick_expiration(LADDER, date(2026, 11, 20)), date(2026, 12, 18))
+
+    def test_no_series_after_the_report_is_none(self):
+        self.assertIsNone(pick_expiration(LADDER, date(2027, 3, 19)))
+        self.assertIsNone(pick_expiration([], date(2027, 2, 1)))
+
+    def test_iso_strings_are_accepted(self):
+        self.assertEqual(pick_expiration(LADDER, "2027-02-01"), date(2027, 3, 19))
+
+    def test_the_chain_is_read_and_sliced_once(self):
+        chain = ladder_chain() + [call("AAA", "2026-12-18", 100.0, 5.0, 5.1)]
+        self.assertEqual(expirations_in(chain), [date(2026, 12, 18), date(2027, 3, 19)])
+        self.assertEqual(len(slice_chain(chain, "2027-03-19")), len(ladder_chain()))
+        self.assertEqual(slice_chain(chain, "2030-01-01"), [])
+
+
+class CriteriaTests(unittest.TestCase):
+    def test_no_dte_window_no_age_filter_and_the_oi_floor(self):
+        criteria = criteria_for(ladder_chain())
+        self.assertIsNone(criteria.dte_min)
+        self.assertIsNone(criteria.dte_max)
+        self.assertIsNone(criteria.max_quote_age_min)
+        self.assertEqual(criteria.min_oi, DEFAULT_MIN_OI)
+        self.assertEqual(criteria.data_mode, "last_available")
+        self.assertEqual(criteria.pair_mode, "within_width")
+        # The WHOLE strike span: 100 .. 105 is "every combination" of this expiry.
+        self.assertEqual(criteria.pair_max_width, 5.0)
+        criteria.validate()
+
+    def test_one_strike_has_no_pair_width(self):
+        self.assertIsNone(criteria_for([call("AAA", "2027-03-19", 100.0, 3.9, 4.0)])
+                          .pair_max_width)
+
+
+# --- the pair -------------------------------------------------------------- #
+class SpreadTests(unittest.TestCase):
+    def test_the_best_ratio_wins_and_the_hurdles_hold(self):
+        pair, criteria, note = best_spread(ladder_chain(), BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(note)
+        self.assertIsNotNone(pair)
+        self.assertEqual((pair.long.asset.strike, pair.short.asset.strike), (100.0, 103.30))
+        self.assertEqual(pair.net_debit, 1.00)
+        self.assertEqual(pair.net_return_pct(criteria), 230.0)
+        self.assertAlmostEqual(pair.net_return_pct(criteria) / 100.0, 2.3, places=4)
+
+    def test_a_one_to_one_point_eight_loses_against_one_to_two_point_three(self):
+        section = [quote for quote in ladder_chain()
+                   if quote.asset.strike in (100.0, 102.80, 103.30)]
+        pair, criteria, _note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertEqual(pair.short.asset.strike, 103.30)
+        self.assertGreater(pair.net_return_pct(criteria), 200.0)
+        # The 1:1.8 pair really is in the section and really is weaker.
+        weaker = VerticalPair(long=section[0], short=section[1], strategy=BULL_CALL_DEBIT)
+        self.assertEqual(weaker.net_return_pct(criteria), 180.0)
+
+    def test_a_long_delta_of_fifteen_is_out(self):
+        section = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=15.0),
+                   call("AAA", "2027-03-19", 105.00, 3.55, 3.65, delta=10.0)]
+        pair, _criteria, note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(pair)
+        self.assertIn("Delta", note)
+
+    def test_a_debit_of_forty_cents_is_out(self):
+        section = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=55.0),
+                   call("AAA", "2027-03-19", 101.32, 3.60, 3.70, delta=45.0)]
+        pair, _criteria, note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(pair)
+        self.assertIn("Debit", note)
+
+    def test_a_section_without_a_two_point_zero_ratio_is_named(self):
+        section = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=55.0),
+                   call("AAA", "2027-03-19", 102.80, 3.00, 3.10, delta=35.0)]
+        pair, _criteria, note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW,
+                                           rr_min=DEFAULT_RR_MIN)
+        self.assertIsNone(pair)
+        self.assertIn("R/R", note)
+
+    def test_a_single_strike_is_a_named_dead_end(self):
+        pair, _criteria, note = best_spread(
+            [call("AAA", "2027-03-19", 100.0, 3.9, 4.0)], BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(pair)
+        self.assertIn("Strike-Paar", note)
+
+
+# --- liquidity ------------------------------------------------------------- #
+class LiquidityTests(unittest.TestCase):
+    def _pair(self, long_leg, short_leg):
+        return VerticalPair(long=long_leg, short=short_leg, strategy=BULL_CALL_DEBIT)
+
+    def test_deep_and_tight_is_full(self):
+        pair = self._pair(call("AAA", "2027-03-19", 100.0, 3.90, 4.00, oi=600),
+                          call("AAA", "2027-03-19", 103.3, 3.00, 3.10, oi=500))
+        self.assertEqual(liquidity_of(pair), LIQUIDITY_FULL)
+
+    def test_open_interest_below_five_hundred_is_thin(self):
+        pair = self._pair(call("AAA", "2027-03-19", 100.0, 3.90, 4.00, oi=499),
+                          call("AAA", "2027-03-19", 103.3, 3.00, 3.10, oi=5000))
+        self.assertEqual(liquidity_of(pair), LIQUIDITY_THIN)
+
+    def test_a_spread_above_ten_percent_is_thin(self):
+        # mid 3.00, 0.40 wide -> 13.3 %: too wide for "full", still a candidate.
+        pair = self._pair(call("AAA", "2027-03-19", 100.0, 2.80, 3.20, oi=5000),
+                          call("AAA", "2027-03-19", 103.3, 3.00, 3.10, oi=5000))
+        self.assertGreater(bid_ask_pct(pair.long), 10.0)
+        self.assertEqual(liquidity_of(pair), LIQUIDITY_THIN)
+
+    def test_ten_percent_is_still_full(self):
+        # mid 1.00, 0.10 wide -> exactly 10 %: the bound is inclusive.
+        pair = self._pair(call("AAA", "2027-03-19", 100.0, 0.95, 1.05, oi=500),
+                          call("AAA", "2027-03-19", 103.3, 0.95, 1.05, oi=500))
+        self.assertEqual(round(bid_ask_pct(pair.long), 6), 10.0)
+        self.assertEqual(liquidity_of(pair), LIQUIDITY_FULL)
+        # 10.5 % is beyond it - the bound is inclusive, not a suggestion.
+        wider = self._pair(call("AAA", "2027-03-19", 100.0, 0.94, 1.05, oi=500),
+                           call("AAA", "2027-03-19", 103.3, 0.95, 1.05, oi=500))
+        self.assertEqual(liquidity_of(wider), LIQUIDITY_THIN)
+
+    def test_an_unmeasurable_spread_is_never_full(self):
+        pair = self._pair(call("AAA", "2027-03-19", 100.0, 0.0, 4.00, oi=5000),
+                          call("AAA", "2027-03-19", 103.3, 3.00, 3.10, oi=5000))
+        self.assertIsNone(bid_ask_pct(pair.long))
+        self.assertEqual(liquidity_of(pair), LIQUIDITY_THIN)
+
+
+# --- the run --------------------------------------------------------------- #
+class _ChainError(Exception):
+    """Stand-in for ``CboeChainError``: only ``reason`` is read."""
+
+    def __init__(self, reason):
+        super().__init__(reason)
+        self.reason = reason
+
+
+def candidate(symbol, gap_pct=10.0, direction="up", name=None, close=100.0):
+    return {
+        "symbol": symbol,
+        "name": name or f"{symbol} Inc.",
+        "gap_pct": gap_pct,
+        "direction": direction,
+        "strategy": "bull_call_debit" if direction == "up" else "bear_put_debit",
+        "close": close,
+        "turnover_usd": close * 2_000_000.0,
+        "earnings_date": PREVIOUS,
+    }
+
+
+class FunnelRunTests(unittest.TestCase):
+    @staticmethod
+    def _raiser(table):
+        """A source fake: a stored exception is RAISED, a stored value answered."""
+        def fetch(symbol):
+            value = table[symbol]
+            if isinstance(value, Exception):
+                raise value
+            return value
+        return fetch
+
+    def _run(self, candidates, dates, chains, **kwargs):
+        return run_funnel(
+            candidates,
+            fetch_next_earnings=self._raiser(dates),
+            fetch_chain=self._raiser(chains),
+            day=REACTION,
+            now_fn=NOW,
+            **kwargs,
+        )
+
+    def test_every_title_is_a_row_or_a_reason(self):
+        dates = {"AAA": date(2027, 2, 1), "DDD": None, "EEE": date(2027, 2, 1),
+                 "FFF": date(2027, 2, 1), "GGG": date(2027, 2, 1),
+                 "HHH": NextEarningsError(CODE_NO_API_KEY, "no key")}
+        chains = {
+            "AAA": ladder_chain(),
+            # EEE: the only listed series lies BEFORE the report.
+            "EEE": [call("EEE", "2026-12-18", 100.0, 3.9, 4.0)],
+            "FFF": _ChainError("not_listed"),
+            "GGG": _ChainError("throttled"),
+        }
+        run = self._run([candidate(symbol) for symbol in
+                          ("AAA", "DDD", "EEE", "FFF", "GGG", "HHH")], dates, chains)
+
+        self.assertEqual([row["symbol"] for row in run.results], ["AAA"])
+        self.assertEqual(run.counts["with_next_earnings"], 4)   # AAA, EEE, FFF, GGG
+        self.assertEqual(run.counts["with_chain"], 2)           # AAA, EEE
+        self.assertEqual(run.counts["with_expiry_after_earnings"], 1)
+        self.assertEqual(run.counts["with_spread_ge_rr"], 1)
+        self.assertEqual(run.counts["shown"], 1)
+
+        reasons = {entry.symbol: entry.reason for entry in run.excluded}
+        self.assertEqual(reasons, {
+            "DDD": REASON_NO_NEXT_EARNINGS,
+            "EEE": REASON_NO_EXPIRY,
+            "FFF": REASON_NOT_OPTIONABLE,
+            "HHH": REASON_NO_NEXT_EARNINGS,
+        })
+        failures = {entry.symbol: entry.code for entry in run.failures}
+        self.assertEqual(failures, {"GGG": "chain_fetch_failed"})
+        # Every candidate is accounted for exactly once.
+        self.assertEqual(len(run.results) + len(run.excluded) + len(run.failures), 6)
+
+    def test_a_missing_key_is_a_setup_fact_not_a_failure(self):
+        run = self._run([candidate("AAA")],
+                        {"AAA": NextEarningsError(CODE_NO_API_KEY, "FINNHUB_API_KEY is not set")},
+                        {})
+        self.assertEqual(run.failures, [])
+        self.assertEqual(run.excluded[0].reason, REASON_NO_NEXT_EARNINGS)
+        self.assertIn("FINNHUB_API_KEY", run.excluded[0].message)
+
+    def test_a_thin_pair_is_still_a_row(self):
+        chain = [
+            call("AAA", "2027-03-19", 100.0, 3.90, 4.00, oi=150, delta=55.0),
+            call("AAA", "2027-03-19", 103.30, 3.00, 3.10, oi=150, delta=30.0),
+        ]
+        run = self._run([candidate("AAA")], {"AAA": date(2027, 2, 1)}, {"AAA": chain})
+        self.assertEqual(len(run.results), 1)
+        self.assertEqual(run.results[0]["liquidity"], LIQUIDITY_THIN)
+
+    def test_a_pair_below_the_open_interest_floor_is_excluded(self):
+        chain = [
+            call("AAA", "2027-03-19", 100.0, 3.90, 4.00, oi=99, delta=55.0),
+            call("AAA", "2027-03-19", 103.30, 3.00, 3.10, oi=99, delta=30.0),
+        ]
+        run = self._run([candidate("AAA")], {"AAA": date(2027, 2, 1)}, {"AAA": chain})
+        self.assertEqual(run.results, [])
+        self.assertEqual(run.excluded[0].reason, REASON_NO_SPREAD)
+
+    def test_an_expired_deadline_is_named_not_dropped(self):
+        def slow(_symbol):
+            time.sleep(0.3)
+            return date(2027, 2, 1)
+
+        run = run_funnel([candidate("AAA"), candidate("BBB")],
+                         fetch_next_earnings=slow,
+                         fetch_chain=lambda symbol: ladder_chain(symbol),
+                         day=REACTION, now_fn=NOW, deadline_seconds=0.05)
+        self.assertEqual({entry.code for entry in run.failures}, {"deadline_exceeded"})
+        self.assertEqual(len(run.failures), 2)
+        self.assertEqual(run.results, [])
+
+    def test_an_empty_candidate_list_is_an_empty_run(self):
+        run = run_funnel([], fetch_next_earnings=lambda symbol: None,
+                         fetch_chain=lambda symbol: [], day=REACTION, now_fn=NOW)
+        self.assertEqual((run.results, run.excluded, run.failures), ([], [], []))
+        self.assertEqual(run.counts["shown"], 0)
+
+
+# --- the endpoint ---------------------------------------------------------- #
+def calendar_row(symbol, session=None, name=None):
+    return {"symbol": symbol, "name": name or f"{symbol} Inc.", "session": session,
+            "eps_forecast": "$1.10", "market_cap": 1000}
+
+
+class _FakeCalendar:
+    def __init__(self, rows_by_day):
+        self.rows_by_day = rows_by_day
+        self.calls = 0
+
+    def get_calendar_days(self, days):
+        self.calls += 1
+        return {
+            "state": "live",
+            "days": {tag: {"date": tag, "state": "live",
+                           "rows": self.rows_by_day.get(tag, [])}
+                     for tag in days.values()},
+        }
+
+
+class _History:
+    def __init__(self, bars):
+        self.bars = bars
+        self.calls = []
+
+    def fetch_daily(self, symbol, fromdate, limit=None):
+        self.calls.append(symbol)
+        return list(self.bars.get(symbol, []))
+
+
+class _Chains:
+    def __init__(self, chains):
+        self.chains = chains
+        self.calls = []
+
+    def get_options(self, underlying_asset=None, expiration_date=None):
+        self.calls.append((underlying_asset, expiration_date))
+        value = self.chains.get(underlying_asset, [])
+        if isinstance(value, Exception):
+            raise value
+        return list(value)
+
+
+class _NextEarnings:
+    def __init__(self, dates):
+        self.dates = dates
+        self.calls = []
+
+    def get_next_earnings(self, symbol):
+        self.calls.append(symbol)
+        value = self.dates.get(symbol)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+
+def _bars(close, previous_close=100.0, volume=2_000_000.0):
+    return [
+        GapBar(session_date=REACTION, open=close, close=close, volume=volume),
+        GapBar(session_date=BEFORE, open=previous_close, close=previous_close,
+               volume=volume),
+    ]
+
+
+def _client(calendar=None, history=None, chains=None, dates=None):
+    return create_app(
+        quote_adapter=chains or _Chains({}),
+        earnings_adapter=calendar or _FakeCalendar({}),
+        gap_adapter=history or _History({}),
+        next_earnings_adapter=dates or _NextEarnings({}),
+        now_fn=CLOCK,
+    ).test_client()
+
+
+def _fixture():
+    """AAA +10 % (up), BBB -8 % (down), CCC +3 % without a report date."""
+    calendar = _FakeCalendar({
+        PREVIOUS: [calendar_row("AAA", session="after_market", name="Alpha Corp"),
+                   calendar_row("BBB", session=None),
+                   calendar_row("CCC", session="before_market")],
+        DAY: [calendar_row("DDD", session="after_market")],   # no gap yet
+    })
+    history = _History({"AAA": _bars(110.0), "BBB": _bars(92.0), "CCC": _bars(103.0)})
+    chains = _Chains({
+        "AAA": ladder_chain("AAA"),
+        "BBB": [put("BBB", "2027-04-16", 100.0, 3.90, 4.00, delta=-60.0, oi=1200),
+                put("BBB", "2027-04-16", 96.70, 3.00, 3.10, delta=-40.0, oi=900)],
+        "CCC": ladder_chain("CCC"),          # must never be asked
+    })
+    dates = _NextEarnings({"AAA": date(2027, 2, 1), "BBB": date(2027, 3, 1), "CCC": None})
+    return calendar, history, chains, dates
+
+
+CONTRACT_KEYS = {"schema_version", "day", "day_state", "threshold_pct", "min_turnover_usd",
+                 "rr_min", "min_oi", "counts", "results", "excluded", "failures", "notes"}
+COUNT_KEYS = ("calendar_rows", "gaps_computed", "over_threshold", "turnover_passed",
+              "price_passed", "candidates", "with_next_earnings",
+              "with_expiry_after_earnings", "with_chain", "with_spread_ge_rr", "shown")
+ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_label", "close",
+            "turnover_usd", "earnings_date", "next_earnings_date", "expiration", "dte",
+            "long_strike", "short_strike", "long_delta", "short_delta", "net_debit",
+            "max_loss", "max_profit", "rr", "net_return_pct", "liquidity", "open_interest",
+            "bid_ask_pct", "position_debit"}
+
+
+class EndpointTests(unittest.TestCase):
+    def _get(self, query=f"?day={DAY}", fixture=None):
+        calendar, history, chains, dates = fixture or _fixture()
+        antwort = _client(calendar, history, chains, dates).get(f"/api/v1/gap-spreads{query}")
+        return antwort, antwort.get_json(), chains, dates
+
+    def test_the_json_contract(self):
+        antwort, body, _chains, _dates = self._get()
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(set(body), CONTRACT_KEYS)
+        self.assertEqual(body["schema_version"], "1.0")
+        self.assertEqual(body["day"], DAY)
+        self.assertEqual(body["day_state"], "live")
+        self.assertEqual(body["threshold_pct"], 2.0)
+        self.assertEqual(body["min_turnover_usd"], 5_000_000.0)
+        self.assertEqual(body["rr_min"], 2.0)
+        self.assertEqual(body["min_oi"], 100)
+        self.assertEqual(set(body["counts"]), set(COUNT_KEYS))
+        self.assertIsInstance(body["notes"], list)
+        self.assertTrue(all(isinstance(note, str) for note in body["notes"]))
+        for row in body["results"]:
+            self.assertEqual(set(row), ROW_KEYS)
+
+    def test_results_are_sorted_by_the_size_of_the_gap(self):
+        _antwort, body, _chains, _dates = self._get()
+        self.assertEqual([row["symbol"] for row in body["results"]], ["AAA", "BBB"])
+        self.assertEqual([row["gap_pct"] for row in body["results"]], [10.0, -8.0])
+        self.assertGreaterEqual(abs(body["results"][0]["gap_pct"]),
+                                abs(body["results"][1]["gap_pct"]))
+
+    def test_the_row_carries_the_agreed_numbers(self):
+        _antwort, body, _chains, _dates = self._get()
+        aaa = body["results"][0]
+        self.assertEqual(aaa["name"], "Alpha Corp")
+        self.assertEqual(aaa["direction"], "up")
+        self.assertEqual(aaa["strategy"], "bull_call_debit")
+        self.assertEqual(aaa["strategy_label"], "Bull Call Spread (Debit)")
+        self.assertEqual(aaa["earnings_date"], PREVIOUS)
+        self.assertEqual(aaa["next_earnings_date"], "2027-02-01")
+        self.assertEqual(aaa["expiration"], "2027-03-19")
+        self.assertEqual(aaa["dte"], (date(2027, 3, 19) - REACTION).days)
+        self.assertEqual((aaa["long_strike"], aaa["short_strike"]), (100.0, 103.3))
+        self.assertEqual(aaa["long_delta"], 55.0)
+        self.assertEqual(aaa["short_delta"], 30.0)
+        self.assertEqual(aaa["net_debit"], 1.0)
+        self.assertEqual(aaa["max_profit"], 2.3)
+        self.assertEqual(aaa["max_loss"], 1.0)
+        self.assertEqual(aaa["rr"], 2.3)
+        self.assertEqual(aaa["net_return_pct"], 230.0)
+        self.assertEqual(aaa["liquidity"], LIQUIDITY_FULL)
+        self.assertEqual(aaa["open_interest"], [1200, 800])
+        self.assertEqual(len(aaa["bid_ask_pct"]), 2)
+        self.assertEqual(aaa["position_debit"], 100.0)     # 1.00 x 100 x 1 + 0 fees
+
+        bbb = body["results"][1]
+        self.assertEqual(bbb["direction"], "down")
+        self.assertEqual(bbb["strategy"], "bear_put_debit")
+        self.assertEqual(bbb["expiration"], "2027-04-16")
+        self.assertEqual(bbb["long_strike"], 100.0)        # the bought put is higher
+        self.assertEqual(bbb["short_strike"], 96.7)
+        self.assertLess(bbb["long_delta"], 0)              # puts carry a negative delta
+
+    def test_the_counters_describe_the_whole_day(self):
+        _antwort, body, chains, dates = self._get()
+        counts = body["counts"]
+        self.assertEqual(counts["calendar_rows"], 3)       # AAA, BBB, CCC
+        self.assertEqual(counts["gaps_computed"], 3)
+        self.assertEqual(counts["over_threshold"], 3)
+        self.assertEqual(counts["turnover_passed"], 3)
+        self.assertEqual(counts["price_passed"], 3)
+        self.assertEqual(counts["candidates"], 3)
+        self.assertEqual(counts["with_next_earnings"], 2)  # CCC has no date
+        self.assertEqual(counts["with_chain"], 2)
+        self.assertEqual(counts["with_expiry_after_earnings"], 2)
+        self.assertEqual(counts["with_spread_ge_rr"], 2)
+        self.assertEqual(counts["shown"], 2)
+
+    def test_an_excluded_title_names_its_reason_and_costs_no_chain_request(self):
+        _antwort, body, chains, dates = self._get()
+        self.assertEqual([entry["symbol"] for entry in body["excluded"]], ["CCC"])
+        self.assertEqual(body["excluded"][0]["reason"], REASON_NO_NEXT_EARNINGS)
+        self.assertIn("Berichtstermin", body["excluded"][0]["message"])
+        self.assertEqual(body["failures"], [])
+        # The report date is asked FIRST: a title without one never costs a chain.
+        self.assertIn("CCC", dates.calls)
+        self.assertNotIn("CCC", [symbol for symbol, _expiry in chains.calls])
+        # ONE chain request per symbol, for the whole chain (no expiry).
+        self.assertEqual(sorted(symbol for symbol, _expiry in chains.calls), ["AAA", "BBB"])
+        self.assertTrue(all(expiry is None for _symbol, expiry in chains.calls))
+
+    def test_a_broken_chain_is_a_failure_not_a_row(self):
+        calendar, history, chains, dates = _fixture()
+        chains.chains["AAA"] = _ChainError("throttled")
+        antwort, body, _chains, _dates = self._get(fixture=(calendar, history, chains, dates))
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual([entry["symbol"] for entry in body["failures"]], ["AAA"])
+        self.assertEqual(body["failures"][0]["code"], "chain_fetch_failed")
+        self.assertIn("throttled", body["failures"][0]["message"])
+        self.assertEqual([row["symbol"] for row in body["results"]], ["BBB"])
+        self.assertEqual(body["counts"]["with_chain"], 1)
+
+    def test_an_unlisted_chain_is_not_optionable(self):
+        calendar, history, chains, dates = _fixture()
+        chains.chains["AAA"] = _ChainError("not_listed")
+        _antwort, body, _chains, _dates = self._get(
+            fixture=(calendar, history, chains, dates))
+        self.assertEqual(body["excluded"][0]["symbol"], "AAA")
+        self.assertEqual(body["excluded"][0]["reason"], REASON_NOT_OPTIONABLE)
+
+    def test_a_day_without_a_report_date_is_a_200_with_counts(self):
+        calendar = _FakeCalendar({PREVIOUS: [calendar_row("AAA")], DAY: []})
+        history = _History({"AAA": _bars(110.0)})
+        fixture = (calendar, history, _Chains({"AAA": ladder_chain("AAA")}),
+                   _NextEarnings({"AAA": None}))
+        antwort, body, _chains, _dates = self._get(fixture=fixture)
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(body["results"], [])
+        self.assertEqual(body["counts"]["with_next_earnings"], 0)
+        self.assertEqual(body["excluded"][0]["reason"], REASON_NO_NEXT_EARNINGS)
+
+    def test_a_bad_day_is_still_a_400(self):
+        antwort, body, _chains, _dates = self._get("?day=2026-11-14")  # Saturday
+        self.assertEqual(antwort.status_code, 400)
+        self.assertEqual(body["error"], "invalid_day")
+        antwort, body, _chains, _dates = self._get("?day=nonsense")
+        self.assertEqual(antwort.status_code, 400)
+
+    def test_an_unknown_parameter_is_refused(self):
+        antwort, body, _chains, _dates = self._get(f"?day={DAY}&nonsense=1")
+        self.assertEqual(antwort.status_code, 400)
+        self.assertEqual(body["error"], "unknown_parameter")
+
+
+if __name__ == "__main__":  # pragma: no cover
+    unittest.main()
