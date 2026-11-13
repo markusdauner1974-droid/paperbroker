@@ -32,11 +32,12 @@ contract (answer shape, rendering) cannot drift apart. No test touches a socket.
 """
 
 import json
+import os
 import shutil
 import subprocess
 import tempfile
 import unittest
-from datetime import date, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import paperbroker
@@ -49,6 +50,19 @@ from paperbroker.tests.test_gap_scan_endpoint import (
     _scan,
 )
 
+#: The instant the panel's clock is frozen at in every render below: 15:00 UTC
+#: is 10:00 ET - a US session still open, so "yesterday" is the calendar day
+#: before it. The panel itself keeps reading the real clock; the harness fakes
+#: it, because a test that follows the wall clock turns red at midnight.
+PANEL_NOW = "2026-11-12T15:00:00Z"
+
+
+def _day_before(instant):
+    """The calendar day the panel shows as its default for that instant."""
+    moment = datetime.fromisoformat(instant.replace("Z", "+00:00"))
+    return (moment.astimezone(UTC).date() - timedelta(days=1)).isoformat()
+
+
 #: The panel's behaviour lives in one static file; the tests execute it.
 PANEL_JS = Path(paperbroker.__file__).parent / "static" / "gap_scan.js"
 
@@ -60,13 +74,17 @@ NODE = shutil.which("node")
 _HARNESS = r"""
 'use strict';
 // Renders paperbroker/static/gap_scan.js against ONE stubbed answer, offline.
-// Usage: node harness.js <gap_scan.js> <answer.json> [--click] [--open N]
+// Usage: node harness.js <gap_scan.js> <answer.json> [--now <ISO>] [--click] [--open N]
 const fs = require('fs');
 const vm = require('vm');
 
 const argv = process.argv.slice(2);
 const jsPath = argv[0];
 const answerPath = argv[1];
+const nowAt = argv.indexOf('--now');
+// The instant the panel's clock is frozen at. 15:00 UTC is 10:00 ET, i.e. a
+// US session still open - the panel's default day is the calendar day before.
+const FROZEN = new Date(nowAt >= 0 ? argv[nowAt + 1] : '2026-11-12T15:00:00Z').getTime();
 const click = argv.indexOf('--click') >= 0;
 const openAt = argv.indexOf('--open');
 const openRow = openAt >= 0 ? Number(argv[openAt + 1]) : null;
@@ -193,6 +211,25 @@ const sandbox = {
   console
 };
 vm.createContext(sandbox);
+// Freeze the panel's clock INSIDE the sandbox, before gap_scan.js is loaded:
+// `new Date()` (no argument) and `Date.now()` answer FROZEN, every other form
+// (`new Date('2026-11-11')`, `new Date(ms)`, `Date.parse`) keeps its meaning.
+// Without this the harness reads the wall clock and goes red at midnight.
+vm.runInContext(`
+(function () {
+  var Real = Date;
+  var FIXED = ${FROZEN};
+  function Frozen() {
+    if (!(this instanceof Frozen)) return new Real(FIXED).toString();
+    return arguments.length ? new Real(...arguments) : new Real(FIXED);
+  }
+  Frozen.now = function () { return FIXED; };
+  Frozen.parse = Real.parse;
+  Frozen.UTC = Real.UTC;
+  Frozen.prototype = Real.prototype;
+  globalThis.Date = Frozen;
+}());
+`, sandbox, { filename: 'frozen-clock.js' });
 vm.runInContext(source, sandbox, { filename: 'gap_scan.js' });
 
 // The default the field carries BEFORE any click: "gestern", set by the panel.
@@ -210,6 +247,8 @@ function rows() {
 function report() {
   return {
     defaultDay,
+    // Der eingefrorene Zeitpunkt, den dieser Lauf gesehen hat - nicht die Wanduhr.
+    now: new Date(FROZEN).toISOString(),
     url: requested,
     state: nodes['gscan-state'].textContent,
     error: nodes['gscan-error'].hidden ? null : nodes['gscan-error'].textContent,
@@ -251,11 +290,12 @@ def _answer(status=200, body=None):
     return {"status": status, "body": body}
 
 
-def _render(answer, *, click=False, open_row=None):
+def _render(answer, *, click=False, open_row=None, now=None):
     """Run the real panel against one answer and return what it drew.
 
     ``click`` presses "Scannen" first (the page itself does not), ``open_row``
-    presses "Öffnen" in that row afterwards. A missing node is a failure, not a
+    presses "Öffnen" in that row afterwards, ``now`` freezes the panel's clock
+    at that instant (default ``PANEL_NOW``). A missing node is a failure, not a
     skip: the harness is the only place the rendering is measured.
     """
     if NODE is None:
@@ -264,12 +304,16 @@ def _render(answer, *, click=False, open_row=None):
         tmp = Path(tmp)
         (tmp / "answer.json").write_text(json.dumps(answer), encoding="utf-8")
         (tmp / "harness.js").write_text(_HARNESS, encoding="utf-8")
-        befehl = [NODE, str(tmp / "harness.js"), str(PANEL_JS), str(tmp / "answer.json")]
+        befehl = [NODE, str(tmp / "harness.js"), str(PANEL_JS), str(tmp / "answer.json"),
+                  "--now", now or PANEL_NOW]
         if click:
             befehl.append("--click")
         if open_row is not None:
             befehl += ["--open", str(open_row)]
-        lauf = subprocess.run(befehl, capture_output=True, text=True, timeout=120)
+        # TZ is pinned so the injected instant lands on the same calendar day
+        # on every machine: 15:00 UTC is 15:00 local, never the next day.
+        env = {**os.environ, "TZ": "UTC"}
+        lauf = subprocess.run(befehl, capture_output=True, text=True, timeout=120, env=env)
     if lauf.returncode != 0:
         raise AssertionError("the render harness failed:\n" + lauf.stderr[-2000:])
     return json.loads(lauf.stdout)
@@ -309,8 +353,26 @@ class TestThePageCarriesThePanel(unittest.TestCase):
         panel = _render(_three_candidates()[0])
         self.assertIsNone(panel["url"])        # kein Automatiklauf beim Laden
         self.assertEqual([], panel["rows"])
-        gestern = (date.today() - timedelta(days=1)).isoformat()
-        self.assertEqual(gestern, panel["defaultDay"])
+        # Der Vortag des eingefrorenen Zeitpunkts - nicht der der Wanduhr.
+        self.assertEqual(_day_before(PANEL_NOW), panel["defaultDay"])
+        self.assertEqual(DAY, panel["defaultDay"])
+
+    def test_the_default_day_follows_the_injected_clock(self):
+        # Zwei Laeufe, zwei Zeitpunkte, zwei Felder: das Feld liest die Uhr des
+        # Laufs, nicht die Wanduhr. Waere die Uhr nicht injiziert, stuenden hier
+        # zweimal derselbe Tag - der von heute.
+        antwort = _three_candidates()[0]
+        erster = _render(antwort, now="2026-11-12T15:00:00Z")
+        zweiter = _render(antwort, now="2026-11-20T15:00:00Z")
+
+        self.assertEqual("2026-11-11", erster["defaultDay"])
+        self.assertEqual("2026-11-19", zweiter["defaultDay"])
+        self.assertNotEqual(erster["defaultDay"], zweiter["defaultDay"])
+        # Der Zeitpunkt selbst kommt aus dem Argument, nicht aus der Wanduhr.
+        self.assertEqual("2026-11-12T15:00:00.000Z", erster["now"])
+        self.assertEqual("2026-11-20T15:00:00.000Z", zweiter["now"])
+        # auch der zweite Lauf scannt nichts von selbst
+        self.assertIsNone(zweiter["url"])
 
 
 class TestTheListSpeaksTheAnswer(unittest.TestCase):
