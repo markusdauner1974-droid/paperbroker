@@ -3,13 +3,10 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  {# Die drei Schriftschnitte liegen als woff2 im Paket: keine Anfrage
-     verlaesst das LAN, und die Seite haengt nicht an einem CDN. #}
+  {# Die Schriftschnitte liegen als woff2 im Paket: keine Anfrage verlaesst das
+     LAN, und die Seite haengt an keinem CDN. #}
   <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
-  {# Die drei Schriftschnitte liegen als woff2 im Paket: keine Anfrage
-     verlaesst das LAN, und die Seite haengt nicht an einem CDN. #}
-  <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
-  <title>Options-Screener — CoachBen-Stil</title>
+  <title>Gap-Spread-Trichter</title>
   <style>
     :root{
       --base:#091217; --panel:#0d181e; --ink:#fafafa;
@@ -18,7 +15,7 @@
       --hair:rgba(250,250,250,.20); --hair-soft:rgba(250,250,250,.10);
       /* Bedienkanten tragen 3,0:1 (gemessen: .36 -> #606669 = 3,24:1) */
       --edge:rgba(250,250,250,.36);
-      --ok:#57c98b; --warn:#d9a441;
+      --warn:#d9a441;
       --font-display:"Oswald",sans-serif;
       --font-body:"Instrument Sans",system-ui,sans-serif;
       --font-mono:"Martian Mono",ui-monospace,"SFMono-Regular",monospace;
@@ -26,130 +23,71 @@
     *,*::before,*::after{box-sizing:border-box}
     body{margin:0;background:var(--base);color:var(--ink);font-family:var(--font-body);
       font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
-    /* Sortier-Links: eigene Farbe statt Browser-Blau (#0000ee = 1,96:1) */
-    a,a:visited{color:var(--primary);text-decoration:none;border-bottom:1px dotted rgba(224,85,52,.55)}
-    a:hover,a:focus-visible{color:var(--ink);border-bottom-color:var(--ink)}
     :focus-visible{outline:2px solid var(--primary);outline-offset:2px}
-    header{padding:20px 28px 16px;border-bottom:1px dotted var(--hair);
-      display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+    [hidden]{display:none!important}
+
+    header{padding:26px 28px 18px;border-bottom:1px dotted var(--hair)}
     h1{font-family:var(--font-display);font-weight:700;text-transform:uppercase;
-      font-size:21px;letter-spacing:.01em;margin:0 12px 0 0;line-height:1}
-    .badge{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
-      text-transform:uppercase;color:var(--muted);padding:5px 10px;
-      border:1px dotted var(--hair);border-radius:0}
-    .lamp{width:8px;height:8px;display:inline-block;vertical-align:middle;border-radius:0}
-    .green{background:var(--ok)}.yellow{background:var(--warn)}
-    .red{background:var(--primary)}.none{background:var(--faint)}
+      font-size:26px;letter-spacing:.01em;margin:0;line-height:1.05}
+    .lede{font-size:13px;color:var(--muted);margin:8px 0 0;max-width:70ch}
+    h2.lede{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
+      text-transform:uppercase;color:var(--faint);margin:0}
     main{padding:24px 26px 72px;max-width:1400px;margin:0 auto}
+
     .note{font-size:12.5px;color:var(--muted);margin:0}
-    .shell{display:grid;grid-template-columns:268px minmax(0,1fr);gap:30px;align-items:start}
-    .results{min-width:0;display:flex;flex-direction:column;gap:18px}
-    .lede{font-family:var(--font-display);font-weight:700;text-transform:uppercase;
-      font-size:26px;line-height:1.05;margin:0}
-    .lede span{color:var(--primary);font-family:var(--font-mono);font-size:.66em;letter-spacing:.02em}
-    @media (max-width:1212px){.shell{grid-template-columns:minmax(0,1fr)}}
+    .err{padding:12px 14px;border:1px dotted rgba(224,85,52,.55);border-radius:0;
+      background:rgba(224,85,52,.08);color:#f7d3c9;font-size:12.5px;margin:14px 0 0}
+    .stale{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.04em;
+      color:var(--warn);border:1px dotted rgba(217,164,65,.5);padding:4px 8px}
 
-    form{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:0}
-    form>input,form>select{width:100%;min-width:0}
-    form>button,form>fieldset,form>span{grid-column:1/-1}
-    input,select,button{font-family:var(--font-mono);font-size:12px;border-radius:0;
-      border:0;border-bottom:1px dotted var(--edge);background:transparent;
-      color:var(--ink);padding:8px 2px}
-    input::placeholder{color:var(--faint)}
-    select{max-width:100%;padding:8px 4px;background:var(--panel);border:1px dotted var(--edge)}
-    select:disabled,input:disabled{opacity:.45}
-    /* Funkknoepfe und Schalter sind keine Textfelder: keine Unterkante,
-       keine Innenpolster (sonst werden sie zu grossen Ringen) */
-    input[type=radio],input[type=checkbox]{width:15px;height:15px;padding:0;
-      border:0;background:none;accent-color:var(--primary);vertical-align:middle}
-    button{background:var(--primary);border:1px solid var(--primary);color:#0b0704;
-      font-weight:600;letter-spacing:.14em;text-transform:uppercase;font-size:11px;
-      padding:12px 16px;cursor:pointer;transition:background-color .15s,border-color .15s}
-    button:hover{background:var(--primary-dark);border-color:var(--primary-dark)}
-    button:disabled{opacity:.5}
-    form>h2.rail-title{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
-      text-transform:uppercase;color:var(--faint);margin:4px 0 0;font-weight:600}
-    form>a.reset{font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;
-      text-transform:uppercase;text-align:center;padding:4px 0;border-bottom:0;color:var(--muted)}
-    form>a.reset:hover{color:var(--primary)}
-
-    fieldset.crit{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));
-      gap:8px 18px;flex:1 1 100%;border:0;border-top:1px dotted var(--hair);
-      border-radius:0;padding:14px 0 0;margin:0 0 18px}
-    fieldset.crit legend{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.14em;
-      text-transform:uppercase;color:var(--faint);padding:0 0 6px}
-    fieldset.crit label{font-size:12px;color:var(--muted);display:inline-flex;gap:6px;
-      align-items:center;margin:3px 8px 3px 0}
-    fieldset.crit input[type=number]{width:5.2rem;text-align:right}
-    fieldset.crit input[type=checkbox],fieldset.crit input[type=radio]{accent-color:var(--primary);width:14px;height:14px}
-    fieldset.crit>span{grid-column:1/-1;display:flex;flex-wrap:wrap;gap:6px 18px;
-      align-items:center;font-size:12px;color:var(--muted)}
-    fieldset.crit>span>label{margin:0}
-    small.warn-min{color:var(--warn);font-size:10.5px}
-    /* the rail is one column: ticker, date, button stacked (268 px) */
-    .shell form{grid-template-columns:minmax(0,1fr);gap:12px}
-    .shell form>input,.shell form>select{text-align:left}
-    .shell form>select{max-width:100%}
-    .shell fieldset.crit{grid-template-columns:minmax(0,1fr)}
-    .shell fieldset.crit>label{display:grid;grid-template-columns:minmax(0,1fr) 74px;
-      align-items:center;gap:10px;margin:6px 0}
-    .shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;text-align:right;padding:6px 2px}
-    .shell fieldset.crit>label>small{grid-column:1/-1;margin-top:2px}
-    .shell fieldset.crit>label:has(input[type=checkbox]){grid-template-columns:auto minmax(0,1fr);justify-items:start}
-    /* a radio has no number field, so the 74 px value column is wrong for it: the
-       text was squeezed into 184 px, wrapped over nine lines and the dot floated
-       in the middle of a 162 px row - the block looked like a doubled list */
-    .shell fieldset.crit>label:has(input[type=radio]){grid-template-columns:auto minmax(0,1fr);
-      align-items:start;justify-items:start}
-
-    .err,.warn,.hint{padding:12px 14px;border:1px dotted;border-radius:0;font-size:12.5px}
-    /* Datenmodus "Letzter verfügbarer Marktstand": der Block steht ueber dem
-       Ergebnis und ist nicht zu uebersehen - Vorlaeufigkeit ist eine Eigenschaft
-       der ganzen Antwort, keine Randnotiz. */
-    .provisional{padding:10px 14px;border:1px dotted rgba(217,164,65,.6);
-      background:rgba(217,164,65,.08);color:var(--ink);font-size:12.5px;margin:0 0 14px}
-    .provisional b{color:var(--warn);letter-spacing:.06em;text-transform:uppercase;font-size:11px}
-    .err{border-color:rgba(224,85,52,.55);background:rgba(224,85,52,.08);color:#f7d3c9}
-    .warn{border-color:rgba(217,164,65,.5);background:rgba(217,164,65,.07);color:#f0dfba}
-    .hint{border-color:var(--hair);background:var(--panel);color:var(--muted)}
-    .spin{display:none;font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;
+    /* Eingabezeile: ein Datumsfeld, ein Knopf, sonst nichts. Kein Lauf beim
+       Laden der Seite - der Trichter kostet je Titel eine Optionskette und
+       bleibt ein ausdruecklicher Klick. */
+    .funnel-form{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;
+      margin:20px 0 0}
+    .funnel-form label{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
       text-transform:uppercase;color:var(--faint)}
+    /* Das Datumsfeld erbt die Feldkante der Seite; color-scheme haelt das native
+       Kalenderzeichen auf dunklem Grund sichtbar. */
+    .funnel-form input[type=date]{color-scheme:dark;font-family:var(--font-mono);
+      font-size:12px;border:0;border-bottom:1px dotted var(--edge);
+      background:transparent;color:var(--ink);padding:8px 2px;border-radius:0}
+    /* Ruhige Kante, Akzent nur beim Zeigen: Scannen ist eine Aktion, kein
+       Hauptknopf. */
+    .funnel-btn{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
+      text-transform:uppercase;background:none;border:1px solid var(--edge);
+      color:var(--muted);cursor:pointer;padding:5px 10px;border-radius:0}
+    .funnel-btn:hover:not(:disabled){color:var(--ink);border-color:var(--primary)}
+    .funnel-btn:disabled{opacity:.4;cursor:not-allowed}
 
-    h2{font-family:var(--font-display);font-weight:700;text-transform:uppercase;
-      font-size:22px;margin:6px 0 0;line-height:1.05}
+    /* Die Zaehlerzeile ist die eine Aussage ueber den Lauf: Klartext, jede
+       Huerde mit Namen. Monospace nur fuer die Zahlen. */
+    .stats{font-size:12.5px;color:var(--muted);margin:16px 0 0;max-width:90ch}
+    .stats b{color:var(--ink);font-family:var(--font-mono);font-size:12px;font-weight:600}
+
+    .tbl{min-width:0;overflow-x:auto;margin:18px 0 0}
     table{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:10.5px;
       font-variant-numeric:tabular-nums}
-    th,td{text-align:right;padding:6px 6px;border-bottom:1px dotted var(--hair-soft);white-space:nowrap}
-    th{white-space:normal;line-height:1.25}
-    th:first-child,td:first-child{text-align:left}
+    th,td{text-align:right;padding:6px 7px;border-bottom:1px dotted var(--hair-soft);
+      white-space:nowrap;vertical-align:top}
     th{font-size:9.5px;font-weight:600;letter-spacing:.1em;text-transform:uppercase;
-      color:var(--faint);border-bottom:1px dotted var(--hair)}
+      color:var(--faint);border-bottom:1px dotted var(--hair);
+      white-space:normal;line-height:1.25}
+    th:first-child,td:first-child,
+    th:nth-child(2),td:nth-child(2),
+    th:nth-child(4),td:nth-child(4){text-align:left}
     tbody tr:hover{background:rgba(250,250,250,.035)}
-    .score{color:var(--primary);font-weight:700}
-    .mismatch{color:var(--warn)}
-    .stats{display:flex;gap:8px 20px;flex-wrap:wrap;font-family:var(--font-mono);
-      font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
-    .stats b{color:var(--ink);font-weight:600}
+    .sub{display:block;font-size:9.5px;color:var(--faint);letter-spacing:.04em}
+    /* Die Richtung traegt Pfeil UND Wort - nie allein die Farbe. */
+    .dir{color:var(--ink);font-weight:600}
 
-    /* Sortierleiste: eine Zeile mit allen Ordnungen, die aktive ist markiert.
-       Die Spaltenkoepfe behalten ihre zwei Links - beide Wege sind derselbe. */
-    .sortbar{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:baseline;
-      font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;
-      text-transform:uppercase;color:var(--faint);margin:0}
-    .sortbar a{color:var(--muted);border-bottom:1px dotted var(--hair)}
-    .sortbar a:hover{color:var(--ink)}
-    .sortbar a.aktiv{color:var(--ink);border-bottom:1px solid var(--primary)}
-    /* Ausschlussuebersicht: je Einheit EINE Zeile - Kontrakte, Kombinationen,
-       Verfälle und Aktien werden nie zu einer Summe addiert. */
-    .excl{border-left:2px solid var(--hair);padding:2px 0 2px 12px}
-    .excl h3{font-family:var(--font-mono);font-size:10px;letter-spacing:.12em;
-      text-transform:uppercase;color:var(--faint);margin:0 0 8px;font-weight:600}
-    .excl-unit{font-size:12.5px;color:var(--muted);margin:0 0 2px}
-    .excl-unit b{color:var(--ink);font-family:var(--font-mono);font-size:12px}
-    .excl-note{font-size:11px;color:var(--faint);margin:0 0 10px}
-    .dropped-summary{border-top:1px dotted var(--hair);border-radius:0;background:none;padding:0}
+    /* Ausschluesse und Fehlschlaege: zugeklappt, damit eine leere Liste ruhig
+       aussieht. Aufgeklappt nennt jede Zeile ihren Grund in Klartext. */
+    .dropped-summary{border-top:1px dotted var(--hair);border-radius:0;background:none;
+      padding:0;margin:22px 0 0}
     .dropped-summary summary{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
-      text-transform:uppercase;color:var(--muted);cursor:pointer;padding:12px 0;list-style:none}
+      text-transform:uppercase;color:var(--muted);cursor:pointer;padding:12px 0;
+      list-style:none}
     .dropped-summary summary::-webkit-details-marker{display:none}
     .dropped-summary summary::before{content:"\203A  ";color:var(--primary)}
     .dropped-summary[open] summary::before{content:"\2304  "}
@@ -157,768 +95,79 @@
       font-family:var(--font-mono);font-size:11px;color:var(--muted)}
     .dropped-summary li{padding:5px 0;border-bottom:1px dotted var(--hair-soft);
       display:flex;justify-content:space-between;gap:16px}
-    .drop-count{color:var(--primary);font-weight:700}
+    .dropped-summary li b{color:var(--ink);font-weight:600}
 
-    .earn{border:1px dotted var(--hair);border-radius:0;padding:16px 18px;background:var(--panel)}
-    .earn h3{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
-      text-transform:uppercase;color:var(--faint);margin:0 0 12px;font-weight:600}
-    .earn-stats{display:flex;gap:9px 22px;flex-wrap:wrap;font-size:12.5px;color:var(--muted);margin-bottom:8px}
-    .earn-stats b{color:var(--ink);font-family:var(--font-mono);font-size:12px;font-weight:600}
-    .earn .ok{color:var(--ok);font-weight:600}
-    .earn .blocked{color:var(--primary);font-weight:600}
-    .earn .unknown{color:var(--warn);font-weight:600}
-    .earn ul{margin:6px 0 0;padding-left:16px;font-size:12px;color:var(--muted)}
+    footer{border-top:1px dotted var(--hair);margin:34px 0 0;padding:14px 0 0}
+    footer .note{font-size:11.5px;color:var(--faint)}
 
-    /* Earnings-Kalender im CoachBen-Look: Tagesreiter statt drei Spalten.
-       Genau EIN Tageskoerper ist sichtbar (.show), die Tabelle scrollt in
-       fester Hoehe, "ausblenden" laesst nur die Kopfzeile stehen.
-       Keine Karten, keine Rundungen, keine Schatten - gepunktete Haarlinien
-       wie im restlichen Blatt; der aktive Reiter traegt den Akzent. */
-    .cal{border:1px dotted var(--hair);border-radius:0;padding:16px 18px;background:var(--panel);margin-bottom:22px}
-    .cal-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:10px}
-    .cal h2{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
-      text-transform:uppercase;color:var(--faint);margin:0;font-weight:600}
-    .cal .cal-note,.cal .cal-filter{margin:0 0 6px;font-size:11px;color:var(--muted)}
-    .cal-toggle{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
-      background:none;border:1px solid var(--edge);color:var(--muted);cursor:pointer;
-      padding:6px 12px;border-radius:0}
-    .cal-toggle:hover{color:var(--ink);border-color:var(--primary)}
-    .cal-tabs{display:flex;flex-wrap:wrap;gap:0;margin:0 0 10px;border-bottom:1px dotted var(--hair)}
-    .cal-tab{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;text-transform:uppercase;
-      padding:8px 14px;background:none;border:0;border-bottom:2px solid transparent;
-      color:var(--muted);cursor:pointer;margin-bottom:-1px}
-    .cal-tab:hover{color:var(--ink)}
-    .cal-tab.is-active{color:var(--primary);border-bottom-color:var(--primary)}
-    .cal-body{display:none}
-    .cal-body.show{display:block}
-    .cal-day-head{display:flex;align-items:baseline;flex-wrap:wrap;gap:2px 12px;margin:0 0 6px}
-    .cal-day-head h3{font-size:12.5px;font-weight:600;margin:0;color:var(--ink)}
-    .cal-day-head .note{margin:0;font-size:11px;color:var(--muted)}
-    .cal-scroll{max-height:264px;overflow-y:auto}
-    .cal-scroll::-webkit-scrollbar{width:10px}
-    .cal-scroll::-webkit-scrollbar-thumb{background:var(--hair);border-radius:0}
-    .cal-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:12.5px}
-    .cal-table th{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
-      color:var(--faint);font-weight:600;padding:8px;border-bottom:1px solid var(--hair);text-align:left;
-      position:sticky;top:0;background:var(--panel)}
-    .cal-table td{padding:7px 8px;border-bottom:1px dotted var(--hair-soft);text-align:left;color:var(--ink)}
-    .cal-table th:nth-child(4),.cal-table th:nth-child(5),.cal-table td.num{text-align:right;font-variant-numeric:tabular-nums}
-    .cal-table td.cal-name{max-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}
-    .cal-row:hover td{background:rgba(250,250,250,.04)}
-    .cal-row a{font-weight:600;font-family:var(--font-mono);font-size:11px}
-    .cal.collapsed .cal-note,.cal.collapsed .cal-filter,.cal.collapsed .cal-groups{display:none}
-    /* Der Tages-Scan ist eine Aktion des Tages, kein Seitenaufruf: der Knopf
-       sitzt am Tag, zu dem er gehoert. Ruhige Kante, Akzent nur beim Zeigen. */
-    .cal-scan{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
-      text-transform:uppercase;background:none;border:1px solid var(--edge);
-      color:var(--muted);cursor:pointer;padding:5px 10px;border-radius:0;margin-left:auto}
-    .cal-scan:hover:not(:disabled){color:var(--ink);border-color:var(--primary)}
-    .cal-scan:disabled{opacity:.4;cursor:not-allowed}
-
-    /* Earnings-Uebersicht: der gemeinsame Tages-Scan als Tabelle unter dem
-       Kalender. Dieselbe Sprache wie das uebrige Blatt - gepunktete Haarlinien,
-       Mono-Zahlen, keine Karten. Der Fortschrittsbalken ist UNBESTIMMT: die
-       Route antwortet einmal am Ende, eine erfundene Prozentzahl waere eine
-       Luege ueber den Fortschritt. */
-    [hidden]{display:none!important}
-    .escan{border:1px dotted var(--hair);border-radius:0;padding:16px 18px;
-      background:var(--panel);margin:0 0 22px}
-    .escan-head{display:flex;align-items:baseline;justify-content:space-between;
-      gap:4px 12px;flex-wrap:wrap;margin-bottom:8px}
-    .escan h2{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
-      text-transform:uppercase;color:var(--faint);margin:0;font-weight:600}
-    .escan-meta{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
-      text-transform:uppercase;color:var(--muted)}
-    .escan-progress{display:flex;align-items:center;gap:10px;margin:10px 0 0}
-    .escan-progress span{font-family:var(--font-mono);font-size:10.5px;color:var(--muted)}
-    .escan-bar{position:relative;flex:1 1 120px;height:3px;background:var(--hair-soft);
-      overflow:hidden}
-    .escan-bar i{position:absolute;top:0;left:0;height:100%;width:34%;
-      background:var(--primary);animation:escan-sweep 1.3s linear infinite}
-    @keyframes escan-sweep{from{transform:translateX(-100%)}to{transform:translateX(294%)}}
-    .escan-controls{display:flex;flex-wrap:wrap;align-items:center;gap:8px 18px;margin:12px 0 0}
-    .escan-controls label{font-size:12px;color:var(--muted);display:inline-flex;
-      gap:6px;align-items:center}
-    .escan-stale{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.04em;
-      color:var(--warn);border:1px dotted rgba(217,164,65,.5);padding:4px 8px}
-    /* Veraltete Ergebnisse bleiben lesbar, treten aber zurueck: ein Klick auf
-       eine Trefferzahl oeffnet WEITERHIN den Scan mit den Filtern, die zu
-       diesen Zahlen gehoerten. */
-    .escan.is-stale #escan-table-wrap{opacity:.5}
-    .escan-table{width:100%;border-collapse:collapse;font-family:var(--font-mono);
-      font-size:10.5px;font-variant-numeric:tabular-nums}
-    .escan-table th,.escan-table td{text-align:right;padding:6px 6px;
-      border-bottom:1px dotted var(--hair-soft);white-space:nowrap}
-    .escan-table th:first-child,.escan-table td:first-child{text-align:left}
-    .escan-table th{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;
-      color:var(--faint);border-bottom:1px dotted var(--hair);font-weight:600}
-    .escan-table td.name{font-family:var(--font-body);font-size:12px;color:var(--muted);
-      max-width:200px;overflow:hidden;text-overflow:ellipsis}
-    .escan-table a.hit{font-weight:700}
-    .escan-sub{display:block;font-family:var(--font-mono);font-size:9.5px;
-      color:var(--faint);letter-spacing:.04em}
-    .st-hits{color:var(--ok);font-weight:600}
-    .st-none{color:var(--muted)}
-    .st-stale{color:var(--warn);font-weight:600}
-    .st-warn{color:var(--warn)}
-    .st-failed{color:var(--primary);font-weight:600}
-    .st-blocked{color:var(--primary)}
-    .st-unchecked{color:var(--faint)}
-    .escan-legend{margin:10px 0 0}
-    .escan-legend b{font-weight:600;color:var(--muted)}
-    @media (prefers-reduced-motion:reduce){.escan-bar i{animation:none;transform:none;
-      width:100%;opacity:.35}}
-
-    /* Gap-Scan: die Kandidaten eines abgeschlossenen Reaktionstags. Dieselbe
-       Sprache wie die Earnings-Uebersicht - eine Tabelle, gepunktete
-       Haarlinien, Mono-Zahlen, keine Karten. Kein Balken: die Route antwortet
-       einmal am Ende, ein Fortschritt waere erfunden. */
-    .gscan-form{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;margin:12px 0 0}
-    .gscan-form label{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
-      text-transform:uppercase;color:var(--faint)}
-    /* Das Datumsfeld erbt die Feldkante der Seite; color-scheme haelt das
-       native Kalenderzeichen auf dunklem Grund sichtbar. */
-    .gscan-form input[type=date]{color-scheme:dark;font-family:var(--font-mono);font-size:12px}
-    /* Ruhige Kante wie der Tages-Scan am Kalender, Akzent nur beim Zeigen:
-       "Scannen" und "Oeffnen" sind Aktionen, keine Hauptknoepfe. */
-    .gscan-btn{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
-      text-transform:uppercase;background:none;border:1px solid var(--edge);
-      color:var(--muted);cursor:pointer;padding:5px 10px;border-radius:0}
-    .gscan-btn:hover:not(:disabled){color:var(--ink);border-color:var(--primary)}
-    .gscan-btn:disabled{opacity:.4;cursor:not-allowed}
-
-    /* CB-EDIT: overflow container for the twelve-column spread table */
-    .tbl{min-width:0;overflow-x:auto}
-    /* Auf schmalen Fenstern klappt die Leiste unter das Ergebnis: das
-       Formular bekommt eine lesbare Breite statt der vollen Fensterbreite
-       (gemessen bei 780 px: der Scan-Knopf lief als Balken ueber 780 px) */
-    @media (max-width:1212px){.shell form{max-width:560px}}
     @media (max-width:900px){
       main{padding:18px 18px 56px}
-      header{padding:16px 18px 14px}
+      header{padding:20px 18px 14px}
     }
     @media (prefers-reduced-motion:reduce){*{transition:none!important}}
   </style>
 </head>
 <body>
+{# Kein Bezug auf Kalender, Einzelformular oder Earnings-Uebersicht: die Seite
+   ist EIN Trichter. Die Route fuellt ihre uebrigen Variablen weiter - gelesen
+   wird hier keine davon, damit nichts an fehlendem Kontext scheitert. #}
 <header>
-  <h1>Options-Screener</h1>
-  {% if freshness %}
-    <span class="badge">Datenalter:
-      <span class="lamp {{ freshness }}"></span>
-      {% if freshness == 'green' %}frisch{% elif freshness == 'yellow' %}älter{% elif freshness_age is not none and freshness_age < 0 %}Zukunft{% else %}alt{% endif %}
-      {%- if freshness_age is not none %} ({{ freshness_age }} min, {% if freshness_limit is not none %}Grenze {{ freshness_limit }} min{% else %}Grenze aus{% endif %}){% endif %}
-    </span>
-    {# E3: the operator own age limit answers a DIFFERENT question than the general
-       freshness class above. "frisch" next to a violated limit was misleading, so the
-       limit gets its own named statement - plus the exact feed stamp. #}
-    {% if age_within_limit is not none %}
-    <span class="badge">innerhalb deiner Altersgrenze:
-      {{ 'ja' if age_within_limit else 'nein' }}
-      (Grenze {{ freshness_limit }} min)</span>
-    {% elif freshness_limit is none %}
-    <span class="badge">Altersgrenze aus</span>
-    {% endif %}
-    {% if feed_stamp %}<span class="badge">Kursdatum {{ feed_stamp }}</span>{% endif %}
-  {% endif %}
-  {# Datenmodus und Datenstand: der Modus ist eine Angabe des Bedieners, der
-     Quellzeitpunkt eine der Quelle - und der Abrufzeitpunkt eine dritte. Alle
-     drei stehen nebeneinander, damit keiner den anderen ersetzt. ACHTUNG: eine
-     Quelle ohne Zonenangabe bekommt hier KEIN "UTC" angehaengt. #}
-  {% if data_state %}
-    <span class="badge">Modus: {{ data_state.mode_label }}</span>
-    {% if data_state.source_timestamp_raw %}
-    <span class="badge">Datenstand {{ data_state.source_timestamp_raw }}{% if data_state.source_timestamp_zone == 'assumed_utc' %} · ohne Zonenangabe{% endif %}</span>
-    {% else %}
-    <span class="badge">Datenstand unbekannt</span>
-    {% endif %}
-    {% if data_state.fetched_text %}<span class="badge">Abruf {{ data_state.fetched_text }}</span>{% endif %}
-  {% endif %}
-  {% if trend %}
-    <span class="badge">Trend: {{ trend.label }}{% if trend.note %} - {{ trend.note }}{% endif %}</span>
-  {% endif %}
+  <h1>Gap-Spread-Trichter</h1>
+  <p class="lede">Earnings-Gap, Optionen, Verfall nach dem nächsten Bericht,
+    R/R mindestens 1 zu 2.</p>
 </header>
 <main>
-  {# Vorlaeufigkeit ist eine Eigenschaft der ganzen Antwort, nicht einer Zeile:
-     deshalb steht der Satz ueber allem anderen. Er behauptet ausdruecklich
-     NICHT, dass irgendetwas handelbar ist. #}
-  {% if data_state and data_state.provisional %}
-  <p class="provisional" role="status" id="provisional-note">
-    <b>Vorläufig</b> {{ data_state.provisional_note }}{% if data_state.note %} {{ data_state.note }}{% endif %}
-  </p>
-  {% endif %}
-  {% if calendar %}
-  {# Der Kalender ist eine Zugabe: fehlt die Quelle, steht hier ein Satz -
-     keine erfundenen Zeilen, kein Absturz des Screener-Formulars darunter. #}
-  <section class="cal" id="cal-block" aria-labelledby="cal-title">
-    {# Eigene Klasse am <h2>: der Block ist eine Sektion wie die Spread-Tabelle,
-       aber die Ueberschrift des Screener-Abschnitts bleibt die erste blanke <h2>. #}
-    <div class="cal-head">
-      <h2 class="cal-title" id="cal-title">Earnings-Kalender</h2>
-      {% if calendar.show_groups %}
-      <button type="button" class="cal-toggle" data-cal-toggle aria-expanded="true" aria-controls="cal-groups">ausblenden</button>
-      {% endif %}
+  <section id="gap-funnel" aria-labelledby="funnel-title">
+    <h2 class="lede" id="funnel-title">Reaktionstag prüfen</h2>
+    <div class="funnel-form">
+      <label for="funnel-day">Reaktionstag</label>
+      <input type="date" id="funnel-day" autocomplete="off">
+      <button type="button" class="funnel-btn" id="funnel-run">Scannen</button>
+      <span class="stale" id="funnel-stale" role="status" hidden></span>
     </div>
-    <p class="note cal-note">
-      {%- if calendar.state == 'not_configured' -%}
-        Keine Earnings-Quelle konfiguriert.
-      {%- else -%}
-        Quelle: Nasdaq{% if calendar.stand %} · Stand {{ calendar.stand }}{% endif %}
-      {%- endif -%}
-      {%- if calendar.note and calendar.state != 'not_configured' %} · {{ calendar.note }}{% endif -%}
-    </p>
-    {% if calendar.option_note %}
-    {# Der Filter ist eine Aussage ueber die Auswahl, nicht ueber den Tag:
-       Zahl und Stand stehen deshalb einmal ueber den Reitern. #}
-    <p class="note cal-filter">{{ calendar.option_note }}{% if calendar.option_stamp %} · Options-Liste: Stand {{ calendar.option_stamp }}{% endif %}</p>
-    {% endif %}
-    {% if calendar.show_groups %}
-    <div class="cal-groups" id="cal-groups">
-      <div class="cal-tabs" role="tablist">
-        {% for g in calendar.groups %}
-        <button type="button" class="cal-tab{% if g.is_default %} is-active{% endif %}" data-day="{{ g.date }}" role="tab" aria-selected="{{ 'true' if g.is_default else 'false' }}" aria-controls="cal-body-{{ g.key }}">{{ g.label }}{% if g.label %} · {% endif %}{{ g.tab_counter if g.tab_counter is not none else '–' }}</button>
-        {% endfor %}
-      </div>
-      {% for g in calendar.groups %}
-      <div class="cal-body{% if g.is_default %} show{% endif %}" id="cal-body-{{ g.key }}" data-day="{{ g.date }}" role="tabpanel">
-        <div class="cal-group">
-          <div class="cal-day-head">
-            <h3>{{ g.label }} · {{ g.date_text or 'Datum unbekannt' }}</h3>
-            {% if g.rows %}<p class="note">{{ g.counter }}{% if g.without_options %} · {{ g.without_options }} ohne gelistete Optionen ausgeblendet{% endif %}</p>{% endif %}
-            {# Ein Tag, den die Quelle nicht beantwortet hat, laesst sich nicht
-               scannen - der Knopf bleibt sichtbar, aber abgeschaltet, statt
-               eine Anfrage zu schicken, die nur 503 zurueckgeben kann. #}
-            {% if g.date %}
-            <button type="button" class="cal-scan" data-scan-day="{{ g.date }}"{% if g.unavailable %} disabled title="Dieser Tag ist bei der Quelle nicht abrufbar"{% endif %}>Earnings-Aktien scannen</button>
-            {% endif %}
-          </div>
-          {% if g.rows %}
-          <div class="cal-scroll">
-          <table class="cal-table">
-            <thead><tr><th>Zeit</th><th>Ticker</th><th>Unternehmen</th><th>EPS erwartet (USD)</th><th>Marktkap. (Mrd USD)</th></tr></thead>
-            <tbody>
-            {% for row in g.rows %}
-              <tr class="cal-row">
-                <td>{{ row.session_text }}</td>
-                <td><a href="/?ticker={{ row.symbol }}#screener-form" data-symbol="{{ row.symbol }}">{{ row.symbol }}</a></td>
-                <td class="cal-name">{{ row.name or '–' }}</td>
-                <td class="num">{{ row.eps_forecast or '–' }}</td>
-                <td class="num">{% if row.market_cap is not none %}{{ '%.1f'|format(row.market_cap / 1000000000) }}{% else %}–{% endif %}</td>
-              </tr>
-            {% endfor %}
-            </tbody>
-          </table>
-          </div>
-          {% elif g.unavailable %}
-          {# Kein belegter Inhalt: "keine Einträge" waere hier eine erfundene
-             Aussage - die Quelle hat den Tag gar nicht beantwortet. Nennt die
-             Antwort einen Grund (Block, Drosselung, Timeout), steht er daneben:
-             ein 403 ist eine Antwort, kein Schweigen. #}
-          <p class="note">Tag nicht abrufbar{% if g.failure_reason %} · {{ g.failure_reason }}{% endif %}</p>
-          {% else %}
-          <p class="note">keine Einträge</p>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p class="note">Kalender nicht verfügbar – {{ calendar.note }}</p>
-    {% endif %}
-  </section>
-  {% endif %}
-
-  {% if calendar and calendar.show_groups %}
-  {# Der Tages-Scan: eine ausdrueckliche Aktion je Kalendertag, kein Seitenaufruf.
-     Er uebernimmt die Filter aus dem Formular links; die Namen der Felder kommen
-     vom Server (scan.fields), damit ein neuer Filter nicht still fehlt. Die
-     Tabelle zeigt je Aktie die Treffer der GEWAEHLTEN Strategien, den besten
-     Verfall, den max. Verlust des besten Treffers und den Datenzustand.
-     "nicht geprueft" ist dabei kein Treffer von null. #}
-  <section class="escan" id="earnings-scan" aria-labelledby="escan-title">
-    {# Die Konfiguration des Abschnitts steht als JSON-Datenblock, nicht in
-       Attributen: tojson maskiert <, > und ', aber keine Doppelten - in einem
-       Attribut wuerde die erste davon den Wert beenden. Der Datenblock haelt
-       Route, Feldnamen und Strategiekoepfe in EINER Aussage des Servers. #}
-    <script type="application/json" id="escan-config">{{ scan|tojson }}</script>
-    <div class="escan-head">
-      <h2 id="escan-title">Earnings-Übersicht</h2>
-      <span class="escan-meta" id="escan-state" aria-live="polite">Noch kein Scan gelaufen</span>
-    </div>
-    <p class="note">Scannt einen Kalendertag mit den links eingestellten Strategien und Filtern
-      (ein Kettenabruf je Aktie, Obergrenze 40 Aktien). „Nur Aktien mit Treffern“ blendet
-      Zeilen ohne Treffer aus, ohne sie zu löschen.</p>
-    <div class="escan-progress" id="escan-progress" hidden>
-      <span id="escan-progress-text">Scan läuft …</span>
-      <span class="escan-bar" aria-hidden="true"><i></i></span>
-    </div>
-    <p class="err" id="escan-error" role="alert" hidden></p>
-    <p class="note" id="escan-coverage" aria-live="polite" hidden></p>
-    <div class="escan-controls" id="escan-controls" hidden>
-      <label><input type="checkbox" id="escan-only-hits"> Nur Aktien mit Treffern</label>
-      <span class="escan-stale" id="escan-stale" role="status" hidden></span>
-    </div>
-    <p class="note" id="escan-empty" hidden></p>
-    <div class="tbl" id="escan-table-wrap" hidden>
-      <table class="escan-table" id="escan-table">
-        <thead id="escan-thead"></thead>
-        <tbody id="escan-tbody"></tbody>
+    <p class="note" id="funnel-state" aria-live="polite">Noch kein Scan gelaufen</p>
+    <p class="err" id="funnel-error" role="alert" hidden></p>
+    <p class="stats" id="funnel-counts" aria-live="polite" hidden></p>
+    <p class="note" id="funnel-notes" hidden></p>
+    <p class="note" id="funnel-empty" hidden></p>
+    <div class="tbl" id="funnel-table-wrap" hidden>
+      <table id="funnel-table">
+        <thead>
+          <tr>
+            <th>Nummer</th>
+            <th>Symbol</th>
+            <th>Gap Prozent</th>
+            <th>Strategie</th>
+            <th>Kurs</th>
+            <th>Strikes (Long / Short)</th>
+            <th>Debit</th>
+            <th>maximaler Verlust</th>
+            <th>maximaler Gewinn</th>
+            <th>R/R</th>
+            <th>Verfall</th>
+            <th>DTE</th>
+            <th>nächster Bericht</th>
+            <th>Optionen</th>
+          </tr>
+        </thead>
+        <tbody id="funnel-tbody"></tbody>
       </table>
     </div>
-    <p class="note escan-legend">Zustände je Aktie: <b>Treffer</b> ·
-      <b>keine passenden Spreads</b> (Daten gelesen, nichts bestanden) ·
-      <b>Daten zu alt</b> · <b>Daten unvollständig</b> · <b>Abruffehler</b> ·
-      <b>nicht geprüft</b> (Budget oder Abbruch — keine Aussage über Treffer) ·
-      <b>Fenster verhindert/unklar</b> (der Earnings-Termin lässt keinen Einstieg zu).
-      Eine Trefferzahl anklicken öffnet den Einzelscan mit Aktie, Strategie, Verfall
-      und genau den Filtern, die zu dieser Zahl gehört haben.</p>
+    <details class="dropped-summary" id="funnel-excluded-block" hidden>
+      <summary id="funnel-excluded-summary">Ausschlüsse</summary>
+      <ul id="funnel-excluded"></ul>
+    </details>
+    <details class="dropped-summary" id="funnel-failures-block" hidden>
+      <summary id="funnel-failures-summary">Fehlschläge</summary>
+      <ul id="funnel-failures"></ul>
+    </details>
   </section>
-  {# Das Verhalten des Abschnitts liegt in einer eigenen Datei: der Block traegt
-     Zustaende, Filter und Wettlauf-Schutz, nicht Text. defer haelt die
-     Reihenfolge zum Rest der Seite ein, ohne das Rendern zu blockieren. #}
-  <script src="{{ url_for('static', filename='earnings_scan.js') }}" defer></script>
-  {% endif %}
-
-  {# Der Gap-Scan: die Kandidaten eines abgeschlossenen Reaktionstags. Er misst
-     NUR den Schluss des Reaktionstags gegen den Schluss davor - keine Spreads,
-     keine Optionskette: die Kette kostet je Titel Sekunden und wird erst beim
-     Oeffnen eines Titels geholt. Kein Automatiklauf beim Laden der Seite: der
-     Lauf ist je Titel ein Abruf und bleibt ein ausdruecklicher Klick. Die
-     Session eines Kalendereintrags erscheint hier bewusst nicht. #}
-  <section class="escan gscan" id="gap-scan" aria-labelledby="gscan-title">
-    <div class="escan-head">
-      <h2 id="gscan-title">GAP-SCAN nach Earnings</h2>
-      <span class="escan-meta" id="gscan-state" aria-live="polite">Noch kein Scan gelaufen</span>
-    </div>
-    <p class="note">Misst für einen abgeschlossenen Reaktionstag den Schluss gegen den Schluss
-      davor und zeigt die Titel, deren Bewegung die Schwelle und die Umsatzhürde überschreitet.
-      Geprüft wird der ganze Tag, angezeigt werden die größten Bewegungen. Diese Liste enthält
-      keine Spreads — die Optionskette wird erst beim Öffnen eines Titels geholt.</p>
-    <div class="gscan-form">
-      <label for="gscan-day">Reaktionstag</label>
-      <input type="date" id="gscan-day" autocomplete="off">
-      <button type="button" class="gscan-btn" id="gscan-run">Scannen</button>
-      <span class="escan-stale" id="gscan-stale" role="status" hidden></span>
-    </div>
-    <p class="err" id="gscan-error" role="alert" hidden></p>
-    <p class="note" id="gscan-counts" aria-live="polite" hidden></p>
-    <p class="note" id="gscan-empty" hidden></p>
-    <div class="tbl" id="gscan-table-wrap" hidden>
-      <table class="escan-table" id="gscan-table">
-        <thead id="gscan-thead"></thead>
-        <tbody id="gscan-tbody"></tbody>
-      </table>
-    </div>
-  </section>
-  {# Das Verhalten liegt in einer eigenen Datei, wie beim Tages-Scan: der Block
-     traegt Zustaende und Spalten, nicht Text. #}
-  <script src="{{ url_for('static', filename='gap_scan.js') }}" defer></script>
-  {% if feed_note %}<p class="note">{{ feed_note }}.</p>{% endif %}
-
-  {% if age_off %}
-    <div class="warn">Alter-Grenze aus - die Kurse können Stunden alt sein. Der Screener rechnet
-      damit auf veralteten Kursen (Handel auf eigenes Risiko).</div>
-  {% endif %}
-
-  {% if hint %}<div class="hint">{{ hint }}</div>{% endif %}
-
-  {% if error %}<div class="err">{{ error }}</div>{% endif %}
-
-  <div class="shell">
-  <form method="get" action="/" id="screener-form">
-    <h2 class="rail-title">Instrument</h2>
-    <input name="ticker" id="ticker" value="{{ ticker }}" placeholder="Ticker (z. B. SPY)" maxlength="6" size="10" required autocomplete="off">
-    <select name="expiration" id="expiration" {% if not dates %}disabled{% endif %}>
-      {% if not dates_loaded %}
-        <option value="">Verfälle: Ticker eingeben</option>
-      {% elif not dates %}
-        <option value="" disabled>Nicht verfügbar</option>
-      {% else %}
-        {% for d in dates %}<option value="{{ d }}" {% if d == expiration %}selected{% endif %}>{{ d }}</option>{% endfor %}
-      {% endif %}
-    </select>
-    <span class="spin" id="spin">Verfälle laden ...</span>
-    <button type="submit">Scan</button>
-    <a class="reset" href="?ticker={{ ticker }}&expiration={{ expiration }}">Standardwerte</a>
-    <fieldset class="crit">
-      <legend>Liquidität</legend>
-      <label>Spread max (%) · Standard 10.0 <input type="number" step="0.1" name="max_spread_pct" min="0" value="{{ request.args.get('max_spread_pct') or (criteria.max_spread_pct if criteria.max_spread_pct is not none else '') }}"></label>
-      <label>Spread max ($) · Standard 0.1 · greift nur bei Kursmitte ≤ 1 $ (Penny-Zone) <input type="number" step="0.01" name="max_spread_abs" min="0" value="{{ request.args.get('max_spread_abs') or (criteria.max_spread_abs if criteria.max_spread_abs is not none else '') }}"></label>
-      <label>OI min · Standard 500 <input type="number" name="min_oi" min="0" value="{{ request.args.get('min_oi') or (criteria.min_oi if criteria.min_oi is not none else '') }}"></label>
-      <label>Volumen min · Standard 0 · schließt Werte ≤ Grenze aus (strikt größer) <input type="number" name="min_volume" min="0" value="{{ request.args.get('min_volume') or (criteria.min_volume if criteria.min_volume is not none else '') }}"></label>
-      <label>Paar-Breite max ($) · Standard aus (leer = Suchart »Benachbarte Strikes«; gesetzt = Obergrenze der Breite) <input type="number" step="0.5" name="pair_max_width" min="0" value="{{ request.args.get('pair_max_width') or (criteria.pair_max_width if criteria.pair_max_width is not none else '') }}"></label>
-      <span>Suche nach Strike-Kombinationen
-        <label><input type="radio" name="pair_mode" value="adjacent" {% if pair_search.mode != 'within_width' %}checked{% endif %}> Benachbarte Strikes — nur die direkt aufeinanderfolgenden Strikes der Kette</label>
-        <label><input type="radio" name="pair_mode" value="within_width" {% if pair_search.mode == 'within_width' %}checked{% endif %}> Alle Kombinationen bis maximale Breite — braucht eine positive Breite, überspringt auch belegte Strikes dazwischen</label></span>
-      <label>Geld-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_bid_size" min="0" value="{{ request.args.get('min_bid_size') or (criteria.min_bid_size if criteria.min_bid_size is not none else '') }}"></label>
-      <label>Brief-Größe min · Standard aus (leer = Filter aus) <input type="number" name="min_ask_size" min="0" value="{{ request.args.get('min_ask_size') or (criteria.min_ask_size if criteria.min_ask_size is not none else '') }}"></label>
-      <span>OI-Pflicht
-        <label><input type="radio" name="require_oi" value="" {% if criteria.require_oi %}checked{% endif %}> Standard (an)</label>
-        <label><input type="radio" name="require_oi" value="0" {% if not criteria.require_oi %}checked{% endif %}> aus</label></span>
-      <span>Volumen-Pflicht
-        <label><input type="radio" name="require_volume" value="" {% if not criteria.require_volume %}checked{% endif %}> Standard (aus)</label>
-        <label><input type="radio" name="require_volume" value="1" {% if criteria.require_volume %}checked{% endif %}> an</label></span>
-    </fieldset>
-    <fieldset class="crit">
-      <legend>Laufzeit und Frische</legend>
-      <label>DTE von (Tage) · Standard 7 <input type="number" name="dte_min" min="0" value="{{ request.args.get('dte_min') or (criteria.dte_min if criteria.dte_min is not none else '') }}"></label>
-      <label>DTE bis (Tage) · Standard 45 <input type="number" name="dte_max" min="0" value="{{ request.args.get('dte_max') or (criteria.dte_max if criteria.dte_max is not none else '') }}"></label>
-      <label>Alter max (min) · Standard 30 <input type="number" name="max_quote_age_min" min="0" value="{{ request.args.get('max_quote_age_min') or (criteria.max_quote_age_min if criteria.max_quote_age_min is not none else '') }}" {% if age_off %}disabled{% endif %}> <small class="warn-min">0 streicht alle Kurse (nicht »aus«)</small></label>
-      <label><input type="checkbox" name="ignore_quote_age" value="1" {% if age_off %}checked{% endif %}> Alter-Grenze aus</label>
-      <span>Datenmodus
-        <label><input type="radio" name="data_mode" value="fresh" {% if criteria.data_mode != 'last_available' %}checked{% endif %}> Aktualitätsfilter (Standard) — die Altersgrenze streicht ältere Kurse</label>
-        <label><input type="radio" name="data_mode" value="last_available" {% if criteria.data_mode == 'last_available' %}checked{% endif %}> Letzter verfügbarer Marktstand — ältere Kurse zur vorläufigen Vorbereitung, klar als vorläufig gekennzeichnet</label></span>
-    </fieldset>
-    <fieldset class="crit">
-      <legend>Volatilität</legend>
-      <label>IV min (%) · Standard aus (leer = Filter aus) <input type="number" step="0.1" name="iv_min" min="0" value="{{ request.args.get('iv_min') or (criteria.iv_min if criteria.iv_min is not none else '') }}"></label>
-      <label>IV max (%) · Standard aus (leer = Filter aus) <input type="number" step="0.1" name="iv_max" min="0" value="{{ request.args.get('iv_max') or (criteria.iv_max if criteria.iv_max is not none else '') }}"></label>
-      <span>IV-Vorliebe
-        <label><input type="radio" name="iv_pref" value="" {% if criteria.iv_pref is none %}checked{% endif %}> Standard</label>
-        <label><input type="radio" name="iv_pref" value="high" {% if criteria.iv_pref == "high" %}checked{% endif %}> hohe IV</label>
-        <label><input type="radio" name="iv_pref" value="low" {% if criteria.iv_pref == "low" %}checked{% endif %}> niedrige IV</label></span>
-    </fieldset>
-    <fieldset class="crit">
-      <legend>Bewertung</legend>
-      <label>Gewicht Spread · Standard 0.5 <input type="number" step="0.1" name="weight_spread" min="0" value="{{ request.args.get('weight_spread') or (criteria.weight_spread if criteria.weight_spread is not none else '') }}"></label>
-      <label>Gewicht OI · Standard 0.3 <input type="number" step="0.1" name="weight_oi" min="0" value="{{ request.args.get('weight_oi') or (criteria.weight_oi if criteria.weight_oi is not none else '') }}"></label>
-      <label>Gewicht IV · Standard 0.2 <input type="number" step="0.1" name="weight_iv" min="0" value="{{ request.args.get('weight_iv') or (criteria.weight_iv if criteria.weight_iv is not none else '') }}"></label>
-    </fieldset>
-    {# L: die Wahl ist die STRATEGIE, nicht eine Kettenseite - der Name sagt, welches
-       Bein gekauft wird. option_type bleibt als alte Adresse gueltig (siehe server.py). #}
-    <fieldset class="crit">
-      <legend>Strategie</legend>
-      <label><input type="radio" name="strategy" value="bull_call_debit" {% if strategy == 'bull_call_debit' %}checked{% endif %}> Bull Call Spread (Debit) — Call kaufen (niedriger Strike), Call verkaufen (höherer Strike)</label>
-      <label><input type="radio" name="strategy" value="bear_put_debit" {% if strategy == 'bear_put_debit' %}checked{% endif %}> Bear Put Spread (Debit) — Put kaufen (höherer Strike), Put verkaufen (niedrigerer Strike)</label>
-      <label><input type="radio" name="strategy" value="bull_put_credit" {% if strategy == 'bull_put_credit' %}checked{% endif %}> Bull Put Spread (Credit) — Put kaufen (niedrigerer Strike), Put verkaufen (höherer Strike)</label>
-      <label><input type="radio" name="strategy" value="bear_call_credit" {% if strategy == 'bear_call_credit' %}checked{% endif %}> Bear Call Spread (Credit) — Call kaufen (höherer Strike), Call verkaufen (niedrigerer Strike)</label>
-    </fieldset>
-    <fieldset class="crit">
-      <legend>Position</legend>
-      <label>Multiplikator (Stück je Kontrakt) · Standard 100 <input type="number" name="multiplier" min="1" value="{{ request.args.get('multiplier') or (criteria.multiplier if criteria.multiplier is not none else '') }}"></label>
-      <label>Stückzahl (Kontrakte) · Standard 1 <input type="number" name="quantity" min="1" value="{{ request.args.get('quantity') or (criteria.quantity if criteria.quantity is not none else '') }}"></label>
-      <label>Gebühren gesamt (USD) · Standard 0 <input type="number" step="0.01" name="fees" min="0" value="{{ request.args.get('fees') or (criteria.fees if criteria.fees is not none else '') }}"></label>
-      <label>Budget (USD) · Standard aus (leer = keine Grenze) <input type="number" step="1" name="budget" min="0" value="{{ request.args.get('budget') or (criteria.budget if criteria.budget is not none else '') }}"></label>
-    </fieldset>
-</form>
-  <div class="results">
-    {# Das Earnings-Panel haengt am Ticker, nicht an der Ergebnisliste: der Termin
-       ist auch dann sichtbar, wenn noch kein Verfall gewaehlt wurde. #}
-    {% if earnings %}
-    <div class="earn">
-      <h3>Earnings-Termin</h3>
-      {% if earnings.failed %}
-        <p class="note">Die Earnings-Daten konnten für diesen Ticker nicht gelesen werden. Es wird kein Termin angenommen.</p>
-      {% else %}
-      <div class="earn-stats">
-        <span>Nächster Termin: <b>{{ earnings.date or 'UNBEKANNT' }}</b></span>
-        <span>Veröffentlichung: <b>{{ earnings.session }}</b></span>
-        <span>Beleg: {{ earnings.confirmation }}</span>
-        <span>Status: {{ earnings.status }}</span>
-        {% if earnings.source %}<span>Quelle: {{ earnings.source }}</span>{% endif %}
-        {% if earnings.checked %}<span>Quellenprüfung: {{ earnings.checked }}{% if earnings.cache_state and earnings.cache_state != 'live' %} (aus Cache){% endif %}</span>{% endif %}
-        <span>Geplanter Ausstieg: <b>{{ earnings.exit or 'UNBEKANNT' }}</b></span>
-      </div>
-      <div class="earn-stats">
-        <span>Verfall nach Earnings:
-          {% if not earnings.date %}<b>nicht bestimmbar</b> (kein Termin)
-          {% elif earnings.after %}<b>{{ earnings.after|join(', ') }}</b>
-          {% elif earnings.selected %}<b>{{ earnings.selected }}</b> (außerhalb des Laufzeitfensters)
-          {% else %}<b>KEINER</b>{% endif %}
-        </span>
-        {% if earnings.after_hidden %}<span>+{{ earnings.after_hidden }} weitere Verfälle außerhalb des Laufzeitfensters</span>{% endif %}
-        {% if earnings.selected and earnings.selected in earnings.after %}<span>Ausgewählt: <b>{{ earnings.selected }}</b> (erster gelisteter Verfall danach)</span>{% endif %}
-        <span>Fenster:
-          {% if earnings.eligible %}<span class="ok">erfüllt</span>
-          {% elif earnings.status in ('unknown', 'unavailable', 'invalid') %}<span class="unknown">nicht entscheidbar</span>
-          {% else %}<span class="blocked">nicht erfüllt</span>{% endif %}
-        </span>
-      </div>
-      {% if earnings.reasons %}
-      <ul>
-        {% for grund in earnings.reasons %}<li>{{ grund }}</li>{% endfor %}
-      </ul>
-      {% endif %}
-      {% if earnings.notes %}
-      <p class="note">{{ earnings.notes|join(' ') }}</p>
-      {% endif %}
-      <p class="note">Der Ausstiegstag ist ein PLAN, keine Order. Er ist der letzte US-Handelstag
-        vor dem Termin - unabhängig davon, ob vorbörslich oder nachbörslich berichtet wird.
-        Ein Verfall nach Earnings allein macht einen Trade nicht geeignet.</p>
-      {% endif %}
-    </div>
-    {% endif %}
-  {% if results is not none %}
-    {% if verticals %}
-      {% set beste = namespace(wert=None) %}
-      {% for v, rendite, abstand in verticals %}{% if rendite is not none and (beste.wert is none or rendite > beste.wert) %}{% set beste.wert = rendite %}{% endif %}{% endfor %}
-      <p class="lede">{{ verticals|length }} Spreads{% if beste.wert is not none %}, bester {{ '%.2f'|format(beste.wert) }} % Rendite (brutto){% endif %}</p>
-    {% endif %}
-    <div class="stats">
-      <span>Kette: {{ results|length + dropped_count }}</span>
-      <span>Kandidaten: <b>{{ results|length }}</b></span>
-      <span>Gefiltert: {{ dropped_count }}</span>
-      <span>Verfall {{ expiration }}</span>
-      {% if dte is not none %}<span>DTE {{ dte }} (Tage ab heute)</span>{% endif %}
-      {% if feed_time %}<span>Kursdatum {{ feed_time }}</span>{% endif %}
-    </div>
-    {# Suchart und Umfang stehen VOR dem Abschnitt: auch (und gerade) wenn kein
-       Spread uebrig bleibt, muss der Leser sehen, welche Suche lief und wie viele
-       Kombinationen sie geprueft hat. #}
-    {% if pair_search %}
-      <p class="note" id="pair-search">Suchart: <strong>{{ pair_search.label }}</strong>{% if pair_search.max_width %} · maximale Breite {{ pair_search.max_width }} $ · nur Kombinationen innerhalb dieser Breite{% endif %}{% if pair_search.coverage and pair_search.coverage.enumerated %} · geprüft {{ pair_search.coverage.enumerated }}{% if pair_search.coverage.possible_exact %} von {{ pair_search.coverage.possible }}{% else %} (mindestens so viele, die Suche wurde gekappt){% endif %} Kombinationen{% if pair_search.coverage.capped %} — <strong>gekappt</strong> bei {{ pair_search.coverage.limit }}; die Suche ist damit NICHT vollständig{% endif %}{% endif %}{% if pair_search.width_ignored %} · {{ pair_search.note }}{% endif %}</p>
-    {% endif %}
-    {% if verticals %}
-      <h2>{{ strategy_label or 'Spreads' }}</h2>
-      <p class="note">Die gewählte Strategie: {{ strategy_buy }}, {{ strategy_sell }}. Der Basiswert
-        muss {{ strategy_direction }} laufen. Dieselben Filter wie die Liste oben, auf beide Beine
-        angewandt - ein Verfall außerhalb der Laufzeitgrenze lässt den Abschnitt leer.
-        {% if strategy_kind == 'credit' %}Credit = Bid des verkauften Beins minus Ask des gekauften
-        Beins - der konservativ sofort erzielbare Betrag, nie ein Mittelwert.{% else %}Debit = Kauf
-        zum Ask, Verkauf zum Bid.{% endif %}</p>
-      <p class="note">Die Bruttospalten gelten <strong>je Einheit und vor Kosten</strong> — sie sind die Vergleichsbasis zwischen zwei Spreads.
-        {% if strategy_kind == 'credit' %}Max Gewinn ist der Credit, max Verlust die Strike-Breite
-        minus Credit.{% endif %}
-        Die Nettowerte nach Multiplikator, Stückzahl und Gebühren stehen im JSON; hier erscheint nur, was nach Kosten nicht sicher verliert. Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung, in die der Basiswert laufen muss (↑ steigen für Calls, ↓ fallen für Puts){% if strategy_kind == 'credit' %}. Bei einem Credit-Spread ist der Break-even die <strong>Verlustschwelle</strong>: Gewinn entsteht, solange der Basiswert auf der anderen Seite bleibt{% endif %}.</p>
-      <p class="note">{% if strategy_kind == 'credit' %}Die Spalte Risikobudget ($) ist der maximale
-        Verlust nach Multiplikator, Stückzahl und Gebühren ((Breite − Credit) × Multiplikator ×
-        Stückzahl + Gebühren) — eine eigene Rechnung aus den Kursen, <strong>keine Broker-Margin</strong>.
-        Der Credit bleibt der Wert je Einheit.{% else %}Die Spalte Position ($) rechnet mit Multiplikator, Stückzahl und Gebühren aus dem Formular; der Debit bleibt der Wert je Einheit.{% endif %}</p>
-      <p class="note sortbar" id="sortbar">Sortierung:
-        {% for mode in sort_modes %}<a href="?{{ sort_links[mode] }}"{% if mode == sort_mode %} class="aktiv" aria-current="true"{% endif %}>{{ sort_labels[mode] }}</a>{% if not loop.last %}<span>·</span>{% endif %}{% endfor %}
-      </p>
-      <p class="note">Keine Spalte ist eine Gewinnwahrscheinlichkeit oder eine erwartete Rendite:
-        die Zahlen beschreiben die Auszahlung <em>bei Verfall</em> (best case / worst case) und
-        ordnen sie; wie wahrscheinlich ein Ausgang ist, sagt hier nichts und wird auch nicht behauptet.
-        Zeilen ohne belastbaren Nenner (kein Break-even, kein Kurs, kein Restsaldo) stehen am Ende
-        und tragen einen Strich.</p>
-      <div class="tbl"><table>
-        <thead><tr>
-          <th>Spread</th><th>Verfall</th><th>Breite</th><th>{% if strategy_kind == 'credit' %}Credit (je Einheit){% else %}Debit (je Einheit){% endif %}</th><th>{% if strategy_kind == 'credit' %}Risikobudget ($){% else %}Position ($){% endif %}</th><th>max Verlust<br>(je Einheit, brutto)</th><th>max Gewinn<br>(je Einheit, brutto)</th><th><a href="?{{ sort_links.rendite_desc }}" title="nach Rendite sortieren (absteigend)">Rendite<br>(brutto)</a></th><th>Breakeven<br>(brutto)</th><th><a href="?{{ sort_links.be_asc }}" title="nach Abstand zum Break-even sortieren (aufsteigend)">BE-Abstand</a></th><th>{% if strategy_kind == 'credit' %}Credit/Breite %{% else %}Debit/Breite %{% endif %}</th><th>Hinweis</th>
-        </tr></thead>
-        {% for v, rendite, abstand in verticals %}
-          <tr>
-            <td title="Kauf {{ v.long.asset.symbol }} · Verkauf {{ v.short.asset.symbol }}">{{ v.long.asset.underlying.symbol }} {{ '%.2f'|format(v.long.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }} kaufen / {{ '%.2f'|format(v.short.asset.strike) }} {{ 'Put' if spread_type == 'put' else 'Call' }} verkaufen</td>
-            <td>{{ v.expiration }}</td>
-            <td>{{ '%.2f'|format(v.strike_width) }}</td>
-            <td>{% if strategy_kind == 'credit' %}{% if v.net_credit is none %}-{% else %}{{ '%.2f'|format(v.net_credit) }}{% endif %}{% else %}{{ '%.2f'|format(v.net_debit) }}{% endif %}</td>
-            {# D13: was die Position kostet - Multiplikator, Stueckzahl und Gebuehren
-               stehen im Formular. Ohne Groesse ein Strich, keine stille Null.
-               Credit: das Risikobudget (max. Verlust inkl. Gebuehren), nicht der
-               Credit als negativer Einsatz. #}
-            <td>{% if strategy_kind == 'credit' %}{% if v.risk_budget(criteria) is none %}-{% else %}{{ '%.0f'|format(v.risk_budget(criteria)) }}{% endif %}{% else %}{% if v.position_debit(criteria) is none %}-{% else %}{{ '%.0f'|format(v.position_debit(criteria)) }}{% endif %}{% endif %}</td>
-            <td>{{ '%.2f'|format(v.max_loss) }}</td>
-            <td>{{ '%.2f'|format(v.max_profit) }}</td>
-            <td{% if v.max_profit == 0 %} title="kein Gewinn möglich"{% endif %}>{% if rendite is none %}-{% else %}{{ '%.2f'|format(rendite) }} %{% endif %}</td>
-            <td>{{ '%.2f'|format(v.breakeven) }}</td>
-            <td>{% if abstand is none %}-{% else %}{{ '↑' if v.breakeven > v.long.underlying_price else '↓' }} {{ '%.2f'|format(abstand) }} %{% endif %}</td>
-            <td>{% if strategy_kind == 'credit' %}{% if v.credit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.credit_width_ratio * 100) }} %{% endif %}{% else %}{% if v.debit_width_ratio is none %}-{% else %}{{ '%.2f'|format(v.debit_width_ratio * 100) }} %{% endif %}{% endif %}</td>
-            <td>{% if strategy_kind == 'credit' %}{% if v.credit_ge_width %}Credit ≥ Breite{% else %}-{% endif %}{% else %}{% if v.debit_ge_width %}kein Gewinn möglich{% else %}-{% endif %}{% endif %}</td>
-          </tr>
-        {% endfor %}
-      </table></div></div>
-    {% endif %}
-    {% if results %}
-      <div class="tbl"><table>
-        <thead><tr>
-          <th>Kontrakt</th><th>Bid</th><th>Ask</th><th>Spread %</th><th>IV %</th><th>OI</th><th>Vol</th><th>Δ×100</th><th>Score</th>
-        </tr></thead>
-        <tbody>
-        {% for r in results %}
-          <tr>
-            <td title="{{ r.reasons|join('; ') }}">{{ r.quote.asset.symbol }}</td>
-            <td>{{ r.quote.bid }}</td><td>{{ r.quote.ask }}</td>
-            <td>{{ '%.1f'|format(r.spread_pct) }}</td>
-            <td>{{ '%.0f'|format(r.quote.iv) }}</td>
-            <td>{{ r.quote.open_interest }}</td><td>{{ r.quote.volume }}</td>
-            <td>{% if r.quote.delta is none %}–{% else %}{{ '%.0f'|format(r.quote.delta) }}{% endif %}</td>
-            <td class="score">{{ '%.2f'|format(r.score) }}</td>
-          </tr>
-        {% endfor %}
-        </tbody>
-      </table></div></div>
-    {% else %}
-      <p class="note">Keine Kontrakte haben die Kriterien bestanden.</p>
-    {% endif %}
-    {# Ausschlussuebersicht: JE EINHEIT eine Zeile, keine Gesamtsumme. Eine
-       gestrichene Kombination sind zwei Kontrakte, und ein Verfall kann die
-       ganze Kette verbergen - eine Addition waere eine Zahl ohne Bedeutung. #}
-    {% if exclusions %}
-      <div class="excl" id="exclusions">
-        <h3>Ausschlüsse nach Einheit</h3>
-        {% for block in exclusions %}
-          <p class="excl-unit" data-unit="{{ block.level }}"><b>{{ block.unit }}: {{ block.counted }}</b>
-            {%- for c in block.categories %} · {{ c.label }} {{ c.count }}{% endfor %}</p>
-          <p class="excl-note">{{ block.first_reason_note }}{% if block.not_checked %} Nicht geprüft wurden: {{ block.not_checked|join(', ') }}.{% endif %}{% if block.unmapped %} Nicht zugeordnete Gründe: {{ block.unmapped|join(' · ') }}.{% endif %}</p>
-        {% endfor %}
-      </div>
-    {% endif %}
-    {% if dropped_reasons %}
-      <details class="dropped-summary">
-        <summary>Warum gestrichen? Je Kontrakt zählt der erste zutreffende Filter. Je Gruppe steht ein Beispiel, die Zahl nennt alle betroffenen Kontrakte.</summary>
-        <ul class="dropped-reasons">
-          {% for g in dropped_reasons -%}
-          <li class="drop-reason">{{ g.reason }} <span class="drop-count">{{ g.count }}</span></li>
-          {% endfor -%}
-        </ul>
-      </details>
-    {% endif %}
-    {% if vertical_drops %}
-      <details class="dropped-summary">
-        <summary>Warum kein Spread? Je Paar zählt das erste Bein, das eine Regel verletzt. Je Gruppe steht ein Beispiel, die Zahl nennt alle betroffenen Paare.</summary>
-        <ul class="dropped-reasons vertical-drops">
-          {% for g in vertical_drops -%}
-          <li class="vertical-reason">{{ g.reason }} <span class="vertical-count">{{ g.count }}</span></li>
-          {% endfor -%}
-        </ul>
-      </details>
-    {% endif %}
-  {% elif not error and ticker %}
-    <p class="note">Scan laufen ... (falls dies steht, war die Ergebnisliste leer)</p>
-  {% else %}
-    <p class="note">Ticker eingeben - Verfallsdaten laden automatisch. Danach Verfall wählen und "Scan" drücken.</p>
-  {% endif %}
-  </div>
-  </div>
+  <footer>
+    <p class="note">CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit.</p>
+  </footer>
 </main>
-
-<script>
-// Auto-load the real expiration list as soon as the ticker is fully
-// typed (server-side validated against the chain's real dates).
-// Race-safety (CodeRabbit): each fetch remembers ITS ticker and only
-// a response for the CURRENTLY-typed ticker may update the selector;
-// a failure clears `last` so returning to the previous ticker re-fetches.
-(function () {
-  var input = document.getElementById('ticker');
-  var exp = document.getElementById('expiration');
-  var spin = document.getElementById('spin');
-  var debounce = null;
-  var last = {{ (ticker or '')|tojson }};
-  var generation = 0;   // round-2 finding: only the newest load may act
-
-  function esc(s) { return encodeURIComponent(s); }
-
-  function placeholder(text) {
-    exp.innerHTML = '';
-    var o = document.createElement('option');
-    o.value = '';
-    o.textContent = text;
-    exp.appendChild(o);
-  }
-
-  function invalidateSelector(text) {
-    // clear stale/failing state immediately (finding 3): the selector
-    // must never survive showing dates for a no-longer-typed ticker
-    placeholder(text);
-    exp.disabled = true;
-  }
-
-  function loadDates(t) {
-    var gen = ++generation;
-    spin.style.display = 'inline';
-    invalidateSelector('Verfälle laden ...');
-    fetch('/api/screen?ticker=' + esc(t))
-      .then(function (r) { return r.ok ? r.json() : Promise.reject(r.status); })
-      .then(function (d) {
-        if (gen !== generation) return;                      // older request
-        if (input.value.trim().toUpperCase() !== t) return;  // stale response
-        last = t;
-        exp.innerHTML = '';
-        (d.listed_dates || []).forEach(function (date) {
-          var o = document.createElement('option');
-          o.value = date;
-          o.textContent = date;
-          exp.appendChild(o);
-        });
-        if (!exp.options.length) {
-          placeholder('keine Verfälle gefunden');
-          exp.disabled = true;
-        } else {
-          exp.disabled = false;
-        }
-      })
-      .catch(function () {
-        if (gen !== generation) return;                      // older request
-        if (input.value.trim().toUpperCase() !== t) return;  // stale failure
-        last = '';               // finding 2: A->B fail->A must refetch A
-        placeholder('Verfälle konnten nicht geladen werden');
-        exp.disabled = true;
-      })
-      .finally(function () {
-        if (gen === generation) spin.style.display = 'none';
-      });
-  }
-
-  // prefilled ticker but no server-rendered dates (e.g. bad URL date):
-  // kick off one load right away so the selector becomes usable
-  if (input.value.trim().toUpperCase() && exp.disabled) loadDates(last);
-
-  input.addEventListener('input', function () {
-    var v = input.value.trim().toUpperCase();
-    if (!/^[A-Z]{1,6}$/.test(v)) {
-      // invalid/no ticker: drop stale dates at once (finding 3)
-      clearTimeout(debounce);
-      last = '';
-      invalidateSelector('Ticker prüfen - 1-6 Buchstaben A-Z');
-      return;
-    }
-    clearTimeout(debounce);
-    debounce = setTimeout(function () {
-      if (v !== last) loadDates(v);           // skip refetch on same ticker
-    }, 350);                                  // debounce keystrokes
-  });
-})();
-
-// Kalender-Reiter: genau ein sichtbarer Tageskoerper, Einklappen, Symbol-Klick.
-// Bewusst ohne Framework - die Seite traegt dieses eine kleine Skript.
-(function () {
-  var block = document.getElementById('cal-block');
-  if (!block) return;
-  var tabs = Array.prototype.slice.call(block.querySelectorAll('.cal-tab'));
-  var bodies = Array.prototype.slice.call(block.querySelectorAll('.cal-body'));
-
-  function showDay(day) {
-    tabs.forEach(function (t) {
-      var on = t.getAttribute('data-day') === day;
-      t.classList.toggle('is-active', on);
-      t.setAttribute('aria-selected', on ? 'true' : 'false');
-    });
-    bodies.forEach(function (b) {
-      b.classList.toggle('show', b.getAttribute('data-day') === day);
-    });
-  }
-
-  tabs.forEach(function (t) {
-    t.addEventListener('click', function () { showDay(t.getAttribute('data-day')); });
-  });
-
-  var toggle = block.querySelector('[data-cal-toggle]');
-  if (toggle) {
-    toggle.addEventListener('click', function () {
-      var zu = block.classList.toggle('collapsed');
-      toggle.textContent = zu ? 'einblenden' : 'ausblenden';
-      toggle.setAttribute('aria-expanded', zu ? 'false' : 'true');
-    });
-  }
-
-  // Symbol-Klick: Tickerfeld fuellen und zum Formular scrollen. Der href
-  // bleibt als Rückfall ohne JavaScript bestehen.
-  block.addEventListener('click', function (ev) {
-    var ziel = ev.target;
-    if (!ziel || !ziel.closest) return;
-    var link = ziel.closest('a[data-symbol]');
-    if (!link) return;
-    ev.preventDefault();
-    var feld = document.getElementById('ticker');
-    if (feld) {
-      feld.value = link.getAttribute('data-symbol');
-      feld.dispatchEvent(new Event('input', {bubbles: true}));
-      feld.focus();
-    }
-    var formular = document.getElementById('screener-form');
-    if (formular) formular.scrollIntoView({behavior: 'smooth', block: 'start'});
-  });
-})();
-</script>
+{# Das Verhalten liegt in einer eigenen Datei: der Block traegt Zustaende,
+   Zeilen und Fehlertexte, nicht Text. #}
+<script src="{{ url_for('static', filename='gap_funnel.js') }}" defer></script>
 </body>
 </html>
