@@ -11,7 +11,14 @@
 import unittest
 from unittest.mock import MagicMock
 
+import requests
+
 from ..adapters.quotes.CBOEQuoteAdapter import (
+    CHAIN_BLOCKED,
+    CHAIN_MALFORMED,
+    CHAIN_NOT_LISTED,
+    CHAIN_THROTTLED,
+    CHAIN_UNREACHABLE,
     CboeNotFoundError,
     CBOEQuoteAdapter,
     CboeRequestError,
@@ -131,10 +138,13 @@ class TestCboeAdapter(unittest.TestCase):
         self.assertEqual(q.iv, 0.0)
         self.assertIsNone(q.delta)
 
-    def test_unknown_symbol_raises_403_as_not_found(self):
+    def test_a_blocked_client_is_named_blocked_not_unknown_symbol(self):
+        # 403 is the feed refusing THIS client, not "no such symbol" - and a
+        # retry cannot change a block.
         ad = self._adapter_with({}, status=403)
-        with self.assertRaises((CboeNotFoundError, CboeRequestError)):
+        with self.assertRaises(CboeRequestError) as ctx:
             ad.get_expiration_dates("AAAANOTREAL")
+        self.assertEqual(ctx.exception.reason, CHAIN_BLOCKED)
 
     def test_get_quote_option_by_occ_symbol(self):
         payload = _chain_payload(["FAKE261016C00100000"])
@@ -269,6 +279,96 @@ class TestCboeAdapter(unittest.TestCase):
         payload = _chain_payload(["FAKE280229C00100000", "FAKE261016C00100000"])
         ad = self._adapter_with(payload)
         self.assertIn("2028-02-29", ad.get_expiration_dates("FAKE"))
+
+
+class TestChainFailuresAreClassified(unittest.TestCase):
+    """Each failure gets its own class, and only the retryable ones repeat.
+
+    Fake session, no network: the responses are handed out in order, the sleep
+    is recorded instead of waited, so the retry POLICY is what is asserted.
+    """
+
+    def _adapter(self, responses):
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        ad._session.get.side_effect = list(responses)
+        geschlafen = []
+        ad._sleep = geschlafen.append
+        return ad, geschlafen
+
+    @staticmethod
+    def _ok():
+        return _fake_response(_chain_payload(["FAKE261016C00100000"]))
+
+    def test_a_throttled_call_is_retried_once_and_then_succeeds(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 429), self._ok()])
+        quotes = ad.get_options("FAKE")
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(ad._session.get.call_count, 2)
+        self.assertEqual(quotes.attempts, 2)
+        # 0.4 s plus jitter, and only one wait.
+        self.assertEqual(len(geschlafen), 1)
+        self.assertAlmostEqual(geschlafen[0], 0.4, delta=0.11)
+
+    def test_a_persistent_throttle_stops_after_three_attempts(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 429)] * 3)
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_THROTTLED)
+        self.assertEqual(ctx.exception.attempts, 3)
+        self.assertEqual(ad._session.get.call_count, 3)
+        self.assertEqual(len(geschlafen), 2)
+        self.assertAlmostEqual(geschlafen[1], 1.2, delta=0.11)
+
+    def test_a_blocked_client_is_not_retried(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 403)])
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_BLOCKED)
+        self.assertEqual(ctx.exception.attempts, 1)
+        self.assertEqual(ad._session.get.call_count, 1)
+        self.assertEqual(geschlafen, [])
+
+    def test_an_unlisted_symbol_is_not_retried(self):
+        ad, geschlafen = self._adapter([_fake_response({}, 404)])
+        with self.assertRaises(CboeNotFoundError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_NOT_LISTED)
+        self.assertEqual(ad._session.get.call_count, 1)
+        self.assertEqual(geschlafen, [])
+
+    def test_a_timeout_is_retried_and_then_succeeds(self):
+        ad, geschlafen = self._adapter([requests.Timeout("slow"), self._ok()])
+        quotes = ad.get_options("FAKE")
+        self.assertEqual(len(quotes), 1)
+        self.assertEqual(quotes.attempts, 2)
+        self.assertEqual(ad._session.get.call_count, 2)
+        self.assertEqual(len(geschlafen), 1)
+
+    def test_a_5xx_is_retried_like_an_unreachable_feed(self):
+        ad, _ = self._adapter([_fake_response({}, 503), self._ok()])
+        self.assertEqual(ad.get_options("FAKE").attempts, 2)
+
+    def test_an_unreadable_body_is_named_malformed_and_not_retried(self):
+        kaputt = MagicMock()
+        kaputt.status_code = 200
+        kaputt.json.return_value = {"data": None}
+        ad, geschlafen = self._adapter([kaputt])
+        with self.assertRaises(CboeRequestError) as ctx:
+            ad.get_options("FAKE")
+        self.assertEqual(ctx.exception.reason, CHAIN_MALFORMED)
+        self.assertEqual(ad._session.get.call_count, 1)
+        self.assertEqual(geschlafen, [])
+
+    def test_a_cache_hit_costs_no_source_call(self):
+        ad, _ = self._adapter([self._ok()])
+        self.assertEqual(ad.get_options("FAKE").attempts, 1)
+        self.assertEqual(ad.get_options("FAKE").attempts, 0)
+        self.assertEqual(ad._session.get.call_count, 1)
+
+    def test_every_class_is_reachable_and_distinct(self):
+        self.assertEqual(len({CHAIN_BLOCKED, CHAIN_THROTTLED, CHAIN_NOT_LISTED,
+                              CHAIN_UNREACHABLE, CHAIN_MALFORMED}), 5)
 
 
 class TestOptionQuoteExtension(unittest.TestCase):

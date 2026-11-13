@@ -16,7 +16,9 @@
 """
 import logging
 import math
+import random
 import re
+import time
 from collections import OrderedDict
 from datetime import date
 
@@ -27,13 +29,46 @@ from ...assets import _DAYS_IN_MONTH, Asset, Call, Option, Put, asset_factory, p
 from ...quotes import OptionQuote, Quote
 from .QuoteAdapter import QuoteAdapter
 
+# --- why a chain call failed ----------------------------------------------- #
+# Stable machine-readable classes. A caller may show the class (and its own
+# German sentence) in a 200 body; the exception text stays a log detail, because
+# a requests message carries URLs and socket details.
+CHAIN_BLOCKED = "blocked"          # 403: the feed refuses this client
+CHAIN_THROTTLED = "throttled"      # 429: too many requests
+CHAIN_NOT_LISTED = "not_listed"    # 404: no chain for this underlying
+CHAIN_UNREACHABLE = "unreachable"  # timeout, connection error, 5xx
+CHAIN_MALFORMED = "malformed"      # 200, but the payload cannot be read
+CHAIN_REASONS = (CHAIN_BLOCKED, CHAIN_THROTTLED, CHAIN_NOT_LISTED,
+                 CHAIN_UNREACHABLE, CHAIN_MALFORMED)
 
-class CboeNotFoundError(Exception):
-    """Unknown symbol or empty chain in the CBOE feed."""
+
+class CboeChainError(Exception):
+    """A chain call that failed, carrying the class and the attempt count.
+
+    ``reason`` is the part a caller may repeat: it names WHAT happened, so a
+    scan can say "throttled" instead of "could not be read". ``attempts`` is how
+    many requests the answer really cost - a retried call is not one call.
+    """
+
+    reason = CHAIN_UNREACHABLE
+
+    def __init__(self, message="", reason=None, attempts=1):
+        super().__init__(message)
+        if reason is not None:
+            self.reason = reason
+        self.attempts = attempts
 
 
-class CboeRequestError(Exception):
+class CboeNotFoundError(CboeChainError):
+    """Unknown symbol or empty chain in the CBOE feed (no chain listed)."""
+
+    reason = CHAIN_NOT_LISTED
+
+
+class CboeRequestError(CboeChainError):
     """The CBOE feed rejected the request (blocked / throttled / down)."""
+
+    reason = CHAIN_UNREACHABLE
 
 
 _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -77,9 +112,13 @@ class ChainResult(list):
     (measured 2026-10-12), so no existing assertion had to be touched.
     """
 
-    def __init__(self, items=(), skipped=0):
+    def __init__(self, items=(), skipped=0, attempts=1):
         super().__init__(items)
         self.skipped = skipped
+        #: How many requests the chain cost. One for a single fetch that was
+        #: not retried, more when the feed throttled or broke; 0 for a cache
+        #: hit, which spends no request at all.
+        self.attempts = attempts
 
 
 class CBOEQuoteAdapter(QuoteAdapter):
@@ -96,11 +135,21 @@ class CBOEQuoteAdapter(QuoteAdapter):
 
     MAX_CACHE_UNDERLYINGS = 64
 
-    def __init__(self, timeout_seconds=30, session=None, now_fn=None):
+    #: Backoff before the second and the third attempt. A 429 asks for less
+    #: traffic, not for a different request, so waiting is the only useful
+    #: reaction; the jitter keeps parallel workers from retrying in lockstep.
+    RETRY_BACKOFF_SECONDS = (0.4, 1.2)
+
+    def __init__(self, timeout_seconds=30, session=None, now_fn=None,
+                 sleep_fn=None, backoff_seconds=RETRY_BACKOFF_SECONDS):
         self._timeout = timeout_seconds
         self._session = session or requests.Session()
         self._session.headers.update({"User-Agent": _BROWSER_UA, "Accept": "application/json"})
         self._now_fn = now_fn if now_fn is not None else arrow.utcnow
+        # Injected in tests: the retry policy is what is under test, not the
+        # wall clock.
+        self._sleep = sleep_fn if sleep_fn is not None else time.sleep
+        self._backoff_seconds = tuple(backoff_seconds)
         # underlying -> {"timestamp": str, "current_price": float, "options": [...]}
         self._cache = OrderedDict()
         self._cache_ttl_seconds = 900  # bounded; refreshed on timestamp change
@@ -109,8 +158,48 @@ class CBOEQuoteAdapter(QuoteAdapter):
     # internal helpers
     # ------------------------------------------------------------------ #
 
+    @staticmethod
+    def _reason_for_status(status):
+        """``(reason, retryable)`` for a non-200 answer.
+
+        403 is a block, 429 a throttle, 404 an unlisted symbol. Retrying a block
+        or an unlisted symbol cannot change the answer - only the throttle and a
+        failing feed (5xx, read like an unreachable connection) are repeated.
+        Anything else is an unexpected answer and is reported unreachable
+        without a retry: guessing that a 400 might go away is not a policy.
+        """
+        if status == 403:
+            return CHAIN_BLOCKED, False
+        if status == 429:
+            return CHAIN_THROTTLED, True
+        if status == 404:
+            return CHAIN_NOT_LISTED, False
+        if isinstance(status, int) and 500 <= status < 600:
+            return CHAIN_UNREACHABLE, True
+        return CHAIN_UNREACHABLE, False
+
+    def _wait_before_retry(self, versuch):
+        """Sleep the backoff for attempt ``versuch`` plus a little jitter."""
+        self._sleep(self._backoff_seconds[versuch - 1] + random.uniform(0.0, 0.1))
+
     def _fetch(self, underlying_symbol):
-        """Fetch + cache the full chain for an underlying (LRU + timestamp TTL)."""
+        """Fetch + cache the full chain for an underlying (LRU + timestamp TTL).
+
+        Failures are CLASSIFIED, not concatenated: ``blocked`` (403),
+        ``throttled`` (429), ``not_listed`` (404), ``unreachable`` (timeout,
+        connection error, 5xx) and ``malformed`` (200 with an unreadable body).
+        Only ``throttled``, ``unreachable`` and 5xx get two further attempts,
+        with the 0.4 s / 1.2 s backoff above; a block and an unlisted symbol are
+        answers and are not repeated. Each attempt is counted in
+        ``attempts`` on the error and in the cache entry, because a retried
+        call is not one source call.
+
+        Concurrency is deliberately NOT touched here. A single 429 halves the
+        scan's worker count only if the adapter can see the run it is part of -
+        it cannot, and a guess at a shared pool would be worse than the
+        documented limit. The scan keeps its concurrency; this retry spreads the
+        same load over time instead.
+        """
         key = underlying_symbol
         cached = self._cache.get(key)
         now = arrow.get(self._now_fn())
@@ -119,18 +208,39 @@ class CBOEQuoteAdapter(QuoteAdapter):
             if age < self._cache_ttl_seconds:
                 # move to most-recent position (LRU touch)
                 self._cache.move_to_end(key)
-                return cached
+                # A cache hit spends no request: it must not count as one.
+                return dict(cached, attempts=0)
 
         url = f"https://cdn.cboe.com/api/global/delayed_quotes/options/{key}.json"
-        try:
-            resp = self._session.get(url, timeout=self._timeout)
-        except requests.RequestException as e:
-            raise CboeRequestError(f"CBOE feed unreachable for {key}: {e}") from e
+        versuch = 0
+        while True:
+            versuch += 1
+            try:
+                resp = self._session.get(url, timeout=self._timeout)
+            except requests.RequestException as e:
+                fehler = CboeRequestError(
+                    f"CBOE feed unreachable for {key}: {e}",
+                    reason=CHAIN_UNREACHABLE, attempts=versuch,
+                )
+                if versuch <= len(self._backoff_seconds):
+                    self._wait_before_retry(versuch)
+                    continue
+                raise fehler from e
 
-        if resp.status_code == 404:
-            raise CboeNotFoundError(key)
-        if resp.status_code != 200:
-            raise CboeRequestError(f"CBOE feed HTTP {resp.status_code} for {key}")
+            status = getattr(resp, "status_code", None)
+            if status == 200:
+                break
+
+            reason, wiederholbar = self._reason_for_status(status)
+            if reason == CHAIN_NOT_LISTED:
+                fehler = CboeNotFoundError(key, reason=reason, attempts=versuch)
+            else:
+                fehler = CboeRequestError(f"CBOE feed HTTP {status} for {key}",
+                                          reason=reason, attempts=versuch)
+            if wiederholbar and versuch <= len(self._backoff_seconds):
+                self._wait_before_retry(versuch)
+                continue
+            raise fehler
 
         try:
             payload = resp.json()
@@ -140,28 +250,34 @@ class CBOEQuoteAdapter(QuoteAdapter):
             timestamp = payload.get("timestamp")
         except (ValueError, KeyError, TypeError) as e:
             # TypeError catches {"data": null} (None is not subscriptable)
-            raise CboeRequestError(f"CBOE feed malformed response for {key}: {e}") from e
+            raise CboeRequestError(f"CBOE feed malformed response for {key}: {e}",
+                                   reason=CHAIN_MALFORMED, attempts=versuch) from e
 
         if not isinstance(data, dict) or not isinstance(options, list):
-            raise CboeRequestError(f"CBOE feed 'data'/'options' malformed for {key}")
+            raise CboeRequestError(f"CBOE feed 'data'/'options' malformed for {key}",
+                                   reason=CHAIN_MALFORMED, attempts=versuch)
 
         for entry_ in options:
             # each contract must be a dict; 'option' must be a string when present
             if not isinstance(entry_, dict) or (
                 "option" in entry_ and not isinstance(entry_["option"], str)
             ):
-                raise CboeRequestError(f"CBOE feed malformed option entry for {key}")
+                raise CboeRequestError(f"CBOE feed malformed option entry for {key}",
+                                       reason=CHAIN_MALFORMED, attempts=versuch)
 
         try:
             current_price = float(current_price) if current_price is not None else None
         except (TypeError, ValueError) as e:
-            raise CboeRequestError(f"CBOE feed invalid current_price for {key}: {e!r}") from e
+            raise CboeRequestError(f"CBOE feed invalid current_price for {key}: {e!r}",
+                                   reason=CHAIN_MALFORMED, attempts=versuch) from e
 
         entry = {
             "timestamp": timestamp,
             "current_price": current_price,
             "options": options,
             "fetched_at": now,
+            # What this entry cost the feed; carried to ChainResult below.
+            "attempts": versuch,
         }
         self._cache[key] = entry
         self._cache.move_to_end(key)
@@ -328,7 +444,7 @@ class CBOEQuoteAdapter(QuoteAdapter):
             # never let a fully unusable chain look like "no candidates"
             raise CboeNotFoundError(
                 f"all {len(chain['options'])} contracts of {underlying} unusable")
-        return ChainResult(out, skipped=skipped)
+        return ChainResult(out, skipped=skipped, attempts=int(chain.get("attempts", 1) or 0))
 
     def get_option_chain_snapshot(self, underlying_symbol):
         """Raw, unfiltered view of the cached feed entry for one underlying.

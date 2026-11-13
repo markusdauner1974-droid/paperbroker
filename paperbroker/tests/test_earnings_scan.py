@@ -20,7 +20,7 @@ from datetime import date
 
 import arrow
 
-from paperbroker.adapters.quotes.CBOEQuoteAdapter import ChainResult
+from paperbroker.adapters.quotes.CBOEQuoteAdapter import CboeRequestError, ChainResult
 from paperbroker.assets import asset_factory
 from paperbroker.earnings_calendar import (
     CONFIRMATION_CONFIRMED,
@@ -286,6 +286,44 @@ class TestAReportTodayCostsNoChain(unittest.TestCase):
         koerper = run_scan({"AAPL": kette}, [calendar_row("AAPL", 10)], adapter=adapter)
         self.assertEqual([c[0] for c in adapter.calls], ["AAPL"])
         self.assertTrue(entry_of(koerper, "AAPL")["data"]["chain_requested"])
+
+
+class TestAChainFailureNamesItsCause(unittest.TestCase):
+    """One code, one stable class, one German sentence - never the exception text."""
+
+    def test_a_throttled_feed_is_named_and_counted_per_attempt(self):
+        fehler = CboeRequestError("CBOE feed HTTP 429 for AAPL", reason="throttled", attempts=3)
+        koerper = run_scan({"AAPL": fehler}, [calendar_row("AAPL", 30)])
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["status"], STATUS_FETCH_FAILED)
+        self.assertEqual(aapl["exclusion"]["code"], "chain_fetch_failed")
+        self.assertEqual(aapl["exclusion"]["reason"], "throttled")
+        self.assertIn("drosselt", aapl["exclusion"]["message"])
+        # Three attempts are three source calls - not one.
+        self.assertEqual(koerper["coverage"]["source_calls"]["chains"], 3)
+        rohtext = json.dumps(koerper)
+        # The fixed sentence may name the status; the EXCEPTION text may not.
+        self.assertNotIn("CBOE feed HTTP 429 for AAPL", rohtext)
+        self.assertNotIn("CBOE feed", rohtext)
+
+    def test_every_class_reads_differently(self):
+        for reason, wort in (("blocked", "blockt"), ("not_listed", "listet"),
+                             ("unreachable", "erreichbar"), ("malformed", "nicht lesbar")):
+            with self.subTest(reason=reason):
+                fehler = CboeRequestError("detail that must not leak", reason=reason)
+                aapl = entry_of(run_scan({"AAPL": fehler}, [calendar_row("AAPL", 30)]), "AAPL")
+                self.assertEqual(aapl["exclusion"]["reason"], reason)
+                self.assertIn(wort, aapl["exclusion"]["message"])
+                self.assertNotIn("detail that must not leak", json.dumps(aapl))
+
+    def test_an_uncoded_exception_keeps_the_old_wording(self):
+        # A fake or a bug names no class: it is not upgraded to a claim about
+        # the source, and no reason field is invented for it.
+        aapl = entry_of(run_scan({"AAPL": RuntimeError("boom")},
+                                 [calendar_row("AAPL", 30)]), "AAPL")
+        self.assertEqual(aapl["exclusion"],
+                         {"code": "chain_fetch_failed",
+                          "message": "option chain could not be read"})
 
 
 class TestTheScanCoversTheDay(unittest.TestCase):

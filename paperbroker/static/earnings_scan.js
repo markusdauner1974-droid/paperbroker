@@ -295,13 +295,22 @@
     row.appendChild(td);
 
     var zustand = STATUS[entry.status] || { text: entry.status || 'unbekannt', cls: 'st-none' };
+    // Ein gedrosselter Abruf ist kein kaputter Abruf: die Zeile sagt "gedrosselt",
+    // nicht "Abruffehler". Der Unterschied entscheidet, ob ein neuer Versuch
+    // sinnvoll ist - und der Grund steht stabil in exclusion.reason.
+    if (entry.status === 'fetch_failed' && entry.exclusion
+        && entry.exclusion.reason === 'throttled') {
+      zustand = { text: 'gedrosselt', cls: 'st-warn' };
+    }
     var tdStatus = document.createElement('td');
     var span = document.createElement('span');
     span.className = zustand.cls;
     span.textContent = zustand.text;
     tdStatus.appendChild(span);
     if (entry.exclusion) {
-      tdStatus.title = (entry.exclusion.code || '') + ': ' + (entry.exclusion.message || '');
+      tdStatus.title = (entry.exclusion.code || '')
+        + (entry.exclusion.reason ? ' [' + entry.exclusion.reason + ']' : '')
+        + ': ' + (entry.exclusion.message || '');
     }
     row.appendChild(tdStatus);
 

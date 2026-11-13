@@ -266,6 +266,14 @@ class TestTheCellsSayWhatHappened(unittest.TestCase):
         self.assertIn("daten.chain_requested === false", quelle)
         self.assertIn("nicht geladen (Fenster verhindert)", quelle)
 
+    def test_a_throttled_call_is_labelled_gedrosselt_not_abruffehler(self):
+        quelle = self._quelle()
+        self.assertIn("entry.exclusion.reason === 'throttled'", quelle)
+        self.assertIn("text: 'gedrosselt'", quelle)
+        # The class travels in the tooltip next to the German sentence.
+        self.assertIn("entry.exclusion.reason", quelle)
+
+
 class TestThePanelKeepsTheOldPromises(unittest.TestCase):
     """The calendar and the single view are untouched by the new block."""
 
