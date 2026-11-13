@@ -23,18 +23,25 @@ import arrow
 from paperbroker.adapters.quotes.CBOEQuoteAdapter import ChainResult
 from paperbroker.assets import asset_factory
 from paperbroker.earnings_calendar import (
+    CONFIRMATION_CONFIRMED,
     CONFIRMATION_ESTIMATED,
+    CONFIRMATION_UNKNOWN,
     SESSION_AFTER,
+    SESSION_UNKNOWN,
     STATUS_FRESH,
     STATUS_STALE,
     STATUS_UNKNOWN,
+    empty_earnings,
 )
 from paperbroker.earnings_day_calendar import rank_rows
 from paperbroker.earnings_scan import (
+    FLAG_CALENDAR_ROW_SOURCE,
+    FLAG_CALENDAR_ROW_STALE_DAY,
     LIMIT_DEADLINE,
     LIMIT_EXPIRATION_BEFORE_EARNINGS,
     LIMIT_MAX_EXPIRATIONS,
     LIMIT_MAX_SYMBOLS,
+    SOURCE_CALENDAR_ROW,
     STATUS_FETCH_FAILED,
     STATUS_HITS,
     STATUS_INCOMPLETE_DATA,
@@ -45,6 +52,7 @@ from paperbroker.earnings_scan import (
     STATUS_WINDOW_UNKNOWN,
     ScanLimits,
     best_sort_key,
+    earnings_from_calendar_row,
     scan_day,
 )
 from paperbroker.quotes import OptionQuote
@@ -66,6 +74,12 @@ EXP_B = "2026-11-20"              # DTE 44, inside [7, 45]
 EXP_BEFORE_EARNINGS = "2026-10-16"   # DTE 9, but on/before the earnings date
 
 _LOOSE = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None)
+
+#: The calendar day a fixture scan runs for. The rows below ARE that day's
+#: listing, and since the scan derives the earnings date from the row, this day
+#: is the day the fixture title reports on - it equals ``EARNINGS_DATE``, which
+#: the fake adapter answers with too, so both paths describe the same symbol.
+SCAN_DAY = EARNINGS_DATE
 
 
 def quote(occ, bid, ask, *, iv=30.0, oi=1500, volume=100,
@@ -212,7 +226,10 @@ def run_scan(chains, rows, **kwargs):
     kwargs.setdefault("criteria", _LOOSE)
     kwargs.setdefault("today", TODAY)
     kwargs.setdefault("now_fn", CLOCK)
-    kwargs.setdefault("day", EXP_A)
+    kwargs.setdefault("day", SCAN_DAY)
+    # The state the day cache reported. Every test that does not say otherwise
+    # scans a LIVE day, so its previously proven behaviour stays unchanged.
+    kwargs.setdefault("day_state", "live")
     adapter = kwargs.pop("adapter", FakeChainAdapter(chains))
     return scan_day(
         rows,
@@ -483,8 +500,10 @@ class TestEveryStateIsReachable(unittest.TestCase):
     def test_a_failing_earnings_lookup_is_its_own_state(self):
         rows = [calendar_row("AAPL", 30)]
         adapter = FakeEarningsAdapter(rows, failures={"AAPL": RuntimeError("boom")})
+        # ``day=None``: the record has to come from the lookup, so the lookup's
+        # own failure handling is what this test exercises.
         koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
-                           fetch_earnings=adapter.get_earnings)
+                           fetch_earnings=adapter.get_earnings, day=None)
         aapl = entry_of(koerper, "AAPL")
         self.assertEqual(aapl["status"], STATUS_FETCH_FAILED)
         self.assertEqual(aapl["exclusion"]["code"], "earnings_fetch_failed")
@@ -492,26 +511,45 @@ class TestEveryStateIsReachable(unittest.TestCase):
         self.assertEqual(koerper["coverage"]["source_calls"],
                          {"earnings": 0, "chains": 0})
 
-    def test_a_stale_earnings_record_blocks_the_window(self):
+    def test_a_stale_earnings_record_cannot_authorise_a_window(self):
         rows = [calendar_row("AAPL", 30)]
         adapter = FakeEarningsAdapter(rows, earnings_status=STATUS_STALE)
+        # The record has to come from the adapter, so this scan carries no day.
+        chain = FakeChainAdapter({"AAPL": call_pair("AAPL", EXP_A)})
         koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
-                           fetch_earnings=adapter.get_earnings)
+                           fetch_earnings=adapter.get_earnings, day=None,
+                           adapter=chain)
         aapl = entry_of(koerper, "AAPL")
-        self.assertEqual(aapl["status"], STATUS_WINDOW_BLOCKED)
+        # A stale record can never authorise a window, so the chain is not
+        # requested at all and the record decides alone. Without expiries the
+        # gate also names ``expirations_unavailable``, which is why the verdict
+        # reads "unknown" (undecidable) instead of the "blocked" a chain used to
+        # supply - the entry is ineligible either way, and nothing was spent on
+        # an answer that could not change.
+        self.assertEqual(aapl["status"], STATUS_WINDOW_UNKNOWN)
         self.assertFalse(aapl["window"]["eligible"])
-        self.assertEqual(aapl["window"]["status"], "blocked")
+        self.assertEqual(aapl["window"]["status"], "unknown")
+        codes = [g["code"] for g in aapl["window"]["reasons"]]
+        self.assertIn("earnings_data_stale", codes)
+        self.assertIn("expirations_unavailable", codes)
+        self.assertIs(aapl["data"]["chain_requested"], False)
+        self.assertEqual(chain.calls, [])
         self.assertEqual(aapl["strategies"], {})
 
     def test_an_unknown_earnings_record_is_not_a_blocked_one(self):
         rows = [calendar_row("AAPL", 30)]
         adapter = FakeEarningsAdapter(rows, earnings_status=STATUS_UNKNOWN,
                                        earnings_date=None)
+        # "the source has no date" can only come from the adapter, so no day.
         koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
-                           fetch_earnings=adapter.get_earnings)
+                           fetch_earnings=adapter.get_earnings, day=None)
         aapl = entry_of(koerper, "AAPL")
         self.assertEqual(aapl["status"], STATUS_WINDOW_UNKNOWN)
         self.assertEqual(aapl["window"]["status"], "unknown")
+        # Still named: the fallback found no date, so the reason says exactly
+        # that - and the second code says no expiry list was read either.
+        self.assertEqual([g["code"] for g in aapl["window"]["reasons"]],
+                         ["earnings_date_unknown", "expirations_unavailable"])
 
     def test_an_expiry_outside_the_window_is_named(self):
         rows = [calendar_row("AAPL", 30)]
@@ -745,6 +783,278 @@ class TestTheAgePassRunsOncePerExpiry(unittest.TestCase):
         self.assertEqual(_combine_freshness(["stale", "stale"], ohne), "unchecked")
 
 
+class TestTheScannedDaySuppliesTheRecord(unittest.TestCase):
+    """The row of the scanned day is the earnings record - no lookup needed.
+
+    Measured before this: GET /api/v1/earnings-scan?day=2026-11-12 answered
+    ``window_unknown`` for all 40 titles, because Nasdaq has no *upcoming* date
+    for a title reporting TODAY. The row itself already names the day.
+    """
+
+    def test_a_calendar_row_yields_the_earnings_record(self):
+        record = earnings_from_calendar_row(calendar_row("AAPL", 30), SCAN_DAY, "live")
+        self.assertEqual(record["next_earnings_date"], SCAN_DAY)
+        self.assertEqual(record["release_session"], SESSION_AFTER)
+        self.assertEqual(record["date_confirmation"], CONFIRMATION_CONFIRMED)
+        self.assertEqual(record["source"], SOURCE_CALENDAR_ROW)
+        self.assertEqual(record["status"], STATUS_FRESH)
+        # The row carries no timestamp: the record says so instead of borrowing
+        # the scan's clock, which would look like a checked proof.
+        self.assertIsNone(record["source_checked_at_utc"])
+        self.assertIn(FLAG_CALENDAR_ROW_SOURCE, record["quality_flags"])
+        self.assertIn("calendar_row_without_timestamp", record["quality_flags"])
+        # Same contract as every other record - no key gained, none lost.
+        self.assertEqual(set(record), set(empty_earnings("AAPL")))
+
+    def test_a_stale_listing_does_not_prove_a_fresh_date(self):
+        # Kody finding on PR #80: the row settles WHICH day a symbol reports
+        # on, but only a LIVE listing proves that answer is still today's
+        # truth. A stale cache day used to produce a fresh, confirmed record -
+        # and the fail-closed window gate then let a window through on it.
+        record = earnings_from_calendar_row(calendar_row("AAPL", 30), SCAN_DAY, "stale")
+        self.assertEqual(record["next_earnings_date"], SCAN_DAY)
+        self.assertEqual(record["status"], STATUS_STALE)
+        self.assertEqual(record["date_confirmation"], CONFIRMATION_UNKNOWN)
+        self.assertIn(FLAG_CALENDAR_ROW_STALE_DAY, record["quality_flags"])
+        # The date, the session and the source are still the row's statement:
+        # only the proof weakens, nothing is rewritten.
+        self.assertEqual(record["release_session"], SESSION_AFTER)
+        self.assertEqual(record["source"], SOURCE_CALENDAR_ROW)
+        self.assertIn(FLAG_CALENDAR_ROW_SOURCE, record["quality_flags"])
+        self.assertEqual(set(record), set(empty_earnings("AAPL")))
+
+    def test_a_stale_row_cannot_authorise_a_window(self):
+        rows = [calendar_row("AAPL", 30)]
+        koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
+                           day_state="stale")
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["data"]["earnings_status"], STATUS_STALE)
+        # The gate blocks instead of authorising on an old entry - and it
+        # names both reasons, so the verdict is readable from the answer. A
+        # stale record with an unknown confirmation is UNDECIDABLE, which the
+        # shared gate reports as ``unknown`` rather than as a clean "blocked".
+        self.assertFalse(aapl["window"]["eligible"])
+        self.assertEqual(aapl["window"]["status"], "unknown")
+        # ``selected_expiration`` only NAMES the first listed expiry after the
+        # date; it authorises nothing on its own - the gate says ineligible and
+        # the entry is never scanned.
+        codes = [g["code"] for g in aapl["window"]["reasons"]]
+        self.assertIn("earnings_data_stale", codes)
+        self.assertIn("date_confirmation_unknown", codes)
+        self.assertEqual(aapl["status"], STATUS_WINDOW_UNKNOWN)
+        self.assertNotEqual(aapl["status"], STATUS_HITS)
+        self.assertEqual(aapl["checked_expirations"], [])
+        self.assertEqual(aapl["strategies"], {})
+
+    def test_a_live_row_still_authorises_the_window(self):
+        rows = [calendar_row("AAPL", 30)]
+        koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
+                           day_state="live")
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["data"]["earnings_status"], STATUS_FRESH)
+        self.assertTrue(aapl["window"]["eligible"])
+        self.assertEqual(aapl["window"]["status"], "ok")
+        self.assertEqual(aapl["window"]["planned_last_exit_date"], "2026-10-19")
+        self.assertEqual(aapl["window"]["selected_expiration"], EXP_A)
+        self.assertEqual(aapl["status"], STATUS_HITS)
+        codes = [g["code"] for g in aapl["window"]["reasons"]]
+        self.assertNotIn("earnings_data_stale", codes)
+        self.assertNotIn("date_confirmation_unknown", codes)
+
+    def test_a_session_the_row_does_not_state_is_not_guessed(self):
+        for wert in (SESSION_UNKNOWN, None, "midday"):
+            record = earnings_from_calendar_row(
+                dict(calendar_row("AAPL", 30), session=wert), SCAN_DAY, "live")
+            self.assertEqual(record["release_session"], SESSION_UNKNOWN)
+            self.assertIn("release_session_unknown", record["quality_flags"])
+
+    def test_a_day_that_is_not_a_day_yields_no_record(self):
+        row = calendar_row("AAPL", 30)
+        for tag in (None, "", "not-a-day", 20261020):
+            self.assertIsNone(earnings_from_calendar_row(row, tag, "live"))
+
+    def test_the_scanned_day_pays_no_earnings_lookup(self):
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        gerufen = []
+
+        def gezaehlt(symbol):
+            gerufen.append(symbol)
+            return FakeEarningsAdapter(rows).get_earnings(symbol)
+
+        koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A),
+                            "MSFT": call_pair("MSFT", EXP_A)}, rows,
+                           fetch_earnings=gezaehlt)
+        self.assertEqual(gerufen, [])
+        self.assertEqual(koerper["coverage"]["source_calls"]["earnings"], 0)
+        for eintrag in koerper["entries"]:
+            self.assertEqual(eintrag["data"]["earnings_source"], SOURCE_CALENDAR_ROW)
+            self.assertEqual(eintrag["data"]["earnings_date"], SCAN_DAY)
+            self.assertEqual(eintrag["data"]["earnings_status"], STATUS_FRESH)
+
+    def test_without_a_day_the_source_is_asked_once_per_ticker(self):
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        gerufen = []
+
+        def gezaehlt(symbol):
+            gerufen.append(symbol)
+            return FakeEarningsAdapter(rows).get_earnings(symbol)
+
+        koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A),
+                            "MSFT": call_pair("MSFT", EXP_A)}, rows,
+                           fetch_earnings=gezaehlt, day=None)
+        self.assertEqual(sorted(gerufen), ["AAPL", "MSFT"])
+        self.assertEqual(koerper["coverage"]["source_calls"]["earnings"], 2)
+        for eintrag in koerper["entries"]:
+            self.assertEqual(eintrag["data"]["earnings_source"], "nasdaq_earnings_date")
+            self.assertEqual(eintrag["data"]["earnings_date"], EARNINGS_DATE)
+
+    def test_a_failing_lookup_without_a_day_does_not_stop_the_scan(self):
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        adapter = FakeEarningsAdapter(rows, failures={"AAPL": RuntimeError("boom")})
+        koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A),
+                            "MSFT": call_pair("MSFT", EXP_A)}, rows,
+                           fetch_earnings=adapter.get_earnings, day=None)
+        self.assertEqual(entry_of(koerper, "AAPL")["status"], STATUS_FETCH_FAILED)
+        self.assertEqual(entry_of(koerper, "AAPL")["exclusion"]["code"],
+                         "earnings_fetch_failed")
+        self.assertEqual(entry_of(koerper, "MSFT")["status"], STATUS_HITS)
+        self.assertEqual(koerper["coverage"]["processed"], 1)
+
+    def test_the_running_day_blocks_at_the_past_exit_day(self):
+        # The rule, not a bug: the planned exit day is the last trading day
+        # STRICTLY before the report, so a title reporting today can no longer
+        # be entered - and that is a verdict, not "we do not know".
+        rows = [calendar_row("AAPL", 30)]
+        koerper = run_scan({"AAPL": call_pair("AAPL", EXP_A)}, rows,
+                           day=TODAY.isoformat())
+        aapl = entry_of(koerper, "AAPL")
+        self.assertEqual(aapl["status"], STATUS_WINDOW_BLOCKED)
+        self.assertEqual(aapl["window"]["status"], "blocked")
+        self.assertEqual(aapl["window"]["planned_last_exit_date"], "2026-10-06")
+        self.assertEqual(aapl["window"]["remaining_trading_days"], 0)
+        self.assertEqual([g["code"] for g in aapl["window"]["reasons"]],
+                         ["exit_day_in_past"])
+        self.assertEqual(aapl["exclusion"]["code"], "earnings_window_blocked")
+
+    def test_no_row_of_a_scanned_day_is_window_unknown(self):
+        chains = {
+            "AAPL": call_pair("AAPL", EXP_A) + call_pair("AAPL", EXP_B),
+            "MSFT": call_pair("MSFT", EXP_A),
+            "NVDA": put_pair("NVDA", EXP_A),
+        }
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20),
+                calendar_row("NVDA", 10)]
+        koerper = run_scan(chains, rows)
+        self.assertEqual(koerper["counts"][STATUS_WINDOW_UNKNOWN], 0)
+        self.assertEqual(sum(koerper["counts"].values()),
+                         koerper["coverage"]["processed"])
+        for eintrag in koerper["entries"]:
+            self.assertNotEqual(eintrag["status"], STATUS_WINDOW_UNKNOWN)
+
+
+class TestAnUnprovenRecordCostsNoChain(unittest.TestCase):
+    """Kody finding on PR #80: the chain is the expensive call of a scan, and a
+    record that can never authorise a window does not need it.
+
+    Measured before this: every row of a stale calendar day paid one chain
+    request, up to ``max_symbols`` of them, for a verdict the record alone
+    already fixed.
+    """
+
+    def _stale_scan(self):
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        chains = {
+            "AAPL": call_pair("AAPL", EXP_A),
+            "MSFT": call_pair("MSFT", EXP_A),
+        }
+        adapter = FakeChainAdapter(chains)
+        return run_scan(chains, rows, day_state="stale", adapter=adapter), adapter
+
+    def test_an_unproven_record_costs_no_chain_request(self):
+        koerper, adapter = self._stale_scan()
+        # Not one chain was asked for: the record decided on its own.
+        self.assertEqual(adapter.calls, [])
+        self.assertEqual(koerper["coverage"]["source_calls"]["chains"], 0)
+        for symbol in ("AAPL", "MSFT"):
+            eintrag = entry_of(koerper, symbol)
+            self.assertEqual(eintrag["data"]["earnings_status"], STATUS_STALE)
+            # The omission is visible and deliberate, not a missing chain.
+            self.assertIs(eintrag["data"]["chain_requested"], False)
+            self.assertFalse(eintrag["window"]["eligible"])
+            self.assertIn(eintrag["status"],
+                          (STATUS_WINDOW_UNKNOWN, STATUS_WINDOW_BLOCKED))
+            self.assertNotEqual(eintrag["status"], STATUS_HITS)
+            # Nothing about a chain is claimed: no contracts, no stamp, no scan.
+            self.assertEqual(eintrag["data"]["chain_contracts"], 0)
+            self.assertIsNone(eintrag["data"]["chain_quote_timestamp_raw"])
+            self.assertEqual(eintrag["checked_expirations"], [])
+            self.assertEqual(eintrag["skipped_expirations"], [])
+            self.assertEqual(eintrag["strategies"], {})
+
+    def test_an_unproven_record_keeps_the_counts_adding_up(self):
+        koerper, _adapter = self._stale_scan()
+        self.assertEqual(sum(koerper["counts"].values()),
+                         koerper["coverage"]["processed"])
+        self.assertEqual(koerper["coverage"]["processed"], 2)
+        # The same counter as before: an undecidable window is a verdict about
+        # the trade, never "not checked" and never a silent gap.
+        self.assertEqual(koerper["counts"][STATUS_WINDOW_UNKNOWN], 2)
+        self.assertEqual(koerper["counts"][STATUS_NOT_CHECKED], 0)
+        for eintrag in koerper["entries"]:
+            self.assertIsNotNone(eintrag["data"])
+
+    def test_a_fresh_record_still_fetches_the_chain(self):
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        chains = {
+            "AAPL": call_pair("AAPL", EXP_A),
+            "MSFT": call_pair("MSFT", EXP_A),
+        }
+        adapter = FakeChainAdapter(chains)
+        koerper = run_scan(chains, rows, adapter=adapter)
+        # One request per title - the fresh path is untouched.
+        self.assertEqual(sorted(symbol for symbol, _exp in adapter.calls),
+                         ["AAPL", "MSFT"])
+        self.assertEqual(koerper["coverage"]["source_calls"]["chains"], 2)
+        for symbol in ("AAPL", "MSFT"):
+            eintrag = entry_of(koerper, symbol)
+            self.assertIs(eintrag["data"]["chain_requested"], True)
+            self.assertTrue(eintrag["window"]["eligible"])
+            self.assertEqual(eintrag["status"], STATUS_HITS)
+            self.assertGreater(eintrag["data"]["chain_contracts"], 0)
+
+    def test_a_missing_confirmation_costs_no_chain_request(self):
+        # Kody's third finding: a FRESH record that simply does not state its
+        # confirmation passed the record-only precheck, paid a chain request and
+        # was blocked by the gate only afterwards. ``None`` and ``""`` must be
+        # read as "unknown" here, exactly as the gate reads them.
+        rows = [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
+        chains = {
+            "AAPL": call_pair("AAPL", EXP_A),
+            "MSFT": call_pair("MSFT", EXP_A),
+        }
+        for fehlend in (None, ""):
+            with self.subTest(date_confirmation=fehlend):
+                adapter = FakeChainAdapter(chains)
+
+                def antwort(symbol, _fehlend=fehlend):
+                    koerper = FakeEarningsAdapter(rows).get_earnings(symbol)
+                    koerper["earnings"]["date_confirmation"] = _fehlend
+                    return koerper
+
+                koerper = run_scan(chains, rows, fetch_earnings=antwort,
+                                   adapter=adapter, day=None)
+                # The record alone already refuses: not one chain was asked.
+                self.assertEqual(adapter.calls, [])
+                self.assertEqual(koerper["coverage"]["source_calls"]["chains"], 0)
+                for symbol in ("AAPL", "MSFT"):
+                    eintrag = entry_of(koerper, symbol)
+                    self.assertEqual(eintrag["data"]["earnings_status"], STATUS_FRESH)
+                    self.assertIs(eintrag["data"]["chain_requested"], False)
+                    self.assertFalse(eintrag["window"]["eligible"])
+                    self.assertIn(eintrag["status"],
+                                  (STATUS_WINDOW_UNKNOWN, STATUS_WINDOW_BLOCKED))
+
+
 class TestTheRoute(unittest.TestCase):
     def _rows(self):
         return [calendar_row("AAPL", 30), calendar_row("MSFT", 20)]
@@ -766,16 +1076,16 @@ class TestTheRoute(unittest.TestCase):
         # `ignore_quote_age`, so the scan must accept the parameter too -
         # otherwise a weekend scan could never be run at all.
         antwort = self._client().get(
-            f"/api/v1/earnings-scan?day={EXP_A}&ignore_quote_age=1")
+            f"/api/v1/earnings-scan?day={SCAN_DAY}&ignore_quote_age=1")
         self.assertEqual(antwort.status_code, 200)
         self.assertIsNone(antwort.get_json()["criteria"]["max_quote_age_min"])
 
     def test_the_scan_answers_its_contract(self):
-        antwort = self._client().get(f"/api/v1/earnings-scan?day={EXP_A}")
+        antwort = self._client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}")
         self.assertEqual(antwort.status_code, 200)
         koerper = antwort.get_json()
         self.assertEqual(koerper["schema_version"], "1.0")
-        self.assertEqual(koerper["day"], EXP_A)
+        self.assertEqual(koerper["day"], SCAN_DAY)
         self.assertEqual(koerper["day_state"], "live")
         self.assertEqual(koerper["strategies"], list(STRATEGY_IDS))
         self.assertEqual(koerper["coverage"]["day_rows"], 2)
@@ -784,31 +1094,31 @@ class TestTheRoute(unittest.TestCase):
 
     def test_several_strategies_can_be_selected(self):
         antwort = self._client().get(
-            f"/api/v1/earnings-scan?day={EXP_A}"
+            f"/api/v1/earnings-scan?day={SCAN_DAY}"
             f"&strategy={BULL_CALL_DEBIT}&strategy={BEAR_PUT_DEBIT}")
         self.assertEqual(antwort.get_json()["strategies"],
                          [BULL_CALL_DEBIT, BEAR_PUT_DEBIT])
 
     def test_a_comma_list_works_too(self):
         antwort = self._client().get(
-            f"/api/v1/earnings-scan?day={EXP_A}&strategy={BULL_CALL_DEBIT},{BEAR_PUT_DEBIT}")
+            f"/api/v1/earnings-scan?day={SCAN_DAY}&strategy={BULL_CALL_DEBIT},{BEAR_PUT_DEBIT}")
         self.assertEqual(antwort.get_json()["strategies"],
                          [BULL_CALL_DEBIT, BEAR_PUT_DEBIT])
 
     def test_the_legacy_alias_still_names_one_strategy(self):
         koerper = self._client().get(
-            f"/api/v1/earnings-scan?day={EXP_A}&option_type=put").get_json()
+            f"/api/v1/earnings-scan?day={SCAN_DAY}&option_type=put").get_json()
         self.assertEqual(koerper["strategies"], [BEAR_PUT_DEBIT])
 
     def test_the_alias_cannot_be_combined_with_several_strategies(self):
         antwort = self._client().get(
-            f"/api/v1/earnings-scan?day={EXP_A}&strategy={BULL_CALL_DEBIT}"
+            f"/api/v1/earnings-scan?day={SCAN_DAY}&strategy={BULL_CALL_DEBIT}"
             f"&strategy={BEAR_PUT_DEBIT}&option_type=put")
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(antwort.get_json()["error"], "conflicting strategy and option_type")
 
     def test_an_unknown_strategy_is_refused(self):
-        antwort = self._client().get(f"/api/v1/earnings-scan?day={EXP_A}&strategy=iron_condor")
+        antwort = self._client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}&strategy=iron_condor")
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(antwort.get_json()["error"], "unknown strategy")
 
@@ -822,25 +1132,25 @@ class TestTheRoute(unittest.TestCase):
             .get_json()["error"]["code"], "invalid_day")
 
     def test_unknown_parameters_are_named(self):
-        antwort = self._client().get(f"/api/v1/earnings-scan?day={EXP_A}&ticker=AAPL")
+        antwort = self._client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}&ticker=AAPL")
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(antwort.get_json()["error"]["code"], "unknown_parameter")
 
     def test_a_duplicate_day_is_refused(self):
-        antwort = self._client().get(f"/api/v1/earnings-scan?day={EXP_A}&day={EXP_A}")
+        antwort = self._client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}&day={SCAN_DAY}")
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(antwort.get_json()["error"]["code"], "duplicate_parameter")
 
     def test_the_budget_is_bounded(self):
         self.assertEqual(
-            self._client().get(f"/api/v1/earnings-scan?day={EXP_A}&max_symbols=9999")
+            self._client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}&max_symbols=9999")
             .get_json()["error"]["code"], "invalid_limit")
         self.assertEqual(
-            self._client().get(f"/api/v1/earnings-scan?day={EXP_A}&concurrency=0")
+            self._client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}&concurrency=0")
             .get_json()["error"]["code"], "invalid_limit")
 
     def test_a_criteria_error_is_reported(self):
-        antwort = self._client().get(f"/api/v1/earnings-scan?day={EXP_A}&dte_min=50&dte_max=10")
+        antwort = self._client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}&dte_min=50&dte_max=10")
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(antwort.get_json()["error"]["code"], "invalid_criteria")
 
@@ -848,7 +1158,7 @@ class TestTheRoute(unittest.TestCase):
         rows = self._rows()
         earnings = FakeEarningsAdapter(rows, day_state="unavailable")
         antwort = self._client(rows=rows, earnings=earnings).get(
-            f"/api/v1/earnings-scan?day={EXP_A}")
+            f"/api/v1/earnings-scan?day={SCAN_DAY}")
         self.assertEqual(antwort.status_code, 503)
         self.assertEqual(antwort.get_json()["error"]["code"], "calendar_unavailable")
 
@@ -870,7 +1180,7 @@ class TestTheRoute(unittest.TestCase):
                 return antwort
 
         antwort = self._client(earnings=_Blocked(self._rows())).get(
-            f"/api/v1/earnings-scan?day={EXP_A}")
+            f"/api/v1/earnings-scan?day={SCAN_DAY}")
         self.assertEqual(antwort.status_code, 503)
         fehler = antwort.get_json()["error"]
         self.assertEqual(fehler["code"], "calendar_unavailable")
@@ -884,7 +1194,7 @@ class TestTheRoute(unittest.TestCase):
         # Nothing to report about the source: the answer stays exactly as
         # before, without invented upstream fields.
         antwort = self._client(earnings=FakeEarningsAdapter(self._rows(), day_state="unavailable")).get(
-            f"/api/v1/earnings-scan?day={EXP_A}")
+            f"/api/v1/earnings-scan?day={SCAN_DAY}")
         fehler = antwort.get_json()["error"]
         self.assertEqual(fehler["code"], "calendar_unavailable")
         self.assertNotIn("source_code", fehler)
@@ -892,7 +1202,7 @@ class TestTheRoute(unittest.TestCase):
 
     def test_without_a_source_the_scan_says_so(self):
         app = create_app(quote_adapter=FakeChainAdapter({}), now_fn=CLOCK)
-        antwort = app.test_client().get(f"/api/v1/earnings-scan?day={EXP_A}")
+        antwort = app.test_client().get(f"/api/v1/earnings-scan?day={SCAN_DAY}")
         self.assertEqual(antwort.status_code, 503)
         self.assertEqual(antwort.get_json()["error"]["code"],
                          "earnings_source_not_configured")
@@ -920,7 +1230,7 @@ class TestTheRoute(unittest.TestCase):
                 return antwort
 
         earnings = _Forgetful(self._rows())
-        antwort = self._client(earnings=earnings).get(f"/api/v1/earnings-scan?day={EXP_A}")
+        antwort = self._client(earnings=earnings).get(f"/api/v1/earnings-scan?day={SCAN_DAY}")
         self.assertEqual(antwort.status_code, 503)
         self.assertEqual(antwort.get_json()["error"]["code"], "calendar_unavailable")
 
@@ -928,9 +1238,16 @@ class TestTheRoute(unittest.TestCase):
         rows = self._rows()
         earnings = FakeEarningsAdapter(rows, day_state="stale")
         koerper = self._client(rows=rows, earnings=earnings).get(
-            f"/api/v1/earnings-scan?day={EXP_A}").get_json()
+            f"/api/v1/earnings-scan?day={SCAN_DAY}").get_json()
         self.assertEqual(koerper["day_state"], "stale")
         self.assertEqual(koerper["coverage"]["day_rows"], 2)
+        # The header and the rows agree: a stale day may not produce a fresh
+        # proof, so no row reaches a window and nothing is scanned for hits.
+        self.assertEqual(koerper["counts"][STATUS_HITS], 0)
+        for eintrag in koerper["entries"]:
+            self.assertEqual(eintrag["data"]["earnings_status"], STATUS_STALE)
+            self.assertFalse(eintrag["window"]["eligible"])
+            self.assertEqual(eintrag["status"], STATUS_WINDOW_UNKNOWN)
 
 
 if __name__ == "__main__":       # pragma: no cover

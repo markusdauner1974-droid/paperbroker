@@ -50,7 +50,18 @@ from datetime import date
 
 from . import exclusions, quote_age
 from .assets import calendar_days_between
-from .earnings_calendar import combine_earnings_and_expirations
+from .earnings_calendar import (
+    CONFIRMATION_CONFIRMED,
+    CONFIRMATION_UNKNOWN,
+    FLAG_SESSION_UNKNOWN,
+    SESSION_AFTER,
+    SESSION_BEFORE,
+    SESSION_UNKNOWN,
+    STATUS_FRESH,
+    STATUS_STALE,
+    combine_earnings_and_expirations,
+    empty_earnings,
+)
 from .earnings_day_calendar import rank_rows
 from .screener import MAX_PAIRS_PER_SECTION, STRATEGIES, STRATEGY_IDS, filter_stale, pair_search_report, vertical_spreads
 
@@ -117,6 +128,20 @@ MAX_SYMBOLS_CEILING = 200
 MAX_EXPIRATIONS_CEILING = 40
 MAX_SECONDS_CEILING = 300.0
 CONCURRENCY_CEILING = 8
+
+# --- where an entry's earnings date came from ----------------------------- #
+#: The scanned calendar row itself. A row of day D is the source's structured
+#: statement that this symbol reports ON D - not a claim about the future, so
+#: it needs no second lookup (and no confirmation guess) to be usable.
+SOURCE_CALENDAR_ROW = "nasdaq_calendar_row"
+FLAG_CALENDAR_ROW_SOURCE = "earnings_date_from_calendar_row"
+#: A calendar row carries no timestamp of its own. The record says so instead
+#: of borrowing the scan's clock, which would look like a checked proof.
+FLAG_CALENDAR_ROW_WITHOUT_TIMESTAMP = "calendar_row_without_timestamp"
+#: The day itself was not live (a cached, stale or unknown day). The row then
+#: still NAMES a date, but it proves nothing about today - so the record is
+#: stale and unconfirmed, and the flag says which part failed.
+FLAG_CALENDAR_ROW_STALE_DAY = "calendar_row_from_stale_day"
 
 _NUMBER_RE = re.compile(r"\d+(?:\.\d+)?")
 
@@ -383,7 +408,16 @@ class _Context:
     now_fn: object
     limits: ScanLimits
     counter: _Counter
+    #: The state of the scanned day as the caller established it (``live``,
+    #: ``stale``, ...). Required, never defaulted to "live": a caller that does
+    #: not know the state must not silently claim a fresh proof.
+    day_state: str
     on_ticker_error: object = None
+    #: The calendar day this scan runs for. The rows ARE that day's listing, so
+    #: this is what lets an entry derive its earnings record from its own row
+    #: instead of paying one lookup per ticker. ``None`` means "not known" and
+    #: keeps the per-ticker lookup.
+    day: object = None
     #: Coverage of EVERY section the scan searched, accumulated for the whole
     #: answer: a capped search must never be invisible just because the scan
     #: loops over many expiries and titles.
@@ -456,6 +490,122 @@ def _report(ctx, symbol, exc):
         pass
 
 
+def _day_of(value):
+    """The scanned day as a ``date``, or ``None`` when it is not one."""
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str) and value.strip():
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def earnings_from_calendar_row(row, day, day_state):
+    """The earnings record a calendar row of ``day`` proves on its own.
+
+    Returns the unchanged ``empty_earnings()`` shape, or ``None`` when no day
+    can be established - then the caller keeps the per-ticker lookup, because
+    nothing here may be guessed.
+
+    Why the row settles the question
+    --------------------------------
+    The scan runs for exactly ONE calendar day and its rows came from that
+    day's listing, so the row already answers "when does this symbol report?":
+    on ``day``. Asking the single-ticker endpoint again cannot improve that
+    answer - and for a title reporting TODAY Nasdaq answers "hasn't provided us
+    with the upcoming earnings report date", which used to turn every row of
+    the running day into ``window_unknown``. The row is a statement about a
+    day, not a forecast, which is why ``date_confirmation`` is ``confirmed``:
+    no window rule is loosened by this, the exit day still has to lie before
+    the date and still has to be in the future.
+
+    ``day_state`` is what keeps that argument honest: it settles the DATE, but
+    it can only be a fresh proof when the day it came from was ``live``. A
+    cached/stale (or otherwise unknown) listing still names a day, yet proves
+    nothing about today, so the record is ``stale`` and unconfirmed and carries
+    ``FLAG_CALENDAR_ROW_STALE_DAY``. The fail-closed window gate then blocks
+    instead of authorising a window on an old cache entry.
+
+    Nothing is invented: a row carries no timestamp (``source_checked_at_utc``
+    stays ``None`` and a flag names why) and a session the source did not state
+    stays ``unknown`` with ``release_session_unknown``.
+    """
+    termin = _day_of(day)
+    if termin is None:
+        return None
+    zeile = row if isinstance(row, dict) else {}
+    sitzung = zeile.get("session")
+    live = str(day_state or "").strip().lower() == "live"
+    flags = [FLAG_CALENDAR_ROW_SOURCE, FLAG_CALENDAR_ROW_WITHOUT_TIMESTAMP]
+    if not live:
+        flags.append(FLAG_CALENDAR_ROW_STALE_DAY)
+    if sitzung not in (SESSION_BEFORE, SESSION_AFTER):
+        # "unknown" and anything unstated stay unknown - a default of "after
+        # the close" would be an invented fact.
+        sitzung = SESSION_UNKNOWN
+        flags.append(FLAG_SESSION_UNKNOWN)
+    record = empty_earnings(zeile.get("symbol"))
+    record.update({
+        "next_earnings_date": termin.isoformat(),
+        "release_session": sitzung,
+        "date_confirmation": CONFIRMATION_CONFIRMED if live else CONFIRMATION_UNKNOWN,
+        "source": SOURCE_CALENDAR_ROW,
+        "source_checked_at_utc": None,
+        "retrieved_at_utc": None,
+        "status": STATUS_FRESH if live else STATUS_STALE,
+        "quality_flags": flags,
+    })
+    return record
+
+
+def _cannot_authorise_a_window(earnings):
+    """True when the record ALONE already fixes the window negatively.
+
+    The fail-closed gate authorises only a ``STATUS_FRESH`` record whose
+    ``date_confirmation`` is not ``unknown`` - every other state is stale,
+    unrecognised or unconfirmed there, no matter what the chain lists. Mirroring
+    exactly those two conditions is what makes it safe to decide the window
+    BEFORE spending the chain request. The missing-value coercion below is
+    deliberately identical to the gate's (earnings_calendar.py:495), so ``None``
+    and ``""`` are refused here for the same reason they are refused there.
+    """
+    confirmation = earnings.get("date_confirmation") or CONFIRMATION_UNKNOWN
+    return (earnings.get("status") != STATUS_FRESH
+            or confirmation == CONFIRMATION_UNKNOWN)
+
+
+def _apply_window(eintrag, fenster, flags):
+    """Write the gate's verdict into the entry; True when it is not eligible.
+
+    ONE implementation for both callers - the record-only path and the
+    chain-backed one - so a blocked or undecidable row cannot carry a different
+    payload depending on whether the chain happened to be read.
+    """
+    entscheidung = fenster["decision"]
+    eintrag["window"] = {
+        "status": entscheidung["status"],
+        "eligible": entscheidung["eligible"],
+        "planned_last_exit_date": fenster["exit"]["planned_last_exit_date"],
+        "remaining_trading_days": fenster["exit"]["remaining_trading_days"],
+        "selected_expiration": fenster["expirations"]["selected"],
+        "reasons": [dict(g) for g in entscheidung["reasons"]],
+    }
+    if entscheidung["eligible"]:
+        return False
+    # A blocked or undecidable window is not "no hits": it is a verdict
+    # about the trade itself, and it is reported as such.
+    unklar = entscheidung["status"] == "unknown"
+    eintrag["status"] = STATUS_WINDOW_UNKNOWN if unklar else STATUS_WINDOW_BLOCKED
+    eintrag["exclusion"] = _exclusion(
+        "earnings_window_" + ("unknown" if unklar else "blocked"),
+        "; ".join(g["message"] for g in entscheidung["reasons"]),
+    )
+    eintrag["quality_flags"] = flags
+    return True
+
+
 def _scan_symbol(symbol, row, ctx):
     """One ticker, every selected strategy, inside its own failure boundary.
 
@@ -478,23 +628,63 @@ def _scan_symbol(symbol, row, ctx):
     }
 
     # --- 1. the earnings record ------------------------------------------
-    try:
-        koerper = ctx.fetch_earnings(symbol)
-        earnings = koerper.get("earnings") if isinstance(koerper, dict) else None
-        if not isinstance(earnings, dict):
-            raise ValueError("earnings answer carries no record")
-        ctx.counter.count_earnings()
-    except Exception as exc:                        # noqa: BLE001 - one ticker, one verdict
-        # No exception text and no class name in the 200 body: the code below
-        # names WHICH call failed, and that is the actionable part for the
-        # caller. The type goes to the caller's log (``on_ticker_error``).
-        _report(ctx, symbol, exc)
-        eintrag["status"] = STATUS_FETCH_FAILED
-        eintrag["exclusion"] = _exclusion(
-            "earnings_fetch_failed",
-            "earnings lookup failed",
-        )
-        return eintrag
+    # The row belongs to the ONE day this scan runs for, so it already carries
+    # the answer: "this symbol reports on ctx.day". Deriving it costs nothing
+    # and calls nothing - the per-ticker lookup below stays for the case the
+    # row cannot settle (no day, or a caller that scans without one).
+    earnings = earnings_from_calendar_row(row, ctx.day, ctx.day_state)
+    if earnings is None:
+        try:
+            koerper = ctx.fetch_earnings(symbol)
+            earnings = koerper.get("earnings") if isinstance(koerper, dict) else None
+            if not isinstance(earnings, dict):
+                raise ValueError("earnings answer carries no record")
+            ctx.counter.count_earnings()
+        except Exception as exc:                    # noqa: BLE001 - one ticker, one verdict
+            # No exception text and no class name in the 200 body: the code below
+            # names WHICH call failed, and that is the actionable part for the
+            # caller. The type goes to the caller's log (``on_ticker_error``).
+            _report(ctx, symbol, exc)
+            eintrag["status"] = STATUS_FETCH_FAILED
+            eintrag["exclusion"] = _exclusion(
+                "earnings_fetch_failed",
+                "earnings lookup failed",
+            )
+            return eintrag
+
+    # --- 1b. a record that cannot authorise a window costs no chain --------
+    # The gate below only ever authorises a FRESH, confirmed record, so for any
+    # other record the verdict is already fixed before a single quote is read.
+    # Asking the chain for it was pure cost: up to max_symbols chain requests on
+    # a stale calendar day for an answer that cannot change. The window is
+    # therefore decided here from the record alone - ``None`` expiries means
+    # "none known", which the gate names as such - and nothing about a chain is
+    # claimed: every chain_* field stays at "not read".
+    if _cannot_authorise_a_window(earnings):
+        fenster = combine_earnings_and_expirations(earnings, None, today=ctx.today)
+        eintrag["data"] = {
+            "earnings_status": earnings.get("status"),
+            "earnings_date": earnings.get("next_earnings_date"),
+            "earnings_source": earnings.get("source"),
+            "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
+            # Says the omission was a decision, not a missing chain.
+            "chain_requested": False,
+            "chain_contracts": 0,
+            "chain_skipped_contracts": 0,
+            "chain_quote_timestamp_raw": None,
+            "chain_quote_timestamp_utc": None,
+            "chain_quote_zone": None,
+            "chain_quote_age_proven": False,
+            "chain_quote_age_minutes": None,
+            "freshness": _empty_freshness(ctx.criteria),
+            "completeness": "unknown",
+            "listed_expirations": [],
+        }
+        if _apply_window(eintrag, fenster, []):
+            return eintrag
+        # Not reachable while the predicate and the gate share one rule. If they
+        # ever drift, the entry takes the unchanged path below instead of
+        # skipping a call it turns out to need.
 
     # --- 2. the chain (ONE request covers every expiry of this underlying)
     try:
@@ -535,7 +725,13 @@ def _scan_symbol(symbol, row, ctx):
     eintrag["data"] = {
         "earnings_status": earnings.get("status"),
         "earnings_date": earnings.get("next_earnings_date"),
+        # WHICH record the date above came from: the scanned calendar row or a
+        # per-ticker lookup. Additive, so existing keys keep their meaning.
+        "earnings_source": earnings.get("source"),
         "earnings_source_checked_at_utc": earnings.get("source_checked_at_utc"),
+        # The chain WAS asked on this path - the counterpart of the record-only
+        # path's False above.
+        "chain_requested": True,
         "chain_contracts": len(quotes),
         "chain_skipped_contracts": uebersprungen,
         "chain_quote_timestamp_raw": None if neueste is None else neueste.source_timestamp_raw,
@@ -554,26 +750,7 @@ def _scan_symbol(symbol, row, ctx):
     fenster = combine_earnings_and_expirations(
         earnings, [d.isoformat() for d in verfaelle], today=ctx.today
     )
-    entscheidung = fenster["decision"]
-    eintrag["window"] = {
-        "status": entscheidung["status"],
-        "eligible": entscheidung["eligible"],
-        "planned_last_exit_date": fenster["exit"]["planned_last_exit_date"],
-        "remaining_trading_days": fenster["exit"]["remaining_trading_days"],
-        "selected_expiration": fenster["expirations"]["selected"],
-        "reasons": [dict(g) for g in entscheidung["reasons"]],
-    }
-    if not entscheidung["eligible"]:
-        # A blocked or undecidable window is not "no hits": it is a verdict
-        # about the trade itself, and it is reported as such.
-        eintrag["status"] = (STATUS_WINDOW_UNKNOWN
-                             if entscheidung["status"] == "unknown"
-                             else STATUS_WINDOW_BLOCKED)
-        eintrag["exclusion"] = _exclusion(
-            "earnings_window_" + ("unknown" if entscheidung["status"] == "unknown" else "blocked"),
-            "; ".join(g["message"] for g in entscheidung["reasons"]),
-        )
-        eintrag["quality_flags"] = flags
+    if _apply_window(eintrag, fenster, flags):
         return eintrag
 
     # --- 5. which listed expiries are worth checking ----------------------
@@ -795,6 +972,7 @@ def scan_day(
     criteria,
     strategies=None,
     day,
+    day_state,
     today,
     now_fn,
     limits=None,
@@ -806,7 +984,16 @@ def scan_day(
     ``rows`` is the day's list exactly as the source delivered it (before any
     ranking). ``fetch_earnings(symbol)`` and ``fetch_chain(symbol)`` are the
     only ways out of this module - both cached inside their adapters, which is
-    why a repeated scan inside their TTLs costs no request at all.
+    why a repeated scan inside their TTLs costs no request at all. Because the
+    rows ARE ``day``'s listing, ``day`` also answers the earnings question: the
+    record is derived from the row (``earnings_from_calendar_row``) and no
+    per-ticker lookup is paid. ``day=None`` keeps the lookup path.
+
+    ``day_state`` is the state the CALLER established for that day (``live``,
+    ``stale``, ...) and is required - there is no default, because a caller
+    that does not know the state must not silently claim a fresh proof. Only a
+    ``live`` day turns its rows into a fresh, confirmed record; anything else
+    yields a stale, unconfirmed one and the window stays blocked.
 
     ``optionable`` is the CBOE symbol set; ``None`` means "not available" and
     the scan then runs unfiltered and says so.
@@ -839,6 +1026,8 @@ def scan_day(
         limits=limits,
         counter=counter,
         on_ticker_error=on_ticker_error,
+        day=day,
+        day_state=day_state,
         search_coverage={},
     )
 

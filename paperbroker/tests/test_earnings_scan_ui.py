@@ -472,7 +472,8 @@ class TestTheCoverageIsAlwaysThere(unittest.TestCase):
 
         ctx = _Context(fetch_earnings=None, fetch_chain=None, strategies=(),
                        criteria=ScreenerCriteria(), today=date(2026, 11, 11),
-                       now_fn=None, limits=None, counter=None, search_coverage={})
+                       now_fn=None, limits=None, counter=None, day_state="live",
+                       search_coverage={})
         abschnitt = {"possible": 7, "enumerated": 5, "limit": 500, "capped": True}
 
         def arbeite():
