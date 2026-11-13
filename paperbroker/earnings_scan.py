@@ -182,6 +182,7 @@ CHAIN_REASON_TEXT = {
     "throttled": "Die Quelle drosselt den Abruf (HTTP 429) — später erneut versuchen.",
     "unreachable": "Die Optionskette war nicht erreichbar.",
     "malformed": "Die Antwort der Quelle war nicht lesbar.",
+    "unusable": "Die Kette wurde gelesen, aber kein Kontrakt ist brauchbar.",
 }
 
 

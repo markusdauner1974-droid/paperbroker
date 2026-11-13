@@ -18,6 +18,7 @@ import logging
 import math
 import random
 import re
+import threading
 import time
 from collections import OrderedDict
 from datetime import date
@@ -38,8 +39,9 @@ CHAIN_THROTTLED = "throttled"      # 429: too many requests
 CHAIN_NOT_LISTED = "not_listed"    # 404: no chain for this underlying
 CHAIN_UNREACHABLE = "unreachable"  # timeout, connection error, 5xx
 CHAIN_MALFORMED = "malformed"      # 200, but the payload cannot be read
+CHAIN_UNUSABLE = "unusable"        # 200, the chain was read, no row was usable
 CHAIN_REASONS = (CHAIN_BLOCKED, CHAIN_THROTTLED, CHAIN_NOT_LISTED,
-                 CHAIN_UNREACHABLE, CHAIN_MALFORMED)
+                 CHAIN_UNREACHABLE, CHAIN_MALFORMED, CHAIN_UNUSABLE)
 
 
 class CboeChainError(Exception):
@@ -121,6 +123,66 @@ class ChainResult(list):
         self.attempts = attempts
 
 
+class RetryBudget:
+    """Thread-safe token bucket that pays for retry sleeps, in second units.
+
+    A backoff is not free: it is spent on the worker thread, so eight symbols
+    that keep failing add roughly 1.7 s each to the scan's wall clock
+    (measured 2026-11-16: a 19.8 s scan with 8 ``fetch_failed`` rows). The
+    bucket caps the total wait per adapter, shared by every worker that uses
+    it, because all of them talk to the same source.
+
+    ``take`` is all-or-nothing on purpose. When the budget is spent the caller
+    must NOT retry: an immediate second request while the source is already
+    throttling costs that source more than the retry could win, and it would
+    turn a throttle into a burst. Reporting the failure with its own reason is
+    the honest answer; the next scan run starts with a full bucket.
+
+    The clock is injectable (tests pin it); refill is monotonic, so a clock
+    that jumps backwards cannot mint budget.
+    """
+
+    def __init__(self, capacity_seconds=2.0, refill_per_second=2.0,
+                 clock=time.monotonic):
+        self._capacity = max(0.0, float(capacity_seconds))
+        self._refill_per_second = max(0.0, float(refill_per_second))
+        self._clock = clock
+        self._tokens = self._capacity
+        self._stamp = self._clock()
+        self._lock = threading.Lock()
+
+    def take(self, seconds):
+        """Reserve ``seconds`` of wait: ``True`` if granted, ``False`` if not.
+
+        A denied request spends nothing - the caller must not sleep and must
+        not retry.
+        """
+        seconds = max(0.0, float(seconds))
+        with self._lock:
+            now = self._clock()
+            elapsed = now - self._stamp
+            if elapsed > 0:
+                self._tokens = min(self._capacity,
+                                   self._tokens + elapsed * self._refill_per_second)
+                self._stamp = now
+            if self._tokens < seconds:
+                return False
+            self._tokens -= seconds
+            return True
+
+    @property
+    def available(self):
+        """Seconds of wait left right now (after refill) - for reporting."""
+        with self._lock:
+            now = self._clock()
+            elapsed = now - self._stamp
+            if elapsed > 0:
+                self._tokens = min(self._capacity,
+                                   self._tokens + elapsed * self._refill_per_second)
+                self._stamp = now
+            return self._tokens
+
+
 class CBOEQuoteAdapter(QuoteAdapter):
     """
     QuoteAdapter for the keyless CBOE delayed-quotes feed.
@@ -138,10 +200,12 @@ class CBOEQuoteAdapter(QuoteAdapter):
     #: Backoff before the second and the third attempt. A 429 asks for less
     #: traffic, not for a different request, so waiting is the only useful
     #: reaction; the jitter keeps parallel workers from retrying in lockstep.
+    #: The wait is paid from ``retry_budget`` - see RetryBudget.
     RETRY_BACKOFF_SECONDS = (0.4, 1.2)
 
     def __init__(self, timeout_seconds=30, session=None, now_fn=None,
-                 sleep_fn=None, backoff_seconds=RETRY_BACKOFF_SECONDS):
+                 sleep_fn=None, backoff_seconds=RETRY_BACKOFF_SECONDS,
+                 retry_budget=None):
         self._timeout = timeout_seconds
         self._session = session or requests.Session()
         self._session.headers.update({"User-Agent": _BROWSER_UA, "Accept": "application/json"})
@@ -150,6 +214,9 @@ class CBOEQuoteAdapter(QuoteAdapter):
         # wall clock.
         self._sleep = sleep_fn if sleep_fn is not None else time.sleep
         self._backoff_seconds = tuple(backoff_seconds)
+        # One bucket per adapter, shared by every worker thread that uses it:
+        # the waits add up on the scan's wall clock, so they need a common cap.
+        self._retry_budget = retry_budget if retry_budget is not None else RetryBudget()
         # underlying -> {"timestamp": str, "current_price": float, "options": [...]}
         self._cache = OrderedDict()
         self._cache_ttl_seconds = 900  # bounded; refreshed on timestamp change
@@ -179,8 +246,20 @@ class CBOEQuoteAdapter(QuoteAdapter):
         return CHAIN_UNREACHABLE, False
 
     def _wait_before_retry(self, versuch):
-        """Sleep the backoff for attempt ``versuch`` plus a little jitter."""
-        self._sleep(self._backoff_seconds[versuch - 1] + random.uniform(0.0, 0.1))
+        """Pay for the backoff of attempt ``versuch`` - if the budget allows.
+
+        Returns ``True`` when the wait was granted and slept, ``False`` when
+        the shared retry budget is spent. In that case the caller must not
+        sleep AND must not retry: repeating the request immediately while the
+        source is already throttling or refusing costs the source more than
+        the retry could win. The failure goes out at once, with its own reason
+        and the attempts it really took.
+        """
+        pause = self._backoff_seconds[versuch - 1] + random.uniform(0.0, 0.1)
+        if not self._retry_budget.take(pause):
+            return False
+        self._sleep(pause)
+        return True
 
     def _fetch(self, underlying_symbol):
         """Fetch + cache the full chain for an underlying (LRU + timestamp TTL).
@@ -189,10 +268,12 @@ class CBOEQuoteAdapter(QuoteAdapter):
         ``throttled`` (429), ``not_listed`` (404), ``unreachable`` (timeout,
         connection error, 5xx) and ``malformed`` (200 with an unreadable body).
         Only ``throttled``, ``unreachable`` and 5xx get two further attempts,
-        with the 0.4 s / 1.2 s backoff above; a block and an unlisted symbol are
-        answers and are not repeated. Each attempt is counted in
-        ``attempts`` on the error and in the cache entry, because a retried
-        call is not one source call.
+        with the 0.4 s / 1.2 s backoff above - and only while the adapter's
+        shared ``retry_budget`` can pay for the wait; once it is spent the
+        failure leaves at once instead of retrying under throttling. A block
+        and an unlisted symbol are answers and are not repeated. Each attempt
+        is counted in ``attempts`` on the error and in the cache entry, because
+        a retried call is not one source call.
 
         Concurrency is deliberately NOT touched here. A single 429 halves the
         scan's worker count only if the adapter can see the run it is part of -
@@ -222,8 +303,7 @@ class CBOEQuoteAdapter(QuoteAdapter):
                     f"CBOE feed unreachable for {key}: {e}",
                     reason=CHAIN_UNREACHABLE, attempts=versuch,
                 )
-                if versuch <= len(self._backoff_seconds):
-                    self._wait_before_retry(versuch)
+                if versuch <= len(self._backoff_seconds) and self._wait_before_retry(versuch):
                     continue
                 raise fehler from e
 
@@ -237,8 +317,8 @@ class CBOEQuoteAdapter(QuoteAdapter):
             else:
                 fehler = CboeRequestError(f"CBOE feed HTTP {status} for {key}",
                                           reason=reason, attempts=versuch)
-            if wiederholbar and versuch <= len(self._backoff_seconds):
-                self._wait_before_retry(versuch)
+            if wiederholbar and versuch <= len(self._backoff_seconds) \
+                    and self._wait_before_retry(versuch):
                 continue
             raise fehler
 
@@ -441,9 +521,14 @@ class CBOEQuoteAdapter(QuoteAdapter):
             logger.warning("get_options(%s): %d of %d contracts skipped",
                            underlying, skipped, len(chain["options"]))
         if skipped and not out:
-            # never let a fully unusable chain look like "no candidates"
+            # never let a fully unusable chain look like "no candidates" - and
+            # never call it "not listed": the feed did deliver a chain, the
+            # adapter just could not build a single contract from it. The
+            # attempts the chain cost belong to that answer.
             raise CboeNotFoundError(
-                f"all {len(chain['options'])} contracts of {underlying} unusable")
+                f"all {len(chain['options'])} contracts of {underlying} unusable",
+                reason=CHAIN_UNUSABLE,
+                attempts=int(chain.get("attempts", 1) or 1))
         return ChainResult(out, skipped=skipped, attempts=int(chain.get("attempts", 1) or 0))
 
     def get_option_chain_snapshot(self, underlying_symbol):

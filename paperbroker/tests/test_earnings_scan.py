@@ -20,7 +20,12 @@ from datetime import date
 
 import arrow
 
-from paperbroker.adapters.quotes.CBOEQuoteAdapter import CboeRequestError, ChainResult
+from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
+    CHAIN_UNUSABLE,
+    CboeNotFoundError,
+    CboeRequestError,
+    ChainResult,
+)
 from paperbroker.assets import asset_factory
 from paperbroker.earnings_calendar import (
     CONFIRMATION_CONFIRMED,
@@ -315,6 +320,23 @@ class TestAChainFailureNamesItsCause(unittest.TestCase):
                 self.assertEqual(aapl["exclusion"]["reason"], reason)
                 self.assertIn(wort, aapl["exclusion"]["message"])
                 self.assertNotIn("detail that must not leak", json.dumps(aapl))
+
+    def test_an_unusable_chain_reads_as_unusable(self):
+        """The chain was delivered and read - it just held no usable contract.
+
+        That is not "the source lists no chain": the old class reason sent the
+        not_listed sentence, and the attempts the chain cost were dropped.
+        """
+        fehler = CboeNotFoundError("all 2 contracts of AAPL unusable",
+                                   reason=CHAIN_UNUSABLE, attempts=2)
+        aapl = entry_of(run_scan({"AAPL": fehler}, [calendar_row("AAPL", 30)]), "AAPL")
+        self.assertEqual(aapl["status"], STATUS_FETCH_FAILED)
+        self.assertEqual(aapl["exclusion"]["code"], "chain_fetch_failed")
+        self.assertEqual(aapl["exclusion"]["reason"], "unusable")
+        self.assertIn("kein Kontrakt ist brauchbar", aapl["exclusion"]["message"])
+        self.assertNotIn("listet", aapl["exclusion"]["message"])
+        # The exception text stays a log detail, as for every other class.
+        self.assertNotIn("all 2 contracts of AAPL unusable", json.dumps(aapl))
 
     def test_an_uncoded_exception_keeps_the_old_wording(self):
         # A fake or a bug names no class: it is not upgraded to a claim about
