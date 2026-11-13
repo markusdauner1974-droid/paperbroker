@@ -73,6 +73,23 @@ class CboeRequestError(CboeChainError):
     reason = CHAIN_UNREACHABLE
 
 
+class CboeUnusableChainError(CboeRequestError):
+    """The feed delivered a chain, but no contract of it could be built.
+
+    Deliberately NOT a ``CboeNotFoundError``: the symbol IS known and the
+    chain WAS read. A handler that classifies only by the base class would
+    otherwise tell the caller "unknown symbol" for a source that answered
+    with data it could not map (measured: every row refused by the option
+    constructor -> ``except CboeNotFoundError`` -> 404 "unknown symbol").
+
+    It IS a ``CboeRequestError`` because from the caller's point of view the
+    chain could not be read at all - but its own ``reason`` says why, and
+    every handler must check this class BEFORE the base class.
+    """
+
+    reason = CHAIN_UNUSABLE
+
+
 _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                "AppleWebKit/537.36 (KHTML, like Gecko) "
                "Chrome/131.0.0.0 Safari/537.36")
@@ -524,10 +541,11 @@ class CBOEQuoteAdapter(QuoteAdapter):
             # never let a fully unusable chain look like "no candidates" - and
             # never call it "not listed": the feed did deliver a chain, the
             # adapter just could not build a single contract from it. The
-            # attempts the chain cost belong to that answer.
-            raise CboeNotFoundError(
+            # attempts the chain cost belong to that answer. The class is its
+            # own one (not CboeNotFoundError), so no handler can degrade this
+            # to "unknown symbol" by checking the base class.
+            raise CboeUnusableChainError(
                 f"all {len(chain['options'])} contracts of {underlying} unusable",
-                reason=CHAIN_UNUSABLE,
                 attempts=int(chain.get("attempts", 1) or 1))
         return ChainResult(out, skipped=skipped, attempts=int(chain.get("attempts", 1) or 0))
 
@@ -546,7 +564,9 @@ class CBOEQuoteAdapter(QuoteAdapter):
 
         Failures keep the existing contract unchanged: CboeNotFoundError for a
         symbol the source does not know, CboeRequestError for a timeout, an
-        outage, HTTP throttling or an unreadable payload.
+        outage, HTTP throttling or an unreadable payload - and
+        CboeUnusableChainError (a CboeRequestError, never a CboeNotFoundError)
+        for a chain that arrived but yielded no buildable contract.
         """
         entry = self._fetch(underlying_symbol)
         records = entry.get("options")

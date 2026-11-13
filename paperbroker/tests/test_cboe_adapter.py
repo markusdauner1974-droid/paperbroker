@@ -26,6 +26,7 @@ from ..adapters.quotes.CBOEQuoteAdapter import (
     CboeNotFoundError,
     CBOEQuoteAdapter,
     CboeRequestError,
+    CboeUnusableChainError,
     RetryBudget,
 )
 from ..quotes import OptionQuote
@@ -263,7 +264,7 @@ class TestCboeAdapter(unittest.TestCase):
         """A totally unusable chain must not look like "no candidates"."""
         payload = _chain_payload(["FAKE260229C00100000", "FAKE260229P00110000"])
         ad = self._adapter_with(payload)
-        with self.assertRaises(CboeNotFoundError):
+        with self.assertRaises(CboeUnusableChainError):
             ad.get_options("FAKE")
 
     def test_single_option_lookup_still_reports_not_found(self):
@@ -414,11 +415,54 @@ class TestAnUnusableChainIsNotUnlisted(unittest.TestCase):
             _fake_response(self._unusable_payload()),
         ]
         ad._sleep = lambda _seconds: None
-        with self.assertRaises(CboeNotFoundError) as ctx:
+        with self.assertRaises(CboeUnusableChainError) as ctx:
             ad.get_options("FAKE")
         self.assertEqual(ctx.exception.reason, CHAIN_UNUSABLE)
         self.assertNotEqual(ctx.exception.reason, CHAIN_NOT_LISTED)
         self.assertEqual(ctx.exception.attempts, 2)
+
+    def test_an_unusable_chain_is_no_unknown_symbol(self):
+        """The class itself must carry the distinction, not the message.
+
+        A handler that classifies by ``isinstance(exc, CboeNotFoundError)``
+        answered 404 "unknown symbol" for a chain the feed had delivered and
+        the adapter had read. The raise therefore uses a class that is a
+        request error and NOT a not-found error - checked here, because the
+        handlers rely on exactly that inheritance.
+        """
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        ad._session.get.side_effect = [
+            _fake_response({}, 429),
+            _fake_response(self._unusable_payload()),
+        ]
+        ad._sleep = lambda _seconds: None
+        with self.assertRaises(CboeUnusableChainError) as ctx:
+            ad.get_options("FAKE")
+        fehler = ctx.exception
+        self.assertFalse(isinstance(fehler, CboeNotFoundError),
+                         "an unusable chain must not be classified as unknown symbol")
+        self.assertTrue(isinstance(fehler, CboeRequestError),
+                        "an unusable chain is still a request that yielded no chain")
+        self.assertEqual(fehler.reason, CHAIN_UNUSABLE)
+        # the two attempts the chain really cost survive the new class
+        self.assertEqual(fehler.attempts, 2)
+        # and it still names no URL or socket detail
+        self.assertNotIn("http", str(fehler).lower())
+
+    def test_a_real_unknown_symbol_is_still_a_not_found(self):
+        """The distinction is only worth something if 404 stays its own class."""
+        ad = CBOEQuoteAdapter()
+        ad._session = MagicMock()
+        ad._session.get.side_effect = [
+            _fake_response(_chain_payload(["FAKE261016C00100000"])),
+        ]
+        ad._sleep = lambda _seconds: None
+        with self.assertRaises(CboeNotFoundError) as ctx:
+            # the chain is here, the contract asked for is not
+            ad.get_quote("FAKE261017C00100000")
+        self.assertFalse(isinstance(ctx.exception, CboeUnusableChainError))
+        self.assertEqual(ctx.exception.reason, CHAIN_NOT_LISTED)
 
     def test_the_unusable_reason_has_its_own_text(self):
         from ..earnings_scan import _chain_exclusion

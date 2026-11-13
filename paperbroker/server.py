@@ -593,10 +593,18 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         try:
             quotes = broker.get_options(ticker, expiration)
         except Exception as exc:                        # noqa: BLE001 - classified below
-            from paperbroker.adapters.quotes.CBOEQuoteAdapter import CboeNotFoundError
+            from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
+                CboeNotFoundError,
+                CboeUnusableChainError,
+            )
             if isinstance(exc, CboeNotFoundError):
                 return jsonify(error="unknown symbol", ticker=ticker), 404
             app.logger.exception("api_screen: market data failed for %s %s", ticker, expiration)
+            # A chain the feed delivered but no contract of it could be built is
+            # NOT an unknown symbol: the source knows the ticker and answered.
+            # It is a source-side failure (503) with its own wording.
+            if isinstance(exc, CboeUnusableChainError):
+                return jsonify(error="chain unreadable", ticker=ticker), 503
             return jsonify(error="market data unavailable"), 503
         trend_signal = _trend_for_screener(ticker)
         results, dropped = screen(quotes, criteria, trend=trend_signal,
@@ -691,6 +699,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
             CboeNotFoundError,
             CboeRequestError,
+            CboeUnusableChainError,
         )
         from paperbroker.option_chain_api import (
             SCHEMA_VERSION,
@@ -755,6 +764,16 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             snapshot = broker.get_option_chain_snapshot(ticker)
         except CboeNotFoundError:
             return _chain_error(404, "unknown_symbol", "the source does not know this symbol")
+        # Order matters: CboeUnusableChainError IS a CboeRequestError, so it must
+        # be caught first. The source delivered the chain - "unknown symbol"
+        # would be a false statement about the source.
+        except CboeUnusableChainError:
+            app.logger.warning("api_option_chain: chain unusable for %s", ticker)
+            return _chain_error(
+                503,
+                "chain_unreadable",
+                "the source delivered the chain, but no contract of it could be read",
+            )
         except CboeRequestError:
             app.logger.warning("api_option_chain: market data failed for %s", ticker)
             return _chain_error(
@@ -858,6 +877,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
             CboeNotFoundError,
             CboeRequestError,
+            CboeUnusableChainError,
         )
         from paperbroker.option_chain_api import listed_expirations
 
@@ -878,6 +898,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             verfaelle = listed_expirations(snapshot)
         except CboeNotFoundError:
             ketten_status = "unknown_symbol"
+        # The source knew the ticker and answered - only the mapping failed.
+        # Caught before CboeRequestError, of which it is a subclass.
+        except CboeUnusableChainError:
+            ketten_status = "chain_unreadable"
         except CboeRequestError:
             ketten_status = "market_data_unavailable"
         except Exception:                                    # noqa: BLE001 - classified here

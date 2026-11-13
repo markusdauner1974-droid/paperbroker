@@ -24,6 +24,7 @@ from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
     CHAIN_UNUSABLE,
     CboeNotFoundError,
     CboeRequestError,
+    CboeUnusableChainError,
     ChainResult,
 )
 from paperbroker.assets import asset_factory
@@ -327,8 +328,8 @@ class TestAChainFailureNamesItsCause(unittest.TestCase):
         That is not "the source lists no chain": the old class reason sent the
         not_listed sentence, and the attempts the chain cost were dropped.
         """
-        fehler = CboeNotFoundError("all 2 contracts of AAPL unusable",
-                                   reason=CHAIN_UNUSABLE, attempts=2)
+        fehler = CboeUnusableChainError("all 2 contracts of AAPL unusable",
+                                        attempts=2)
         aapl = entry_of(run_scan({"AAPL": fehler}, [calendar_row("AAPL", 30)]), "AAPL")
         self.assertEqual(aapl["status"], STATUS_FETCH_FAILED)
         self.assertEqual(aapl["exclusion"]["code"], "chain_fetch_failed")
