@@ -51,7 +51,6 @@ class _MockAdapter:
     def get_quote(self, asset):
         return None
 
-
 _LOOSE = ScreenerCriteria(max_spread_pct=100.0)
 
 # D7: the leg chain of the spread section is the chain of the list above, so the
@@ -66,18 +65,15 @@ _LOOSE = ScreenerCriteria(max_spread_pct=100.0)
 # test_screener.py (TestVerticalCallSpreads).
 _WIDE = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None)
 
-
 def _clock():
     """Pinned test clock: fixture ts are hardcoded '2026-10-07 14:30' -
     a real now() goes stale (>30 min) and wipes every result."""
     return lambda: arrow.get("2026-10-07T14:35:00")
 
-
 def _later_clock():
     """A second as-of day, to prove the filter reads the clock rather than
     a frozen date (see test_window_follows_the_injected_clock)."""
     return lambda: arrow.get("2026-11-15T14:35:00")
-
 
 class TestServerDisplay(unittest.TestCase):
     def setUp(self):
@@ -167,39 +163,6 @@ class TestServerDisplay(unittest.TestCase):
         # ...but the lamp still tells the truth (red = >= 2 h old)
         self.assertEqual(data["freshness"], "red")
 
-    def test_delta_none_renders_placeholder(self):
-        qs = make()
-        qs[0].delta = None
-        app2 = create_app(quote_adapter=_MockAdapter(qs), screener=None,
-                          now_fn=_clock())
-        app2.config["TESTING"] = True
-        c2 = app2.test_client()
-        res = c2.get("/", query_string={"ticker": "SPY",
-                                        "expiration": "2026-10-16"})
-        self.assertEqual(res.status_code, 200)
-        self.assertIn("–", res.get_data(as_text=True))
-
-    def test_index_renders_form(self):
-        res = self.client.get("/")
-        self.assertEqual(res.status_code, 200)
-        html = res.get_data(as_text=True)
-        self.assertIn("Options-Screener", html)
-        self.assertIn("Scan", html)
-
-    def test_index_arms_auto_loader(self):
-        # the empty page must ship the auto-loader JS that fetches
-        # /api/screen (picker stage) on ticker input
-        res = self.client.get("/")
-        html = res.get_data(as_text=True)
-        self.assertIn("loadDates", html)
-        self.assertIn("/api/screen?ticker=", html)
-        # D17 (finding 5d): the untouched select no longer claims to be
-        # loading - its placeholder names the input it waits for, and the
-        # loader's "cannot load" state names the expected ticker format
-        self.assertIn('<option value="">Verfälle: Ticker eingeben', html)
-        self.assertIn("invalidateSelector('Ticker prüfen - 1-6 Buchstaben A-Z')",
-                      html)
-
     def test_picker_api_contract_for_auto_loader(self):
         # the exact response shape the JS loader consumes: listed_dates
         # as 'YYYY-MM-DD' strings, results empty, freshness null
@@ -218,48 +181,6 @@ class TestServerDisplay(unittest.TestCase):
         res = self.client.get("/api/screen", query_string={"ticker": "../etc"})
         self.assertEqual(res.status_code, 400)
         self.assertEqual(res.get_json()["error"], "invalid ticker (1-6 letters A-Z expected)")
-
-    def test_lamp_uses_injected_clock(self):
-        # CodeRabbit finding: the lamp must take create_app's clock, not
-        # real now() - with the pinned clock (fixture ts 14:30) the lamp
-        # must be GREEN here, not red-by-real-time
-        res = self.client.get("/",
-                              query_string={"ticker": "SPY",
-                                            "expiration": "2026-10-16"})
-        html = res.get_data(as_text=True)
-        self.assertIn('lamp green', html)
-
-    def test_last_init_is_rendered_json(self):
-        # regression guard: the Jinja default must render a VALID JS
-        # literal in both branches (was broken twice during round 1)
-        res = self.client.get("/")
-        self.assertIn('var last = "";', res.get_data(as_text=True))
-        res = self.client.get("/", query_string={"ticker": "SPY"})
-        self.assertIn('var last = "SPY";', res.get_data(as_text=True))
-
-    def test_index_renders_result_table(self):
-        res = self.client.get("/", query_string={"ticker": "SPY",
-                                                 "expiration": "2026-10-16"})
-        self.assertEqual(res.status_code, 200)
-        html = res.get_data(as_text=True)
-        self.assertIn("Kette", html)
-        self.assertIn("Kandidaten", html)
-
-    def test_index_error_rendered_not_crash(self):
-        # SSR pages render the error as a readable box (200) - only the
-        # JSON API answers with 400; the page must never turn into a
-        # naked stacktrace
-        res = self.client.get("/", query_string={"ticker": "SPY",
-                                                 "expiration": "2019-01-01"})
-        self.assertEqual(res.status_code, 200)
-        self.assertIn("nicht gelistet", res.get_data(as_text=True))
-
-    def test_index_rejects_injection_attempt_readably(self):
-        res = self.client.get("/", query_string={"ticker": "../etc",
-                                                 "expiration": "2026-10-16"})
-        self.assertEqual(res.status_code, 200)
-        self.assertIn("Ungültiger Ticker", res.get_data(as_text=True))
-
 
 class TestDteWindow(unittest.TestCase):
     """B-11: the expiration picker must only offer dates that can hit.
@@ -328,12 +249,6 @@ class TestDteWindow(unittest.TestCase):
         d = self._picker_dates().get_json()
         self.assertIn("2026-11-21", d["listed_dates"])
 
-    def test_index_html_does_not_list_out_of_window_dates(self):
-        res = self._picker_dates(path="/")
-        html = res.get_data(as_text=True)
-        self.assertNotIn("2026-12-18", html)   # 72 dte, above the window
-        self.assertIn("2026-11-21", html)       # 45 dte, still offered
-
     def test_filtered_but_real_date_still_returns_200(self):
         # the regression guard on the DANGEROUS direction: narrowing the
         # OFFER must not narrow VALIDATION - a saved link to a real but
@@ -345,72 +260,6 @@ class TestDteWindow(unittest.TestCase):
             self.assertEqual(res.status_code, 200, date)
 
     # --- B-14: the <select> and validation must read the SAME list ---
-
-    def test_index_keeps_an_out_of_window_bookmark(self):
-        # 200 alone is not enough: test_filtered_but_real_date_still_returns_200
-        # was green while the <select> rendered WITHOUT the bookmarked date,
-        # leaving the form displaying a different date than it screened for.
-        html = self._app().test_client().get(
-            "/", query_string={"ticker": "SPY", "expiration": "2026-12-18"}
-        ).get_data(as_text=True)
-        self.assertIn('<option value="2026-12-18" selected>', html)
-
-    def test_in_window_bookmark_is_still_marked(self):
-        # control for the test above: the normal case must not regress
-        html = self._app().test_client().get(
-            "/", query_string={"ticker": "SPY", "expiration": "2026-10-16"}
-        ).get_data(as_text=True)
-        self.assertIn('<option value="2026-10-16" selected>', html)
-
-    def test_bookmarked_date_is_listed_first(self):
-        # keeping the bookmarked date is not enough - it has to come FIRST.
-        # Appending it would still satisfy the "is it there" test while
-        # burying the very date the user asked for at the bottom of a list
-        # of dates they did not ask about.
-        html = self._app().test_client().get(
-            "/", query_string={"ticker": "SPY", "expiration": "2026-12-18"}
-        ).get_data(as_text=True)
-        options = re.findall(r'<option value="([^"]*)"', html)
-        self.assertEqual(options[0], "2026-12-18")
-        self.assertEqual(options, ["2026-12-18"] + self.IN_WINDOW)
-
-    def test_non_bookmarked_ticker_keeps_the_window_order(self):
-        # without a bookmark the offer is exactly the filtered list, so the
-        # "bookmark first" rule must not reorder anything on its own
-        html = self._app().test_client().get(
-            "/", query_string={"ticker": "SPY"}).get_data(as_text=True)
-        options = re.findall(r'<option value="([^"]*)"', html)
-        self.assertEqual(options, self.IN_WINDOW)
-
-    def test_empty_window_says_unavailable_not_loading(self):
-        html = self._app(
-            ScreenerCriteria(dte_min=900, dte_max=1000)
-        ).test_client().get("/", query_string={"ticker": "SPY"}
-                            ).get_data(as_text=True)
-        # match the OPTION, not the bare phrase: the same text also lives in
-        # the JS loader (invalidateSelector), so a bare assertNotIn is useless
-        self.assertNotIn('<option value="">Verfälle werden geladen', html)
-        self.assertIn('<option value="" disabled>Nicht verfügbar', html)
-
-    def test_no_ticker_names_the_input_prompt(self):
-        # D17 (finding 5d): the "nothing fetched yet" state keeps its
-        # placeholder - but it now names the expected input instead of a
-        # loading operation that never started
-        html = self._app().test_client().get("/").get_data(as_text=True)
-        self.assertIn('<option value="">Verfälle: Ticker eingeben', html)
-        self.assertNotIn('<option value="">Verfälle werden geladen', html)
-        self.assertNotIn("Verfälle werden geladen", html)
-
-    def test_unlisted_date_never_reaches_the_picker(self):
-        # the union guard: only dates that are really in the chain may be
-        # added back to the offer list. Note the index route reports this
-        # softly (200 + message) where /api/screen aborts with 400.
-        res = self._app().test_client().get(
-            "/", query_string={"ticker": "SPY", "expiration": "2030-01-01"})
-        self.assertEqual(res.status_code, 200)
-        html = res.get_data(as_text=True)
-        self.assertIn("nicht gelistet", html)
-        self.assertNotIn('<option value="2030-01-01"', html)
 
     def test_picker_uses_the_injected_screener_criteria(self):
         d = self._picker_dates(ScreenerCriteria(dte_min=20)).get_json()
@@ -454,8 +303,6 @@ class TestDteWindow(unittest.TestCase):
         d = self._picker_dates().get_json()
         self.assertEqual(d["listed_dates"], self.IN_WINDOW)
 
-
-
 class TestDropReasons(unittest.TestCase):
     """UX-1 (Ausbau-Slice 1): the page names WHY a contract was dropped."""
 
@@ -488,114 +335,29 @@ class TestDropReasons(unittest.TestCase):
             quote("AAPL261016C00280000", bid=1.50, ask=2.00, iv=45.0, oi=9000),                                   # spread 28.6 %
         ]
 
-    @staticmethod
-    def _pairs(html_page):
-        """Read the rendered groups: (reason, count) in page order.
-
-        The template is autoescaped, so '<' and '>' arrive as entities -
-        unescape BEFORE comparing, because the browser shows the text.
-        """
-        return [(html.unescape(m.group(1)), int(m.group(2))) for m in re.finditer(
-            r'<li class="drop-reason">(.*?) <span class="drop-count">(\d+)</span></li>',
-            html_page)]
-
-    def _page(self, quotes, criteria=None):
-        return self._app(quotes, criteria).test_client().get(
-            "/", query_string={"ticker": "SPY", "expiration": "2026-10-16"}
-        ).get_data(as_text=True)
-
     def _json(self, quotes, criteria=None):
         return self._app(quotes, criteria).test_client().get(
             "/api/screen",
             query_string={"ticker": "SPY", "expiration": "2026-10-16"}
         ).get_json()
 
-    def _page_with(self, quotes, **params):
-        """The page for a request that carries the criteria fields itself.
-
-        `_page` injects a criteria OBJECT; the switch `ignore_quote_age` only
-        exists as a request parameter, so the new tests need this path.
-        """
-        query = {"ticker": "SPY", "expiration": "2026-10-16"}
-        query.update(params)
-        return self._app(quotes).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
-
-    # --- the empty case: the whole chain fails the age guard ---
-
-    def test_the_page_names_the_reasons_when_nothing_hits(self):
-        html = self._page(self._stale_chain())
-        self.assertIn("Keine Kontrakte haben die Kriterien bestanden", html)
-        # drop order is the pipeline order: iv=0 first, the rest is stale
-        self.assertEqual(self._pairs(html),
-                         [("veraltet: 275 Min.", 6), ("iv=0 illiquide", 1)])
-
-    def test_the_page_shows_the_age_and_the_limit(self):
-        # the lamp already said "alt"; UX-1 adds the measured value
-        html_page = self._page(self._stale_chain())
-        self.assertIn("lamp red", html_page)
-        self.assertIn("(275 min, Grenze 30 min)", html_page)
-
-    def test_the_header_age_agrees_with_the_reason_text(self):
-        # 14:35:00 - 10:00:24 = 274.6 min: the header must round the same way
-        # as the "stale N min" text (274.6 -> 275), not floor it to 274
-        chain = make()
-        for q in chain:
-            q.quote_timestamp = "2026-10-07 10:00:24"
-        html_page = self._page(chain)
-        self.assertIn("(275 min, Grenze 30 min)", html_page)
-        self.assertEqual(self._pairs(html_page)[0], ("veraltet: 275 Min.", 6))
-
-    # --- the mixed case: candidates exist, drops are still explained ---
-
-    def test_the_block_is_rendered_with_candidates_too(self):
-        html = self._page(self._mixed_chain())
-        self.assertIn("Kandidaten: <b>1</b>", html)
-        # ties (both count 2) keep the order the filters produced them in:
-        # data-complete (iv=0) runs before oi; the spread group is last.
-        # D9a/E7: the group names ONE real example out of its family of
-        # bounds (the numbers-masked pattern is gone) - sorted() picks the
-        # stable member, so the label is reproducible.
-        self.assertEqual(self._pairs(html),
-                         [("iv=0 illiquide", 2), ("OI 200 < 500", 2),
-                          ("Spread 28.6% > 10.0%", 1)])
-
-    def test_two_numbers_of_one_family_collapse_into_one_group(self):
-        pairs = dict((r, c) for r, c in self._pairs(self._page(self._mixed_chain())))
-        # 5 and 200 are different bounds - one family, one line. The family is
-        # identified by ONE real member text now (D9a/E7), not by the pattern.
-        self.assertEqual(pairs.get("OI 200 < 500"), 2)
-        self.assertNotIn("OI 5 < 500", pairs)      # the other member is no line of its own
-        self.assertNotIn("OI # < #", pairs)       # and the masked pattern is gone
-
     def test_two_bounds_of_one_family_share_one_real_example(self):
         """D9a/E7 (a): the grouping still collapses a family - now it names a
-        real member as the example instead of the numbers-masked pattern."""
+        real member as the example instead of the numbers-masked pattern.
+
+        The page block that used to render these groups is gone with the old
+        screen; the grouping itself lives on in ``dropped_reasons``, so this
+        case is pinned on the answer that still carries it.
+        """
         chain = [
             quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0, oi=8000),  # candidate
             quote("AAPL261016C00270000", bid=1.20, ask=1.30, iv=30.0, oi=200),  # OI 200 < 500
             quote("AAPL261016C00271000", bid=1.20, ask=1.30, iv=30.0, oi=40),   # OI 40 < 500
         ]
-        labels = [r for r, _ in self._pairs(self._page(chain))]
-        self.assertEqual(labels, ["OI 200 < 500"])       # ONE line for the family
-        self.assertIn(labels[0], {"OI 200 < 500", "OI 40 < 500"})   # a real member ...
-        self.assertNotIn("#", labels[0])                 # ... not the pattern
-        self.assertEqual(self._json(chain)["dropped_reasons"],
-                         [{"reason": "OI 200 < 500", "count": 2}])
-
-    def test_the_summary_shows_a_real_bound_not_the_masked_pattern(self):
-        """D9a/E7 (a): the page names the concrete bounds of the group."""
-        html_page = self._page(self._mixed_chain())
-        # the relative-spread group carries the real limit; autoescaping turns
-        # '>' into an entity, which is what the browser shows as a bound
-        self.assertIn("&gt; 10.0%", html_page)
-        self.assertNotIn("Spread #%", html_page)
-
-    def test_a_single_raw_text_keeps_its_measured_value(self):
-        # a group with exactly one text shows it (with its number)
-        pairs = dict(self._pairs(self._page(self._stale_chain())))
-        self.assertIn("veraltet: 275 Min.", pairs)
-        self.assertNotIn("veraltet: # Min.", pairs)
+        gruppen = self._json(chain)["dropped_reasons"]
+        self.assertEqual(gruppen, [{"reason": "OI 200 < 500", "count": 2}])
+        self.assertIn(gruppen[0]["reason"], {"OI 200 < 500", "OI 40 < 500"})  # a real member
+        self.assertNotIn("#", gruppen[0]["reason"])                          # not the pattern
 
     # --- the JSON contract (additive) ---
 
@@ -610,12 +372,6 @@ class TestDropReasons(unittest.TestCase):
         counts = [g["count"] for g in d["dropped_reasons"]]
         self.assertEqual(counts, sorted(counts, reverse=True))
 
-    def test_json_and_html_report_the_same_groups(self):
-        chain = self._mixed_chain()
-        self.assertEqual(self._pairs(self._page(chain)),
-                         [(g["reason"], g["count"])
-                          for g in self._json(chain)["dropped_reasons"]])
-
     def test_the_empty_list_is_carried_in_both_stages(self):
         # picker stage: no scan happened yet - and a scan that dropped
         # nothing; the key exists in both, the list is empty (contract:
@@ -627,21 +383,6 @@ class TestDropReasons(unittest.TestCase):
                                   iv=28.0, oi=8000)])
         self.assertEqual(clean["dropped_reasons"], [])
         self.assertEqual(clean["dropped"], 0)
-
-    # --- edge case: nothing dropped at all ---
-
-    def test_no_drops_render_no_block(self):
-        chain = [quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
-                       oi=8000)]
-        html_page = self._page(chain)
-        self.assertIn("Kandidaten: <b>1</b>", html_page)
-        self.assertIn("Datenalter:", html_page)          # the header stays
-        # match the ELEMENT, not the bare class: the same name also lives
-        # in the <style> block, so a substring check would always pass
-        # D2: der Ausschuss-Kasten ist ein <details> geworden - das ELEMENT
-        # pruefen, nicht den blanken Klassennamen (der steht auch im <style>)
-        self.assertNotIn('<details class="dropped-summary"', html_page)
-        self.assertNotIn('<li class="drop-reason">', html_page)
 
     @staticmethod
     def _one(ts):
@@ -663,63 +404,16 @@ class TestDropReasons(unittest.TestCase):
         self.assertIsNone(lamp(self._one("gestern abend"), now_fn=_clock()))
         self.assertIsNone(lamp([], now_fn=_clock()))
 
-    def test_the_lamp_reads_the_fetched_chain_and_the_header_shows_it(self):
-        # newest governs; the lamp reads the FETCHED chain (CodeRabbit), not
-        # the results - here the fresh contract is the DROPPED one
-        mixed = [
-            quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=0.0, oi=8000, quote_timestamp="2026-10-07 14:30:00"),   # fresh, dropped
-            quote("AAPL261016C00245000", bid=2.40, ask=2.50, iv=28.0, oi=1500, quote_timestamp="2026-10-07 10:00:00"),   # old, stale
-        ]
-        html_page = self._page(mixed)
-        self.assertIn("lamp green", html_page)
-        self.assertIn("(5 min, Grenze 30 min)", html_page)
-
-    # --- D9a/E3 (b): the operator's own limit next to the general lamp ---
-
-    def test_the_header_names_the_limit_question_separately_from_the_lamp(self):
-        """D9a/E3 (b): the traffic light answers the general freshness class
-        (30/120 min, unchanged); the operator's OWN limit gets its own named
-        line, so 'frisch' can never again stand next to a violated limit."""
-        inside = self._page(self._mixed_chain())          # 5 min vs limit 30
-        self.assertIn("lamp green", inside)               # the general statement ...
-        self.assertIn("(5 min, Grenze 30 min)", inside)
-        self.assertRegex(inside, r"innerhalb deiner Altersgrenze:\s*ja")
-        # the exact feed stamp the chain carries (D8 already names it)
-        self.assertIn("Kursdatum 2026-10-07 14:30:00", inside)
-
-        # a limit the present quotes violate: the limit line answers 'nein',
-        # the general lamp may stay green - the two statements are separate
-        violated = self._page_with(self._mixed_chain(), max_quote_age_min="1")
-        self.assertIn("lamp green", violated)
-        self.assertRegex(violated, r"innerhalb deiner Altersgrenze:\s*nein")
-        self.assertIn("(Grenze 1 min)", violated)
-
-    def test_the_header_announces_a_switched_off_age_limit(self):
-        """D9a/E3 (b): with ignore_quote_age=1 the header says so instead of
-        naming a limit that is not enforced."""
-        html_page = self._page_with(self._mixed_chain(), ignore_quote_age="1")
-        self.assertIn("Altersgrenze aus", html_page)
-        self.assertIn("(5 min, Grenze aus)", html_page)   # the lamp line, unchanged
-
-    def test_a_reason_text_cannot_inject_markup(self):
-        # the reasons are free text from the screener; they are rendered
-        # escaped, so a '<' stays text (measured: '&lt;' in the HTML). D9a/D7
-        # made the shown text a REAL example, so the escaped bound is the one
-        # the group picked - and it still must not become markup.
-        html_page = self._page(self._mixed_chain())
-        self.assertIn("OI 200 &lt; 500", html_page)
-        self.assertIn('<span class="drop-count">2</span>', html_page)
-
-
 
 class TestCriteriaPanel(unittest.TestCase):
-    """Ausbau-Slice 2 (A): the filter criteria become operator-settable.
+    """Ausbau-Slice 2 (A): the filter criteria are settable through the request.
 
     Six fields plus the switch `ignore_quote_age`. The criteria of the app the
     request runs against stay the BASE: only values the request really sets
     override them (the picker tests inject their own criteria).
     0 is a valid, sharp age bound - the switch is the only way to turn the
-    guard off, and it is announced on the page.
+    guard off. The old form that carried these fields is gone; the request path
+    and the criteria echo are what is left to pin.
     """
 
     def _app(self, quotes=None, criteria=None):
@@ -730,53 +424,14 @@ class TestCriteriaPanel(unittest.TestCase):
         app.config["TESTING"] = True
         return app
 
-    @staticmethod
-    def _stale_chain():
-        # every fixture is 275 min old: with the default 30-min guard the
-        # chain is wiped; a settable guard lets two of them through
-        qs = make()
-        for q in qs:
-            q.quote_timestamp = "2026-10-07 10:00:00"
-        return qs
-
-    @staticmethod
-    def _stats(html_page):
-        m = re.search(r'<div class="stats">(.*?)</div>', html_page, re.S)
-        return " ".join(re.sub(r"<[^>]+>", " ", m.group(1)).split())
-
     def _request(self, params, quotes=None, criteria=None, path="/"):
         query = {"ticker": "SPY", "expiration": "2026-10-16"}
         query.update(params)
         return self._app(quotes, criteria).test_client().get(path, query_string=query)
 
-    def _page(self, params, quotes=None, criteria=None):
-        return self._request(params, quotes, criteria).get_data(as_text=True)
-
     def _json(self, params, quotes=None, criteria=None):
         return self._request(params, criteria=criteria, quotes=quotes,
                              path="/api/screen").get_json()
-
-    # --- the age guard becomes settable (the Saturday case) ---
-
-    def test_the_age_guard_becomes_settable(self):
-        stale = self._stale_chain()
-        self.assertIn("Kandidaten: 0", self._stats(self._page({}, stale)))
-        html = self._page({"max_quote_age_min": "999"}, stale)
-        self.assertIn("Kandidaten: 2", self._stats(html))
-        self.assertIn("(275 min, Grenze 999 min)", html)
-        # the form shows what is in effect and offers the switch
-        self.assertIn('name="max_quote_age_min"', html)
-        self.assertIn('value="999"', html)
-        self.assertIn('name="ignore_quote_age"', html)
-
-    def test_the_switch_disables_the_age_check_visibly(self):
-        html = self._page({"ignore_quote_age": "1"}, self._stale_chain())
-        self.assertIn("Kandidaten: 2", self._stats(html))
-        self.assertIn("(275 min, Grenze aus)", html)
-        self.assertIn('class="warn"', html)            # the banner element
-        labels = re.findall(r'<li class="drop-reason">(.*?) <span', html)
-        self.assertTrue(labels)
-        self.assertTrue(all("stale" not in label for label in labels), labels)
 
     def test_the_switch_is_stateless(self):
         cli = self._app().test_client()
@@ -796,21 +451,9 @@ class TestCriteriaPanel(unittest.TestCase):
             "/api/screen", query_string={"ticker": "SPY"}).get_json()
         self.assertEqual(picker["listed_dates"], ["2026-11-21"])
 
-    def test_a_request_value_overrides_the_injected_criteria(self):
-        # injected dte_min=20 against a request that sets dte_max=10 -> the
-        # merged set is contradictory: reported, not silently accepted
-        # error texts are rendered escaped ("&lt;=") - compare the visible text
-        page = html.unescape(self._page({"dte_max": "10"},
-                                        criteria=ScreenerCriteria(dte_min=20)))
-        self.assertIn("dte_min: muss ≤ dte_max sein (ist: 20 > 10).", page)
-        self.assertNotIn("Kandidaten:", page)
-
     # --- contradictions and bad values are errors, not silence ---
 
     def test_contradicting_criteria_are_reported(self):
-        page = html.unescape(self._page({"dte_min": "45", "dte_max": "7"}))
-        self.assertIn("dte_min: muss ≤ dte_max sein (ist: 45 > 7).", page)
-        self.assertNotIn("Kandidaten:", page)
         res = self._request({"dte_min": "45", "dte_max": "7"}, path="/api/screen")
         self.assertEqual(res.status_code, 400)
         self.assertIn("dte_min: muss ≤ dte_max sein (ist: 45 > 7).",
@@ -821,27 +464,9 @@ class TestCriteriaPanel(unittest.TestCase):
                                ({"min_volume": "-5"},
                                 "min_volume: muss ≥ 0 sein (ist: -5)."),
                                ({"max_spread_pct": "nan"}, "endliche Zahl")):
-            page = html.unescape(self._page(params))
-            self.assertIn(needle, page)
-            self.assertNotIn("Kandidaten:", page)
-            self.assertEqual(self._request(params, path="/api/screen").status_code, 400)
-
-    def test_a_comma_decimal_gets_a_hint(self):
-        html = self._page({"max_spread_pct": "7,5"})
-        self.assertIn("Punkt als Dezimaltrenner", html)
-        self.assertNotIn("Kandidaten:", html)
-
-    def test_an_unknown_parameter_is_named(self):
-        html = self._page({"min_o": "500"})
-        self.assertIn("Unbekannte Parameter", html)
-        self.assertIn("min_o", html)
-        self.assertIn("Kandidaten: 2", self._stats(html))   # criteria unchanged
-
-    # --- the fields really move the result ---
-
-    def test_a_min_oi_moves_the_candidate_count(self):
-        self.assertIn("Kandidaten: 2", self._stats(self._page({})))
-        self.assertIn("Kandidaten: 1", self._stats(self._page({"min_oi": "5000"})))
+            res = self._request(params, path="/api/screen")
+            self.assertEqual(res.status_code, 400, params)
+            self.assertIn(needle, res.get_json()["error"], params)
 
     def test_the_echo_is_the_object_that_computed(self):
         d = self._json({"dte_min": "045"})
@@ -872,18 +497,11 @@ class TestCriteriaPanel(unittest.TestCase):
         narrow = self._app().test_client().get(
             "/api/screen", query_string={"ticker": "SPY", "dte_min": "45"}).get_json()
         self.assertEqual(narrow["listed_dates"], ["2026-11-21"])
-        # ... and on the PAGE too: the picker there is built by index(), not by
-        # the API helper - a mutant that passes the base criteria to only one
-        # of the two routes has to fail here (B-14: one source for both)
-        page = self._app().test_client().get(
-            "/", query_string={"ticker": "SPY", "dte_min": "45"}).get_data(as_text=True)
-        options = re.findall(r'<option value="(\d{4}-\d{2}-\d{2})"', page)
-        self.assertEqual(options, ["2026-11-21"])
 
     def test_the_position_fields_are_settable_through_the_request(self):
         """D12: die vier Positionsfelder stehen in den Kriterien-Feldlisten des
-        Servers (`_CRITERIA_FIELDS`). Fehlten sie dort, meldete das Formular sie
-        als UNBEKANNTE Parameter und der Wert verpuffte - der Nutzer stellt eine
+        Servers (`_CRITERIA_FIELDS`). Fehlten sie dort, gaelten sie als
+        UNBEKANNTE Parameter und der Wert verpuffte - der Nutzer stellt eine
         Positionsgroesse ein, die die Rechnung nie sieht.
         """
         werte = {"multiplier": "10", "quantity": "3", "fees": "1.5",
@@ -893,18 +511,14 @@ class TestCriteriaPanel(unittest.TestCase):
         self.assertEqual(d["criteria"]["quantity"], 3)
         self.assertEqual(d["criteria"]["fees"], 1.5)
         self.assertEqual(d["criteria"]["budget"], 500.0)
-        # ... und die Seite meldet sie nicht als unbekannt
-        self.assertNotIn("Unbekannte Parameter", self._page(werte))
-
 
 class TestThePositionFieldsInTheRequestPath(unittest.TestCase):
     """D16 request path: the position size is checked where it enters.
 
-    The browser bounds (min="1"/min="0") are convenience, not a check - the
-    criteria check in validate() is the one that decides, and it must be
-    reachable from both surfaces (page and /api/screen). The JSON status and
-    body below are measured, not guessed: multiplier=0 is a client error (400)
-    whose body carries the same text the page shows.
+    The browser bounds (min="1"/min="0") of the old form were convenience, not
+    a check - the criteria check in validate() is the one that decides, and it
+    is reachable through /api/screen. The JSON status and body below are
+    measured, not guessed: multiplier=0 is a client error (400).
     """
 
     def _app(self, quotes=None, criteria=None):
@@ -921,24 +535,6 @@ class TestThePositionFieldsInTheRequestPath(unittest.TestCase):
         return self._app(quotes, criteria).test_client().get(path,
                                                              query_string=query)
 
-    def _page(self, params, quotes=None, criteria=None):
-        return self._request(params, quotes, criteria).get_data(as_text=True)
-
-    @staticmethod
-    def _vertical_rows(body):
-        start = body.index("<th>Position ($)</th>")
-        end = body.index("</table>", start)
-        rows = re.findall(r"<tr>(.*?)</tr>", body[start:end], re.S)
-        return [re.findall(r"<td[^>]*>(.*?)</td>", row, re.S) for row in rows]
-
-    def test_the_page_reports_multiplier_zero_not_the_browser_bound(self):
-        # the request really carries multiplier=0: the form's min="1" is not a
-        # check, so the value reaches validate() and is reported there
-        page = html.unescape(self._page({"multiplier": "0"}))
-        self.assertIn("multiplier: muss eine positive ganze Zahl sein (ist: 0).",
-                      page)
-        self.assertNotIn("Kandidaten:", page)
-
     def test_the_json_route_reports_multiplier_zero_with_status_and_body(self):
         # measured: 400, body {"error": "multiplier: ... (ist: 0)."} - abort()
         # runs through the JSON error handler, not into the HTML page
@@ -948,32 +544,10 @@ class TestThePositionFieldsInTheRequestPath(unittest.TestCase):
                          {"error": "multiplier: muss eine positive ganze "
                                    "Zahl sein (ist: 0)."})
 
-    def test_multiplier_100_runs_normally_on_both_surfaces(self):
-        page = self._page({"multiplier": "100"})
-        self.assertIn("Kandidaten:", page)
-        self.assertNotIn("multiplier: muss eine positive ganze Zahl sein", page)
+    def test_multiplier_100_runs_normally_on_the_api(self):
         res = self._request({"multiplier": "100"}, path="/api/screen")
         self.assertEqual(res.status_code, 200)
         self.assertEqual(res.get_json()["criteria"]["multiplier"], 100)
-
-    def test_the_page_shows_a_dash_when_no_position_is_computed(self):
-        # multiplier=None means "no position is computed": the position column
-        # shows a dash, not a silent 0. The unset state only comes from the
-        # injected criteria - an empty request field keeps the default 100.
-        ohne = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
-                                multiplier=None, quantity=None)
-        rows = self._vertical_rows(self._page({}, quotes=make_verticals(),
-                                              criteria=ohne))
-        self.assertTrue(rows)
-        for row in rows:
-            self.assertEqual("-", row[4], row)   # the Position ($) cell
-        # ... and with a real size the same column carries the number
-        mit = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
-                               multiplier=100, quantity=1)
-        rows = self._vertical_rows(self._page({}, quotes=make_verticals(),
-                                              criteria=mit))
-        self.assertEqual(["70", "70"], [row[4] for row in rows])
-
 
 class TestSettableCriteria(unittest.TestCase):
     """Slice I: the eleven criteria that had no form field are settable now.
@@ -998,12 +572,6 @@ class TestSettableCriteria(unittest.TestCase):
         return self._app(quotes).test_client().get(
             "/api/screen", query_string=query).get_json()
 
-    def _page(self, params, quotes=None):
-        query = {"ticker": "SPY", "expiration": "2026-10-16"}
-        query.update(params)
-        return self._app(quotes).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
-
     @staticmethod
     def _gruende(d):
         return {g["reason"]: g["count"] for g in d["dropped_reasons"]}
@@ -1022,26 +590,6 @@ class TestSettableCriteria(unittest.TestCase):
         self.assertEqual(d["criteria"]["min_ask_size"], 200)
         self.assertEqual(d["candidates"], 0)
         self.assertEqual(self._gruende(d)["Größe unter Minimum"], 2)
-
-    def test_the_penny_zone_and_the_volume_bound_are_named(self):
-        """D9a/E6+E9 (a/b): the two field labels name the rule they enforce -
-        the $ bound only bites in the penny zone, the volume bound is strict."""
-        html_page = self._page({})
-        self.assertIn("Spread max ($) · Standard 0.1 · greift nur bei Kursmitte "
-                      "≤ 1 $ (Penny-Zone)", html_page)
-        self.assertIn("Volumen min · Standard 0 · schließt Werte ≤ Grenze aus "
-                      "(strikt größer)", html_page)
-        # D11: the pair-width field sits DIRECTLY behind the volume field, and its
-        # own text says what its empty state means (adjacent strikes only). Were it
-        # anywhere else - or silent about "leer" - the reader would read the empty
-        # field as "filter off", which is exactly the D1 trap.
-        naechstes = re.search(
-            r'<label>Volumen min[^<]*<input[^>]*name="min_volume"[^>]*></label>\s*'
-            r'<label>Paar-Breite max \(\$\)[^<]*'
-            r'<input[^>]*name="pair_max_width"', html_page)
-        self.assertIsNotNone(
-            naechstes,
-            "das Paar-Breiten-Feld steht nicht direkt hinter dem Volumenfeld")
 
     def test_iv_min_drops_the_low_iv_contract(self):
         d = self._json({"iv_min": "29"})                 # IVs are 28 and 30
@@ -1122,7 +670,7 @@ class TestSettableCriteria(unittest.TestCase):
         self.assertAlmostEqual(tief["results"][0]["score"], 0.901, places=3)
         self.assertEqual(hoch["candidates"], tief["candidates"])   # selection identical
 
-    # --- the guards that already existed, now reachable from the form -----
+    # --- the guards that already existed, now reachable from the request ---
 
     def test_a_bad_switch_value_is_a_readable_400(self):
         res = self._app().test_client().get(
@@ -1149,17 +697,7 @@ class TestSettableCriteria(unittest.TestCase):
             self.assertEqual(res.status_code, 400, params)
             self.assertIn(text, res.get_json()["error"], params)
 
-    # --- the form itself and the "empty = default" rule --------------------
-
-    def test_the_form_offers_every_criterion_and_names_no_unknown_parameter(self):
-        html = self._page({})
-        for feld in ("max_spread_abs", "pair_max_width", "min_bid_size", "min_ask_size",
-                     "iv_min", "iv_max", "iv_pref", "require_oi", "require_volume",
-                     "weight_spread", "weight_oi", "weight_iv"):
-            self.assertIn(f'name="{feld}"', html, feld)
-        self.assertNotIn("Unbekannte Parameter", html)
-        # a real typo is still named (the old guard is untouched)
-        self.assertIn("foo", self._page({"foo": "bar"}))
+    # --- the "empty = default" rule ----------------------------------------
 
     def test_an_empty_field_keeps_the_default_instead_of_zero(self):
         # measured: min_bid_size=None means "off", 0 means "size >= 0" and drops
@@ -1219,7 +757,6 @@ class TestSettableCriteria(unittest.TestCase):
         self.assertEqual([v["symbol"] for v in knapp["verticals"]], [])
         self.assertEqual(knapp["criteria"]["pair_max_width"], 9.0)
 
-
 class TestFutureTimestampLamp(unittest.TestCase):
     """Slice J: the lamp must not call a chain with a future timestamp fresh.
 
@@ -1245,12 +782,6 @@ class TestFutureTimestampLamp(unittest.TestCase):
             q.quote_timestamp = ts
         return k
 
-    def _page(self, quotes, params=None):
-        query = {"ticker": "SPY", "expiration": "2026-10-16"}
-        query.update(params or {})
-        return self._app(quotes).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
-
     def _json(self, quotes, params=None):
         query = {"ticker": "SPY", "expiration": "2026-10-16"}
         query.update(params or {})
@@ -1258,11 +789,8 @@ class TestFutureTimestampLamp(unittest.TestCase):
             "/api/screen", query_string=query).get_json()
 
     def test_the_lamp_turns_red_with_the_guard_switched_off(self):
-        page = self._page(self._kette("2026-10-08 14:35:00"), {"ignore_quote_age": "1"})
-        self.assertIn("Zukunft", page)          # not "frisch", not "alt"
-        self.assertNotIn("frisch", page)
-        self.assertIn("-1440 min", page)        # the number stays honest
-        self.assertIn("Grenze aus", page)
+        # the traffic light itself is only carried by the answer now: the page
+        # that used to paint it is gone with the old screen.
         self.assertEqual(self._json(self._kette("2026-10-08 14:35:00"),
                                     {"ignore_quote_age": "1"})["freshness"], "red")
 
@@ -1284,116 +812,7 @@ class TestFutureTimestampLamp(unittest.TestCase):
     def test_half_a_minute_ahead_is_still_fresh(self):
         # separates the SHARED tolerance from a strict lamp: the filter keeps
         # this quote, so the lamp must not turn red for it
-        page = self._page(self._kette("2026-10-07 14:35:30"))
-        self.assertIn("frisch", page)
-        self.assertNotIn("Zukunft", page)
         self.assertEqual(self._json(self._kette("2026-10-07 14:35:30"))["freshness"], "green")
-
-
-class TestResultList(unittest.TestCase):
-    """Ausbau-Slice 3 (D): what the result list shows, and in which order.
-
-    The row order is produced by the SERVER (the template no longer sorts), so
-    it is observable in the test client. Ties keep the historical order: a
-    stable ascending sort, then reversed - of two equal scores the later
-    contract comes first.
-    """
-
-    def _app(self, quotes=None, criteria=None):
-        app = create_app(
-            quote_adapter=_MockAdapter(make() if quotes is None else quotes),
-            screener=None if criteria is None else OptionScreener(criteria),
-            now_fn=_clock())
-        app.config["TESTING"] = True
-        return app
-
-    def _page(self, params, quotes=None, criteria=None):
-        query = {"ticker": "SPY", "expiration": "2026-10-16"}
-        query.update(params)
-        return self._app(quotes, criteria).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
-
-    @staticmethod
-    def _stats(page):
-        m = re.search(r'<div class="stats">(.*?)</div>', page, re.S)
-        return " ".join(re.sub(r"<[^>]+>", " ", m.group(1)).split())
-
-    @staticmethod
-    def _symbols(page):
-        # first cell of every row (all 9 cells of a row match <td> too - the
-        # first extraction attempt collected all of them and proved nothing)
-        body = page.split("<tbody>")[-1].split("</tbody>")[0]
-        rows = re.findall(r"<tr>(.*?)</tr>", body, re.S)
-        return [re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', row, re.S)[0].strip()
-                for row in rows]
-
-    # --- what the list shows ---
-
-    def test_the_contract_cell_carries_the_score_reasons(self):
-        self.assertIn('title="spread 2.0%; OI 8000; IV 28"', self._page({}))
-
-    def test_the_reasons_come_from_the_contract(self):
-        # a chain with different numbers: a fixed text in the template cannot
-        # satisfy this one
-        chain = [quote("AAPL261016C00240000", bid=1.00, ask=1.10, iv=21.0,
-                       oi=4242, volume=7)]
-        self.assertIn('title="spread 9.5%; OI 4242; IV 21"', self._page({}, chain))
-
-    def test_the_delta_column_states_its_unit(self):
-        page = self._page({})
-        self.assertIn("<th>Δ×100</th>", page)
-        self.assertNotIn("<th>Δ</th>", page)
-
-    def test_the_header_names_the_dte_basis(self):
-        # D8: the single "DTE 38 (Kalendertage)" line read like the DATA's own
-        # maturity. The honest maturity is expiry minus the SCAN clock
-        # (2026-10-16 - 2026-10-07 = 9), and the label now says so.
-        stats = self._stats(self._page({}))
-        self.assertIn("Verfall 2026-10-16", stats)
-        self.assertIn("DTE 9 (Tage ab heute)", stats)
-        self.assertNotIn("(Kalendertage)", stats)
-
-    def test_the_header_names_the_feed_stamp_as_well(self):
-        # D8 (E1 = c) requires the header to name BOTH numbers: the scan's
-        # maturity AND the data's own stamp. The template asks for the second
-        # one (screen.html:170 `{% if feed_time %}<span>Kursdatum ...`), but the
-        # delivered server computes feed_time at server.py:407 and never hands
-        # it to render_template (screen.html never receives it, ruff F841 on
-        # exactly that line). RED ON PURPOSE - this is a REAL defect of the D8
-        # artifact, not a fixture contradiction, so it is named rather than
-        # papered over. It goes green the moment render_template gets
-        # `feed_time=feed_time`.
-        stats = self._stats(self._page({}))
-        self.assertIn("Kursdatum 2026-10-07 14:30:00", stats)
-
-    def test_the_header_dte_follows_the_contracts(self):
-        # a chain on its OWN expiry: 2026-10-30 - 2026-10-07 = 23. A hardcoded
-        # "DTE 9" in the template cannot satisfy this one.
-        chain = [quote("AAPL261030C00240000", bid=5.00, ask=5.10, iv=28.0,
-                       oi=8000, volume=1200)]
-        self.assertIn("DTE 23 (Tage ab heute)", self._stats(self._page({}, chain)))
-
-    def test_the_header_shows_no_dte_without_results(self):
-        stats = self._stats(self._page({"min_oi": "999999"}))
-        self.assertIn("Verfall 2026-10-16", stats)
-        self.assertNotIn("DTE", stats)
-        self.assertIn("Kandidaten: 0", stats)
-
-    # --- in which order (pin: green before and after) ---
-
-    def test_the_rows_are_ordered_by_score_and_ties_are_kept(self):
-        tie_a = quote("AAPL261016C00240000", bid=2.40, ask=2.50, iv=30.0,
-                      oi=1500, volume=300)
-        best = quote("AAPL261016C00245000", bid=5.00, ask=5.10, iv=28.0,
-                      oi=8000, volume=1200)
-        tie_b = quote("AAPL261016C00261000", bid=2.40, ask=2.50, iv=30.0,
-                      oi=1500, volume=300)
-        page = self._page({}, [tie_a, best, tie_b])
-        self.assertEqual(self._symbols(page),
-                         ["AAPL261016C00245000", "AAPL261016C00261000",
-                          "AAPL261016C00240000"])
-
-
 
 class TestNonFiniteJsonBody(unittest.TestCase):
     """D8 (E2 = a): the body of /api/screen is STRICT JSON.
@@ -1448,7 +867,6 @@ class TestNonFiniteJsonBody(unittest.TestCase):
         self.assertEqual(data["dropped_reasons"],
                          [{"reason": "Spread: kein Geld-/Briefkurs", "count": 2}])
 
-
 class TestVerticalSpreadList(unittest.TestCase):
     """Ausbau-Slice B: the second list (vertical call spreads).
 
@@ -1474,12 +892,6 @@ class TestVerticalSpreadList(unittest.TestCase):
         query.update(params or {})
         return self._app(quotes, criteria).test_client().get(
             "/api/screen", query_string=query).get_json()
-
-    def _page(self, quotes=None, criteria=None, params=None):
-        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
-        query.update(params or {})
-        return self._app(quotes, criteria).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
 
     def test_the_api_lists_the_pairs_that_pass_the_leg_rules(self):
         # D7: the degenerated AAPL pair (debit == width) is dropped by the pair
@@ -1567,21 +979,6 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertEqual([(g["count"], g["reason"]) for g in data["vertical_drops"]
                           if "kein Gewinn" in g["reason"]],
                          [(1, "Debit 2.5 außerhalb (0, 2.5) - kein Gewinn möglich")])
-        self.assertIn("kein Gewinn möglich", self._page())
-
-    def test_both_lists_are_rendered_side_by_side_on_one_page(self):
-        # the spread table is additive: with loosened single-option criteria
-        # BOTH tables have rows, and the page stays one document. D7: loosened
-        # now includes the absolute spread bound - the fixture legs are 0.20 $
-        # wide in the penny zone, and the pairs must survive for the table to
-        # exist at all.
-        criteria = ScreenerCriteria(max_quote_age_min=None, max_spread_pct=None,
-                                    max_spread_abs=None, min_oi=None,
-                                    dte_min=None, dte_max=None)
-        page = self._page(criteria=criteria)
-        self.assertEqual(page.count("<table>"), 2)
-        self.assertIn("Bull Call Spread (Debit)", page)
-        self.assertIn("Kontrakt", page)
 
     def test_the_api_reports_why_pairs_were_dropped(self):
         # D7: every dropped pair carries the reason of the first rule that
@@ -1599,33 +996,12 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertNotIn("P00", "".join(v["symbol"] for v in data["verticals"]))
         self.assertNotIn("P00", "".join(g["reason"] for g in data["vertical_drops"]))
 
-    def test_the_page_shows_the_numbers_the_json_carries(self):
-        page = self._page()
-        for v in self._json()["verticals"]:
-            for field in ("strike_width", "net_debit", "max_loss",
-                          "max_profit", "breakeven"):
-                self.assertIn(f"{v[field]:.2f}", page)
-            # D17 (finding 5b): the column is percent now - the cell carries
-            # the ratio scaled by 100
-            self.assertIn(f"{v['debit_width_ratio'] * 100:.2f}", page)
+    def test_the_ratio_is_carried_unrounded_in_the_json(self):
+        """D17 (finding 5b): debit 0.01 over a width of 5.00 is a ratio of 0.002.
 
-    @staticmethod
-    def _ratio_cell(page, long_symbol, short_symbol):
-        """The Debit/Breite cell of one pair's row - found by its title,
-        not by a table position."""
-        zeile = re.search(rf'<td title="Kauf {long_symbol} · Verkauf {short_symbol}">.*?</tr>',
-                          page, re.S)
-        zellen = re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile.group(0), re.S)
-        return zellen[10].strip()
-
-    def test_the_ratio_is_a_percentage_with_two_decimals(self):
-        """D17 (finding 5b): the ratio read as "0.00" at two decimals because
-        0.002 truncated to nothing. The cell scales it now: debit 0.01 over a
-        width of 5.00 is a ratio of 0.002 and must render as "0.20 %", not "0.00".
-
-        The percent sign sits in the header AND in the cell, the way the Rendite
-        and BE-Abstand columns already do it - the first D17 artefact had it in the
-        header only, which made this column the odd one out.
+        The old page scaled and rounded it for its cell; that cell is gone. What
+        is left to pin is that the answer carries the raw fraction instead of a
+        pre-rounded 0.00 - a consumer that wants percent scales it itself.
         """
         kette = [
             quote("SPY261016C00100000", bid=1.00, ask=1.01,
@@ -1636,50 +1012,7 @@ class TestVerticalSpreadList(unittest.TestCase):
         v = self._json(quotes=kette)["verticals"][0]
         self.assertEqual((v["strike_width"], v["net_debit"]), (5.00, 0.01))
         self.assertEqual(v["debit_width_ratio"], 0.002)
-        page = self._page(quotes=kette)
-        self.assertIn("<th>Debit/Breite %</th>", page)
-        zelle = self._ratio_cell(page, v["long_symbol"], v["short_symbol"])
-        self.assertEqual(zelle, "0.20 %")
-        self.assertNotEqual(zelle, "0.00 %")
-
-    def test_the_first_table_is_untouched(self):
-        criteria = ScreenerCriteria(max_quote_age_min=None)
-        app = create_app(quote_adapter=_MockAdapter(make()),
-                         screener=OptionScreener(criteria), now_fn=_clock())
-        app.config["TESTING"] = True
-        page = app.test_client().get(
-            "/", query_string={"ticker": "SPY", "expiration": "2026-10-16"}
-        ).get_data(as_text=True)
-        # the single-option rows are still the FIRST tbody section, and the
-        # new table must not introduce a second one
-        body = page.split("<tbody>")[-1].split("</tbody>")[0]
-        symbols = [re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', row, re.S)[0].strip()
-                   for row in re.findall(r"<tr>(.*?)</tr>", body, re.S)]
-        self.assertEqual(symbols, ["AAPL261016C00240000", "AAPL261016C00245000"])
-        self.assertEqual(page.count("<tbody>"), 1)
-        self.assertIn("<th>\u0394\u00d7100</th>", page)
-        self.assertNotIn("<th>\u0394</th>", page)
-
-    def test_the_feed_note_is_german_and_no_python_value_reaches_the_page(self):
-        """Feed-Zeile deutsch, kein Python-Wert, Tooltips bleiben lesbar.
-
-        Die Feed-Zeile war von keiner Zusicherung gepinnt (gemessen) - sie
-        nennt als einzige den Datenursprung, also gehoert sie festgehalten.
-        "None" war ein ausgedruckter Python-Wert, kein Wort. Die Hinweise
-        stehen als Tooltip am Symbol und duerfen nicht unbrauchbar lang
-        werden (Basisstand gemessen: laengster Tooltip 51 Zeichen).
-        """
-        client = self._app().test_client()
-        html_page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
-        self.assertIn("CBOE-Kursdaten zeitversetzt", html_page)
-        self.assertIn("ca. 15 Minuten hinter Echtzeit", html_page)
-        self.assertNotIn("delayed feed", html_page)
-        self.assertNotIn("None", html_page)
-        self.assertIn("OI fehlt", html_page)
-        tooltips = re.findall(r'title="([^"]*)"', html_page)
-        self.assertTrue(tooltips, "keine Tooltips mehr auf der Seite")
-        self.assertLessEqual(max(len(t) for t in tooltips), 64)
-
+        self.assertNotEqual(v["debit_width_ratio"], 0.0)
 
     def test_a_chain_without_neighbours_reports_two_empty_lists(self):
         data = self._json(quotes=[quote("AAPL261016C00240000", bid=5.00, ask=5.10,
@@ -1687,10 +1020,8 @@ class TestVerticalSpreadList(unittest.TestCase):
         self.assertEqual(data["verticals"], [])
         self.assertEqual(data["vertical_drops"], [])
 
-
 _ENV_KEYS = ("PAPERBROKER_TREND_MCP_URL", "PAPERBROKER_TREND_TOKEN",
              "PAPERBROKER_TREND_TIMEOUT_S")
-
 
 def _mcp_envelope(stage, symbol="AAPL"):
     """The MEASURED shape (2026-10-12): result.content[0].text is a JSON string
@@ -1699,7 +1030,6 @@ def _mcp_envelope(stage, symbol="AAPL"):
                         "technicals": {"symbol": symbol, "stage": stage}})
     return json.dumps({"jsonrpc": "2.0", "id": 1,
                        "result": {"content": [{"type": "text", "text": inner}]}}).encode()
-
 
 class _FakeTransport:
     """Records every call; never touches the network."""
@@ -1713,7 +1043,6 @@ class _FakeTransport:
         self.calls.append({"url": url, "headers": headers, "body": body, "timeout": timeout})
         return self.status, self.body
 
-
 class _FakeProvider:
     def __init__(self, signal):
         self.signal = signal
@@ -1721,11 +1050,9 @@ class _FakeProvider:
     def get_trend(self, ticker):
         return self.signal
 
-
 class _BrokenProvider:
     def get_trend(self, ticker):
         raise RuntimeError("boom")
-
 
 class TestTrendDirectionRule(unittest.TestCase):
     def test_direction_two_is_up(self):
@@ -1746,7 +1073,6 @@ class TestTrendDirectionRule(unittest.TestCase):
         for bad in (None, 5, "2"):
             with self.assertRaises(ValueError):
                 server_module._direction_from_stage(bad)
-
 
 class TestTrendTransport(unittest.TestCase):
     def test_transport_returns_status_and_body(self):
@@ -1813,7 +1139,6 @@ class TestTrendTransport(unittest.TestCase):
         self.assertEqual(seen["auth"], "Bearer T")
         self.assertEqual(seen["ctype"], "application/json")
         self.assertEqual(seen["body"], b'{"a":1}')
-
 
 class TestTrendProvider(unittest.TestCase):
     def _provider(self, status=200, body=b""):
@@ -1887,7 +1212,6 @@ class TestTrendProvider(unittest.TestCase):
         sent = json.loads(fake.calls[0]["body"])
         self.assertEqual(sent["params"]["arguments"]["symbol"], 'AA"PL{')
 
-
     def test_provider_reads_stage_from_technicals(self):
         """MEASURED 2026-10-12: the numbers live under "technicals"."""
         prov, _ = self._provider(200, _mcp_envelope(2))
@@ -1897,7 +1221,6 @@ class TestTrendProvider(unittest.TestCase):
             {"type": "text", "text": json.dumps({"stage": 2})}]}}).encode())
         with self.assertRaises(RuntimeError):
             prov.get_trend("AAPL")
-
 
 class TestTrendConfig(unittest.TestCase):
     def setUp(self):
@@ -1940,7 +1263,6 @@ class TestTrendConfig(unittest.TestCase):
             os.environ["PAPERBROKER_TREND_TIMEOUT_S"] = bad
             self.assertEqual(server_module._get_trend_provider().timeout, 2.0, bad)
 
-
 class TestTrendWiring(unittest.TestCase):
     def _client(self):
         return create_app(quote_adapter=_MockAdapter(make()), screener=OptionScreener(_LOOSE), now_fn=_clock()).test_client()
@@ -1952,9 +1274,7 @@ class TestTrendWiring(unittest.TestCase):
     def test_json_reports_the_unavailable_source_not_a_calm_market(self):
         import unittest.mock as mock
         with mock.patch.object(server_module, "_get_trend_provider", return_value=_BrokenProvider()):
-            client = self._client()
-            antwort = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16")
-            page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
+            antwort = self._client().get("/api/screen?ticker=AAPL&expiration=2026-10-16")
         # D6: ein Ausfall der Trend-Quelle kostet die Trend-Anmerkung, nie das
         # Ergebnis. Vor D6 antwortete dieser Aufruf mit HTML/500 - und die alte
         # Zusicherung war trotzdem grün, weil get_json() für eine HTML-Seite
@@ -1968,33 +1288,21 @@ class TestTrendWiring(unittest.TestCase):
         self.assertIsNone(data["trend"], "unterbrochene Quelle muss null melden")
         self.assertTrue(data["results"],
                         "kein Ergebnis, obwohl ohne Trend weiter gescreent wird")
-        self.assertIn("Trend nicht verfügbar", page)
-        self.assertIn("nicht erreichbar", page,
-                      "die Seite muss die Ursache nennen")
-        self.assertNotIn("Marktdaten-Fehler", page,
-                         "ein Trend-Ausfall ist kein Marktdaten-Fehler")
 
-    def test_json_and_page_agree_on_trend_reasons(self):
+    def test_json_names_the_trend_and_its_reason(self):
         import unittest.mock as mock
         signal = TrendSignal(symbol="AAPL", direction="up")
         with mock.patch.object(server_module, "_get_trend_provider",
                                return_value=_FakeProvider(signal)):
-            client = self._client()
-            data = client.get("/api/screen?ticker=AAPL&expiration=2026-10-16").get_json()
-            page = client.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
+            data = self._client().get(
+                "/api/screen?ticker=AAPL&expiration=2026-10-16").get_json()
         json_reasons = [r for row in data["results"] for r in row["reasons"] if "Trend" in r]
         self.assertTrue(json_reasons, "kein Trend-Grund im JSON")
-        for reason in json_reasons:
-            self.assertIn(reason, page, "Seite und JSON gehen auseinander")
-        self.assertIn("steigend", page)
         # das gesunde Signal muss auch in der Schnittstelle stehen,
         # sonst faellt nicht auf, wenn sie es verschweigt
         self.assertIn("trend", data)
         self.assertEqual("up", data["trend"]["direction"])
         self.assertEqual("AAPL", data["trend"]["symbol"])
-
-
-
 
 class TestChainBoundary(unittest.TestCase):
     """Ausbau-Slice E (B-16): one unusable row must not take the screen down."""
@@ -2067,14 +1375,11 @@ class TestChainBoundary(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertNotIn("2026-02-29", res.get_json()["listed_dates"])
 
-
-
 class TheSpreadListIsReadyToDecide(unittest.TestCase):
     """Slice K: Rendite, Break-even-Abstand, Strikes im Klartext, Sortierung.
 
-    Die Zahlen sind reine Arithmetik aus dem Spread-Objekt; die Reihenfolge der
-    ANZEIGE darf von der Reihenfolge der Schnittstelle abweichen (dort haengen
-    die Zusicherungen der bestehenden Tests).
+    The table that rendered these numbers went with the old screen; the two
+    cases left here pin the arithmetic and the order of the answer itself.
     """
 
     @staticmethod
@@ -2089,325 +1394,21 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         app.config["TESTING"] = True
         return app
 
-    def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
-        query.update(params or {})
-        return self._app(quotes).test_client().get("/", query_string=query).get_data(as_text=True)
-
     def _json(self, quotes=None):
         return self._app(quotes).test_client().get(
             "/api/screen", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}).get_json()
 
-    @staticmethod
-    def _spread_rows(page):
-        """Nur die Spread-Tabelle - am KOPF erkannt, nicht an der Position.
-
-        Seit D2 stehen die Spreads VOR den Kontrakten; ein [-1] wie zuvor
-        griffe jetzt die Kontrakttabelle. Fehlt die Tabelle ganz, wird das
-        benannt - ein leeres [] waere still und wuerde die Zusicherungen, die
-        ueber die Zeilen laufen, zu Leerproben machen.
-        """
-        tabellen = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
-                    if "<th>Spread</th>" in t]
-        if not tabellen:
-            raise AssertionError("keine Spread-Tabelle auf der Seite")
-        zeilen = re.findall(r"<tr>(.*?)</tr>", tabellen[0], re.S)
-        return [[re.sub(r"<[^>]+>", "", c).strip() for c in
-                 re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)]
-                for zeile in zeilen[1:]]
-
-    @staticmethod
-    def _spread_header(page):
-        """Die Kopfzellen der Spread-Tabelle in Dokumentreihenfolge (D13: 12).
-
-        Am <thead> gelesen, nicht gezaehlt: nur so lässt sich die neue Spalte an
-        ihrer STELLE pruefen (zwischen Breite und max Verlust) statt nur als
-        Zahl. Ein Link im <th> (Rendite, BE-Abstand) wird auf seinen Text
-        reduziert.
-        """
-        tabellen = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
-                    if "<th>Spread</th>" in t]
-        if not tabellen:
-            raise AssertionError("keine Spread-Tabelle auf der Seite")
-        kopf = tabellen[0].split("<thead><tr>")[1].split("</tr></thead>")[0]
-        return [re.sub(r"<[^>]+>", "", th).strip()
-                for th in re.findall(r"<th[^>]*>(.*?)</th>", kopf, re.S)]
-
-    # --- die neuen Spalten tragen gerechnete Zahlen ---
-
-    def test_the_page_shows_the_return_of_every_spread(self):
-        zeilen = self._spread_rows(self._page())
-        # D7: the degenerated AAPL pair (debit == width, return 0.00 %) is no
-        # longer a result - it is dropped with the pair rule's reason.
-        self.assertEqual([z[0] for z in zeilen],
-                         ["AMZN 260.00 Call kaufen / 262.50 Call verkaufen",
-                          "TSLA 290.00 Call kaufen / 292.50 Call verkaufen"])
-        # D13: the Position ($) cell slides in at index 4, so the return column
-        # moved from 6 to 7 - same value, one cell further right.
-        self.assertEqual([z[7] for z in zeilen], ["257.14 %", "257.14 %"])
-
-    def test_the_page_shows_the_distance_to_the_break_even(self):
-        zeilen = self._spread_rows(self._page())
-        # D13: BE-Abstand moved from 8 to 9 (Position ($) is index 4 now).
-        # D20: the cell shows a DISTANCE with a direction arrow in front of it,
-        # not a signed gap - the sign is gone. Both fixture pairs are calls
-        # (break-even above the spot), so both carry the up arrow.
-        self.assertEqual([z[9] for z in zeilen], ["↑ 4.28 %", "↑ 16.28 %"])
-
-    # --- D20: der BE-Abstand ist eine Distanz MIT Richtungspfeil ------------
-
-    @staticmethod
-    def _distance_fixture():
-        """D20 fixture: one call pair and one put pair per underlying, spot 500.
-
-        Measured on the tree: the SPY call 500/505 costs 1.50 -> break-even
-        501.50 -> distance 0.30 (up arrow); the SPY put 480/475 costs 0.01 ->
-        break-even 479.99, i.e. BELOW the spot -> distance 4.002 (down arrow).
-        QQQ adds a second pair per side so the sort has to move something:
-        call 520/525 -> 4.42, put 490/485 -> 2.10.
-        """
-        return [
-            quote("SPY261016C00500000", bid=2.40, ask=2.50, oi=5000, volume=500,
-                  underlying_price=500.0),
-            quote("SPY261016C00505000", bid=1.00, ask=1.10, oi=5000, volume=500,
-                  underlying_price=500.0),
-            quote("SPY261016P00480000", bid=0.02, ask=0.02, oi=5000, volume=500,
-                  underlying_price=500.0),
-            quote("SPY261016P00475000", bid=0.01, ask=0.01, oi=5000, volume=500,
-                  underlying_price=500.0),
-            quote("QQQ261016C00520000", bid=3.00, ask=3.10, oi=5000, volume=500,
-                  underlying_price=500.0),
-            quote("QQQ261016C00525000", bid=1.00, ask=1.10, oi=5000, volume=500,
-                  underlying_price=500.0),
-            quote("QQQ261016P00490000", bid=0.60, ask=0.60, oi=5000, volume=500,
-                  underlying_price=500.0),
-            quote("QQQ261016P00485000", bid=0.10, ask=0.10, oi=5000, volume=500,
-                  underlying_price=500.0),
-        ]
-
-    def test_the_distance_to_the_break_even_is_always_positive(self):
-        """D20: the BE-Abstand is a DISTANCE, never a signed call gap.
-
-        The put pair breaks even BELOW the spot (479.99 against 500.00) and
-        still reads positive; the same pair used to come out as -4.002. The
-        cell dropped the sign with it.
-        """
-        put = VerticalPair(long=quote("SPY261016P00480000", bid=0.02, ask=0.02,
-                                      underlying_price=500.0),
-                           short=quote("SPY261016P00475000", bid=0.01, ask=0.01,
-                                       underlying_price=500.0))
-        call = VerticalPair(long=quote("SPY261016C00500000", bid=2.40, ask=2.50,
-                                       underlying_price=500.0),
-                            short=quote("SPY261016C00505000", bid=1.00, ask=1.10,
-                                        underlying_price=500.0))
-        # Gleitkomma: 4.001999999999998 ist 4.002.
-        self.assertAlmostEqual(server_module._spread_be_gap_pct(put), 4.002, places=3)
-        self.assertAlmostEqual(server_module._spread_be_gap_pct(call), 0.30, places=3)
-        self.assertGreater(server_module._spread_be_gap_pct(put), 0)
-        self.assertGreater(server_module._spread_be_gap_pct(call), 0)
-
-        zellen = {z[0]: z[9] for z in
-                  self._spread_rows(self._page(quotes=self._distance_fixture()))
-                  + self._spread_rows(self._page({"option_type": "put"},
-                                                 quotes=self._distance_fixture()))}
-        self.assertEqual(zellen["SPY 480.00 Put kaufen / 475.00 Put verkaufen"], "↓ 4.00 %")
-        self.assertEqual(zellen["SPY 500.00 Call kaufen / 505.00 Call verkaufen"], "↑ 0.30 %")
-        for zelle in zellen.values():
-            self.assertNotIn("+", zelle)
-            self.assertNotIn("-", zelle)
-
-    def test_the_arrow_names_the_direction_for_puts_and_calls(self):
-        """D20: the arrow in front of the distance is the direction the
-        underlying has to move - up for a call (break-even above the spot),
-        down for a put (break-even below it). Both carry two decimals and a
-        percent sign.
-        """
-        put_zeilen = self._spread_rows(
-            self._page({"option_type": "put"}, quotes=self._distance_fixture()))
-        call_zeilen = self._spread_rows(self._page(quotes=self._distance_fixture()))
-        self.assertTrue(put_zeilen, "keine Put-Zeilen")
-        self.assertTrue(call_zeilen, "keine Call-Zeilen")
-        for zeile in put_zeilen:
-            self.assertRegex(zeile[9], r"^↓ \d+\.\d{2} %$", zeile[0])
-        for zeile in call_zeilen:
-            self.assertRegex(zeile[9], r"^↑ \d+\.\d{2} %$", zeile[0])
-
-    def test_the_note_above_the_table_explains_the_arrow(self):
-        """D20: a reader who does not know what the arrow means cannot read the
-        column - the note over the table says the value is a distance and names
-        both directions."""
-        page = self._page(quotes=self._distance_fixture())
-        hinweis = "Der BE-Abstand ist eine Distanz; der Pfeil nennt die Richtung"
-        self.assertIn(hinweis, page)
-        self.assertIn("↑ steigen für Calls", page)
-        self.assertIn("↓ fallen für Puts", page)
-        self.assertLess(page.index(hinweis), page.index("<th>Spread</th>"),
-                        "der Hinweis muss ueber der Tabelle stehen")
-
-    def test_the_spread_cell_names_the_trade_and_keeps_the_codes_in_the_tooltip(self):
-        html = self._page()
-        self.assertIn('title="Kauf AMZN261016C00260000 · Verkauf AMZN261016C00262500"', html)
-        self.assertIn(">AMZN 260.00 Call kaufen / 262.50 Call verkaufen<", html)
-
-    # --- D13: die Spalte Position ($) ---------------------------------------
-
-    def test_the_header_carries_the_position_column_between_width_and_loss(self):
-        """D13: the spread header has 12 columns, and `Debit (je Einheit)` and
-        `Position ($)` stand DIRECTLY beside each other between `Breite` and
-        the loss column - the basis first, then what the account really pays.
-
-        D18: the loss/gain column now says out loud that it is per unit and
-        gross, so the neighbour of `Position ($)` carries that label. The
-        statement stays: the header names the position column in that place.
-        """
-        kopf = self._spread_header(self._page())
-        self.assertEqual(len(kopf), 12)
-        self.assertEqual(kopf[2:6], ["Breite", "Debit (je Einheit)",
-                                     "Position ($)",
-                                     "max Verlust(je Einheit, brutto)"])
-
-    def test_the_gross_columns_say_gross_and_the_note_explains_net(self):
-        """D18: the four columns that stay per unit and before costs say so -
-        `max Verlust`/`max Gewinn` carry `je Einheit, brutto`, return and
-        break-even carry `brutto` - and the note under the heading says the
-        gross columns are the comparison basis while the net numbers live in
-        the JSON. The lede names its return gross, too.
-        """
-        page = self._page()
-        kopf = self._spread_header(page)
-        self.assertEqual(kopf[5], "max Verlust(je Einheit, brutto)")
-        self.assertEqual(kopf[6], "max Gewinn(je Einheit, brutto)")
-        self.assertEqual(kopf[7], "Rendite(brutto)")
-        self.assertEqual(kopf[8], "Breakeven(brutto)")
-        self.assertIn("Die Bruttospalten gelten <strong>je Einheit und vor "
-                      "Kosten</strong>", page)
-        self.assertIn("Nettowerte nach Multiplikator, Stückzahl und Gebühren "
-                      "stehen im JSON", page)
-        self.assertIn("Rendite (brutto)", page)
-
-    def test_the_position_cell_shows_what_the_row_costs(self):
-        """D13: with a size from the form (multiplier 10, quantity 3, fees 1.5)
-        the Position ($) cell is the row's OWN debit x 10 x 3 + 1.5, rounded to
-        whole dollars. The debit is read out of the same rendered row, so the
-        check measures the page instead of rebuilding the number by hand."""
-        zeilen = self._spread_rows(
-            self._page({"multiplier": "10", "quantity": "3", "fees": "1.5"}))
-        self.assertEqual(len(zeilen), 2)  # the fixture still lists both spreads
-        for zeile in zeilen:
-            debit = float(zeile[3])
-            self.assertEqual(zeile[4], f"{round(debit * 10 * 3 + 1.5, 2):.0f}",
-                             f"Position von {zeile[0]!r} passt nicht zum Debit")
-
-    def test_the_position_cell_shows_a_dash_without_a_size(self):
-        """D13: a missing position size must not read as a silent 0. Without a
-        multiplier OR without a quantity the cell is exactly `-`, never a zero."""
-        for multiplier, quantity in ((None, 3), (10, None)):
-            criteria = ScreenerCriteria(max_spread_pct=100.0, max_spread_abs=None,
-                                        multiplier=multiplier, quantity=quantity)
-            page = self._app(criteria=criteria).test_client().get(
-                "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}
-            ).get_data(as_text=True)
-            positionen = [z[4] for z in self._spread_rows(page)]
-            self.assertEqual(positionen, ["-", "-"], (multiplier, quantity))
-            for zelle in positionen:
-                self.assertNotIn("0", zelle, (multiplier, quantity))
-
-    def test_the_debit_stays_the_value_per_unit_and_the_note_explains_it(self):
-        """D13: the new column supplements, never replaces, the per-unit debit -
-        the same row still shows the debit with two decimals - and the note
-        ABOVE the table names `Position ($)` and says the debit keeps being the
-        value per unit."""
-        page = self._page({"multiplier": "10", "quantity": "3", "fees": "1.5"})
-        zeilen = self._spread_rows(page)
-        self.assertEqual(len(zeilen), 2)
-        for zeile in zeilen:
-            self.assertRegex(zeile[3], r"^\d+\.\d{2}$")
-        self.assertIn("Position ($)", page)
-        hinweis = "der Debit bleibt der Wert je Einheit"
-        self.assertIn(hinweis, page)
-        self.assertLess(page.index(hinweis), page.index("<th>Spread</th>"),
-                        "der Hinweis muss ueber der Tabelle stehen")
-
-    def test_the_spread_row_keeps_the_shape_the_other_tests_parse(self):
-        # die Muster der uebrigen Tests duerfen nicht brechen: <tr> ohne
-        # Attribute, <td> hoechstens mit title, genau ein tbody, zwei Tabellen
-        loose = ScreenerCriteria(max_quote_age_min=None, max_spread_pct=None,
-                                 max_spread_abs=None, min_oi=None,
-                                 dte_min=None, dte_max=None)
-        page = self._app(criteria=loose).test_client().get(
-            "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}).get_data(as_text=True)
-        for zeile in self._spread_rows(page):
-            self.assertEqual(len(zeile), 12)  # D13: + Position ($)
-        self.assertEqual(page.count("<tbody>"), 1)
-        self.assertEqual(page.count("<table>"), 2)
-
-    # --- die Reihenfolge: Seite sortiert, Schnittstelle nicht ---
-
-    def test_the_page_sorts_by_return_per_default(self):
-        self.assertEqual(self._spread_rows(self._page())[0][0],
-                         "AMZN 260.00 Call kaufen / 262.50 Call verkaufen")
-        self.assertEqual(self._spread_rows(self._page())[-1][0],
-                         "TSLA 290.00 Call kaufen / 292.50 Call verkaufen")
-
-    def test_the_page_can_sort_by_distance_to_break_even(self):
-        zeilen = self._spread_rows(self._page({"sort": "be_asc"}))
-        # D20: the cell carries the direction arrow now; ascending still means
-        # nearest first. Both fixture pairs are calls, so both arrows point up.
-        self.assertEqual([z[9] for z in zeilen], ["↑ 4.28 %", "↑ 16.28 %"])
-
-    def test_the_ascending_sort_puts_the_smallest_gap_on_top_for_calls_and_puts(self):
-        """D20: `sort=be_asc` means nearest break-even first - for calls AND for
-        puts. The put list is the real test: while the gap was signed, its two
-        distances came out as -4.002 and -2.10, so the LARGER move stood on top.
-        The numbers compared here are the ones the page itself renders.
-        """
-        for params in ({"option_type": "call"}, {"option_type": "put"}):
-            zeilen = self._spread_rows(
-                self._page(dict(params, sort="be_asc"), quotes=self._distance_fixture()))
-            self.assertGreaterEqual(len(zeilen), 2, params)
-            zahlen = [float(zeile[9].split()[1]) for zeile in zeilen]  # "↓ 4.00 %" -> 4.00
-            self.assertEqual(zahlen, sorted(zahlen), params)
-            self.assertEqual(zahlen[0], min(zahlen), params)
-
-        # der Put ist der Beleg: "naechster zuerst" ist das ANDERE Ende als die
-        # Rendite-Reihenfolge, die die groesste Bewegung nach oben stellt
-        vorher = [z[0] for z in self._spread_rows(
-            self._page({"option_type": "put"}, quotes=self._distance_fixture()))]
-        nachher = [z[0] for z in self._spread_rows(
-            self._page({"option_type": "put", "sort": "be_asc"}, quotes=self._distance_fixture()))]
-        self.assertEqual(nachher, list(reversed(vorher)))
-
-    def test_the_page_can_keep_the_chain_order(self):
-        self.assertEqual([z[0] for z in self._spread_rows(self._page({"sort": "none"}))],
-                         ["AMZN 260.00 Call kaufen / 262.50 Call verkaufen",
-                          "TSLA 290.00 Call kaufen / 292.50 Call verkaufen"])
-
-    def test_an_unknown_sort_mode_falls_back_to_the_return(self):
-        self.assertEqual(self._spread_rows(self._page({"sort": "quatsch"}))[0][0],
-                         self._spread_rows(self._page())[0][0])
-
-    def test_the_api_keeps_the_chain_order_while_the_page_sorts(self):
-        # die Entscheidung selbst: gleiche Werte, verschiedene Reihenfolge
+    def test_the_api_keeps_the_chain_order(self):
+        # die Entscheidung selbst: die Liste kommt in Kettenreihenfolge, das
+        # Sortieren war eine Eigenschaft der entfernten Seite
         self.assertEqual([v["symbol"][:4] for v in self._json()["verticals"]],
                          ["AMZN", "TSLA"])
-        self.assertEqual(self._spread_rows(self._page())[0][0][:4], "AMZN")
-
-    def test_the_sort_links_keep_the_other_parameters(self):
-        # D7: the spread section now runs through the same filters as the list, so
-        # a tight relative bound empties it - and an empty section has no header
-        # links to check. The value below keeps the fixture's pairs (14.3 % to
-        # 33.3 %) and still proves that the link carries what the user typed.
-        html = self._page({"max_spread_pct": "50"})
-        self.assertIn("ticker=AAPL", html)
-        self.assertIn("sort=rendite_desc", html)
-        self.assertIn("sort=be_asc", html)
-        self.assertIn("max_spread_pct=50", html)
 
     # --- die Faelle, die die Mock-Kette nicht triggert (Restrisiko des Urteils) ---
 
-    def test_a_spread_without_loss_never_reaches_the_page_and_the_guard_still_holds(self):
+    def test_a_spread_without_loss_never_reaches_the_list(self):
         # GEMESSEN: die Bein-Regel sortiert `debit <= 0` schon aus, ein Spread
-        # ohne Verlust kann die Seite also gar nicht erreichen. Der Schutz in
+        # ohne Verlust kann die Liste also gar nicht erreichen. Der Schutz in
         # der Anzeige wird deshalb direkt geprueft - nicht ueber die Seite.
         # D19: der Vorfilter liest die Laufzeit jetzt ueber die Uhr, ein
         # fehlender Aufruf (`_clock` statt `_clock()`) waere bis dahin nie
@@ -2430,48 +1431,18 @@ class TheSpreadListIsReadyToDecide(unittest.TestCase):
         self.assertIsNone(server_module._spread_return_pct(OhneVerlust()))
         self.assertEqual(server_module._spread_return_pct(MitVerlust()), 50.0)
 
-    def test_a_spread_without_spot_shows_a_dash(self):
-        kette = [quote("AAPL261016C00250000", bid=1.10, ask=1.20, iv=30.0, oi=1500,
-                       underlying_price=None),
-                 quote("AAPL261016C00252500", bid=0.45, ask=0.50, iv=30.0, oi=1500,
-                       underlying_price=None)]
-        # D13: BE-Abstand is index 9 now (was 8); the return column is index 7
-        # (was 6). Same two cells, one step to the right of the Position ($).
-        self.assertEqual(self._spread_rows(self._page(quotes=kette))[0][9], "-")
-        # ... und nur dort: die Rendite ist rechenbar und bleibt eine Zahl
-        self.assertNotEqual(self._spread_rows(self._page(quotes=kette))[0][7], "-")
-
-    def test_a_put_without_a_spot_shows_a_dash_and_never_a_zero(self):
-        """D20: without a spot there is nothing to measure - the distance cell
-        is exactly `-`, also for a put, and it carries neither a zero nor an
-        arrow. A silent 0 would read as "sits on the break-even"."""
-        ohne_spot = [
-            quote("SPY261016P00480000", bid=0.02, ask=0.02, oi=5000, volume=500,
-                  underlying_price=None),
-            quote("SPY261016P00475000", bid=0.01, ask=0.01, oi=5000, volume=500,
-                  underlying_price=None),
-        ]
-        zellen = [z[9] for z in self._spread_rows(
-            self._page({"option_type": "put"}, quotes=ohne_spot))]
-        self.assertEqual(zellen, ["-"])
-        for zelle in zellen:
-            self.assertNotIn("0", zelle)
-            self.assertNotIn("↑", zelle)
-            self.assertNotIn("↓", zelle)
-
 
 class TheStrategyIsTheChoice(unittest.TestCase):
     """L: die Wahl ist eine Strategie, keine Kettenseite.
 
     Bis D14 fragte das Formular nach "Calls" oder "Puts" - einer SEITE der Kette.
-    Das sagt nicht, welches Bein gekauft wird. Das Formular bietet jetzt zwei
-    stabile Kennungen an, und Ueberschrift, Zeilen, Rechnung und JSON folgen
-    derselben Wahl. `option_type=call|put` bleibt als alte Adresse gueltig und
-    bedeutet dasselbe wie zuvor.
+    Das sagt nicht, welches Bein gekauft wird. Die Wahl traegt jetzt zwei stabile
+    Kennungen, und Rechnung und JSON folgen derselben Wahl; ``option_type=call|put``
+    bleibt als alte Adresse gueltig. Das Formular ist mit der alten Seite
+    entfallen - gepinnt ist die Antwort, die die Wahl ausfuehrt.
 
-    Die Kette traegt BEIDE Seiten und MEHR Put- als Call-Paare (ein benachbartes
-    Call-Paar, drei benachbarte Put-Paare) - der Zeilenvergleich ist damit ein
-    echter Vergleich und keine abgeschriebene Zahl.
+    Die Kette traegt BEIDE Seiten und MEHR Put- als Call-Paare, damit der
+    Vergleich der beiden Strategien ein echter Vergleich bleibt.
     """
 
     @staticmethod
@@ -2502,158 +1473,25 @@ class TheStrategyIsTheChoice(unittest.TestCase):
         query.update(params or {})
         return query
 
-    def _page(self, params=None):
-        return self._client().get(
-            "/", query_string=self._query(params)).get_data(as_text=True)
-
     def _json(self, params=None):
         return self._client().get(
             "/api/screen", query_string=self._query(params)).get_json()
 
-    @staticmethod
-    def _heading(page):
-        """Der Spread-Abschnitt nennt seine Strategie in EINER <h2>."""
-        return re.search(r"<h2>(.*?)</h2>", page, re.S).group(1)
-
-    @staticmethod
-    def _spread_rows(page):
-        """Die Zeilen der Spread-Tabelle - am Kopf erkannt, nicht an der Position."""
-        tables = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
-                  if "<th>Spread</th>" in t]
-        if not tables:
-            return []
-        zeilen = re.findall(r"<tr>(.*?)</tr>", tables[0], re.S)
-        return [[re.sub(r"<[^>]+>", "", c).strip() for c in
-                 re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', z, re.S)]
-                for z in zeilen[1:]]
-
-    # --- der Name der Strategie steht in der Ueberschrift ---
-
-    def test_the_heading_names_the_strategy_the_operator_picked(self):
-        self.assertEqual(self._heading(self._page()), "Bull Call Spread (Debit)")
-        self.assertEqual(self._heading(self._page({"strategy": "bear_put_debit"})),
-                         "Bear Put Spread (Debit)")
-
-    # --- die Zeilen nennen Kaufbein und Verkaufsbein ---
-
-    def test_every_row_names_the_leg_it_buys_and_the_leg_it_sells(self):
-        call_rows = self._spread_rows(self._page())
-        put_rows = self._spread_rows(self._page({"strategy": "bear_put_debit"}))
-        self.assertGreater(len(call_rows), 0)
-        # ein echter Vergleich: dieselbe Kette, beide Strategien
-        self.assertGreater(len(put_rows), len(call_rows))
-        for zeile in call_rows:
-            self.assertIn("Call kaufen /", zeile[0])
-            self.assertTrue(zeile[0].endswith("Call verkaufen"), zeile[0])
-        for zeile in put_rows:
-            self.assertIn("Put kaufen /", zeile[0])
-            self.assertTrue(zeile[0].endswith("Put verkaufen"), zeile[0])
-
-    def test_the_strategy_moves_the_heading_and_the_row_labels_together(self):
-        """ONE request flips the heading AND the labels - the choice reaches the
-        whole table, not one of the two."""
-        page = self._page({"strategy": "bear_put_debit"})
-        self.assertEqual(self._heading(page), "Bear Put Spread (Debit)")
-        put_rows = self._spread_rows(page)
-        self.assertTrue(put_rows, "no put rows found")
-        for zeile in put_rows:
-            self.assertTrue(zeile[0].endswith("Put verkaufen"), zeile[0])
-        call_rows = self._spread_rows(self._page())
-        self.assertTrue(call_rows, "no call rows found")
-        for zeile in call_rows:
-            self.assertTrue(zeile[0].endswith("Call verkaufen"), zeile[0])
-
-    # --- die alte Adresse bedeutet dasselbe ---
-
-    def test_the_legacy_side_gives_exactly_the_same_rows_as_the_strategy(self):
-        """`option_type=call|put` ist die alte Adresse derselben Wahl.
-
-        Verglichen werden die ZELLEN, nicht die Anfrage: die alte Adresse muss
-        dieselbe Tabelle erzeugen wie die neue, sonst haetten alte Links eine
-        andere Bedeutung.
-        """
-        for alt, neu in (("call", "bull_call_debit"), ("put", "bear_put_debit")):
-            alt_rows = self._spread_rows(self._page({"option_type": alt}))
-            neu_rows = self._spread_rows(self._page({"strategy": neu}))
-            self.assertTrue(alt_rows, f"keine Zeilen fuer option_type={alt}")
-            self.assertEqual(alt_rows, neu_rows, alt)
-
-    def test_the_legacy_side_and_the_matching_strategy_agree(self):
-        page = self._page({"strategy": "bear_put_debit", "option_type": "put"})
-        self.assertEqual(self._heading(page), "Bear Put Spread (Debit)")
-        self.assertTrue(self._spread_rows(page))
-
     # --- Widerspruch und unbekannte Werte ---
 
-    def test_a_contradiction_is_an_error_and_computes_neither_side(self):
-        """Strategie sagt Bear Put, die alte Adresse sagt Calls: KEINE stille
-        Mehrheit. Die Seite nennt beide Werte und zeigt keine Spread-Tabelle -
-        eine Tabelle wuerde eine der beiden Antworten erfinden.
-        """
-        page = self._page({"strategy": "bear_put_debit", "option_type": "call"})
-        self.assertIn('<div class="err">Widerspruch: bear_put_debit gehört zu '
-                      'option_type=put, angegeben war option_type=call.', page)
-        self.assertEqual(self._spread_rows(page), [])
-        self.assertEqual(page.count("<table>"), 0)
-
-    def test_an_unknown_strategy_is_an_error_and_computes_nothing(self):
-        page = self._page({"strategy": "bogus"})
-        self.assertIn('<div class="err">Ungültige Strategie - erlaubt sind '
-                      'bull_call_debit (Bull Call Spread (Debit)) und '
-                      'bear_put_debit (Bear Put Spread (Debit)) und '
-                      'bull_put_credit (Bull Put Spread (Credit)) und '
-                      'bear_call_credit (Bear Call Spread (Credit)).</div>', page)
-        self.assertEqual(self._spread_rows(page), [])
-
-    def test_a_valid_strategy_is_never_replaced_by_a_broken_legacy_alias(self):
+    def test_a_broken_legacy_alias_never_replaces_a_valid_strategy(self):
         """Kody-Fund (PR #72): `?strategy=bear_put_debit&option_type=bogus` zeigte
         still den Bull Call.
 
         Die Anfrage ist nicht erfuellbar - die alte Adresse ist unbekannt, die
-        Uebereinstimmung also unbeweisbar. Die Seite nennt den Fehler, rechnet
-        NICHTS und laesst die GEWAEHLTE Strategie im Formular stehen; die API
-        lehnt dieselbe Anfrage mit 400 ab. Beide Antworten sagen dasselbe.
+        Uebereinstimmung also unbeweisbar. Die API lehnt dieselbe Anfrage mit 400
+        ab, statt still die Voreinstellung zu rechnen.
         """
         params = {"strategy": "bear_put_debit", "option_type": "bogus"}
-        page = self._page(params)
-        self.assertIn('<div class="err">Ungültige Spread-Art - erlaubt sind Calls oder Puts.</div>',
-                      page)
-        self.assertEqual(self._spread_rows(page), [])
-        self.assertEqual(page.count("<table>"), 0)
-        # die Wahl bleibt sichtbar und wird nicht durch die Voreinstellung ersetzt
-        self.assertTrue(re.search(r'name="strategy" value="bear_put_debit" checked', page))
-        self.assertFalse(re.search(r'name="strategy" value="bull_call_debit" checked', page))
-        # und die API lehnt DIESELBE Anfrage ab - keine zwei Antworten auf eine Frage
+        # die API lehnt die unerfuellbare Anfrage ab und rechnet nichts
         antwort = self._client().get("/api/screen", query_string=self._query(params))
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(antwort.get_json()["error"], "unknown spread type")
-
-    def test_an_unknown_side_keeps_the_old_error_box_and_the_old_fallback(self):
-        """D14 unveraendert: ein unbekanntes option_type ist die ALTE Adresse -
-        Meldung, dann weiter mit der Voreinstellung (Bull Call)."""
-        page = self._page({"option_type": "bogus"})
-        self.assertIn(
-            '<div class="err">Ungültige Spread-Art - erlaubt sind Calls oder Puts.</div>',
-            page)
-        self.assertEqual(self._heading(page), "Bull Call Spread (Debit)")
-        self.assertEqual(len(self._spread_rows(page)),
-                         len(self._spread_rows(self._page())))
-
-    def test_the_sort_links_carry_the_strategy(self):
-        """Ein Klick auf einen Spaltenkopf darf die Wahl nicht verlieren - die
-        Sortieradressen entstehen aus DERSELBEN Anfrage (sort= wird ersetzt)."""
-        page = self._page({"strategy": "bear_put_debit"})
-        links = [h for h in re.findall(r'href="\?([^"]*)"', page) if "sort=" in h]
-        # Two column headers carry a link (Rendite, BE-Abstand) and the sort bar
-        # offers every order once - 2 + 6 addresses, none of them without the
-        # strategy the request asked for.
-        self.assertEqual(len(links), 8)
-        for link in links:
-            self.assertIn("strategy=bear_put_debit", link)
-        # every order the helper knows really appears as a link
-        for mode in ("rendite_desc", "be_asc", "net_ratio_desc", "net_profit_desc",
-                     "max_loss_asc", "none"):
-            self.assertTrue([h for h in links if f"sort={mode}" in h], mode)
 
     # --- das JSON nennt beides ---
 
@@ -2668,48 +1506,8 @@ class TheStrategyIsTheChoice(unittest.TestCase):
             self.assertEqual(daten["strategy_label"],
                              "Bear Put Spread (Debit)" if seite == "put"
                              else "Bull Call Spread (Debit)", params)
-            self.assertEqual(self._heading(self._page(params)),
-                             daten["strategy_label"], params)
 
-    # --- die zwei Credit-Spreads auf derselben Seite ----------------------
-
-    def test_the_credit_heading_names_the_credit_strategy(self):
-        self.assertEqual(self._heading(self._page({"strategy": "bear_call_credit"})),
-                         "Bear Call Spread (Credit)")
-        self.assertEqual(self._heading(self._page({"strategy": "bull_put_credit"})),
-                         "Bull Put Spread (Credit)")
-
-    def test_the_credit_row_names_the_bought_leg_first(self):
-        # Bear Call Credit: verkauft wird der NIEDRIGERE Call, gekauft der hoehere
-        rows = self._spread_rows(self._page({"strategy": "bear_call_credit"}))
-        self.assertEqual(len(rows), 1)
-        self.assertEqual(rows[0][0],
-                         "SPY 105.00 Call kaufen / 100.00 Call verkaufen")
-
-    def test_the_table_labels_follow_the_kind(self):
-        """Die Spalten sagen, was die Zahl IST: Credit oder Debit."""
-        credit = self._page({"strategy": "bear_call_credit"})
-        self.assertIn("Credit (je Einheit)", credit)
-        self.assertIn("Risikobudget ($)", credit)
-        self.assertIn("Credit/Breite %", credit)
-        self.assertNotIn("Position ($)", credit)
-        debit = self._page({"strategy": "bull_call_debit"})
-        self.assertIn("Debit (je Einheit)", debit)
-        self.assertIn("Position ($)", debit)
-        self.assertIn("Debit/Breite %", debit)
-        self.assertNotIn("Risikobudget ($)", debit)
-
-    def test_the_credit_row_shows_the_credit_and_the_risk_budget(self):
-        rows = self._spread_rows(self._page({"strategy": "bear_call_credit"}))
-        zeile = rows[0]
-        self.assertEqual(zeile[2], "5.00")      # Breite
-        self.assertEqual(zeile[3], "1.20")      # Credit je Einheit
-        self.assertEqual(zeile[4], "380")       # Risikobudget 3.80 x 100 + 0
-        self.assertEqual(zeile[5], "3.80")      # max Verlust
-        self.assertEqual(zeile[6], "1.20")      # max Gewinn
-        self.assertEqual(zeile[7], "31.58 %")   # 120 / 380
-        self.assertEqual(zeile[8], "101.20")    # 100.00 + 1.20
-        self.assertEqual(zeile[10], "24.00 %")  # 1.20 / 5.00
+    # --- die zwei Credit-Strategien in derselben Antwort ----------------
 
     def test_the_json_carries_both_kinds_without_mixing_them(self):
         credit = self._json({"strategy": "bull_put_credit"})
@@ -2743,659 +1541,7 @@ class TheStrategyIsTheChoice(unittest.TestCase):
         self.assertEqual(len(data["verticals"]), 1)
         self.assertIs(data["verticals"][0]["budget_fits"], True)
 
-    def test_the_switch_preselects_a_credit_strategy_too(self):
-        page = self._page({"strategy": "bull_put_credit"})
-        block = re.search(r'<fieldset class="crit">\s*<legend>Strategie</legend>'
-                          r'(.*?)</fieldset>', page, re.S).group(1)
-        knoepfe = re.findall(r'<input[^>]*name="strategy"[^>]*>', block)
-        getroffen = [k for k in knoepfe if "checked" in k]
-        self.assertEqual(len(getroffen), 1)
-        self.assertIn('value="bull_put_credit"', getroffen[0])
-
-
-class TheInterfaceSpeaksOneLanguage(unittest.TestCase):
-    """Slice D0: die Oberflaeche schreibt deutsch MIT Umlauten, in EINER Schreibweise.
-
-    Ein assertNotIn auf EINER Seite waere blind: gemessen
-    (docs/debate/ausD_phase4_zustaende.txt) erscheinen die alten Schreibweisen
-    nur in BESTIMMTEN Zustaenden - "aelter" nur bei gelber Lampe, "Nicht
-    verfuegbar" nur ohne gelistete Verfallstage, "fuer" nur bei einem Verfall,
-    den die Kette nicht kennt, "waehlen"/"druecken" nur auf der Startseite.
-    Deshalb wird JEDER Zustand geprueft, in dem eines der Woerter stehen kann.
-    """
-
-    #: Die 11 alten Schreibweisen. Nach D0 darf KEINE mehr im HTML stehen.
-    ALTE = ("aelter", "koennen", "Verfaelle", "verfuegbar", "Groesse",
-            "zaehlt", "moeglich", "waehlen", "druecken", "Ungueltig", "fuer")
-
-    @staticmethod
-    def _client(clock=None, criteria=None):
-        # make() + make_verticals(): die VOLLE Seite braucht beide Ketten,
-        # sonst faellt die Einzelkontrakt-Tabelle weg (gemessen)
-        adapter = _MockAdapter(make() + make_verticals())
-        adapter.expirations = ["2026-10-16"]
-        app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(criteria if criteria is not None
-                                                 else ScreenerCriteria()),
-                         now_fn=clock or _clock())
-        app.config["TESTING"] = True
-        return app.test_client()
-
-    def _pages(self):
-        """Jeder Zustand, in dem eine der alten Schreibweisen vorkommen kann.
-
-        Zwei Klienten, weil sich zwei Zustaende ausschliessen: die volle Seite
-        braucht die STANDARD-Kriterien, der Warnhinweis "koennen" braucht
-        age_off (Alter-Grenze aus).
-        """
-        gruen = self._client()
-        aus = self._client(criteria=ScreenerCriteria(max_quote_age_min=None))
-        # 31 min statt 5: die Lampe steht dann auf gelb, und "aelter" erscheint
-        gelb = self._client(clock=lambda: arrow.get("2026-10-07T14:30:00").shift(minutes=31))
-        return {
-            "leere Startseite": gruen.get("/").get_data(as_text=True),
-            "Alter-Grenze aus": aus.get("/").get_data(as_text=True),
-            "Ticker ohne Verfall": gruen.get("/?ticker=AAPL").get_data(as_text=True),
-            "volle Seite": gruen.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True),
-            "ungueltiger Ticker": gruen.get("/?ticker=../etc&expiration=2026-10-16").get_data(as_text=True),
-            "ungueltiges Datumsformat": gruen.get("/?ticker=AAPL&expiration=quatsch").get_data(as_text=True),
-            "Verfall nicht gelistet": gruen.get("/?ticker=AAPL&expiration=2019-01-01").get_data(as_text=True),
-            "gelbe Lampe": gelb.get("/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True),
-        }
-
-    def test_no_page_carries_an_old_spelling(self):
-        for zustand, page in self._pages().items():
-            for wort in self.ALTE:
-                self.assertNotIn(wort, page,
-                                 f"alte Schreibweise {wort!r} steht noch im Zustand {zustand!r}")
-
-    def test_the_page_renders_the_correct_spellings(self):
-        page = self._pages()["volle Seite"]
-        for wort in ("kein Gewinn möglich", "zählt",
-                     "Geld-Größe min", "Brief-Größe min"):
-            self.assertIn(wort, page, f"{wort!r} fehlt auf der Seite")
-        # D17 (finding 5d): the old loading text is gone; the placeholder of
-        # the page WITHOUT dates still spells "Verfälle" with the umlaut
-        leer = self._pages()["leere Startseite"]
-        self.assertIn("Verfälle: Ticker eingeben", leer)
-        self.assertNotIn("Verfälle werden geladen", leer)
-
-    def test_the_trend_badge_is_german_when_the_source_fails(self):
-        # server.py:546 - der einzige deutsche Text, der aus dem Server in die
-        # Kopfzeile wandert; gemessen an der echten Route, nicht am Quelltext
-        import unittest.mock as mock
-        with mock.patch.object(server_module, "_get_trend_provider",
-                               return_value=_BrokenProvider()):
-            page = self._client().get(
-                "/?ticker=AAPL&expiration=2026-10-16").get_data(as_text=True)
-        self.assertIn("Trend nicht verfügbar", page)
-        self.assertNotIn("verfuegbar", page)
-
-
-class TheFormIsGroupedAndThePageIsWide(unittest.TestCase):
-    """ausD1 (D1): die Filter liegen in Gruppen in einem Raster, die Seite
-    ist breiter als ihre breiteste Tabelle, und das Feld mit der scharfen Null
-    traegt seinen Hinweis.
-
-    Sechs Gruppen in Dokumentreihenfolge: die vier Filter (Liquiditaet, Laufzeit
-    und Frische, Volatilitaet, Bewertung), dazu der Spread-Umschalter (D14) und
-    die Positionsgroesse (D12).
-
-    Zahlen aus der Messung (docs/210_ausD1_phase1_bis3.md): die Spread-Tabelle
-    ist 837 px breit, der Inhaltsbereich war 760 px, der Leerraum betrug 37,4 %
-    der Fensterbreite. Geprueft werden REGELN aus dem <style>-Block, nicht das
-    blosse Wort "display:grid" - das kann auch in einer fremden Regel oder im
-    <script> stehen und wuerde nichts beweisen.
-    """
-
-    #: Die vier Gruppen mit ihren Feldern IN DOKUMENTREIHENFOLGE. Die Reihenfolge
-    #: ist der Inhalt dieses Slices: sie folgt der Frage des Nutzers, nicht der
-    #: Reihenfolge der Kriterien im Rechenmodul.
-    GRUPPEN = (
-        # D11: pair_max_width stands directly behind min_volume - the order of
-        # the criteria in the module, not appended at the end of the group.
-        ("Liquidit\u00e4t", ("max_spread_pct", "max_spread_abs", "min_oi", "min_volume",
-                             "pair_max_width", "pair_mode", "min_bid_size", "min_ask_size",
-                             "require_oi", "require_volume")),
-        # The age MODE sits behind the age limit it governs: the limit is the
-        # number, mode decides what that number DOES (drop or merely state).
-        ("Laufzeit und Frische", ("dte_min", "dte_max", "max_quote_age_min",
-                                  "ignore_quote_age", "data_mode")),
-        ("Volatilit\u00e4t", ("iv_min", "iv_max", "iv_pref")),
-        ("Bewertung", ("weight_spread", "weight_oi", "weight_iv")),
-        # D14: which side of the chain the spread section trades. It does not
-        # filter the chain - it picks the side for the table below, so it has
-        # its own group and stands BETWEEN the four filters and the position.
-        ("Strategie", ("strategy",)),
-        # D12: the position size is its own question and stands AFTER the four
-        # filter groups. It does not filter the chain: it turns the pair numbers
-        # above (per unit) into the position the operator would really hold.
-        ("Position", ("multiplier", "quantity", "fees", "budget")),
-    )
-
-    #: Die Zahlenfelder - die Menge darf das Umgruppieren nicht veraendern.
-    #: D11: pair_max_width kam dazu; min_volume BLEIBT (beide sind Kriterien).
-    #: D12: die vier Felder der Gruppe Position (multiplier, quantity, fees,
-    #: budget) sind ebenfalls <input type="number"> und zaehlen hier mit.
-    #: D14: der Umschalter (option_type) ist ein FUNKKNOPF, kein Zahlenfeld -
-    #: er wird in test_every_field_survives_the_regrouping als Paar geprueft.
-    ZAHLENFELDER = ("dte_min", "dte_max", "max_spread_pct", "max_spread_abs", "min_oi",
-                    "min_volume", "pair_max_width", "min_bid_size", "min_ask_size",
-                    "iv_min", "iv_max", "max_quote_age_min", "weight_spread",
-                    "weight_oi", "weight_iv", "multiplier", "quantity", "fees",
-                    "budget")
-
-    @staticmethod
-    def _page():
-        adapter = _MockAdapter(make() + make_verticals())
-        adapter.expirations = ["2026-10-16"]
-        app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(_WIDE),
-                         now_fn=_clock())
-        app.config["TESTING"] = True
-        return app.test_client().get(
-            "/", query_string={"ticker": "AAPL", "expiration": "2026-10-16"}
-        ).get_data(as_text=True)
-
-    @staticmethod
-    def _ohne_style_und_script(page):
-        # Die Struktur-Zaehlungen duerfen nicht auf Literale im JS oder CSS
-        # hereinfallen (am Basis-Blob gemessen: dort steht keins, aber ein
-        # spaeterer Zusatz im <script> wuerde die Zaehlung sonst still brechen).
-        return re.sub(r"<style>.*?</style>|<script>.*?</script>", "", page, flags=re.S)
-
-    @staticmethod
-    def _gruppen(page):
-        """[(legend, (name, ...)), ...] in Dokumentreihenfolge.
-
-        Eine Funkgruppe erscheint im HTML mehrfach (ein <input> je Knopf) und
-        zaehlt hier EINMAL: aufeinanderfolgende gleiche Namen werden
-        zusammengefasst. Gemessen am Basis-Blob liefert ein rohes findall
-        ('require_oi', 'require_oi', 'require_volume', 'require_volume') -
-        eine Zusicherung darauf wuerde die Knopfe zaehlen, nicht die Felder.
-        """
-        ergebnis = []
-        for block in re.findall(r'<fieldset class="crit">(.*?)</fieldset>', page, re.S):
-            legend = re.search(r"<legend>(.*?)</legend>", block).group(1)
-            roh = re.findall(r'name="([^"]+)"', block)
-            felder = tuple(n for i, n in enumerate(roh) if i == 0 or roh[i - 1] != n)
-            ergebnis.append((legend, felder))
-        return ergebnis
-
-    @staticmethod
-    def _namen(page):
-        """{name: Anzahl} ueber das ganze Formular."""
-        form = re.search(r"<form.*?</form>", page, re.S).group(0)
-        gezaehlt = {}
-        for name in re.findall(r'name="([^"]+)"', form):
-            gezaehlt[name] = gezaehlt.get(name, 0) + 1
-        return gezaehlt
-
-    @staticmethod
-    def _label(page, feld):
-        """Das <label>, das dieses Feld traegt (D12: die Positionsfelder)."""
-        for treffer in re.finditer(r"<label>(.*?)</label>", page, re.S):
-            if f'name="{feld}"' in treffer.group(1):
-                return treffer.group(1)
-        raise AssertionError(f"kein <label> fuer {feld}")
-
-    # --- die Breite ---
-
-    def test_the_page_is_wider_than_its_widest_table(self):
-        # Die breiteste Tabelle (zwoelf Spalten, Mono 10,5 px) braucht im
-        # Browser gemessen 1050 px. Die Zahl wird AUS DER REGEL gelesen und
-        # gegen die gemessene Tabelle gerechnet - ein "assertIn('1400', page)"
-        # waere blind (die Zahl kann aus Daten stammen).
-        page = self._page()
-        regel = re.search(r"main\{([^}]*)\}", page).group(1)
-        breite = int(re.search(r"max-width:(\d+)px", regel).group(1))
-        leiste, abstand, polster = 268, 30, 26
-        self.assertEqual(breite, 1400)
-        self.assertGreaterEqual(breite, 1050 + leiste + abstand + 2 * polster)
-        self.assertNotIn("max-width:760px", page)
-
-    # --- das Raster ---
-
-    def test_the_grid_sits_on_the_fieldset_not_on_the_form(self):
-        page = self._page()
-        # ein Grid am <form> macht jedes <fieldset> zu EINEM Rasterfeld
-        # (D0-Befund); ohne Spaltenangabe faellt das Raster auf eine Spalte
-        # zurueck und waere optisch der alte Zustand
-        self.assertIn("fieldset.crit{display:grid", page)
-        self.assertIn("grid-template-columns:repeat(auto-fill,minmax(230px,1fr))", page)
-        # D2: das <form> traegt jetzt selbst ein Raster - fuer die Leiste
-        # (Instrument oben, Filter darunter). Die D0-Gefahr war, dass ein
-        # <fieldset> dadurch zu EINER Spalte wird; dagegen steht jetzt, dass
-        # jedes <fieldset> ueber die ganze Formularbreite spannt.
-        self.assertIn("form>button,form>fieldset,form>span{grid-column:1/-1}", page)
-        # ohne diese Angabe bleiben die Kaesten Flex-Elemente des <form> und
-        # schrumpfen (gemessen: 206-345 px statt voller Breite)
-        self.assertEqual(page.count("flex:1 1 100%"), 1)
-        # grid-column steht im CSS, nicht am Element. Statt eine Zahl zu pflegen,
-        # die mit jedem Slice waechst, wird die BEDEUTUNG geprueft: jede
-        # Zeilenangabe spannt ueber die ganze Breite, keine Teilstuecke.
-        werte = re.findall(r"grid-column:([^;}]+)", page)
-        self.assertGreaterEqual(len(werte), 3)
-        self.assertEqual(set(werte), {"1/-1"})
-
-    def test_the_fields_are_grouped_by_the_question_they_answer(self):
-        # Gleichheit, nicht Teilzeichenkette: Reihenfolge der Gruppen UND der
-        # Felder je Gruppe sind der Inhalt dieses Slices
-        self.assertEqual(self._gruppen(self._page()), list(self.GRUPPEN))
-
-    def test_every_field_survives_the_regrouping(self):
-        # die schaerfste Zusicherung: ein beim Umbau verlorenes oder doppeltes
-        # Feld laesst sich nicht durch Textsuche finden
-        erwartet = {"ticker": 1, "expiration": 1, "require_oi": 2,
-                    "require_volume": 2, "iv_pref": 3, "ignore_quote_age": 1,
-                    # the age mode is a pair of radio buttons, not a switch:
-                    # "Aktualitaetsfilter" and "Letzter verfuegbarer
-                    # Marktstand" are two explicit, selectable states
-                    "data_mode": 2,
-                    # the strike search is a pair of radios as well - "adjacent"
-                    # and "within width" are two explicitly chosen searches
-                    "pair_mode": 2,
-                    # D14: die Funkknoepfe tragen denselben Namen - eine
-                    # EINZELNE Anzeige, nicht vier Felder; seit den
-                    # Credit-Spreads sind es vier Werte
-                    "strategy": 4}
-        for name in self.ZAHLENFELDER:
-            erwartet[name] = 1
-        self.assertEqual(self._namen(self._page()), erwartet)
-
-    def test_no_control_is_added_or_lost(self):
-        page = self._page()
-        # +2: the two age-mode radio buttons (Aktualitaetsfilter / letzter
-        # verfuegbarer Marktstand), +2: the two strike-search radios - both are
-        # chosen by the operator, never inferred from a leftover value
-        #
-        # Gezaehlt wird das FORMULAR, nicht die Seite: die Seite traegt seit dem
-        # Gap-Scan einen eigenen Abschnitt mit eigenem Datumsfeld und eigenem
-        # Knopf. Ein Seitenzaehler braeche bei jedem neuen Abschnitt, ohne ueber
-        # das Formular etwas auszusagen - gemeint war immer das Formular
-        # (siehe test_the_controls_stay_outside_the_groups).
-        treffer = re.search(r"<form.*?</form>", page, re.S)
-        self.assertIsNotNone(treffer, "die Seite traegt kein Formular")
-        form = treffer.group(0) if treffer else ""
-        self.assertEqual(form.count("<input"), 36)   # D12 +4 Position, +2 Credit
-        self.assertEqual(form.count("<select"), 1)   # Slice-I-Falle: Seiten-Scans
-        self.assertEqual(form.count("<button"), 1)
-        self.assertEqual(form.count("<fieldset"), 6)  # D12 + Position, D14 + Spreads
-        self.assertEqual(form.count("<legend>"), 6)
-
-    def test_the_controls_stay_outside_the_groups(self):
-        # Ticker, Verfallsauswahl und der Scan-Knopf gehoeren NICHT in eine
-        # Filtergruppe: sie sind die Eingabe, die Gruppen sind die Filter.
-        page = self._page()
-        erstes = page.index('<fieldset class="crit">')
-        self.assertLess(page.index('name="ticker"'), erstes)
-        self.assertLess(page.index('<select name="expiration"'), erstes)
-        self.assertLess(page.index("<button"), erstes)
-        # ... und die Gruppen stehen alle im Formular (sonst werden die Filter
-        # nicht mitgesendet)
-        form = re.search(r"<form.*?</form>", page, re.S).group(0)
-        self.assertEqual(form.count('<fieldset class="crit">'), 6)  # D12 + Position, D14 + Spreads
-        self.assertEqual(form.count("</fieldset>"), 6)
-
-    # --- D12: die Gruppe Position -------------------------------------------
-
-    def test_the_position_group_holds_the_four_position_fields(self):
-        """D12: Multiplikator, Stueckzahl, Gebuehren und Budget sitzen im
-        Formular UND in der Gruppe "Position" - und jedes nennt seinen Standard.
-
-        Die vier Zahlen sind die Positionsgroesse: sie stehen in einer eigenen
-        Gruppe, damit der Bediener die Groesse einstellt, ohne die Filter zu
-        beruehren. Geprueft wird die Zugehoerigkeit UEBER die Gruppe, nicht per
-        Textsuche - ein Feld ausserhalb der Gruppe waere im Formular, aber nicht
-        als Position auffindbar.
-        """
-        page = self._page()
-        self.assertEqual(dict(self._gruppen(page))["Position"],
-                         ("multiplier", "quantity", "fees", "budget"))
-        form = re.search(r"<form.*?</form>", page, re.S).group(0)
-        for feld, wert in (("multiplier", "100"), ("quantity", "1"),
-                           ("fees", "0.0"), ("budget", "")):
-            treffer = re.findall(f'<input[^>]*name="{feld}"[^>]*>', form)
-            self.assertEqual(len(treffer), 1, feld)
-            self.assertIn('type="number"', treffer[0], feld)     # a number field
-            self.assertIn(f'value="{wert}"', treffer[0], feld)   # its standard
-            label = self._label(page, feld)
-            self.assertIn("<input", label, feld)                 # inside the row
-            self.assertIn("Standard", label[:label.index("<input")], feld)
-
-    # --- L: die Strategiewahl --------------------------------------------
-
-    def test_the_strategy_group_holds_the_two_named_strategies(self):
-        """L: die Gruppe "Strategie" bietet genau die vier stabilen Kennungen an,
-        und bull_call_debit ist ohne Parameter vorausgewaehlt.
-
-        Knoepfe UND Vorauswahl werden aus DEMSELBEN Gruppenblock gelesen; die
-        Kennung selbst (nicht das deutsche Wort) ist die Zusicherung, weil sie in
-        URL, API und Rechnung steht.
-        """
-        page = self._page()
-        block = re.search(r'<fieldset class="crit">\s*<legend>Strategie</legend>(.*?)</fieldset>',
-                          page, re.S).group(1)
-        knoepfe = re.findall(r'<input[^>]*name="strategy"[^>]*>', block)
-        self.assertEqual(len(knoepfe), 4)
-        for knopf, wert in zip(knoepfe, ("bull_call_debit", "bear_put_debit",
-                                        "bull_put_credit", "bear_call_credit"), strict=True):
-            self.assertIn('type="radio"', knopf)
-            self.assertIn(f'value="{wert}"', knopf)
-        # ohne Parameter ist der Bull Call vorausgewaehlt - und genau EINER
-        self.assertIn("checked", knoepfe[0])
-        for knopf in knoepfe[1:]:
-            self.assertNotIn("checked", knopf)
-        # die Beschriftungen nennen Kauf- und Verkaufsbein, nicht nur die Seite
-        labels = re.findall(r"<label>(.*?)</label>", block, re.S)
-        self.assertIn("Bull Call Spread (Debit)", labels[0])
-        self.assertIn("Call kaufen (niedriger Strike)", labels[0])
-        self.assertIn("Bear Put Spread (Debit)", labels[1])
-        self.assertIn("Put kaufen (höherer Strike)", labels[1])
-        self.assertIn("Bull Put Spread (Credit)", labels[2])
-        self.assertIn("Put kaufen (niedrigerer Strike)", labels[2])
-        self.assertIn("Bear Call Spread (Credit)", labels[3])
-        self.assertIn("Call kaufen (höherer Strike)", labels[3])
-        # die Gruppe zaehlt vollstaendig mit (siehe die vier Struktur-Tests oben)
-        self.assertEqual(dict(self._gruppen(page))["Strategie"], ("strategy",))
-
-    def test_the_switch_preselects_the_strategy_the_request_names(self):
-        # die Vorauswahl folgt der Wahl - ueber die neue UND ueber die alte Adresse
-        for params, erwartet in (({"strategy": "bear_put_debit"}, "bear_put_debit"),
-                                 ({"option_type": "put"}, "bear_put_debit")):
-            query = {"ticker": "AAPL", "expiration": "2026-10-16"}
-            query.update(params)
-            adapter = _MockAdapter(make() + make_verticals())
-            adapter.expirations = ["2026-10-16"]
-            app = create_app(quote_adapter=adapter, screener=OptionScreener(_WIDE),
-                             now_fn=_clock())
-            app.config["TESTING"] = True
-            page = app.test_client().get("/", query_string=query).get_data(as_text=True)
-            treffer = re.search(r'<fieldset class="crit">\s*<legend>Strategie</legend>'
-                                r'(.*?)</fieldset>', page, re.S)
-            assert treffer is not None
-            block = treffer.group(1)
-            knoepfe = re.findall(r'<input[^>]*name="strategy"[^>]*>', block)
-            self.assertIn('value="bull_call_debit"', knoepfe[0])
-            self.assertNotIn("checked", knoepfe[0])
-            self.assertIn(f'value="{erwartet}"', knoepfe[1])
-            self.assertIn("checked", knoepfe[1])
-
-    # --- die Beschriftungen ---
-
-    def test_the_labels_carry_their_unit(self):
-        page = self._page()
-        # D3: der Standardvermerk steht seit D3 zwischen Beschriftung und Feld.
-        # Die Einheit muss weiterhin am ANFANG der Beschriftung stehen; dass
-        # unmittelbar das Feld folgt, sichert TheDefaultsAreVisible zu.
-        for text in ("DTE von (Tage)", "DTE bis (Tage)", "Alter max (min)",
-                     "Spread max (%)", "Spread max ($)", "IV min (%)", "IV max (%)"):
-            self.assertIn("<label>" + text, page, text)
-        for alt in ("Spread max %", "Spread max $", "Alter max min", "IV min %", "IV max %"):
-            self.assertNotIn("<label>" + alt + " <input", page, alt)
-        # die zwei in Slice D0 festgenagelten Texte bleiben Wort fuer Wort
-        self.assertIn("Geld-Gr\u00f6\u00dfe min", page)
-        self.assertIn("Brief-Gr\u00f6\u00dfe min", page)
-
-    def test_the_sharp_zero_is_named_at_its_field(self):
-        # server.py:69 - 0 ist eine scharfe Grenze, kein "aus"; gemessen
-        # (docs/210_ausD1_phase1_bis3.md) loescht 0 die ganze Liste
-        # (19 gefiltert, 0 Kandidaten)
-        label = re.search(r"<label>Alter max \(min\).*?</label>", self._page(), re.S).group(0)
-        self.assertIn('<small class="warn-min">0 streicht alle Kurse (nicht \u00bbaus\u00ab)'
-                      "</small>", label)
-
-    def test_no_legend_promises_a_standard_that_is_not_one(self):
-        # "leer = Standard" stand zweimal auf der Seite und war gemessen
-        # irrefuehrend (10 von 14 Zahlenfeldern sind vorbelegt). Seitenweit
-        # geprueft, damit der Hinweis nicht in ein anderes Element wandern kann.
-        self.assertNotIn("leer = Standard", self._page())
-
     # --- die Struktur, die alle anderen Tests parsen ---
-
-    def test_the_page_keeps_the_shape_every_other_test_parses(self):
-        page = self._ohne_style_und_script(self._page())
-        self.assertEqual(page.count("<table>"), 2)
-        self.assertEqual(page.count("<tbody>"), 1)
-        # <tr> ohne Attribute: jede Zeile wird mit r"<tr>(.*?)</tr>" zerlegt
-        self.assertEqual(len(re.findall(r"<tr[^>]*>", page)), page.count("<tr>"))
-        # in der Spread-Tabelle trifft das Zellmuster der Bestandstests JEDE
-        # Zelle (12 je Zeile) - dort ist kein <td class=...> erlaubt
-        spread = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
-                  if "<th>Spread</th>" in t][0]
-        zeilen = re.findall(r"<tr>(.*?)</tr>", spread, re.S)[1:]
-        # D7: 3 of the 4 pairs survive - the degenerated AAPL pair (debit ==
-        # width) is dropped by the pair rule now
-        self.assertEqual(len(zeilen), 3)
-        for zeile in zeilen:
-            self.assertEqual(
-                len(re.findall(r'<td(?: title="[^"]*")?>(.*?)</td>', zeile, re.S)), 12)
-
-
-class TheFiltersStandBesideTheResult(unittest.TestCase):
-    """ausD2 (D2): die Filter liegen in einer linken Leiste, das Ergebnis hat die
-    Buehne - Spreads vor Kontrakten, die beiden Ausschuesse zugeklappt darunter.
-
-    Messung vor dem Bau (docs/221_ausD2_phase1_bis3.md): der erste Ergebnisblock
-    stand bei y=871 von 1446 px, weil das Formular (558 px) und der Ausschuss-
-    Kasten "Warum gestrichen?" (162 px) davor lagen. Der zweite Ausschuss-Kasten
-    stand hinter dem Ergebnis - die Erklaerung lag also einmal davor und einmal
-    dahinter.
-    """
-
-    @staticmethod
-    def _app(quotes=None):
-        # make() + make_verticals(): beide Tabellen UND beide Ausschuss-Bloecke
-        # brauchen die volle Kette. Gemessen: make() allein liefert kein
-        # <tbody> (die Kontrakttabelle fehlt), make_verticals() allein liefert
-        # keine "Warum gestrichen?"-Begruendungen.
-        adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
-        # die Fixture liegt auf ihrem eigenen Verfall; die Seite nimmt nur ein
-        # Datum an, das die Kette wirklich listet
-        adapter.expirations = ["2026-10-16"]
-        app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(_WIDE),
-                         now_fn=_clock())
-        app.config["TESTING"] = True
-        return app
-
-    def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
-        query.update(params or {})
-        return self._app(quotes).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
-
-    @staticmethod
-    def _spread_tabelle(page):
-        """Die Spread-Tabelle - am KOPF erkannt, nicht an der Position.
-
-        Seit D2 stehen die Spreads VOR den Kontrakten; ein [-1] wie zuvor griffe
-        jetzt die Kontrakttabelle.
-        """
-        return [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
-                if "<th>Spread</th>" in t][0]
-
-    @staticmethod
-    def _erste_spread_zeile(page):
-        tabelle = TheFiltersStandBesideTheResult._spread_tabelle(page)
-        zeile = re.findall(r"<tr>(.*?)</tr>", tabelle, re.S)[1]
-        return re.sub(r"<[^>]+>", "", zeile).strip().split(" ")[0]
-
-    # --- die zwei Spalten ---
-
-    def test_the_filters_stand_beside_the_result(self):
-        page = self._page()
-        # Leiste 268 px, Abstand 30 px; die Tabelle braucht gemessen 1050 px,
-        # daraus folgt der Umbruchpunkt: 268 + 30 + 1050 + 2*26 = 1400
-        self.assertIn("max-width:1400px", page)
-        self.assertIn(".shell{display:grid;grid-template-columns:268px minmax(0,1fr);"
-                      "gap:30px;align-items:start}", page)
-        self.assertIn("@media (max-width:1212px){.shell{grid-template-columns:minmax(0,1fr)}}", page)
-        self.assertLess(page.index('<div class="shell">'), page.index("<form"))
-        self.assertLess(page.index("<form"), page.index('<div class="results">'))
-
-    def test_the_page_notes_stay_outside_the_shell(self):
-        # Hinweis, Warnung und Fehlermeldung gehoeren ueber beide Spalten, nicht
-        # in die Ergebnisspalte
-        page = self._page()
-        self.assertIn('<p class="note">', page)
-        self.assertLess(page.index('<p class="note">'), page.index('<div class="shell">'))
-
-    # --- die Reihenfolge im Ergebnis ---
-
-    def test_the_spreads_come_before_the_contracts(self):
-        page = self._page()
-        self.assertLess(page.index("<th>Spread</th>"), page.index("<th>Kontrakt</th>"))
-        self.assertLess(page.index("<th>Kontrakt</th>"),
-                        page.index('<details class="dropped-summary">'))
-
-    def test_the_contracts_table_keeps_the_only_tbody(self):
-        page = self._page()
-        self.assertEqual(page.count("<tbody>"), 1)
-        kontrakte = [t for t in re.findall(r"<table>(.*?)</table>", page, re.S)
-                     if "<th>Kontrakt</th>" in t][0]
-        self.assertIn("<tbody>", kontrakte)
-        self.assertNotIn("<tbody>", self._spread_tabelle(page))
-
-    # --- die Fuehrzeile ---
-
-    def test_the_lead_line_names_the_best_return(self):
-        page = self._page()
-        # D7: 3 Spreads - the degenerated AAPL pair is no longer a result
-        # D18: the lede names its number gross, like the column it summarises
-        self.assertIn('<p class="lede">3 Spreads, bester 257.14 % Rendite '
-                      '(brutto)</p>', page)
-        self.assertLess(page.index('class="lede"'), page.index('<div class="stats">'))
-
-    def test_the_lead_line_is_the_maximum_and_not_the_first_row(self):
-        # sortiert der Nutzer nach BE-Abstand, steht ein anderer Spread oben -
-        # die Fuehrzeile darf sich nicht mitdrehen
-        nach_rendite = self._page()
-        nach_abstand = self._page({"sort": "be_asc"})
-        self.assertEqual(self._erste_spread_zeile(nach_rendite), "AMZN")
-        self.assertEqual(self._erste_spread_zeile(nach_abstand), "AAPL")
-        for page in (nach_rendite, nach_abstand):
-            self.assertIn("3 Spreads, bester 257.14 % Rendite", page)
-
-    def test_without_spreads_there_is_no_lead_line(self):
-        # ein einzelner Kontrakt hat keinen Nachbarn -> keine Spreads
-        einzeln = [quote("AAPL261016C00240000", bid=5.00, ask=5.10, iv=28.0,
-                         oi=8000, volume=1200)]
-        page = self._page(quotes=einzeln)
-        self.assertNotIn('class="lede"', page)
-
-    # --- die Ausschuesse ---
-
-    def test_the_rejected_blocks_are_collapsed_and_named(self):
-        page = self._page()
-        self.assertEqual(page.count('<details class="dropped-summary">'), 2)
-        # zugeklappt: kein open-Attribut (ein ' open' als Textsuche waere blind)
-        self.assertIsNone(re.search(r'<details class="dropped-summary"[^>]*\bopen\b', page))
-        self.assertIn("<summary>Warum gestrichen?", page)
-        self.assertIn("<summary>Warum kein Spread?", page)
-
-    def test_both_collapse_summaries_name_the_example(self):
-        """D17 (finding 5e): each group shows ONE example while the number
-        beside it counts ALL cases - that was written nowhere. Both collapse
-        lines say it now, each EXACTLY once (a page-wide search would also
-        pass if one line carried the sentence twice).
-        """
-        page = self._page()
-        zeilen = re.findall(r"<summary>(.*?)</summary>", page, re.S)
-        self.assertEqual(len(zeilen), 2)
-        for zeile in zeilen:
-            self.assertEqual(zeile.count("Je Gruppe steht ein Beispiel"), 1, zeile)
-        self.assertIn("alle betroffenen Kontrakte", zeilen[0])
-        self.assertIn("alle betroffenen Paare", zeilen[1])
-
-    def test_the_rejected_items_are_still_in_the_document(self):
-        # zugeklappt heisst nicht verschwunden: die Begruendungen muessen im HTML
-        # stehen, damit die Seite sie ohne Server-Runde aufklappen kann
-        page = self._page()
-        self.assertIn('<li class="drop-reason">', page)
-        self.assertIn('class="vertical-reason"', page)
-        self.assertLess(page.index('<details class="dropped-summary">'),
-                        page.index('<li class="drop-reason">'))
-
-
-class TheRailIsTidyAndTheFieldsLineUp(unittest.TestCase):
-    """D2b: die Leiste traegt keine Kaesten mehr, und jedes Feld steht
-    rechtsbuendig auf einer gemeinsamen Kante.
-
-    Der Slice ist reine Anzeige - die Wirkung der Regeln ist im Browser
-    gemessen (14 Felder, rechte Kante x=341, Abweichung 0 px), pytest kann nur
-    die Regeln selbst festhalten. Deshalb wird hier JEDE Regel zeichengenau
-    gepinnt und zusaetzlich die Struktur, auf der sie beruht.
-    """
-
-    @staticmethod
-    def _app(quotes=None):
-        adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
-        adapter.expirations = ["2026-10-16"]
-        app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(ScreenerCriteria()),
-                         now_fn=_clock())
-        app.config["TESTING"] = True
-        return app
-
-    def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
-        query.update(params or {})
-        return self._app(quotes).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
-
-    def test_the_rail_groups_carry_no_boxes(self):
-        # Kaesten weg: die Gruppe ist eine Haarlinie mit Zeilen darunter
-        page = self._page()
-        css = re.sub(r"\s+", " ", page[page.index("<style>"):page.index("</style>")])
-        self.assertIn("flex:1 1 100%;border:0;border-top:1px dotted var(--hair); "
-                      "border-radius:0;", css)
-        self.assertNotIn("fieldset.crit{border:1px", css)
-        # die Kiste der Basisregel (Radius 8 px) ist ueberall verschwunden
-        self.assertNotIn("border-radius:8px", css)
-
-    def test_each_field_is_a_row_with_the_input_on_the_right(self):
-        page = self._page()
-        css = re.sub(r"\s+", " ", page[page.index("<style>"):page.index("</style>")])
-        self.assertIn(".shell fieldset.crit>label{display:grid;"
-                      "grid-template-columns:minmax(0,1fr) 74px; "
-                      "align-items:center;gap:10px;margin:6px 0}", css)
-        self.assertIn(".shell fieldset.crit>label>input[type=number]{width:100%;min-width:0;"
-                      "text-align:right;padding:6px 2px}", css)
-        # ohne border-box waechst das Feld um sein Polster und laeuft aus der
-        # 268-px-Leiste; die Regel gilt fuer JEDES Element der Seite
-        self.assertIn("*,*::before,*::after{box-sizing:border-box}", css)
-
-    def test_the_warning_line_spans_the_whole_row(self):
-        # die Warnung am Alter-Feld steht in der Beschriftungszeile; ohne
-        # Zeilenspanne landet sie in der schmalen linken Spalte und bricht um
-        page = self._page()
-        self.assertIn(".shell fieldset.crit>label>small{grid-column:1/-1", page)
-
-    def test_the_checkbox_row_stays_left_aligned(self):
-        # "Alter-Grenze aus" ist kein Zahlenfeld und darf nicht in die
-        # rechte Spalte rutschen
-        page = self._page()
-        self.assertIn(".shell fieldset.crit>label:has(input[type=checkbox]){"
-                      "grid-template-columns:auto minmax(0,1fr);justify-items:start}", page)
-
-    def test_the_rail_is_titled_instrument(self):
-        page = self._page()
-        self.assertIn('<h2 class="rail-title">Instrument</h2>', page)
-        self.assertLess(page.index('<h2 class="rail-title">'),
-                        page.index('name="ticker"'))
-
-    def test_every_number_field_sits_inside_its_label(self):
-        # die Regel greift ueber >label: nur so wird die Beschriftung zur
-        # linken und das Feld zur rechten Spalte. Ein Feld ausserhalb seines
-        # <label> faellt aus dem Raster - genau davor schuetzt diese Pruefung.
-        page = self._page()
-        form = page[page.index("<form"):page.index("</form>")]
-        felder = re.findall(r'<input type="number"[^>]*>', form)
-        self.assertEqual(len(felder), 19)      # D12: + 4 Positionsfelder
-        im_label = re.findall(r"<label>(?:(?!</label>).)*?<input type=\"number\"", form, re.S)
-        self.assertEqual(len(im_label), 19)
-
 
 class TheColoursCarryEnoughContrast(unittest.TestCase):
     """D2c, CoachBen-Schnitt: jede Schriftfarbe traegt 4,5:1, jede Bedienkante 3,0:1.
@@ -3493,40 +1639,6 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
 
     # --- die Zusicherungen ----------------------------------------------
 
-    def test_the_sort_links_have_a_colour_of_their_own(self):
-        # ohne eine a-Regel nimmt der Browser sein Blau (#0000ee) - auf diesem
-        # Grund 1,96:1. Der Akzent traegt gemessen 4,97:1.
-        page = self._page()
-        self.assertIn("a,a:visited{color:var(--primary);", self._css(page))
-        self.assertGreaterEqual(round(self._kontrast(self._farbe_von(page, "--primary"),
-                                                     self.SEITE), 2), 4.5)
-
-    def test_the_button_text_clears_four_and_a_half(self):
-        """Der Knopf ist jetzt gefuellt im Akzent - die Schrift ist dunkel.
-
-        Weiss auf #e05534 waere 3,65:1 und wuerde die Regel der Seite
-        brechen; #0b0704 traegt gemessen 5,27:1.
-        """
-        page = self._page()
-        self.assertIn("button{background:var(--primary);border:1px solid var(--primary);"
-                      "color:#0b0704;", self._css(page))
-        self.assertGreaterEqual(round(self._kontrast(self.KNOPFSCHRIFT, self.KNOPF), 2), 4.5)
-
-    def test_the_controls_have_a_visible_border(self):
-        """Die Felder tragen eine gestrichelte Kante, keine Kiste.
-
-        Ein Rahmen muss 3,0:1 tragen. --edge ist deshalb eigens dafuer da und
-        nicht die dekorative Haarlinie (--hair, 1,79:1): gemessen .36 ->
-        #606669 = 3,24:1.
-        """
-        page = self._page()
-        css = self._css(page)
-        self.assertIn("border:0;border-bottom:1px dotted var(--edge)", css)   # input
-        self.assertIn("select{max-width:100%;padding:8px 4px;background:var(--panel);"
-                      "border:1px dotted var(--edge)}", css)
-        self.assertGreaterEqual(round(self._kontrast(self._farbe_von(page, "--edge"),
-                                                     self.SEITE), 2), 3.0)
-
     def test_the_folded_blocks_carry_a_brighter_marker(self):
         # der Marker war der schwaechste Text der Seite (4,01:1); jetzt traegt
         # er den Akzent (4,97:1) und ist damit auch als Bedienelement lesbar
@@ -3539,8 +1651,8 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
     def test_the_four_measured_pairs_clear_their_threshold(self):
         page = self._page()
         for vorne, hinten, grenze, wo in (
-                (self._farbe_von(page, "--primary"), self.SEITE, 4.5, "Sortier-Link"),
-                (self.KNOPFSCHRIFT, self.KNOPF, 4.5, "Knoptschrift"),
+                (self._farbe_von(page, "--primary"), self.SEITE, 4.5, "Akzent"),
+                (self._farbe_von(page, "--muted"), self.SEITE, 4.5, "Sekundaertext"),
                 (self._farbe_von(page, "--edge"), self.SEITE, 3.0, "Bedienkante"),
                 (self._farbe_von(page, "--faint"), self.SEITE, 4.5, "Mikro-Label")):
             self.assertGreaterEqual(round(self._kontrast(vorne, hinten), 2), grenze,
@@ -3573,266 +1685,6 @@ class TheColoursCarryEnoughContrast(unittest.TestCase):
             self.assertGreaterEqual(
                 round(self._kontrast(farbe, self.SEITE), 2), 4.5,
                 f"Schriftfarbe {farbe} traegt nur {self._kontrast(farbe, self.SEITE):.2f}:1")
-
-
-class TheDefaultsAreVisible(unittest.TestCase):
-    """ausD3 (D3): jedes Feld sagt selbst, was der Standard ist.
-
-    Gemessen vor dem Bau: 10 der 14 Zahlenfelder sind vorbelegt (aus
-    ScreenerCriteria), 4 sind leer - und leer heisst "Filter abgeschaltet",
-    NICHT "Standard". Die Seite nannte den Standard bis hierher nirgends; das
-    fruehere "(leer = Standard)" war in D1 als gemessen falsch entfernt worden.
-
-    Der Vermerk steht als reiner TEXT im <label>, direkt vor dem <input>.
-    Gemessen: als eigenes Element verschiebt er die rechte Kante der Felder
-    (319 -> 227 px) und macht die Leiste 689 px hoeher; als Text aendert er
-    nichts (rechte Kante 319, Abweichung 0 px).
-    """
-
-    STANDARD = {"max_spread_pct": "10.0", "max_spread_abs": "0.1", "min_oi": "500",
-                "min_volume": "0", "dte_min": "7", "dte_max": "45",
-                "max_quote_age_min": "30", "weight_spread": "0.5", "weight_oi": "0.3",
-                "weight_iv": "0.2"}
-    AUS = ("min_bid_size", "min_ask_size", "iv_min", "iv_max")
-    AUS_TEXT = "Standard aus (leer = Filter aus)"
-    #: D11: das neue Feld ist ebenfalls leer, heisst aber nicht "Filter aus":
-    #: eine leere Breite ist die Nachbarschaft - der schnelle Modus von vorher.
-    #: Es sagt seinen Standard also selbst, und mit eigenem Wortlaut.
-    BREITE = "pair_max_width"
-    #: The width field no longer describes the search by itself - the search is
-    #: chosen with `pair_mode` next to it, so the label names that choice.
-    BREITE_TEXT = ("Standard aus (leer = Suchart »Benachbarte Strikes«; "
-                   "gesetzt = Obergrenze der Breite)")
-
-    @staticmethod
-    def _app(quotes=None):
-        adapter = _MockAdapter(make() + make_verticals() if quotes is None else quotes)
-        adapter.expirations = ["2026-10-16"]
-        app = create_app(quote_adapter=adapter,
-                         screener=OptionScreener(ScreenerCriteria()),
-                         now_fn=_clock())
-        app.config["TESTING"] = True
-        return app
-
-    def _page(self, params=None, quotes=None):
-        query = {"ticker": "AAPL", "expiration": "2026-10-16"}
-        query.update(params or {})
-        return self._app(quotes).test_client().get(
-            "/", query_string=query).get_data(as_text=True)
-
-    # --- Lesehilfen: das <label> und der Wert EINES Feldes ---------------
-    @staticmethod
-    def _label(page, feld):
-        for treffer in re.finditer(r"<label>(.*?)</label>", page, re.S):
-            if f'name="{feld}"' in treffer.group(1):
-                return treffer.group(1)
-        raise AssertionError(f"kein <label> fuer {feld}")
-
-    @staticmethod
-    def _wert(page, feld):
-        m = re.search(f'name="{feld}"[^>]*?value="([^"]*)"', page)
-        return m.group(1) if m else None
-
-    def _alle(self):
-        return list(self.STANDARD) + list(self.AUS) + [self.BREITE]
-
-    # --- die Zusicherungen ----------------------------------------------
-    def test_every_prefilled_field_shows_the_default_of_the_code(self):
-        """Der Wahrheitsbeweis: der Standard wird AUS DEM CODE gelesen.
-
-        Nicht im HTML festgenagelt - wer den Standard in ScreenerCriteria
-        aendert, ohne das Formular nachzuziehen, faellt hier durch.
-        """
-        page = self._page()
-        std = ScreenerCriteria()
-        for feld in self.STANDARD:
-            self.assertEqual(self._wert(page, feld), str(getattr(std, feld)), feld)
-        # D11: das neue Feld zeigt den Standard AUS DEM CODE. pair_max_width ist
-        # None (Nachbarschaft); das Formular schreibt dann nicht "None", sondern
-        # die leere Zeichenkette - genau der Standard von vorher.
-        self.assertIsNone(std.pair_max_width)
-        self.assertEqual(self._wert(page, self.BREITE), "", self.BREITE)
-        # ... und ein gesetzter Wert kommt am Feld an (eine Quelle fuer Formular
-        # und Rechenmodul - kein zweiter Standard im HTML)
-        self.assertEqual(self._wert(self._page({"pair_max_width": "10.0"}), self.BREITE),
-                         "10.0")
-
-    def test_every_prefilled_field_names_its_default(self):
-        page = self._page()
-        for feld, wert in self.STANDARD.items():
-            label = self._label(page, feld)
-            self.assertIn(f"Standard {wert}", label, feld)
-            self.assertEqual(self._wert(page, feld), wert, feld)
-        # D11: auch das neue, nicht vorbelegte Feld nennt seinen Standard - der
-        # Vermerk steht am Feld, das er beschreibt (jetzt 15 Felder).
-        self.assertIn(self.BREITE_TEXT, self._label(page, self.BREITE), self.BREITE)
-        self.assertEqual(self._wert(page, self.BREITE), "", self.BREITE)
-
-    def test_the_empty_fields_say_the_filter_is_off(self):
-        # die D1-Falle: leer ist "aus", nicht "Standard"
-        page = self._page()
-        for feld in self.AUS:
-            label = self._label(page, feld)
-            self.assertIn(self.AUS_TEXT, label, feld)
-            self.assertEqual(self._wert(page, feld), "", feld)
-
-    def test_every_field_carries_a_note(self):
-        # D12: die vier Positionsfelder kommen dazu - mit ihnen sind es
-        # neunzehn. Geprueft wird weiter dieselbe Aussage: jedes Feld des
-        # Formulars nennt seinen Standard.
-        page = self._page()
-        form = page[page.index("<form"):page.index("</form>")]
-        self.assertEqual(len(re.findall(r"\u00b7\s?Standard", form)), 19)
-
-    def test_the_reset_link_keeps_only_the_instrument(self):
-        # der Link darf kein Filter- und kein Sortierparameter tragen
-        page = self._page({"min_oi": "5000", "weight_spread": "0.9", "sort": "be_asc"})
-        m = re.search(r'<a class="reset" href="([^"]+)"', page)
-        self.assertIsNotNone(m, "kein Ruecksetz-Link")
-        ziel = html.unescape(m.group(1))
-        self.assertIn("ticker=AAPL", ziel)
-        self.assertIn("expiration=2026-10-16", ziel)
-        for verboten in ("min_oi", "max_spread_pct", "weight_spread", "iv_min", "sort"):
-            self.assertNotIn(verboten, ziel)
-
-    def test_the_note_keeps_the_default_after_a_change(self):
-        # der Vermerk nennt den STANDARD, nicht den eingetippten Wert
-        page = self._page({"max_spread_pct": "1000"})
-        # der Wert hat sich geaendert (gerendert wird "1000.0"), der Vermerk nennt
-        # weiterhin den Standard - er zeigt NICHT den eingetippten Wert
-        self.assertNotEqual(self._wert(page, "max_spread_pct"), "10.0")
-        self.assertIn("1000", self._wert(page, "max_spread_pct"))
-        self.assertIn("Standard 10.0", self._label(page, "max_spread_pct"))
-
-    def test_the_note_sits_inside_the_label_before_the_input(self):
-        # das Raster aus D2b haengt daran: Text und Feld sind EIN Rasterfeld
-        page = self._page()
-        for feld in self._alle():
-            label = self._label(page, feld)
-            self.assertIn("<input", label, feld)
-            vor_dem_feld = label[:label.index("<input")]
-            self.assertIn("Standard", vor_dem_feld, feld)
-
-    # --- D11: das neue Feld traegt seinen Namen und erklaert den leeren Zustand ---
-
-    def test_the_width_field_is_named_and_explains_its_empty_state(self):
-        """Das Formularfeld heisst `pair_max_width` und sagt in seinem Text, dass
-        leer "nur benachbarte Strikes" bedeutet.
-
-        Beides zusammen ist die Aussage: der Name allein liesse offen, was leer
-        heisst, und der Text allein haenge an keinem Feld. Ohne den Zusatz waere
-        die leere Breite als "Filter aus" zu lesen - sie IST aber der schnelle
-        Modus von vorher (Nachbarschaft).
-        """
-        page = self._page()
-        form = page[page.index("<form"):page.index("</form>")]
-        treffer = re.findall(r'<input[^>]*name="pair_max_width"[^>]*>', form)
-        self.assertEqual(len(treffer), 1)
-        self.assertIn('type="number"', treffer[0])
-        label = self._label(page, self.BREITE)
-        self.assertIn("leer = Suchart »Benachbarte Strikes«", label)
-        self.assertIn("gesetzt = Obergrenze der Breite", label)
-
-
-class TestErrorBehaviour(unittest.TestCase):
-    """D6: error text, retained form input, the sort link, escaping.
-
-    Each method is one finding of the external review (2026-10-13), measured
-    before and after the fix.
-    """
-
-    def _client(self):
-        # D7: _WIDE - with _LOOSE only the pair of make() survives and the sort
-        # test below could not tell two orders apart (measured: 1 row for both).
-        return create_app(quote_adapter=_MockAdapter(make() + make_verticals()),
-                          screener=OptionScreener(_WIDE), now_fn=_clock()).test_client()
-
-    def _page(self, query):
-        """Die Seite, entschluesselt - Meldungen enthalten "&gt;".
-
-        Die Maskierungs-Kanarie holt sich die Antwort bewusst roh.
-        """
-        antwort = self._client().get("/?ticker=AAPL&expiration=2026-10-16&" + query)
-        return html.unescape(antwort.get_data(as_text=True))
-
-    @staticmethod
-    def _feld(html_out, name):
-        treffer = re.search(rf'name="{name}"[^>]*value="([^"]*)"', html_out)
-        return None if treffer is None else treffer.group(1)
-
-    @staticmethod
-    def _spread_reihenfolge(html_out):
-        """Die erste Zelle jeder Spread-Zeile, in Seitenreihenfolge."""
-        return re.findall(r'<td title="Kauf [^"]+ · Verkauf [^"]+">([^<]+)</td>', html_out)
-
-    def test_every_violation_is_named_in_german_and_with_its_value(self):
-        page = self._page("min_oi=-5&min_volume=-1")
-        self.assertIn("min_oi: muss ≥ 0 sein (ist: -5).", page)
-        self.assertIn("min_volume: muss ≥ 0 sein (ist: -1).", page)
-        self.assertNotIn("ScreenerCriteria invalid", page)
-
-    def test_the_contradiction_names_both_values(self):
-        page = self._page("dte_min=45&dte_max=7")
-        self.assertIn("dte_min: muss ≤ dte_max sein (ist: 45 > 7).", page)
-
-    def test_the_size_filters_are_checked_like_the_rest(self):
-        # min_bid_size/min_ask_size sind int-Felder - der Parser liefert -3, nicht -3.0
-        self.assertIn("min_bid_size: muss ≥ 0 sein (ist: -3).",
-                      self._page("min_bid_size=-3"))
-
-    def test_the_form_keeps_what_was_typed(self):
-        page = self._page("min_oi=-5&dte_max=30&weight_oi=0.3")
-        self.assertEqual("-5", self._feld(page, "min_oi"))
-        self.assertEqual("30", self._feld(page, "dte_max"))
-        self.assertEqual("0.3", self._feld(page, "weight_oi"))
-
-    def test_a_cleared_field_falls_back_to_its_default(self):
-        # "leer = Standard" - ein geleertes Feld darf nicht leer stehen bleiben,
-        # sonst sucht der Bediener einen Wert, den die Pruefung gar nicht nutzt
-        self.assertEqual("500", self._feld(self._page("min_oi="), "min_oi"))
-        self.assertEqual("7", self._feld(self._page("dte_min="), "dte_min"))
-
-    def test_a_zero_is_kept_and_not_read_as_cleared(self):
-        self.assertEqual("0", self._feld(self._page("min_oi=0"), "min_oi"))
-
-    def test_the_sort_link_does_not_warn_any_more(self):
-        page = self._page("sort=rendite_desc")
-        self.assertNotIn("Unbekannte Parameter", page)
-
-    def test_the_spread_switch_does_not_warn_any_more(self):
-        """D17 (finding 4): every scan submits `option_type`, and the page
-        reported it as an unknown parameter even though `_spread_type` reads
-        it - `option_type` is a route argument like ticker/sort. Measured on
-        BOTH sides: no warning. The exemption list must not become too wide,
-        so a truly unknown NAME is still named (`quatsch`).
-        """
-        for seite in ("call", "put"):
-            self.assertNotIn("Unbekannte Parameter",
-                             self._page(f"option_type={seite}"), seite)
-        self.assertIn("Unbekannte Parameter ignoriert: quatsch",
-                      self._page("quatsch=1"))
-
-    def test_a_really_unknown_parameter_is_still_named(self):
-        page = self._page("quatsch=1")
-        self.assertIn("Unbekannte Parameter ignoriert: quatsch", page)
-        # die Liste der bedienbaren Parameter muss sort nennen - sonst waere die
-        # Warnung fuer den eigenen Sortierlink nur halb behoben
-        # die Liste der bedienbaren Parameter muss sort nennen - ein blosses
-        # "sort" faende sich auch in den Sortierlinks der Seite
-        self.assertIn("ignore_quote_age, sort", page)
-
-    def test_the_sort_link_still_orders_the_rows(self):
-        nach_rendite = self._spread_reihenfolge(self._page("sort=rendite_desc"))
-        nach_be = self._spread_reihenfolge(self._page("sort=be_asc"))
-        self.assertTrue(nach_rendite, "keine Spread-Zeilen gefunden")
-        self.assertNotEqual(nach_rendite, nach_be, "sort= wirkt nicht mehr")
-
-    def test_a_script_tag_in_a_field_stays_text(self):
-        roh = self._client().get(
-            "/?ticker=AAPL&expiration=2026-10-16&"
-            "min_oi=%22%3E%3Cscript%3Ealert(1)%3C%2Fscript%3E").get_data(as_text=True)
-        self.assertNotIn("<script>alert(1)</script>", roh)
-        self.assertIn("&lt;script&gt;", roh, "der Wert wurde nicht maskiert")
 
 class TestApiErrorContract(unittest.TestCase):
     """D9b: /api/screen answers JSON for its two failure modes.
@@ -4000,10 +1852,8 @@ class TestApiErrorContract(unittest.TestCase):
         self.assertEqual(body["error"], "unknown spread type")
         self.assertEqual(body["allowed"], ["call", "put"])
 
-
 if __name__ == "__main__":
     unittest.main()
-
 
 class TheFontsComeFromThePackage(unittest.TestCase):
     """Die Seite laedt ihre Schriften aus dem eigenen Paket, nicht von Google.
@@ -4061,14 +1911,12 @@ class TheFontsComeFromThePackage(unittest.TestCase):
                      if f"'{familie}'" in b and f"font-weight: {gewicht};" in b]
             self.assertTrue(block, f"{familie} {gewicht} fehlt")
 
-
 class TheAgeModeOnBothSurfaces(unittest.TestCase):
-    """Both age modes, measured through /api/screen AND through the page.
+    """Both age modes, measured through /api/screen.
 
     One chain, two requests. The preparation mode must keep what the default
-    mode drops, the answer must say which mode produced it, the source time and
-    the fetch time must stay two separate facts - and the page must show the
-    same block the JSON carries, because both read ``server._data_state``.
+    mode drops, the answer must say which mode produced it, and the source time
+    and the fetch time must stay two separate facts.
     """
 
     ALT = "2026-10-07 10:00:00"     # 275 min before the pinned clock (limit 30)
@@ -4093,12 +1941,6 @@ class TheAgeModeOnBothSurfaces(unittest.TestCase):
             "/api/screen",
             query_string={"ticker": "AAPL", "expiration": "2026-10-16", **(params or {})},
         ).get_json()
-
-    def _page(self, params=None):
-        return self._app().test_client().get(
-            "/",
-            query_string={"ticker": "AAPL", "expiration": "2026-10-16", **(params or {})},
-        ).get_data(as_text=True)
 
     # --- the decision itself ---
 
@@ -4187,21 +2029,50 @@ class TheAgeModeOnBothSurfaces(unittest.TestCase):
         self.assertIsNone(state["source_timestamp_raw"])
         self.assertGreater(state["counts"]["undated"], 0)
 
-    # --- the page renders the same block ---
 
-    def test_the_page_marks_a_preparation_run_as_provisional(self):
-        seite = self._page({"data_mode": "last_available"})
-        self.assertIn('id="provisional-note"', seite)
-        self.assertIn("Vorläufig", seite)
-        self.assertIn("Modus: Letzter verfügbarer Marktstand", seite)
-        # the source stamp is shown raw and called what it is
-        self.assertIn(f"Datenstand {self.ALT}", seite)
-        self.assertIn("ohne Zonenangabe", seite)
-        self.assertIn("Abruf 07.10.2026 14:35 UTC", seite)
-        # a claim of tradability is exactly what this block must not contain
-        self.assertNotIn("handelbar", seite)
+class _CountingEarnings:
+    """An earnings source that records every question the page asks it."""
 
-    def test_the_default_page_has_no_provisional_block(self):
-        seite = self._page()
-        self.assertNotIn('id="provisional-note"', seite)
-        self.assertIn("Modus: Aktualitätsfilter", seite)
+    def __init__(self):
+        self.calls = []
+
+    def get_calendar_days(self, days):
+        self.calls.append("get_calendar_days")
+        return {"days": {}, "state": "not_configured", "error": None}
+
+    def get_optionable_symbols(self):
+        self.calls.append("get_optionable_symbols")
+        return {"symbols": None, "state": "unavailable",
+                "fetched_at_utc": None, "error": None}
+
+    def get_earnings(self, ticker):
+        self.calls.append("get_earnings")
+        return {"earnings": {}, "cache": {}}
+
+
+class TestThePageReadsNoSource(unittest.TestCase):
+    def test_the_page_asks_no_source_for_what_it_no_longer_shows(self):
+        # The funnel page carries neither the calendar nor the per-ticker
+        # earnings panel. Building both views on every load cost three adapter
+        # questions (and, with a live source, network round trips) for markup
+        # the template does not contain any more.
+        quelle = _CountingEarnings()
+        client = create_app(quote_adapter=_MockAdapter(make()),
+                            earnings_adapter=quelle, now_fn=_clock()).test_client()
+        for pfad in ("/", "/?ticker=AAPL&expiration=2026-10-16"):
+            with self.subTest(pfad=pfad):
+                antwort = client.get(pfad)
+                self.assertEqual(200, antwort.status_code)
+                self.assertIn("Gap-Spread-Trichter", antwort.get_data(as_text=True))
+        self.assertEqual([], quelle.calls)
+
+    def test_the_page_still_answers_without_any_source(self):
+        # No earnings adapter configured at all. The page used to survive only
+        # because the "not configured" failures landed in the two views it
+        # built and never read; with nobody building them it must still answer.
+        app = create_app(quote_adapter=_MockAdapter(make()), now_fn=_clock())
+        antwort = app.test_client().get("/")
+        self.assertEqual(200, antwort.status_code)
+        seite = antwort.get_data(as_text=True)
+        self.assertIn("Gap-Spread-Trichter", seite)
+        self.assertIn('id="gap-funnel"', seite)
