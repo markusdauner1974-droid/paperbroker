@@ -269,6 +269,24 @@
     @media (prefers-reduced-motion:reduce){.escan-bar i{animation:none;transform:none;
       width:100%;opacity:.35}}
 
+    /* Gap-Scan: die Kandidaten eines abgeschlossenen Reaktionstags. Dieselbe
+       Sprache wie die Earnings-Uebersicht - eine Tabelle, gepunktete
+       Haarlinien, Mono-Zahlen, keine Karten. Kein Balken: die Route antwortet
+       einmal am Ende, ein Fortschritt waere erfunden. */
+    .gscan-form{display:flex;flex-wrap:wrap;align-items:baseline;gap:8px 14px;margin:12px 0 0}
+    .gscan-form label{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
+      text-transform:uppercase;color:var(--faint)}
+    /* Das Datumsfeld erbt die Feldkante der Seite; color-scheme haelt das
+       native Kalenderzeichen auf dunklem Grund sichtbar. */
+    .gscan-form input[type=date]{color-scheme:dark;font-family:var(--font-mono);font-size:12px}
+    /* Ruhige Kante wie der Tages-Scan am Kalender, Akzent nur beim Zeigen:
+       "Scannen" und "Oeffnen" sind Aktionen, keine Hauptknoepfe. */
+    .gscan-btn{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
+      text-transform:uppercase;background:none;border:1px solid var(--edge);
+      color:var(--muted);cursor:pointer;padding:5px 10px;border-radius:0}
+    .gscan-btn:hover:not(:disabled){color:var(--ink);border-color:var(--primary)}
+    .gscan-btn:disabled{opacity:.4;cursor:not-allowed}
+
     /* CB-EDIT: overflow container for the twelve-column spread table */
     .tbl{min-width:0;overflow-x:auto}
     /* Auf schmalen Fenstern klappt die Leiste unter das Ergebnis: das
@@ -460,6 +478,41 @@
      Reihenfolge zum Rest der Seite ein, ohne das Rendern zu blockieren. #}
   <script src="{{ url_for('static', filename='earnings_scan.js') }}" defer></script>
   {% endif %}
+
+  {# Der Gap-Scan: die Kandidaten eines abgeschlossenen Reaktionstags. Er misst
+     NUR den Schluss des Reaktionstags gegen den Schluss davor - keine Spreads,
+     keine Optionskette: die Kette kostet je Titel Sekunden und wird erst beim
+     Oeffnen eines Titels geholt. Kein Automatiklauf beim Laden der Seite: der
+     Lauf ist je Titel ein Abruf und bleibt ein ausdruecklicher Klick. Die
+     Session eines Kalendereintrags erscheint hier bewusst nicht. #}
+  <section class="escan gscan" id="gap-scan" aria-labelledby="gscan-title">
+    <div class="escan-head">
+      <h2 id="gscan-title">GAP-SCAN nach Earnings</h2>
+      <span class="escan-meta" id="gscan-state" aria-live="polite">Noch kein Scan gelaufen</span>
+    </div>
+    <p class="note">Misst für einen abgeschlossenen Reaktionstag den Schluss gegen den Schluss
+      davor und zeigt die Titel, deren Bewegung die Schwelle und die Umsatzhürde überschreitet.
+      Geprüft wird der ganze Tag, angezeigt werden die größten Bewegungen. Diese Liste enthält
+      keine Spreads — die Optionskette wird erst beim Öffnen eines Titels geholt.</p>
+    <div class="gscan-form">
+      <label for="gscan-day">Reaktionstag</label>
+      <input type="date" id="gscan-day" autocomplete="off">
+      <button type="button" class="gscan-btn" id="gscan-run">Scannen</button>
+      <span class="escan-stale" id="gscan-stale" role="status" hidden></span>
+    </div>
+    <p class="err" id="gscan-error" role="alert" hidden></p>
+    <p class="note" id="gscan-counts" aria-live="polite" hidden></p>
+    <p class="note" id="gscan-empty" hidden></p>
+    <div class="tbl" id="gscan-table-wrap" hidden>
+      <table class="escan-table" id="gscan-table">
+        <thead id="gscan-thead"></thead>
+        <tbody id="gscan-tbody"></tbody>
+      </table>
+    </div>
+  </section>
+  {# Das Verhalten liegt in einer eigenen Datei, wie beim Tages-Scan: der Block
+     traegt Zustaende und Spalten, nicht Text. #}
+  <script src="{{ url_for('static', filename='gap_scan.js') }}" defer></script>
   {% if feed_note %}<p class="note">{{ feed_note }}.</p>{% endif %}
 
   {% if age_off %}
