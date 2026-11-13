@@ -94,12 +94,11 @@ _HEADERS = {
     "Referer": "https://www.nasdaq.com/",
 }
 DEFAULT_TIMEOUT_SECONDS = 6.0
-# The source returns at most ``limit`` rows counted FROM ``fromdate`` onward, so
-# the limit - not the fromdate - decides how wide the asked window really is.
-# ``GAP_LOOKBACK_DAYS`` calendar days are ~22 sessions (weekends and holidays);
-# a limit of 10 ended after ten of them and left a reaction day that lay 10+
-# sessions into the window outside its OWN window. 32 covers the 30 days with
-# room, without asking for rows nobody reads.
+# The source returns at most ``limit`` rows counted FROM ``fromdate`` onward -
+# and it returns the NEWEST of them. The limit, not the fromdate, closes the
+# asked window, so a count below the number of sessions the lookback holds drops
+# exactly the reaction day the run is about. ``DEFAULT_LIMIT`` is the floor of
+# the count; what a run actually asks for is ``LOOKBACK_LIMIT`` below.
 DEFAULT_LIMIT = 32
 DEFAULT_THRESHOLD_PCT = 2.0
 DEFAULT_MIN_TURNOVER_USD = 5_000_000.0
@@ -108,11 +107,16 @@ DEFAULT_MAX_WORKERS = 8
 # Measured: 151 titles at 8 in parallel took 45 s against the live endpoint. The
 # window is 30 calendar days because the source rows are daily sessions - a
 # reaction day plus its reference close always fits, and a wider window would
-# only buy rows nobody reads. ``DEFAULT_LIMIT`` must cover this window (see
-# there): the source counts its rows from ``fromdate``, not from the reaction
-# day, so a limit below the number of sessions in the window truncates exactly
-# the day that was asked for.
+# only buy rows nobody reads.
 GAP_LOOKBACK_DAYS = 30
+# The row count a run asks for: the lookback window in the source's own terms.
+# ``fromdate`` is ``reaction - GAP_LOOKBACK_DAYS``, so the distance the count has
+# to bridge is exactly the lookback: 30 calendar days hold at most 23 sessions
+# (weekends and holidays cut the rest), and the +5 is room, not a guess. It is
+# derived from the WINDOW, never from today - an answer must not change with the
+# clock - and it stays above ``DEFAULT_LIMIT`` so a narrow default can never
+# truncate the day that was asked for.
+LOOKBACK_LIMIT = max(DEFAULT_LIMIT, GAP_LOOKBACK_DAYS + 5)
 # The shared cache of the endpoint keeps one entry per (symbol, fromdate, limit).
 # 5000 entries cover several days of the whole calendar and stay small in RAM;
 # a past close never changes, so entries are never aged out - only displaced.
@@ -411,9 +415,9 @@ class NasdaqHistoryAdapter:
         """The daily bars from ``fromdate`` on, newest first - at most ``limit``.
 
         The window is only as wide as ``limit`` allows: ``fromdate`` opens it and
-        the count closes it, so ``DEFAULT_LIMIT`` has to cover the whole
-        ``GAP_LOOKBACK_DAYS`` window or the reaction day falls out of its own
-        question (see ``DEFAULT_LIMIT``).
+        the count closes it, so the caller must pass ``LOOKBACK_LIMIT`` for a
+        gap run or the reaction day falls out of its own question (see
+        ``LOOKBACK_LIMIT``).
 
         Every failure is a ``GapSourceError`` with a stable code: the caller
         must be able to say WHY a title has no gap instead of showing 0 %.
@@ -665,7 +669,7 @@ def reaction_day_rows(previous_rows, day_rows, *, previous_date, day_date):
     return rows
 
 
-def _fetch_one(source, symbol, reaction, fromdate):
+def _fetch_one(source, symbol, reaction, fromdate, limit=LOOKBACK_LIMIT):
     """``(symbol, gap, failure_code)`` - exactly one of gap/code is set.
 
     No exception leaves this function: the caller runs it in a pool, and one
@@ -674,7 +678,7 @@ def _fetch_one(source, symbol, reaction, fromdate):
     rather than being allowed to take the pool down.
     """
     try:
-        bars = source.fetch_daily(symbol, fromdate, DEFAULT_LIMIT)
+        bars = source.fetch_daily(symbol, fromdate, limit)
         gap = compute_gap(bars, reaction)
     except GapSourceError as exc:
         return symbol, None, exc.code
@@ -712,6 +716,14 @@ def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_
     if reaction is None:
         raise GapSourceError("invalid_fromdate", f"{reaction_date!r} is not a date")
     fromdate = reaction - timedelta(days=GAP_LOOKBACK_DAYS)
+    # The count is derived from the window this run asks for, not from the
+    # default: the source answers the NEWEST ``limit`` rows from ``fromdate``
+    # on, so a count that does not span the whole lookback silently drops the
+    # reaction day out of its own question. ``reaction - fromdate`` IS the
+    # lookback; the +5 is room for the sessions the calendar does not expect
+    # (holidays, half days). Deliberately independent of "today": the same day
+    # must answer the same way whenever it is scanned.
+    limit = max(DEFAULT_LIMIT, (reaction - fromdate).days + 5)
     source = adapter or NasdaqHistoryAdapter()
 
     wanted = [_text(symbol).upper() for symbol in symbols or ()]
@@ -724,7 +736,7 @@ def fetch_gaps(symbols, reaction_date, *, adapter=None, max_workers=DEFAULT_MAX_
     try:
         # One future per symbol, kept in input order: the rows below stay stable
         # without a sort, exactly like ``pool.map`` did.
-        paare = [(symbol, pool.submit(_fetch_one, source, symbol, reaction, fromdate))
+        paare = [(symbol, pool.submit(_fetch_one, source, symbol, reaction, fromdate, limit))
                  for symbol in wanted]
         fertig, _offen = wait([future for _symbol, future in paare], timeout=frist)
     finally:

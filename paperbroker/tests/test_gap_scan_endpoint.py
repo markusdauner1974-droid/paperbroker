@@ -26,9 +26,9 @@ What is pinned, in the order of the requirement:
 * a day where every symbol fails is still a 200 with ``selected: 0``,
 * a day whose closes are not published yet (the calendar lists the titles, the
   daily table has no reaction bar) is a 200 named ``history_not_published`` -
-  an outage with per-title codes is not, and neither is a day older than the
-  asked window (``day_outside_history_window``: its closes ARE published, this
-  run just did not look that far back),
+  an outage with per-title codes is not, and neither is an older day the run
+  asked for and the source answered without a row (``day_without_bars``: no
+  claim about a publication either way),
 * two requests for the same day read the history ONCE (shared adapter + cache).
 """
 
@@ -147,6 +147,38 @@ class _History:
         if error is not None:
             raise error
         return list(self.bars.get(symbol, []))
+
+
+class _WindowedHistory(_History):
+    """A history adapter that behaves like the SOURCE, not like a dict.
+
+    The source answers the NEWEST ``limit`` rows of the daily sessions from
+    ``fromdate`` on, up to the day of the request. A count that is too small
+    therefore drops rows out of the middle of the window - and, with an old
+    reaction day, exactly the day the question is about. This fake makes that
+    truncation visible instead of hiding it behind a dict lookup.
+    """
+
+    def __init__(self, closes, today=None, **kwargs):
+        super().__init__(**kwargs)
+        self.closes = dict(closes)
+        self.today = today or date(2026, 11, 12)
+        self.limits = []
+
+    def fetch_daily(self, symbol, fromdate, limit=DEFAULT_LIMIT):
+        self.calls.append(symbol)
+        self.limits.append(limit)
+        if symbol in self.errors:
+            raise self.errors[symbol]
+        tage = sorted(
+            (tag for tag in self.closes if fromdate <= tag <= self.today),
+            reverse=True,
+        )
+        return [
+            GapBar(session_date=tag, open=self.closes[tag], close=self.closes[tag],
+                   volume=1_000_000.0)
+            for tag in tage[:limit]
+        ]
 
 
 def bars(close, previous_close=10.0, volume=1_000_000.0, reaction=REACTION):
@@ -554,9 +586,9 @@ class GapScanEndpointTest(unittest.TestCase):
         self.assertEqual(quelle.calls, [])
 
     def test_an_old_day_is_not_called_unpublished(self):
-        # A day further back than the window the run asks for. Its closes are
-        # long published, so "not published yet" would be a lie: what is true is
-        # that this run never covered the day.
+        # A day far older than any publication lag. Its closes are not "still
+        # coming", so "not published yet" would be a claim nobody can make: what
+        # is true is that the source answered the run without a row for it.
         alt = date(2026, 9, 15)
         while not is_us_trading_day(alt):
             alt -= timedelta(days=1)
@@ -566,7 +598,7 @@ class GapScanEndpointTest(unittest.TestCase):
             alt.isoformat(): [calendar_row("OLD", session="before_market")],
         })
         # The source answers, but its rows stop before the reaction session -
-        # the shape a day outside the asked window produces.
+        # the shape a day without a row produces.
         quelle = _History(bars={"OLD": [
             GapBar(session_date=alt - timedelta(days=1), open=10.0, close=10.0,
                    volume=1_000_000.0),
@@ -576,13 +608,106 @@ class GapScanEndpointTest(unittest.TestCase):
         koerper = antwort.get_json()
 
         self.assertEqual(antwort.status_code, 200)
-        self.assertEqual(koerper["result_state"], "day_outside_history_window")
+        self.assertEqual(koerper["result_state"], "day_without_bars")
         self.assertEqual(koerper["counts"]["candidate_rows"], 1)
         self.assertEqual(koerper["counts"]["gaps_computed"], 0)
         self.assertEqual(koerper["candidates"], [])
-        # Asked, not skipped: the state is about the window, not about a run
+        # Asked, not skipped: the state is about the missing row, not about a run
         # that never happened.
         self.assertEqual(quelle.calls, ["OLD"])
+
+    def test_a_recent_day_without_bars_is_unpublished(self):
+        # 2026-11-10 lies two days before the pinned clock. The daily table
+        # fills in late, so a missing reaction close HERE is plausibly a late
+        # publication - and the answer may say so.
+        tag = date(2026, 11, 10)
+        self.assertEqual((date(2026, 11, 12) - tag).days, 2)
+        self.assertTrue(is_us_trading_day(tag))
+        kalender = _FakeCalendar(rows_by_day={
+            tag.isoformat(): [calendar_row("LATE", session="before_market")],
+        })
+        # Bars exist, but only up to the session BEFORE: the reaction day has no
+        # row yet.
+        quelle = _WindowedHistory({tag - timedelta(days=1): 10.0})
+
+        antwort = _client(kalender, quelle).get(f"/api/v1/gap-scan?day={tag.isoformat()}")
+        koerper = antwort.get_json()
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["result_state"], "history_not_published")
+        self.assertEqual(koerper["counts"]["candidate_rows"], 1)
+        self.assertEqual(koerper["counts"]["gaps_computed"], 0)
+        self.assertEqual(koerper["failures"], {"LATE": "no_reaction_bar"})
+        # Asked, not skipped: nothing was measured, and that is said.
+        self.assertEqual(quelle.calls, ["LATE"])
+
+    def test_an_old_day_without_bars_is_not_called_unpublished(self):
+        # The run asked for this day and the source answered - with no row for
+        # that session (a halted paper, a day the table never carried). Nothing
+        # here says a publication is still coming, so the answer must not say it.
+        tag = date(2026, 11, 12) - timedelta(days=40)
+        while not is_us_trading_day(tag):
+            tag -= timedelta(days=1)
+        self.assertGreater((date(2026, 11, 12) - tag).days, 7)
+
+        kalender = _FakeCalendar(rows_by_day={
+            tag.isoformat(): [calendar_row("GONE", session="before_market")],
+        })
+        # The rows stop a few sessions BEFORE the reaction day and never reach it.
+        quelle = _WindowedHistory({
+            tag - timedelta(days=4): 10.0,
+            tag - timedelta(days=3): 10.0,
+        })
+
+        antwort = _client(kalender, quelle).get(f"/api/v1/gap-scan?day={tag.isoformat()}")
+        koerper = antwort.get_json()
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["result_state"], "day_without_bars")
+        self.assertEqual(koerper["counts"]["candidate_rows"], 1)
+        self.assertEqual(koerper["counts"]["gaps_computed"], 0)
+        self.assertEqual(koerper["failures"], {"GONE": "no_reaction_bar"})
+        self.assertEqual(quelle.calls, ["GONE"])
+
+    def test_an_old_day_outside_the_asked_window_is_still_measured(self):
+        # 20 sessions back: the reaction day lies DEEP in the lookback, while the
+        # source's rows keep running up to the clock. Only a count that spans the
+        # whole lookback still carries the reaction bar - a count that does not
+        # would answer ``no_reaction_bar`` for closes that ARE there. The run
+        # asked for the day, so it has to be measured, not labelled.
+        heute = date(2026, 11, 12)
+        tag = heute
+        zurueck = 0
+        while zurueck < 20:
+            tag -= timedelta(days=1)
+            if is_us_trading_day(tag):
+                zurueck += 1
+        self.assertTrue(is_us_trading_day(tag))
+        # Every session in the lookback has a close; the reaction day is +10 %
+        # against the session before it.
+        closes = {}
+        lauf = tag - timedelta(days=GAP_LOOKBACK_DAYS)
+        while lauf <= heute:
+            if is_us_trading_day(lauf):
+                closes[lauf] = 11.0 if lauf == tag else 10.0
+            lauf += timedelta(days=1)
+        kalender = _FakeCalendar(rows_by_day={
+            tag.isoformat(): [calendar_row("DEEP", session="before_market")],
+        })
+        quelle = _WindowedHistory(closes)
+
+        antwort = _client(kalender, quelle).get(f"/api/v1/gap-scan?day={tag.isoformat()}")
+        koerper = antwort.get_json()
+
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(koerper["result_state"], "ok")
+        self.assertGreater(koerper["counts"]["gaps_computed"], 0)
+        self.assertEqual(koerper["counts"]["gaps_computed"], 1)
+        self.assertEqual([k["symbol"] for k in koerper["candidates"]], ["DEEP"])
+        self.assertEqual(koerper["candidates"][0]["gap_pct"], 10.0)
+        self.assertEqual(koerper["failures"], {})
+        # The count that made it measurable - the whole lookback plus room.
+        self.assertGreaterEqual(quelle.limits[0], GAP_LOOKBACK_DAYS + 5)
 
     def test_a_second_request_reuses_the_history(self):
         transport = _CountingTransport()

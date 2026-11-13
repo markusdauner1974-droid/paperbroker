@@ -30,6 +30,7 @@ from paperbroker.earnings_calendar import is_us_trading_day
 from paperbroker.gap_scan import (
     DEFAULT_LIMIT,
     GAP_LOOKBACK_DAYS,
+    LOOKBACK_LIMIT,
     STRATEGY_BEAR_PUT_DEBIT,
     STRATEGY_BULL_CALL_DEBIT,
     BoundedCache,
@@ -638,7 +639,7 @@ class FetchGapsTest(unittest.TestCase):
         self.assertEqual(result.rows[0]["close"], 11.0)
         self.assertEqual(result.rows[0]["volume"], 1_000_000.0)
         # Every symbol was asked with the documented window and limit.
-        self.assertEqual({call["limit"] for call in adapter.calls}, {DEFAULT_LIMIT})
+        self.assertEqual({call["limit"] for call in adapter.calls}, {LOOKBACK_LIMIT})
         self.assertEqual({call["fromdate"] for call in adapter.calls}, {PREVIOUS_WINDOW})
 
     def test_the_history_window_covers_the_lookback(self):
@@ -658,11 +659,32 @@ class FetchGapsTest(unittest.TestCase):
         fetch_gaps(["AAA"], REACTION, adapter=adapter)
 
         self.assertEqual(len(adapter.calls), 1)
-        self.assertEqual(adapter.calls[0]["limit"], DEFAULT_LIMIT)
+        self.assertEqual(adapter.calls[0]["limit"], LOOKBACK_LIMIT)
         self.assertEqual(adapter.calls[0]["fromdate"], PREVIOUS_WINDOW)
-        self.assertGreaterEqual(DEFAULT_LIMIT, handelstage)
+        self.assertGreaterEqual(LOOKBACK_LIMIT, handelstage)
         # The measured floor: 30 calendar days are at least 22 sessions.
         self.assertGreaterEqual(DEFAULT_LIMIT, 22)
+
+    def test_the_limit_covers_the_whole_lookback(self):
+        # The source answers the NEWEST ``limit`` rows from ``fromdate`` on, so
+        # the COUNT - not the fromdate - decides how wide the window really is.
+        # A count that does not span the lookback truncates the day the run is
+        # about, and every title then answers ``no_reaction_bar`` although the
+        # closes exist. The count must therefore bridge the whole lookback plus
+        # room, and it must be derived from the window - never from "today": the
+        # same day has to answer the same way whenever it is scanned.
+        adapter = StubHistoryAdapter(bars={"AAA": bars_for(REACTION)})
+
+        fetch_gaps(["AAA"], REACTION, adapter=adapter)
+        alt = date(2025, 11, 11)
+        fetch_gaps(["AAA"], alt, adapter=adapter)
+
+        self.assertEqual(len(adapter.calls), 2)
+        gefragt = adapter.calls[0]["limit"]
+        self.assertGreaterEqual(gefragt, GAP_LOOKBACK_DAYS + 5)
+        # Same count for a day a year back: no dependence on the clock.
+        self.assertEqual(adapter.calls[1]["limit"], gefragt)
+        self.assertEqual(adapter.calls[1]["fromdate"], alt - timedelta(days=GAP_LOOKBACK_DAYS))
 
     def test_a_missing_reaction_bar_is_named(self):
         # Bars exist, but only from BEFORE the reaction session.

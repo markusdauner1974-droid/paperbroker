@@ -57,11 +57,12 @@
   // ruhiger Tag, sondern ein Zustand der QUELLE - und wird als solcher benannt.
   var UNPUBLISHED = 'Tagesschlusskurse für diesen Tag sind noch nicht '
     + 'veröffentlicht — bitte später oder am nächsten Tag erneut scannen.';
-  // Der andere Grund fuer null Zeilen: der Tag liegt weiter zurueck als das
-  // Fenster, das die Route abfragt. Dann wurde nichts gemessen - "noch nicht
-  // veroeffentlicht" waere hier schlicht falsch.
-  var OUTSIDE_WINDOW = 'Der Tag liegt ausserhalb des abgefragten Kursfensters '
-    + '(30 Kalendertage) — es wurde nichts gemessen.';
+  // Der andere Grund fuer null Zeilen: fuer diesen Tag hat die Quelle keine
+  // Tagesschlusszeile geliefert. Das ist KEINE Aussage ueber eine
+  // Veroeffentlichung - der Tag kann alt sein, das Papier kann ausgesetzt
+  // haben. Hier steht nur, was beobachtet wurde.
+  var DAY_WITHOUT_BARS = 'Für diesen Tag hat die Kursquelle keine '
+    + 'Tagesschlusszeile geliefert.';
 
   var generation = 0;      // nur die neueste Anfrage darf zeichnen
   var timer = null;
@@ -373,8 +374,8 @@
       // und hier steht der Grund statt eines erfundenen ruhigen Tages.
       el.empty.textContent = body.result_state === 'history_not_published'
         ? UNPUBLISHED
-        : body.result_state === 'day_outside_history_window'
-          ? OUTSIDE_WINDOW
+        : body.result_state === 'day_without_bars'
+          ? DAY_WITHOUT_BARS
           : emptyText(counts);
       el.empty.hidden = false;
     } else {

@@ -466,6 +466,30 @@ class TestTheListSpeaksTheAnswer(unittest.TestCase):
         # Nicht der Text des leeren Ergebnisses: "kein Kandidat" waere hier falsch.
         self.assertNotIn("Kein Kandidat", panel["empty"])
 
+    def test_a_day_without_bars_is_not_called_unpublished(self):
+        # Der andere Grund fuer null Zeilen: die Quelle hat fuer den Tag keine
+        # Zeile geliefert. Das darf NICHT wie "noch nicht veroeffentlicht"
+        # klingen - und nicht wie ein ruhiger Tag.
+        koerper = {
+            "mode": "gap_scan",
+            "day": "2026-09-15",
+            "day_state": "live",
+            "result_state": "day_without_bars",
+            "counts": {"candidate_rows": 1, "gaps_computed": 0, "over_threshold": 0,
+                       "turnover_passed": 0, "selected": 0, "failures": 1},
+            "candidates": [],
+            "failures": {"OLD": "no_reaction_bar"},
+        }
+
+        panel = _render(_answer(200, koerper), click=True)
+
+        self.assertIn("keine Tagesschlusszeile geliefert", panel["empty"])
+        self.assertNotIn("noch nicht veröffentlicht", panel["empty"])
+        self.assertNotIn("Kein Kandidat", panel["empty"])
+        self.assertEqual([], panel["rows"])
+        self.assertTrue(panel["tableHidden"])
+        self.assertIsNone(panel["error"])
+
     def test_the_open_button_carries_the_strategy(self):
         antwort, koerper = _three_candidates()
         # Zeile 0 ist der Aufwaerts-Gap (AAA), Zeile 1 der Abwaerts-Gap (CCC).

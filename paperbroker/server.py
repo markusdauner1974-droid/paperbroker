@@ -62,7 +62,6 @@ from .gap_scan import (
     DEFAULT_MAX_CANDIDATES,
     DEFAULT_MIN_TURNOVER_USD,
     DEFAULT_THRESHOLD_PCT,
-    GAP_LOOKBACK_DAYS,
     BoundedCache,
     NasdaqHistoryAdapter,
     fetch_gaps,
@@ -1109,6 +1108,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # weekend plus the longest NYSE closure (a holiday and a broken bridge).
     # Beyond that the calendar is not believable and the answer is a 503.
     _GAP_PREVIOUS_LOOKBACK_DAYS = 10
+    # How long the daily table may legitimately lag behind the calendar: a
+    # session's closes are published late on that session's day, so a day within
+    # this many calendar days can still be missing for that reason. Older days
+    # are not "late" any more - the answer names the missing row instead of a
+    # publication that will not come.
+    _GAP_PUBLICATION_GRACE_DAYS = 7
     # The regular US session closes at 16:00 in New York. A reaction day is only
     # measurable once its close exists, so today is allowed from this hour on -
     # refusing the whole day would make the evening scan of the day that just
@@ -1390,20 +1395,21 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         # ``deadline_exceeded``, ...) is an outage, not a late publication, and
         # the per-symbol codes in ``failures`` already name it.
         #
-        # And "not published yet" is only a believable claim inside the window
-        # the run actually asked for: ``fetch_gaps`` opens it at
-        # ``reaction - GAP_LOOKBACK_DAYS``. A day older than that was not
-        # measurable HERE - its closes are long published, the run simply never
-        # looked at them - so it gets its own, honest state instead of being
-        # told to wait for a publication that already happened.
+        # "Not published yet" is only a believable claim while the publication
+        # can still run: the daily table fills in late on the session's own day,
+        # so a day inside the last few days is plausibly still late. An older
+        # day is something else - this run asked for it and the source answered
+        # no row for it - and the answer says exactly that, without inventing a
+        # publication that may never come. The window is measured from the
+        # CLOCK, not from the asked window, because it is a claim about time.
         result_state = "ok"
         if zaehler["candidate_rows"] > 0 and zaehler["gaps_computed"] == 0:
             codes = set(gemessen.failures.values())
             if not codes or codes == {"no_reaction_bar"}:
-                fenster_start = _us_today(now_fn) - timedelta(days=GAP_LOOKBACK_DAYS)
+                frisch_bis = _us_today(now_fn) - timedelta(days=_GAP_PUBLICATION_GRACE_DAYS)
                 result_state = (
-                    "history_not_published" if reaction >= fenster_start
-                    else "day_outside_history_window"
+                    "history_not_published" if reaction >= frisch_bis
+                    else "day_without_bars"
                 )
 
         nach_symbol = {zeile["symbol"]: zeile for zeile in kandidatenzeilen}
@@ -1431,8 +1437,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             # "live": a stale calendar answers 200 with ``day_state: stale``,
             # because the rows are old, not because they are missing.
             day_state=gelesen[DAY_TODAY]["state"],
-            # ``ok``, ``history_not_published`` or ``day_outside_history_window``:
-            # the counts can be zero for three very different reasons, and the
+            # ``ok``, ``history_not_published`` or ``day_without_bars``: the
+            # counts can be zero for three very different reasons, and the
             # answer must not leave the reader to guess which one it is.
             result_state=result_state,
             threshold_pct=args["gap_threshold_pct"],
