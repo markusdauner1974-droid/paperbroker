@@ -117,6 +117,15 @@ DEFAULT_FEES = 0.0
 DEFAULT_MULTIPLIER = 100
 DEFAULT_QUANTITY = 1
 
+#: The alternatives shown beside the funnel's own pick, in reading order: the
+#: structure that needs the LEAST movement first, the one with the HIGHEST
+#: reward/risk last, and the middle of that ladder between them. The order is
+#: the ladder itself - a reader who starts at the top spends the least distance
+#: and ends at the most leverage.
+VARIANT_LABELS = ("wenigste Bewegung", "mittlere Bewegung", "höchstes R/R")
+#: How many alternatives a row may carry. Three is a ladder, not a menu.
+DEFAULT_VARIANT_COUNT = 3
+
 LIQUIDITY_THIN = "thin"
 LIQUIDITY_FULL = "full"
 LIQUIDITIES = (LIQUIDITY_THIN, LIQUIDITY_FULL)
@@ -519,7 +528,131 @@ def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
         f"< {min_net_debit:.2f} USD", len(kept), coverage, section, strategy), coverage
 
 
-def spread_row(candidate, pair, criteria, expiration, day, coverage=None, section=None):
+def _strike_pair(pair):
+    """The pair's identity: its two strikes, so it can be kept from appearing twice."""
+    return (round(float(getattr(pair.long.asset, "strike", 0.0)), 6),
+            round(float(getattr(pair.short.asset, "strike", 0.0)), 6))
+
+
+def qualifying_pairs(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
+                     min_long_delta=DEFAULT_MIN_LONG_DELTA,
+                     min_net_debit=DEFAULT_MIN_NET_DEBIT):
+    """``(entries, criteria)`` for every pair that clears the funnel's three hurdles.
+
+    "Qualifying" means exactly what it means for the funnel's own pick: the
+    reward/risk floor, the |delta| of the bought leg and the minimum debit. An
+    alternative that would have been rejected as a first choice must not be
+    offered as a second one, so the same three hurdles apply here unchanged -
+    and in the same order, which keeps the wording of every rejection honest.
+
+    ``entries`` carries ``pair``, ``ratio`` (the screener's percentage) and the
+    raw ``move`` (``required_move_of``, still unrounded so the ladder below is
+    sorted on the number that will be shown).
+    """
+    kept, criteria, _sample_drop, _coverage = spread_candidates(
+        section, strategy, now_fn=now_fn)
+    entries = []
+    for pair in kept:
+        ratio = pair.net_return_pct(criteria)
+        if ratio is None or ratio < rr_min * 100:
+            continue
+        delta = getattr(pair.long, "delta", None)
+        if delta is None or abs(float(delta)) < min_long_delta:
+            continue
+        if pair.net_debit is None or pair.net_debit < min_net_debit:
+            continue
+        entries.append({"pair": pair, "ratio": ratio})
+    return entries, criteria
+
+
+def alternative_spreads(section, strategy, *, primary, close, now_fn=None,
+                        rr_min=DEFAULT_RR_MIN, min_long_delta=DEFAULT_MIN_LONG_DELTA,
+                        min_net_debit=DEFAULT_MIN_NET_DEBIT,
+                        count=DEFAULT_VARIANT_COUNT):
+    """``(alternatives, criteria)`` - up to ``count`` other structures of the expiry.
+
+    The funnel's own pick is the highest reward/risk of the expiry, which makes
+    it a bad comparison: it says what the maximum is, not what the range looks
+    like. The alternatives are therefore built as a LADDER between two known
+    ends of the same expiry:
+
+    * ``wenigste Bewegung`` - the qualifying pair whose break-even is closest to
+      the close (the cheapest distance, usually the calmest structure),
+    * ``höchstes R/R`` - the highest ratio among the remaining pairs,
+    * ``mittlere Bewegung`` - the remaining pair whose distance sits closest to
+      the middle between those two.
+
+    Every step is a pair that clears the same three hurdles as the funnel's own
+    pick, from the SAME section (one expiry, one chain), with the primary pair
+    and every already chosen strike pair removed. ``close`` is the reaction
+    day's close: without it no distance exists, and rather than inventing a
+    ladder out of ratios alone this returns nothing - a row without variants is
+    honest, a row with three unlabelled ones is not.
+    """
+    if primary is None or count <= 0 or close is None:
+        return [], None
+    entries, criteria = qualifying_pairs(
+        section, strategy, now_fn=now_fn, rr_min=rr_min,
+        min_long_delta=min_long_delta, min_net_debit=min_net_debit)
+
+    primary_key = _strike_pair(primary)
+    seen = {primary_key}
+    free = []
+    for entry in entries:
+        key = _strike_pair(entry["pair"])
+        if key in seen:
+            continue
+        seen.add(key)
+        entry["move"] = required_move_of(entry["pair"], close)
+        free.append(entry)
+    movable = [entry for entry in free if entry["move"] is not None]
+    if not movable:
+        return [], criteria
+
+    chosen = []
+    nearest = min(movable, key=lambda entry: (abs(entry["move"]), -entry["ratio"]))
+    chosen.append((VARIANT_LABELS[0], nearest))
+
+    rest = [entry for entry in movable if entry is not nearest]
+    best_rr = None
+    if rest and count >= 2:
+        best_rr = max(rest, key=lambda entry: (entry["ratio"], -abs(entry["move"])))
+        chosen.append((VARIANT_LABELS[2], best_rr))
+        rest = [entry for entry in rest if entry is not best_rr]
+
+    if rest and count >= 3 and best_rr is not None:
+        middle = (abs(nearest["move"]) + abs(best_rr["move"])) / 2.0
+        zwischen = min(rest, key=lambda entry: (abs(abs(entry["move"]) - middle),
+                                                -entry["ratio"]))
+        chosen.insert(1, (VARIANT_LABELS[1], zwischen))
+
+    # Reading order is the ladder, not the order of the picks above.
+    order = {label: index for index, label in enumerate(VARIANT_LABELS)}
+    chosen.sort(key=lambda item: order.get(item[0], len(order)))
+    return [(label, entry) for label, entry in chosen[:count]], criteria
+
+
+def variant_row(entry):
+    """One alternative, in the numbers the row itself uses - nothing new invented."""
+    pair = entry["pair"]
+    ratio = entry["ratio"]
+    return {
+        "label": entry["label"],
+        "long_strike": _round2(getattr(pair.long.asset, "strike", None)),
+        "short_strike": _round2(getattr(pair.short.asset, "strike", None)),
+        "net_debit": _round2(pair.net_debit),
+        "max_loss": _round2(pair.max_loss),
+        "max_profit": _round2(pair.max_profit),
+        "rr": None if ratio is None else _round2(ratio / 100.0),
+        "required_move_pct": _round2(entry.get("move")),
+        "liquidity": liquidity_of(pair),
+        "open_interest": [getattr(pair.long, "open_interest", None),
+                          getattr(pair.short, "open_interest", None)],
+    }
+
+
+def spread_row(candidate, pair, criteria, expiration, day, coverage=None, section=None,
+               alternatives=None):
     """One result row of the agreed contract - numbers rounded, nothing invented.
 
     ``coverage`` is the pair search's report (``spread_candidates``) and
@@ -539,6 +672,11 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None, sectio
     short_delta = getattr(pair.short, "delta", None)
     move = required_move_of(pair, candidate.get("close"))
     possible = possible_pairs(section, strategy_option_type(pair.strategy_id))
+    variants = []
+    for label, entry in alternatives or ():
+        item = dict(entry)
+        item["label"] = label
+        variants.append(variant_row(item))
     # No section or a single strike is no search at all: nothing is measured,
     # so every pair number is ``None`` rather than a zero that would look one.
     report = {} if possible is None else dict(coverage or {})
@@ -599,6 +737,11 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None, sectio
         "pairs_enumerated": report.get("enumerated"),
         "pairs_limit": report.get("limit"),
         "pairs_capped": report.get("capped"),
+        # The alternatives of the SAME expiry, built as the ladder described in
+        # ``alternative_spreads``. An empty list is a fact ("no other structure
+        # cleared the same hurdles"), not a missing measurement - so it is never
+        # ``None``.
+        "variants": variants,
     }
 
 
@@ -763,8 +906,11 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
             pairs_possible=possible_pairs(section, strategy_option_type(strategy)),
         ), None, stages
     stages["spread"] = True
+    alternatives, _variant_criteria = alternative_spreads(
+        section, strategy, primary=pair, close=candidate.get("close"), now_fn=now_fn,
+        rr_min=rr_min, min_long_delta=min_long_delta, min_net_debit=min_net_debit)
     row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage,
-                     section=section)
+                     section=section, alternatives=alternatives)
     row["next_earnings_date"] = next_earnings.isoformat()
 
     # 5) can the underlying even get there? The spread is a fact now, so the

@@ -791,6 +791,59 @@ class TestWhatTheBlockShows(unittest.TestCase):
         self.assertIn("+115,00", text)
 
 
+class TestTheAlternativesOfTheSameExpiry(unittest.TestCase):
+    """The ladder beside the pick: three other structures, same expiry, same rules."""
+
+    def _row_with_variants(self):
+        row = _row()
+        row["variants"] = [
+            {"label": "wenigste Bewegung", "long_strike": 10.0, "short_strike": 8.0,
+             "net_debit": 1.10, "max_loss": 110.0, "max_profit": 90.0, "rr": 0.82,
+             "required_move_pct": -3.4, "liquidity": "full", "open_interest": [820, 300]},
+            {"label": "mittlere Bewegung", "long_strike": 10.0, "short_strike": 7.0,
+             "net_debit": 1.30, "max_loss": 130.0, "max_profit": 170.0, "rr": 1.31,
+             "required_move_pct": -6.8, "liquidity": "thin", "open_interest": [820, 120]},
+            {"label": "höchstes R/R", "long_strike": 10.0, "short_strike": 6.0,
+             "net_debit": 1.35, "max_loss": 135.0, "max_profit": 265.0, "rr": 1.96,
+             "required_move_pct": -9.1, "liquidity": "full", "open_interest": [820, 90]},
+        ]
+        return row
+
+    def test_the_detail_shows_the_ladder_under_the_scenarios(self):
+        body = _list()
+        body["results"] = [self._row_with_variants()]
+        panel = _render(list_body=body, actions=["click:0"])
+        tables = panel["detail"]["tables"]
+        self.assertEqual(3, len(tables))
+        leiter = tables[2]
+        self.assertEqual(["Struktur", "Long / Short", "Debit", "max. Verlust",
+                          "max. Gewinn", "R/R", "nötig", "Liquidität"], leiter["headers"])
+        self.assertEqual(3, leiter["rows"])
+        self.assertEqual(24, leiter["cells"])
+        text = panel["detail"]["text"]
+        self.assertIn("Weitere Strukturen im selben Verfall", text)
+        # Die Reihenfolge IST die Leiter: wenigste Bewegung oben, höchstes R/R unten.
+        self.assertIn("wenigste Bewegung", text)
+        self.assertIn("mittlere Bewegung", text)
+        self.assertIn("höchstes R/R", text)
+        self.assertLess(text.index("wenigste Bewegung"), text.index("höchstes R/R"))
+        # Die Alternativen sind Alternativen - der Satz sagt, worauf sie sich beziehen.
+        self.assertIn("dieselben drei Hürden", text)
+
+    def test_a_row_without_alternatives_shows_no_block(self):
+        # Der Regelfall von ``ladder_chain``: genau ein Paar besteht die Hürden.
+        panel = _render(actions=["click:0"])
+        self.assertEqual(2, len(panel["detail"]["tables"]))
+        self.assertNotIn("Weitere Strukturen", panel["detail"]["text"])
+
+    def test_the_block_is_a_table_and_not_a_second_list(self):
+        body = _list()
+        body["results"] = [self._row_with_variants()]
+        panel = _render(list_body=body, actions=["click:0"])
+        # Die Liste bleibt die Liste: eine Zeile je Titel, nicht je Struktur.
+        self.assertEqual(1, len(panel["rows"]))
+
+
 class TestAnErrorStaysInsideTheBlock(unittest.TestCase):
     def test_a_failed_detail_is_written_into_the_block(self):
         panel = _render(actions=["click:0"],

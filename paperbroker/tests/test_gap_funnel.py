@@ -40,18 +40,22 @@ from paperbroker.assets import asset_factory
 from paperbroker.gap_funnel import (
     DEFAULT_MIN_OI,
     DEFAULT_RR_MIN,
+    DEFAULT_VARIANT_COUNT,
     LIQUIDITY_FULL,
     LIQUIDITY_THIN,
     REASON_NO_EXPIRY,
     REASON_NO_NEXT_EARNINGS,
     REASON_NO_SPREAD,
     REASON_NOT_OPTIONABLE,
+    VARIANT_LABELS,
+    alternative_spreads,
     best_spread,
     bid_ask_pct,
     criteria_for,
     expirations_in,
     liquidity_of,
     pick_expiration,
+    qualifying_pairs,
     run_funnel,
     slice_chain,
 )
@@ -1052,7 +1056,12 @@ ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_labe
             "pairs_possible_exact", "pairs_enumerated", "pairs_limit", "pairs_capped",
             "required_move_pct", "required_move_direction", "volatility_pct",
             "daily_move_pct", "hit_rate_pct", "windows_measured",
-            "window_sessions", "window_calendar_days", "history_state"}
+            "window_sessions", "window_calendar_days", "history_state", "variants"}
+
+#: One alternative of the same expiry. Same numbers as the row, plus the rung of
+#: the ladder it stands on - the label is the only thing the row does not have.
+VARIANT_KEYS = {"label", "long_strike", "short_strike", "net_debit", "max_loss",
+                "max_profit", "rr", "required_move_pct", "liquidity", "open_interest"}
 
 
 class EndpointTests(unittest.TestCase):
@@ -1077,6 +1086,9 @@ class EndpointTests(unittest.TestCase):
         self.assertTrue(all(isinstance(note, str) for note in body["notes"]))
         for row in body["results"]:
             self.assertEqual(set(row), ROW_KEYS)
+            self.assertIsInstance(row["variants"], list)
+            for variant in row["variants"]:
+                self.assertEqual(set(variant), VARIANT_KEYS)
 
     def test_results_are_sorted_by_the_hit_rate_not_by_the_gap(self):
         # The gap order would put AAA (|10 %|) first; the ORDER is the measured
@@ -1298,6 +1310,129 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(doppelt["notes"].count(allgemein), 1)
         self.assertEqual(doppelt["notes"], body["notes"])
         self.assertEqual(len(doppelt["notes"]), len(set(doppelt["notes"])))
+
+
+def variant_ladder(symbol="AAA", expiry="2027-03-19"):
+    """One expiry whose pairs differ in BOTH distances - the ladder fixture.
+
+    ``wide_ladder`` cannot carry this: every pair there shares the same debit of
+    1.00, so every break-even is 101 and every required move is 1 % - a ladder
+    without rungs. Here the legs get cheaper as the strike rises, so the pairs
+    spread over both axes that matter: the distance to the break-even and the
+    reward/risk behind it.
+
+    Pairs that clear all three hurdles (debit >= 0.50, |delta| >= 20, R/R >= 2):
+
+    =============  ============  =========  ======  =====================
+    long / short   net debit     width      R/R     required move (close 100)
+    =============  ============  =========  ======  =====================
+    100 / 120      6.00          20.00      2.33     +6.00 %
+    105 / 115      2.65          10.00      2.77     +7.65 %
+    105 / 120      3.00          15.00      4.00     +8.00 %
+    110 / 120      1.35          10.00      6.41    +11.35 %  <- the pick
+    =============  ============  =========  ======  =====================
+    """
+    return [
+        call(symbol, expiry, 100.0, 6.00, 6.20, delta=55.0, oi=1200),
+        call(symbol, expiry, 105.0, 3.00, 3.20, delta=45.0, oi=1200),
+        call(symbol, expiry, 110.0, 1.40, 1.55, delta=35.0, oi=1200),
+        call(symbol, expiry, 115.0, 0.55, 0.65, delta=27.0, oi=1200),
+        call(symbol, expiry, 120.0, 0.20, 0.28, delta=20.0, oi=1200),
+    ]
+
+
+# --- the alternatives beside the pick -------------------------------------- #
+class AlternativeSpreadTests(unittest.TestCase):
+    """The ladder the detail block shows: same expiry, same hurdles, no repeat."""
+
+    def _pick(self, chain, close=100.0):
+        pair, criteria, note, coverage = best_spread(chain, BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(note)
+        self.assertIsNotNone(pair)
+        return pair, criteria
+
+    def test_the_ladder_runs_from_the_least_to_the_most_movement(self):
+        chain = variant_ladder("AAA")
+        pair, _criteria = self._pick(chain)
+        alts, alt_criteria = alternative_spreads(
+            chain, BULL_CALL_DEBIT, primary=pair, close=100.0, now_fn=NOW)
+        self.assertIsNotNone(alt_criteria)
+        self.assertEqual([label for label, _entry in alts], list(VARIANT_LABELS))
+        moves = [entry["move"] for _label, entry in alts]
+        self.assertTrue(all(move is not None for move in moves))
+        self.assertLess(moves[0], moves[-1])
+        # The last rung is the highest ratio of the ladder, not a random one.
+        ratios = [entry["ratio"] for _label, entry in alts]
+        self.assertEqual(max(ratios), ratios[-1])
+
+    def test_the_pick_itself_never_returns_as_an_alternative(self):
+        chain = variant_ladder("AAA")
+        pair, _criteria = self._pick(chain)
+        alts, _ = alternative_spreads(chain, BULL_CALL_DEBIT, primary=pair, close=100.0,
+                                      now_fn=NOW)
+        aufnahmen = {(entry["pair"].long.asset.strike, entry["pair"].short.asset.strike)
+                     for _label, entry in alts}
+        self.assertNotIn((pair.long.asset.strike, pair.short.asset.strike), aufnahmen)
+        # and no strike pair twice inside the ladder
+        self.assertEqual(len(aufnahmen), len(alts))
+
+    def test_every_alternative_clears_the_same_three_hurdles(self):
+        chain = variant_ladder("AAA")
+        pair, _criteria = self._pick(chain)
+        alts, _ = alternative_spreads(chain, BULL_CALL_DEBIT, primary=pair, close=100.0,
+                                      now_fn=NOW)
+        for _label, entry in alts:
+            kandidat = entry["pair"]
+            self.assertGreaterEqual(entry["ratio"], DEFAULT_RR_MIN * 100)
+            self.assertGreaterEqual(abs(float(kandidat.long.delta)), 20.0)
+            self.assertGreaterEqual(kandidat.net_debit, 0.50)
+
+    def test_the_hurdles_of_the_pick_apply_too(self):
+        # ladder_chain carries four pairs, but only ONE clears all three hurdles
+        # (102.80 loses the ratio, 105.00 the delta, 101.32 the debit) - so a
+        # funnel that offers alternatives here would be offering rejects.
+        chain = ladder_chain()
+        pair, _criteria = self._pick(chain)
+        kept, _criteria = qualifying_pairs(chain, BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertEqual(len(kept), 1)
+        alts, _ = alternative_spreads(chain, BULL_CALL_DEBIT, primary=pair, close=100.0,
+                                      now_fn=NOW)
+        self.assertEqual(alts, [])
+
+    def test_without_a_close_there_is_no_ladder(self):
+        # No close, no distance: the ladder would be a menu of ratios, and the
+        # labels would be lies. Nothing is better than something wrong.
+        chain = variant_ladder("AAA")
+        pair, _criteria = self._pick(chain)
+        alts, criteria = alternative_spreads(chain, BULL_CALL_DEBIT, primary=pair,
+                                             close=None, now_fn=NOW)
+        self.assertEqual(alts, [])
+        self.assertIsNone(criteria)
+
+    def test_the_row_carries_its_alternatives(self):
+        chain = variant_ladder("AAA")
+        run = run_funnel([candidate("AAA")],
+                         fetch_next_earnings=lambda _symbol: date(2027, 2, 1),
+                         fetch_chain=lambda _symbol: chain,
+                         day=REACTION, now_fn=NOW)
+        row = run.results[0]
+        self.assertIn("variants", row)
+        self.assertEqual(len(row["variants"]), DEFAULT_VARIANT_COUNT)
+        erste = row["variants"][0]
+        for feld in ("label", "long_strike", "short_strike", "net_debit", "max_loss",
+                     "max_profit", "rr", "required_move_pct", "liquidity", "open_interest"):
+            self.assertIn(feld, erste)
+        self.assertEqual([v["label"] for v in row["variants"]], list(VARIANT_LABELS))
+        # The numbers are the same shape the row itself uses.
+        self.assertLess(erste["required_move_pct"], row["variants"][-1]["required_move_pct"])
+
+    def test_a_row_without_other_pairs_carries_an_empty_list(self):
+        chain = ladder_chain()
+        run = run_funnel([candidate("AAA")],
+                         fetch_next_earnings=lambda _symbol: date(2027, 2, 1),
+                         fetch_chain=lambda _symbol: chain,
+                         day=REACTION, now_fn=NOW)
+        self.assertEqual(run.results[0]["variants"], [])
 
 
 if __name__ == "__main__":  # pragma: no cover

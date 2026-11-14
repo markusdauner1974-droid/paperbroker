@@ -663,6 +663,27 @@
     return table(['Seite', 'Strike', 'Bid', 'Ask', 'Mid', 'IV', 'OI', 'Delta'], rows);
   }
 
+  // Die Alternativen derselben Kette als Leiter: wenigste Bewegung oben,
+  // hoechstes R/R unten. Die Spalten sind dieselben Zahlen wie in der Zeile,
+  // damit ein Vergleich nicht zwei Vokabulare braucht.
+  function variantTable(variants) {
+    var rows = (Array.isArray(variants) ? variants : []).map(function (v) {
+      return [
+        v.label || '–',
+        de(v.long_strike, 1) + ' / ' + de(v.short_strike, 1),
+        de(v.net_debit, 2),
+        de(v.max_loss, 2),
+        de(v.max_profit, 2),
+        rrText(v.rr),
+        num(v.required_move_pct)
+          ? moveArrow(v.required_move_pct) + moveText(v.required_move_pct) : '–',
+        liquidityWord(v.liquidity)
+      ];
+    });
+    return table(['Struktur', 'Long / Short', 'Debit', 'max. Verlust', 'max. Gewinn',
+                  'R/R', 'nötig', 'Liquidität'], rows);
+  }
+
   function scenarioTable(scenarios) {
     var rows = (Array.isArray(scenarios) ? scenarios : []).map(function (s) {
       return [
@@ -997,6 +1018,22 @@
 
     el.detailBody.appendChild(subtitle('Szenarien'));
     el.detailBody.appendChild(scenarioTable(detail.scenarios));
+
+    // Die Zeile des Trichters ist EINE Struktur: die mit dem hoechsten R/R.
+    // Die Alternativen derselben Kette stehen darunter, weil erst der Vergleich
+    // zeigt, was der hohe R/R kostet - naemlich den Weg bis zum Break-even.
+    var varianten = zeile && Array.isArray(zeile.variants) ? zeile.variants : [];
+    if (varianten.length) {
+      el.detailBody.appendChild(subtitle('Weitere Strukturen im selben Verfall'));
+      el.detailBody.appendChild(variantTable(varianten));
+      var variantNote = document.createElement('p');
+      variantNote.className = 'detail-notes';
+      variantNote.textContent = 'Die Zeile des Trichters ist die Struktur mit dem höchsten '
+        + 'R/R. Die Alternativen sind der Weg dorthin – von der wenigsten Bewegung bis zum '
+        + 'höchsten R/R. Gleiche Regeln, gleicher Verfall, gleiche Kette; jede musste '
+        + 'dieselben drei Hürden nehmen wie die Auswahl selbst.';
+      el.detailBody.appendChild(variantNote);
+    }
 
     // Der Methodik-Absatz steht bei den Notizen des Details, nicht im Kopf: er
     // nennt Fensterlaenge IN HANDELSTAGEN, die Restlaufzeit in KALENDERTAGEN
