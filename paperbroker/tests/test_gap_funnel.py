@@ -357,7 +357,7 @@ class PairSearchCoverageTests(unittest.TestCase):
         self.assertEqual(run.results, [])
         eintrag = run.excluded[0]
         self.assertEqual(eintrag.reason, REASON_NO_SPREAD)
-        self.assertIn("5 aufgezählten", eintrag.message)
+        self.assertIn("5 aufgezählten Paaren", eintrag.message)
         self.assertIn("Suche am Deckel von 5 - 45 möglich", eintrag.message)
         self.assertTrue(eintrag.pairs_capped)
         self.assertEqual(eintrag.pairs_possible, 45)
@@ -383,7 +383,7 @@ class PairSearchCoverageTests(unittest.TestCase):
         self.assertFalse(eintrag.pairs_capped)
         self.assertEqual(eintrag.pairs_enumerated, 45)
         self.assertEqual(eintrag.pairs_possible, 45)
-        self.assertIn("5 gültige Paare von 45 aufgezählten", eintrag.message)
+        self.assertIn("5 gültige Paare von 45 aufgezählten Paaren", eintrag.message)
         self.assertNotIn("Paare geprüft", eintrag.message)
 
     def test_a_capped_exclusion_names_the_cap_and_the_possible_count(self):
@@ -397,9 +397,32 @@ class PairSearchCoverageTests(unittest.TestCase):
         self.assertTrue(eintrag.pairs_capped)
         self.assertEqual(eintrag.pairs_enumerated, 5)
         self.assertEqual(eintrag.pairs_possible, 45)
-        self.assertIn("5 gültige Paare von 5 aufgezählten", eintrag.message)
+        self.assertIn("5 gültige Paare von 5 aufgezählten Paaren", eintrag.message)
         self.assertIn("Suche am Deckel von 5 - 45 möglich", eintrag.message)
         self.assertNotIn("Paare geprüft", eintrag.message)
+
+    def test_one_valid_pair_is_worded_in_the_singular(self):
+        # One counted pair is not "1 gültige Paare": the count stays one, the
+        # adjective and the noun follow it - in the valid count, in the
+        # enumerated count and in the possible count alike.
+        einer = gap_funnel_mod._capped_counts(
+            "kein Paar mit R/R >= 2.0", 1, {"capped": False, "enumerated": 2},
+            ladder_chain(), BULL_CALL_DEBIT)
+        self.assertEqual(einer, "kein Paar mit R/R >= 2.0 "
+                                "(1 gültiges Paar von 2 aufgezählten Paaren)")
+        # One enumerated pair as well: "von 1 aufgezählten Paar", not "Paaren".
+        aufgezaehlt = gap_funnel_mod._capped_counts(
+            "kein Paar mit R/R >= 2.0", 1,
+            {"capped": True, "enumerated": 1, "limit": 1},
+            ladder_chain(), BULL_CALL_DEBIT)
+        self.assertIn("(1 gültiges Paar von 1 aufgezählten Paar, ", aufgezaehlt)
+        # Two strikes are exactly one combination: "1 mögliches Paar".
+        zwei = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, oi=1200),
+                call("AAA", "2027-03-19", 103.3, 3.00, 3.10, oi=900)]
+        moeglich = gap_funnel_mod._capped_counts(
+            "kein Paar mit R/R >= 2.0", 1,
+            {"capped": True, "enumerated": 1, "limit": 1}, zwei, BULL_CALL_DEBIT)
+        self.assertIn("Suche am Deckel von 1 - 1 mögliches Paar)", moeglich)
 
     def test_a_message_without_a_run_or_a_section_invents_no_number(self):
         # No coverage means no run: there is no enumerated count to print, so
@@ -415,7 +438,7 @@ class PairSearchCoverageTests(unittest.TestCase):
             [call("AAA", "2027-03-19", 100.0, 3.9, 4.0)], BULL_CALL_DEBIT)
         self.assertEqual(
             ohne_deckel,
-            "kein Paar mit R/R >= 2.0 (5 gültige Paare von 5 aufgezählten, "
+            "kein Paar mit R/R >= 2.0 (5 gültige Paare von 5 aufgezählten Paaren, "
             "Suche am Deckel von ? - ? möglich)")
 
     def test_the_cap_note_counts_rows_and_exclusions(self):

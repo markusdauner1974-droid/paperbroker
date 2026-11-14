@@ -287,6 +287,33 @@ def possible_pairs(section, option_type=None):
     return count * (count - 1) // 2
 
 
+def _valid_pairs(number):
+    """``1`` -> ``"1 gültiges Paar"``, ``5`` -> ``"5 gültige Paare"``.
+
+    German inflects the adjective AND the noun, so "1 gültige Paare" is wrong
+    twice over; the count itself is untouched.
+    """
+    if number == 1:
+        return "1 gültiges Paar"
+    return f"{_tausender(number)} gültige Paare"
+
+
+def _enumerated_pairs(number):
+    """``"von 1 aufgezählten Paar"`` / ``"von 5 aufgezählten Paaren"``."""
+    if number == 1:
+        return "1 aufgezählten Paar"
+    return f"{_tausender(number)} aufgezählten Paaren"
+
+
+def _possible_pairs_word(number):
+    """``"1 mögliches Paar"`` / ``"45 möglich"`` / ``"?"`` - one number, one number word."""
+    if number is None:
+        return "? möglich"
+    if number == 1:
+        return "1 mögliches Paar"
+    return f"{_tausender(number)} möglich"
+
+
 def _capped_counts(text, checked, coverage, section, strategy):
     """``text`` with BOTH pair counts, naming the ceiling when the search hit it.
 
@@ -300,21 +327,22 @@ def _capped_counts(text, checked, coverage, section, strategy):
     L - M möglich". Without a run there is no enumerated count to name, so the
     sentence stays at "N gültige Paare" instead of inventing one; without a
     section there is no possible count and it stays "?".
+
+    Every count is read in the number it is: one pair is "1 gültiges Paar von
+    1 aufgezählten Paar", not the plural of a count that happens to be one.
     """
     report = coverage or {}
-    geprueft = _tausender(checked)
     enumerated = report.get("enumerated")
     if not isinstance(enumerated, int) or isinstance(enumerated, bool):
-        return f"{text} ({geprueft} gültige Paare)"
-    aufgezaehlt = _tausender(enumerated)
+        return f"{text} ({_valid_pairs(checked)})"
     if not report.get("capped"):
-        return f"{text} ({geprueft} gültige Paare von {aufgezaehlt} aufgezählten)"
+        return f"{text} ({_valid_pairs(checked)} von {_enumerated_pairs(enumerated)})"
     possible = possible_pairs(section, strategy_option_type(strategy))
-    moeglich = "?" if possible is None else _tausender(possible)
+    possible_word = _possible_pairs_word(possible)
     limit = report.get("limit")
     deckel = "?" if not isinstance(limit, int) else _tausender(limit)
-    return (f"{text} ({geprueft} gültige Paare von {aufgezaehlt} aufgezählten, "
-            f"Suche am Deckel von {deckel} - {moeglich} möglich)")
+    return (f"{text} ({_valid_pairs(checked)} von {_enumerated_pairs(enumerated)}, "
+            f"Suche am Deckel von {deckel} - {possible_word})")
 
 
 def liquidity_of(pair, min_oi=DEFAULT_MIN_OI):
