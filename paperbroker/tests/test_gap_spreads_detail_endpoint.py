@@ -42,17 +42,21 @@ from paperbroker.tests.test_gap_funnel import (
     calendar_row,
     ladder_chain,
 )
+from paperbroker.tests.test_gap_variants import bars_from, character_chain
 
 CLOCK = lambda: arrow.get("2026-11-14T21:00:00Z")  # noqa: E731
 
 DETAIL = "/api/v1/gap-spreads/detail"
 
-#: The whole answer, in the order of the agreed contract.
+#: The whole answer, in the order of the agreed contract. ``structure_label``
+#: and ``is_row_pick`` say WHICH structure the numbers describe: the row's pick
+#: ("Hebel (Zeile)"), one of the three characters, or none at all.
 DETAIL_KEYS = {
     "schema_version", "symbol", "name", "day", "strategy", "strategy_label",
     "expiration", "dte", "spot", "spot_source", "strikes", "legs", "net_debit",
     "net_debit_basis", "max_loss", "max_profit", "breakeven", "rr",
     "position_greeks", "series", "scenarios", "notes",
+    "structure_label", "is_row_pick",
 }
 LEG_KEYS = {"side", "strike", "bid", "ask", "mid", "iv", "delta", "gamma", "vega",
             "theta", "open_interest", "volume"}
@@ -201,6 +205,117 @@ class DetailEndpointTest(unittest.TestCase):
         _antwort, body = _get(chains=_Chains({"AAA": kette}))
         self.assertEqual(body["spot"], 110.0)
         self.assertEqual(body["spot_source"], "row_close")
+
+
+class NamedStructureTest(unittest.TestCase):
+    """The optional structure: ``expiration``, ``long`` and ``short`` together.
+
+    The fixtures are the character chain of ``test_gap_variants`` with a real
+    gap (95 -> 101) and a history that carries one level above the price (106):
+    the row picks 103/112, its alternatives are 100/106, 106/109 and 103/109.
+    """
+
+    def _client(self, chain=None):
+        calendar = _FakeCalendar({
+            PREVIOUS: [calendar_row("AAA", session="after_market", name="Alpha Corp")],
+            DAY: [calendar_row("DDD", session="after_market")],
+        })
+        history = _History({"AAA": bars_from(
+            [99.0] * 40 + [106.0] + [99.0] * 214 + [95.0, 101.0])})
+        return create_app(
+            quote_adapter=_Chains({"AAA": chain if chain is not None else character_chain()}),
+            earnings_adapter=calendar,
+            gap_adapter=history,
+            next_earnings_adapter=_NextEarnings({"AAA": date(2027, 2, 1)}),
+            now_fn=CLOCK,
+        ).test_client()
+
+    def _get(self, query, chain=None):
+        antwort = self._client(chain).get(DETAIL + query)
+        return antwort, antwort.get_json()
+
+    def test_without_a_structure_the_pick_is_the_hebel(self):
+        antwort, body = self._get(f"?symbol=AAA&day={DAY}")
+        self.assertEqual(antwort.status_code, 200)
+        self.assertTrue(body["is_row_pick"])
+        self.assertEqual(body["structure_label"], gap_funnel.ROW_PICK_LABEL)
+        self.assertEqual(body["strikes"], {"long": 103.0, "short": 112.0})
+
+    def test_a_named_structure_is_computed_instead_of_the_pick(self):
+        query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=100&short=106"
+        antwort, body = self._get(query)
+        self.assertEqual(antwort.status_code, 200)
+        # NOT the row: the delivered pair is priced as it is listed.
+        self.assertFalse(body["is_row_pick"])
+        self.assertEqual(body["strikes"], {"long": 100.0, "short": 106.0})
+        self.assertEqual(body["net_debit"], 1.65)
+        self.assertEqual(body["max_loss"], 165.0)
+        self.assertEqual(body["max_profit"], 435.0)
+        self.assertEqual(body["breakeven"], 101.65)
+        self.assertEqual(body["structure_label"], gap_funnel.VARIANT_NEAR_MONEY)
+        # The legs of THAT structure, not of the row.
+        self.assertEqual([leg["strike"] for leg in body["legs"]], [100.0, 106.0])
+        self.assertEqual(body["expiration"], "2027-03-19")
+
+    def test_a_resistance_structure_keeps_its_name(self):
+        query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=106&short=109"
+        antwort, body = self._get(query)
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual(body["structure_label"], gap_funnel.VARIANT_AT_RESISTANCE)
+        self.assertFalse(body["is_row_pick"])
+
+    def test_the_row_asked_for_by_its_strikes_is_the_row_pick(self):
+        query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=103&short=112"
+        _antwort, body = self._get(query)
+        self.assertTrue(body["is_row_pick"])
+        self.assertEqual(body["structure_label"], gap_funnel.ROW_PICK_LABEL)
+        self.assertEqual(body["net_debit"], 0.61)
+
+    def test_a_listed_pair_without_a_character_says_null(self):
+        query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=100&short=112"
+        antwort, body = self._get(query)
+        self.assertEqual(antwort.status_code, 200)
+        self.assertFalse(body["is_row_pick"])
+        self.assertIsNone(body["structure_label"])
+
+    def test_a_pair_that_is_not_listed_is_404_leg_not_listed(self):
+        query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=100&short=104"
+        antwort, body = self._get(query)
+        self.assertEqual(antwort.status_code, 404)
+        self.assertEqual(body["error"], "leg_not_listed")
+        self.assertIn("104", body["message"])
+
+    def test_a_strike_that_is_not_a_number_is_404_leg_not_listed(self):
+        query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=zehn&short=106"
+        antwort, body = self._get(query)
+        self.assertEqual(antwort.status_code, 404)
+        self.assertEqual(body["error"], "leg_not_listed")
+
+    def test_an_unlisted_expiration_is_404_expiration_not_listed(self):
+        query = f"?symbol=AAA&day={DAY}&expiration=2028-01-21&long=100&short=106"
+        antwort, body = self._get(query)
+        self.assertEqual(antwort.status_code, 404)
+        self.assertEqual(body["error"], "expiration_not_listed")
+        self.assertIn("2028-01-21", body["message"])
+        # the listed series are named, so the answer says what IS there
+        self.assertIn("2027-03-19", body["message"])
+
+    def test_two_of_three_parameters_are_400_incomplete_structure(self):
+        for query in (
+            f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=100",
+            f"?symbol=AAA&day={DAY}&long=100&short=106",
+            f"?symbol=AAA&day={DAY}&expiration=2027-03-19",
+        ):
+            with self.subTest(query=query):
+                antwort, body = self._get(query)
+                self.assertEqual(antwort.status_code, 400)
+                self.assertEqual(body["error"], "incomplete_structure")
+
+    def test_the_structure_costs_no_leg_lookup_before_the_day_is_valid(self):
+        antwort, body = self._get(
+            "?symbol=AAA&day=2026-13-40&expiration=2027-03-19&long=100&short=106")
+        self.assertEqual(antwort.status_code, 400)
+        self.assertEqual(body["error"], "invalid_day")
 
 
 class DetailErrorTest(unittest.TestCase):

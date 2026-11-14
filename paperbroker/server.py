@@ -1849,23 +1849,68 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     }
     #: A ticker as the calendar spells it - six characters, one dot for a class.
     _SPREAD_DETAIL_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}([.\-][A-Z0-9]{1,3})?$")
+    #: The three parameters that name ONE listed structure instead of the
+    #: funnel's pick. All three or none: half a structure is a different
+    #: spread, not half of one.
+    _STRUCTURE_PARAMS = ("expiration", "long", "short")
+
+    def _detail_date(value):
+        """``value`` as a ``date``, or ``None`` - an unparsable date is no date."""
+        try:
+            return datetime.strptime(str(value).strip()[:10], "%Y-%m-%d").date()
+        except (TypeError, ValueError):
+            return None
+
+    def _detail_strike(value):
+        """``value`` as a finite float strike, or ``None``."""
+        try:
+            number = float(str(value).strip())
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+    def _same_strike(one, other):
+        """Two strikes are the same within the tolerance the legs are found with."""
+        if not isinstance(one, (int, float)) or not isinstance(other, (int, float)):
+            return False
+        return abs(float(one) - float(other)) < 1e-6
+
+    def _structure_label(row, expiration, row_expiration, long_strike, short_strike):
+        """The character of a listed structure, or ``None`` if it has none.
+
+        The characters are computed for the ROW's expiry (they are alternatives
+        of that one chain section), so a structure of a different expiry has no
+        character here and says so with ``None`` instead of a borrowed name. A
+        pair that is listed but is neither the pick nor one of the three
+        characters is named by ``None`` too - the answer does not invent a
+        fourth character for a strike pair nobody's rule chose.
+        """
+        if expiration != row_expiration:
+            return None
+        for variant in row.get("variants") or ():
+            if (_same_strike(variant.get("long_strike"), long_strike)
+                    and _same_strike(variant.get("short_strike"), short_strike)):
+                return variant.get("label")
+        return None
 
     def _spread_detail_args():
-        """``symbol``/``day``/``reaction`` of one detail request, or an error.
+        """``symbol``/``day``/``reaction`` (+ optional structure) - or an error.
 
-        The route knows exactly two parameters. Everything the list allows to
-        move its thresholds (``gap_threshold_pct``, ``min_turnover_usd``,
-        ``max_candidates``, ``min_price``) is NOT re-accepted here: the detail
-        re-derives the row with the route's defaults, and accepting a different
-        threshold would let one request describe a spread the list never showed.
+        The route knows two parameters for the row and three that name ONE
+        listed structure of the same chain: ``expiration``, ``long``, ``short``.
+        Everything the list allows to move its thresholds
+        (``gap_threshold_pct``, ``min_turnover_usd``, ``max_candidates``,
+        ``min_price``) is NOT re-accepted here: the detail re-derives the row
+        with the route's defaults, and accepting a different threshold would let
+        one request describe a spread the list never showed.
         """
-        erlaubt = {"day", "symbol"}
+        erlaubt = {"day", "symbol"} | set(_STRUCTURE_PARAMS)
         unbekannt = sorted(set(request.args) - erlaubt)
         if unbekannt:
             return None, _gap_scan_error(
                 400, "unknown_parameter",
                 f"unknown parameter(s): {', '.join(unbekannt)}. "
-                f"Allowed: day, symbol",
+                f"Allowed: day, symbol, expiration, long, short",
             )
         doppelt = sorted(name for name in erlaubt if len(request.args.getlist(name)) > 1)
         if doppelt:
@@ -1882,7 +1927,22 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             return None, _gap_scan_error(
                 404, "unknown_symbol", f"{symbol or '?'} ist kein gültiges Symbol."
             )
-        return {"symbol": symbol, "day": day, "reaction": reaction}, None
+        gegeben = [name for name in _STRUCTURE_PARAMS if name in request.args]
+        if gegeben and len(gegeben) != len(_STRUCTURE_PARAMS):
+            return None, _gap_scan_error(
+                400, "incomplete_structure",
+                "expiration, long und short benennen EINE Struktur - alle drei "
+                f"oder keine (gegeben: {', '.join(gegeben)}).",
+            )
+        struktur = None
+        if gegeben:
+            struktur = {
+                "expiration": _detail_date(request.args.get("expiration")),
+                "long": _detail_strike(request.args.get("long")),
+                "short": _detail_strike(request.args.get("short")),
+            }
+        return {"symbol": symbol, "day": day, "reaction": reaction,
+                "structure": struktur}, None
 
     def _detail_leg(section, strike, option_type):
         """The contract of ``section`` at ``strike`` and ``option_type``, or ``None``.
@@ -1924,6 +1984,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         if fehler is not None:
             return fehler
         symbol, day, reaction = args["symbol"], args["day"], args["reaction"]
+        struktur = args.get("structure")
 
         gelesen, previous, fehler = _gap_calendar(day, reaction)
         if fehler is not None:
@@ -2007,6 +2068,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 deadline_seconds=gap_funnel.DEFAULT_DEADLINE_SECONDS,
                 rr_min=gap_funnel.DEFAULT_RR_MIN,
                 min_oi=gap_funnel.DEFAULT_MIN_OI,
+                # The daily bars the list measures a row's reachability on: the
+                # detail needs them for the same numbers AND to name the
+                # structure's character (the resistance level and the hit rates
+                # come from this one history). A failing source is a state, not
+                # an error - ``measure_reachability`` reports it per row.
+                fetch_daily=gap_adapter.fetch_daily,
             )
         except Exception:                                    # noqa: BLE001 - classified here
             app.logger.exception("spread detail: funnel failed for %s", symbol)
@@ -2031,17 +2098,47 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             )
 
         chain = ketten.get(symbol) or []
-        section = gap_funnel.slice_chain(chain, row["expiration"])
         option_type = gap_funnel.strategy_option_type(row["strategy"])
-        lang = _detail_leg(section, row["long_strike"], option_type)
-        kurz = _detail_leg(section, row["short_strike"], option_type)
+        row_expiration = datetime.strptime(row["expiration"], "%Y-%m-%d").date()
+        if struktur is None:
+            # The pick: the expiry the funnel chose and the strikes of its row.
+            expiration = row_expiration
+            long_strike, short_strike = row["long_strike"], row["short_strike"]
+        else:
+            # A named structure: its own expiry (which has to be LISTED) and its
+            # own strikes. Nothing is derived from the row here - that is the
+            # whole point of naming one - but it still has to be a contract pair
+            # of this chain, so half a structure cannot be priced.
+            expiration = struktur["expiration"]
+            listed = gap_funnel.expirations_in(chain)
+            if expiration is None or expiration not in listed:
+                genannt = expiration.isoformat() if expiration else "?"
+                gelistet = ", ".join(day.isoformat() for day in listed) or "keiner"
+                return _gap_scan_error(
+                    404, "expiration_not_listed",
+                    f"Der Verfall {genannt} ist für {symbol} nicht gelistet "
+                    f"(gelistet: {gelistet}).",
+                )
+            long_strike, short_strike = struktur["long"], struktur["short"]
+        section = gap_funnel.slice_chain(chain, expiration)
+        lang = _detail_leg(section, long_strike, option_type)
+        kurz = _detail_leg(section, short_strike, option_type)
         if lang is None or kurz is None:
-            fehlend = row["long_strike"] if lang is None else row["short_strike"]
+            fehlend = long_strike if lang is None else short_strike
             return _gap_scan_error(
                 404, "leg_not_listed",
                 f"Der Strike {fehlend} fehlt in der Kette von {symbol} zum "
-                f"Verfall {row['expiration']}.",
+                f"Verfall {expiration.isoformat()}.",
             )
+
+        # The character of THIS structure: the pick is the Hebel, a named
+        # alternative keeps its name, anything else has none.
+        is_row_pick = (expiration == row_expiration
+                       and _same_strike(long_strike, row["long_strike"])
+                       and _same_strike(short_strike, row["short_strike"]))
+        structure_label = (gap_funnel.ROW_PICK_LABEL if is_row_pick
+                           else _structure_label(row, expiration, row_expiration,
+                                                 long_strike, short_strike))
 
         # The centre of the chart: the chain's own underlying price when it
         # carries one, else the close of the reaction day. Named in the answer,
@@ -2065,7 +2162,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 day=reaction,
                 strategy=row.get("strategy"),
                 strategy_label=row.get("strategy_label"),
-                expiration=datetime.strptime(row["expiration"], "%Y-%m-%d").date(),
+                expiration=expiration,
                 option_type=option_type,
                 long_quote=lang,
                 short_quote=kurz,
@@ -2074,6 +2171,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             )
         except spread_detail.SpreadDetailError as exc:
             return _gap_scan_error(404, exc.code, exc.message)
+        # WHICH structure this answer describes, in one word: the row's pick is
+        # the Hebel, a named alternative keeps its character, and a pair that is
+        # listed but is neither says ``null``.
+        detail["structure_label"] = structure_label
+        detail["is_row_pick"] = is_row_pick
         return jsonify(detail)
 
     def _earnings_view(ticker, expirations, offered):
