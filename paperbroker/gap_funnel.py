@@ -288,22 +288,33 @@ def possible_pairs(section, option_type=None):
 
 
 def _capped_counts(text, checked, coverage, section, strategy):
-    """``text`` with the pair count, naming the ceiling when the search hit it.
+    """``text`` with BOTH pair counts, naming the ceiling when the search hit it.
 
-    A capped enumeration stops COUNTING as well as collecting, so "N pairs
-    checked" alone understates the search: the honest sentence is "N von M
-    geprüft, Suche am Deckel von L", with M taken from the chain (exact) and L
-    from the report of the run that was really cut.
+    ``checked`` is what survived the screener's validity rules, ``enumerated``
+    what the search really enumerated - two different numbers, and "N Paare
+    geprüft" let one stand for the other: a sentence reading "5 Paare geprüft"
+    beside ``pairs_enumerated: 45`` says the search only SAW five pairs.
+
+    A capped enumeration stops COUNTING as well as collecting, so the section's
+    exact combination count must stand beside the ceiling: "Suche am Deckel von
+    L - M möglich". Without a run there is no enumerated count to name, so the
+    sentence stays at "N gültige Paare" instead of inventing one; without a
+    section there is no possible count and it stays "?".
     """
     report = coverage or {}
+    geprueft = _tausender(checked)
+    enumerated = report.get("enumerated")
+    if not isinstance(enumerated, int) or isinstance(enumerated, bool):
+        return f"{text} ({geprueft} gültige Paare)"
+    aufgezaehlt = _tausender(enumerated)
     if not report.get("capped"):
-        return f"{text} ({checked} Paare geprüft)"
+        return f"{text} ({geprueft} gültige Paare von {aufgezaehlt} aufgezählten)"
     possible = possible_pairs(section, strategy_option_type(strategy))
-    von = "?" if possible is None else _tausender(possible)
+    moeglich = "?" if possible is None else _tausender(possible)
     limit = report.get("limit")
     deckel = "?" if not isinstance(limit, int) else _tausender(limit)
-    return (f"{text} ({checked} von {von} Paaren geprüft, "
-            f"Suche am Deckel von {deckel})")
+    return (f"{text} ({geprueft} gültige Paare von {aufgezaehlt} aufgezählten, "
+            f"Suche am Deckel von {deckel} - {moeglich} möglich)")
 
 
 def liquidity_of(pair, min_oi=DEFAULT_MIN_OI):

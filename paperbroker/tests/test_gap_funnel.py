@@ -248,6 +248,25 @@ def flat_ladder(symbol="AAA", expiry="2027-03-19", strikes=10, start=100.0, step
             for index in range(strikes)]
 
 
+def star_ladder(symbol="AAA", expiry="2027-03-19"):
+    """Ten calls of ONE expiry: 45 combinations, of which 5 are valid pairs.
+
+    The 100 call (0.95 / 1.00) is the only sane long leg; five partners at
+    101.00 .. 101.08 bid 0.10, so every (100, partner) pair risks 0.90 USD on a
+    width of 1.00 .. 1.08 - a valid pair whose R/R stays below 2.0. The
+    partners' own asks (2.50) and the four quotes at 3.00 / 3.00 are incoherent
+    as pairs (debit >= width or <= 0), so the screener's validity rules keep
+    exactly those five. The count is the point: 45 enumerated, 5 valid.
+    """
+    chain = [call(symbol, expiry, 100.0, 0.95, 1.00, delta=55.0, oi=1200)]
+    for index in range(5):
+        chain.append(call(symbol, expiry, 101.0 + index * 0.02, 0.10, 2.50,
+                          delta=30.0, oi=900))
+    for strike in (106.0, 107.0, 108.0, 109.0):
+        chain.append(call(symbol, expiry, strike, 3.00, 3.00, delta=30.0, oi=900))
+    return chain
+
+
 def run_one(chain, symbol="AAA", **kwargs):
     """One title through the funnel: report date and chain answered from memory."""
     return run_funnel([candidate(symbol)],
@@ -329,16 +348,17 @@ class PairSearchCoverageTests(unittest.TestCase):
         self.assertFalse(any("Deckel" in note for note in run.notes))
 
     def test_an_excluded_title_names_the_cap(self):
-        # The section can be cut even when it produces no winner: "kein Paar mit
-        # R/R >= 2.0 (N Paare geprüft)" then describes the prefix that was
-        # built, not the expiry - so the reason has to say so.
+        # The section can be cut even when it produces no winner: the reason has
+        # to describe the prefix that was built, not the expiry - and it has to
+        # name both the ceiling and the section's exact size, or the cut stays
+        # invisible in the very message that reports it.
         with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
             run = run_one(flat_ladder(strikes=10))
         self.assertEqual(run.results, [])
         eintrag = run.excluded[0]
         self.assertEqual(eintrag.reason, REASON_NO_SPREAD)
-        self.assertIn("von 45", eintrag.message)
-        self.assertIn("Deckel", eintrag.message)
+        self.assertIn("5 aufgezählten", eintrag.message)
+        self.assertIn("Suche am Deckel von 5 - 45 möglich", eintrag.message)
         self.assertTrue(eintrag.pairs_capped)
         self.assertEqual(eintrag.pairs_possible, 45)
         self.assertEqual(eintrag.pairs_enumerated, 5)
@@ -351,6 +371,52 @@ class PairSearchCoverageTests(unittest.TestCase):
         self.assertIn("Bei 1 Titel", run.notes[0])
         self.assertIn("Deckel", run.notes[0])
         self.assertNotIn("50 000", run.notes[0])
+
+    def test_an_uncapped_exclusion_names_valid_and_enumerated_pairs(self):
+        # No ceiling here: the section enumerates all 45 combinations, the
+        # screener's validity rules keep 5 of them. "5 Paare geprüft" beside
+        # pairs_enumerated 45 read as if the search had only SEEN five pairs;
+        # the sentence now names both numbers.
+        run = run_one(star_ladder())
+        self.assertEqual(run.results, [])
+        eintrag = run.excluded[0]
+        self.assertFalse(eintrag.pairs_capped)
+        self.assertEqual(eintrag.pairs_enumerated, 45)
+        self.assertEqual(eintrag.pairs_possible, 45)
+        self.assertIn("5 gültige Paare von 45 aufgezählten", eintrag.message)
+        self.assertNotIn("Paare geprüft", eintrag.message)
+
+    def test_a_capped_exclusion_names_the_cap_and_the_possible_count(self):
+        # The ceiling (5) cuts an enumeration of 45 combinations: the sentence
+        # names the cap AND the section's exact size, so the cut is visible
+        # instead of hiding behind the number that was actually looked at.
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
+            run = run_one(star_ladder())
+        self.assertEqual(run.results, [])
+        eintrag = run.excluded[0]
+        self.assertTrue(eintrag.pairs_capped)
+        self.assertEqual(eintrag.pairs_enumerated, 5)
+        self.assertEqual(eintrag.pairs_possible, 45)
+        self.assertIn("5 gültige Paare von 5 aufgezählten", eintrag.message)
+        self.assertIn("Suche am Deckel von 5 - 45 möglich", eintrag.message)
+        self.assertNotIn("Paare geprüft", eintrag.message)
+
+    def test_a_message_without_a_run_or_a_section_invents_no_number(self):
+        # No coverage means no run: there is no enumerated count to print, so
+        # the sentence stays at "N gültige Paare" instead of inventing one.
+        ohne_lauf = gap_funnel_mod._capped_counts(
+            "kein Paar mit R/R >= 2.0", 5, None, ladder_chain(), BULL_CALL_DEBIT)
+        self.assertEqual(ohne_lauf, "kein Paar mit R/R >= 2.0 (5 gültige Paare)")
+        # A cut search without a readable ceiling or section stays "?" - a
+        # guessed number would be worse than the question mark.
+        ohne_deckel = gap_funnel_mod._capped_counts(
+            "kein Paar mit R/R >= 2.0", 5,
+            {"capped": True, "enumerated": 5, "limit": None},
+            [call("AAA", "2027-03-19", 100.0, 3.9, 4.0)], BULL_CALL_DEBIT)
+        self.assertEqual(
+            ohne_deckel,
+            "kein Paar mit R/R >= 2.0 (5 gültige Paare von 5 aufgezählten, "
+            "Suche am Deckel von ? - ? möglich)")
 
     def test_the_cap_note_counts_rows_and_exclusions(self):
         # One title shows a pair found under the ceiling, one is excluded by it:
