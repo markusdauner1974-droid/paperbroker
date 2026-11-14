@@ -62,9 +62,9 @@ from .gap_scan import GAP_DOWN, GAP_UP, STRATEGY_BEAR_PUT_DEBIT, STRATEGY_BULL_C
 from .next_earnings import CODE_NO_API_KEY, NextEarningsError
 from .quote_age import MODE_LAST_AVAILABLE
 from .screener import (
-    MAX_PAIRS_PER_SECTION,
     PAIR_SEARCH_WITHIN_WIDTH,
     ScreenerCriteria,
+    strategy_option_type,
     vertical_spreads,
 )
 
@@ -255,6 +255,57 @@ def criteria_for(section):
     )
 
 
+def _tausender(number):
+    """``45000`` -> ``"45 000"``: the notes are German prose, the grouping a space."""
+    return f"{int(number):,}".replace(",", " ")
+
+
+def possible_pairs(section, option_type=None):
+    """The EXACT number of strike pairs of one section: ``n * (n - 1) // 2``.
+
+    ``section`` is already one expiry of one underlying, so this is not an
+    estimate of a search - it is the arithmetic of the chain, and it does not
+    move when the enumeration is cut short. ``option_type`` narrows the count to
+    the side the strategy trades: a call and a put of the same strike are two
+    contracts and never one combination. Distinct strikes only - two quotes of
+    the same strike are not a pair.
+
+    ``None`` for fewer than two strikes: no pair exists there, and a 0 would
+    read as "searched, nothing found" instead of "not searchable".
+    """
+    strikes = set()
+    for quote in section or ():
+        asset = getattr(quote, "asset", None)
+        if option_type is not None and getattr(asset, "option_type", None) != option_type:
+            continue
+        strike = getattr(asset, "strike", None)
+        if isinstance(strike, (int, float)):
+            strikes.add(float(strike))
+    count = len(strikes)
+    if count < 2:
+        return None
+    return count * (count - 1) // 2
+
+
+def _capped_counts(text, checked, coverage, section, strategy):
+    """``text`` with the pair count, naming the ceiling when the search hit it.
+
+    A capped enumeration stops COUNTING as well as collecting, so "N pairs
+    checked" alone understates the search: the honest sentence is "N von M
+    geprüft, Suche am Deckel von L", with M taken from the chain (exact) and L
+    from the report of the run that was really cut.
+    """
+    report = coverage or {}
+    if not report.get("capped"):
+        return f"{text} ({checked} Paare geprüft)"
+    possible = possible_pairs(section, strategy_option_type(strategy))
+    von = "?" if possible is None else _tausender(possible)
+    limit = report.get("limit")
+    deckel = "?" if not isinstance(limit, int) else _tausender(limit)
+    return (f"{text} ({checked} von {von} Paaren geprüft, "
+            f"Suche am Deckel von {deckel})")
+
+
 def liquidity_of(pair, min_oi=DEFAULT_MIN_OI):
     """``"full"`` when both legs are deep and tight, else ``"thin"``.
 
@@ -357,30 +408,40 @@ def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
         debits += 1
         return pair, criteria, None, coverage
     if not ratios:
-        return None, criteria, (f"kein Paar mit R/R >= {rr_min:.1f} "
-                                f"({len(kept)} Paare geprüft)"), coverage
+        return None, criteria, _capped_counts(
+            f"kein Paar mit R/R >= {rr_min:.1f}", len(kept), coverage, section,
+            strategy), coverage
     if not deltas:
-        return None, criteria, (f"R/R erfüllt, aber |Delta| des Long-Legs < "
-                                f"{min_long_delta:.0f} ({ratios} Paare geprüft)"), coverage
-    return None, criteria, (f"R/R und Delta erfüllt, aber Netto-Debit < "
-                            f"{min_net_debit:.2f} USD ({deltas} Paare geprüft)"), coverage
+        return None, criteria, _capped_counts(
+            f"R/R erfüllt, aber |Delta| des Long-Legs < {min_long_delta:.0f}",
+            ratios, coverage, section, strategy), coverage
+    return None, criteria, _capped_counts(
+        f"R/R und Delta erfüllt, aber Netto-Debit < {min_net_debit:.2f} USD",
+        deltas, coverage, section, strategy), coverage
 
 
-def spread_row(candidate, pair, criteria, expiration, day, coverage=None):
+def spread_row(candidate, pair, criteria, expiration, day, coverage=None, section=None):
     """One result row of the agreed contract - numbers rounded, nothing invented.
 
-    ``coverage`` is the pair search's report (``spread_candidates``): the row
-    says how many pairs were possible, how many were looked at, what ceiling
-    applied and whether it was hit. Without a report (no chain, one strike) all
-    four stay ``None`` - a zero would read as "measured, nothing found", which is
-    the opposite of "not measured".
+    ``coverage`` is the pair search's report (``spread_candidates``) and
+    ``section`` the contracts that were searched. ``pairs_possible`` is the
+    section's EXACT combination count (``possible_pairs``: ``n*(n-1)//2``) - it
+    is the chain's arithmetic, not the size of the prefix the ceiling let
+    through. The screener's own count stands beside it as
+    ``pairs_possible_measured`` with ``pairs_possible_exact``: that number is a
+    lower bound the moment the search was capped, and the row says which it is.
+    Without a section (no chain, one strike) all of them stay ``None`` - a zero
+    would read as "measured, nothing found", the opposite of "not measured".
     """
     ratio = pair.net_return_pct(criteria)
     expiry = _as_date(expiration)
     scanned = _as_date(day)
     long_delta = getattr(pair.long, "delta", None)
     short_delta = getattr(pair.short, "delta", None)
-    report = coverage or {}
+    possible = possible_pairs(section, strategy_option_type(pair.strategy_id))
+    # No section or a single strike is no search at all: nothing is measured,
+    # so every pair number is ``None`` rather than a zero that would look one.
+    report = {} if possible is None else dict(coverage or {})
     return {
         "symbol": candidate.get("symbol"),
         "name": candidate.get("name"),
@@ -418,7 +479,13 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None):
         # section) and a search that hit it did NOT see every combination. The
         # row carries the numbers so the answer cannot present a cut search as a
         # complete one - "capped" is the only reading of a cut that is honest.
-        "pairs_possible": report.get("possible"),
+        # ``pairs_possible`` is the EXACT count of the section (n*(n-1)//2, see
+        # possible_pairs) and stays true whether or not the search was cut; the
+        # screener's own count is kept beside it, NAMED as what it is - a
+        # measurement that stops counting at the ceiling (``possible_exact``).
+        "pairs_possible": possible,
+        "pairs_possible_measured": report.get("possible"),
+        "pairs_possible_exact": report.get("possible_exact"),
         "pairs_enumerated": report.get("enumerated"),
         "pairs_limit": report.get("limit"),
         "pairs_capped": report.get("capped"),
@@ -427,14 +494,27 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None):
 
 @dataclass(frozen=True)
 class Exclusion:
-    """One title that did not become a row, with the step that stopped it."""
+    """One title that did not become a row, with the step that stopped it.
+
+    ``pairs_*`` describe the pair search behind a ``no_spread_ge_rr``: a title
+    whose search hit the ceiling did not see every combination, so "no pair with
+    R/R >= 2" is a statement about the prefix that was built, not about the
+    expiry. The three fields are additive - a reason that never searched a
+    section keeps ``pairs_capped=False`` and both numbers ``None``.
+    """
 
     symbol: str
     reason: str
     message: str
+    pairs_capped: bool = False
+    pairs_enumerated: int | None = None
+    pairs_possible: int | None = None
 
     def as_dict(self):
-        return {"symbol": self.symbol, "reason": self.reason, "message": self.message}
+        return {"symbol": self.symbol, "reason": self.reason, "message": self.message,
+                "pairs_capped": self.pairs_capped,
+                "pairs_enumerated": self.pairs_enumerated,
+                "pairs_possible": self.pairs_possible}
 
 
 @dataclass(frozen=True)
@@ -553,36 +633,53 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         if not liquid:
             pair, note = None, liquid_note
     if pair is None:
-        return None, Exclusion(symbol, REASON_NO_SPREAD,
-                               f"Verfall {expiration.isoformat()}: {note}"), None, stages
+        # The search behind this exclusion may have been cut: the reason keeps
+        # that fact (and the exact size of the section) instead of letting the
+        # message read like a full search that found nothing.
+        report = coverage or {}
+        return None, Exclusion(
+            symbol, REASON_NO_SPREAD, f"Verfall {expiration.isoformat()}: {note}",
+            pairs_capped=bool(report.get("capped")),
+            pairs_enumerated=report.get("enumerated"),
+            pairs_possible=possible_pairs(section, strategy_option_type(strategy)),
+        ), None, stages
     stages["spread"] = True
-    row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage)
+    row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage,
+                     section=section)
     row["next_earnings_date"] = next_earnings.isoformat()
     return row, None, None, stages
 
 
-def cap_note(rows):
+def cap_note(rows, excluded=None):
     """The sentence a capped pair search has to be named by, or ``None``.
 
     The ceiling (``MAX_PAIRS_PER_SECTION``) cuts the enumeration at a fixed
     point, so on such a title the shown R/R is the best pair that was FOUND, not
     the best that exists - the pairs further down the enumeration were never
     built. Saying that once, for the whole answer, is the difference between a
-    limitation and a silent one. The number in brackets is the ceiling the rows
-    actually ran against, not a constant this module happens to know.
+    limitation and a silent one.
+
+    Both sides count, because both are the ceiling's doing: a capped ROW shows
+    the best pair found, and a capped EXCLUSION means "kein Paar mit R/R >= 2"
+    was decided on a prefix too. The number in brackets is the ceiling the rows
+    actually ran against, not a constant this module happens to know - and when
+    only exclusions were capped there is no row to read it from, so the
+    sentence names the ceiling without inventing a number.
     """
     capped = [row for row in rows or () if row.get("pairs_capped")]
-    if not capped:
+    capped_excluded = [entry for entry in excluded or ()
+                       if getattr(entry, "pairs_capped", False)]
+    count = len(capped) + len(capped_excluded)
+    if not count:
         return None
     limits = sorted({row.get("pairs_limit") for row in capped
                      if isinstance(row.get("pairs_limit"), int)})
-    grenze = limits[0] if limits else MAX_PAIRS_PER_SECTION
-    # "50 000", not "50,000": the notes are German prose, the grouping is a space.
-    zahl = f"{grenze:,}".replace(",", " ")
-    titel = f"{len(capped)} Titel" if len(capped) == 1 else f"{len(capped)} Titeln"
-    return (f"Bei {titel} war die Paarsuche am Deckel ({zahl}) - dort ist das "
-            f"gezeigte R/R das beste GEFUNDENE Paar; ein besseres Paar weiter "
-            f"hinten in der Aufzählung wurde nicht geprüft.")
+    deckel = f" ({_tausender(limits[0])})" if limits else ""
+    titel = f"{count} Titel" if count == 1 else f"{count} Titeln"
+    return (f"Bei {titel} war die Paarsuche am Deckel{deckel} - dort ist das "
+            f"gezeigte R/R das beste GEFUNDENE Paar, und \"kein Paar\" heißt "
+            f"\"keins im geprüften Teil\"; ein besseres Paar weiter hinten in "
+            f"der Aufzählung wurde nicht geprüft.")
 
 
 def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None,
@@ -674,8 +771,9 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
                                         str(entry.get("symbol") or "")))
     counts["shown"] = len(run.results)
     # One sentence for the whole answer when a search hit the ceiling: every
-    # R/R on such a row is the best pair FOUND, not the best that exists.
-    gekappt = cap_note(run.results)
+    # R/R on such a row is the best pair FOUND, not the best that exists, and a
+    # "no pair" decided on such a cut is equally provisional.
+    gekappt = cap_note(run.results, run.excluded)
     if gekappt:
         run.notes.append(gekappt)
     return run

@@ -235,6 +235,19 @@ def wide_ladder(symbol="AAA", expiry="2027-03-19", strikes=10, start=100.0):
     return chain
 
 
+def flat_ladder(symbol="AAA", expiry="2027-03-19", strikes=10, start=100.0, step=0.25):
+    """``strikes`` calls of ONE expiry whose best pair stays below 2:1.
+
+    Every leg bids 3.00 and asks 4.00, so each pair risks the same 1.00 USD. At
+    25-cent spacing the widest pair of ten strikes is 2.25 wide - a ratio of
+    1.25 - and no pair narrower than the debit is a pair at all, so nothing in
+    this section can clear the funnel's 2:1 floor. What the section CAN do is be
+    cut: ten strikes are 45 combinations.
+    """
+    return [call(symbol, expiry, start + index * step, 3.00, 4.00, delta=30.0, oi=900)
+            for index in range(strikes)]
+
+
 def run_one(chain, symbol="AAA", **kwargs):
     """One title through the funnel: report date and chain answered from memory."""
     return run_funnel([candidate(symbol)],
@@ -256,9 +269,35 @@ class PairSearchCoverageTests(unittest.TestCase):
         # counted: the row's numbers are the chain's own arithmetic.
         self.assertEqual(moeglich, 10)
         self.assertEqual(row["pairs_possible"], moeglich)
+        self.assertEqual(row["pairs_possible_measured"], moeglich)
+        self.assertTrue(row["pairs_possible_exact"])
         self.assertEqual(row["pairs_enumerated"], moeglich)
         self.assertEqual(row["pairs_limit"], MAX_PAIRS_PER_SECTION)
         self.assertFalse(row["pairs_capped"])
+
+    def test_the_possible_pairs_are_the_exact_combination_count(self):
+        # Ten strikes are 45 combinations - whether or not a ceiling lets the
+        # enumeration get that far. The number is the chain's arithmetic.
+        chain = wide_ladder(strikes=10)
+        offen = run_one(chain).results[0]
+        self.assertEqual(offen["pairs_possible"], 45)
+        self.assertEqual(offen["pairs_enumerated"], 45)
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
+            gedeckelt = run_one(chain).results[0]
+        self.assertEqual(gedeckelt["pairs_possible"], 45)
+        self.assertEqual(gedeckelt["pairs_enumerated"], 5)
+
+    def test_a_capped_search_says_its_possible_number_is_only_measured(self):
+        # The screener stops COUNTING a cut search, so its own number is a
+        # lower bound. The row says so instead of printing "5 von 45".
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
+            row = run_one(wide_ladder(strikes=10)).results[0]
+        self.assertEqual(row["pairs_possible"], 45)            # the section's truth
+        self.assertEqual(row["pairs_possible_measured"], 5)    # what was measured
+        self.assertFalse(row["pairs_possible_exact"])
+        self.assertEqual(row["pairs_enumerated"], 5)
+        self.assertEqual(row["pairs_limit"], 5)
+        self.assertTrue(row["pairs_capped"])
 
     def test_a_capped_search_is_named_in_the_answer(self):
         chain = wide_ladder(strikes=10)
@@ -288,6 +327,49 @@ class PairSearchCoverageTests(unittest.TestCase):
         # No ceiling was hit, so nothing may talk about one.
         self.assertEqual(run.notes, [])
         self.assertFalse(any("Deckel" in note for note in run.notes))
+
+    def test_an_excluded_title_names_the_cap(self):
+        # The section can be cut even when it produces no winner: "kein Paar mit
+        # R/R >= 2.0 (N Paare geprüft)" then describes the prefix that was
+        # built, not the expiry - so the reason has to say so.
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
+            run = run_one(flat_ladder(strikes=10))
+        self.assertEqual(run.results, [])
+        eintrag = run.excluded[0]
+        self.assertEqual(eintrag.reason, REASON_NO_SPREAD)
+        self.assertIn("von 45", eintrag.message)
+        self.assertIn("Deckel", eintrag.message)
+        self.assertTrue(eintrag.pairs_capped)
+        self.assertEqual(eintrag.pairs_possible, 45)
+        self.assertEqual(eintrag.pairs_enumerated, 5)
+        # The JSON of the exclusion carries the same facts - additively.
+        self.assertTrue(eintrag.as_dict()["pairs_capped"])
+        self.assertEqual(eintrag.as_dict()["pairs_possible"], 45)
+        # A capped exclusion is still a capped title, so the run names it - and
+        # it does not invent a ceiling number it cannot read from a row.
+        self.assertEqual(len(run.notes), 1)
+        self.assertIn("Bei 1 Titel", run.notes[0])
+        self.assertIn("Deckel", run.notes[0])
+        self.assertNotIn("50 000", run.notes[0])
+
+    def test_the_cap_note_counts_rows_and_exclusions(self):
+        # One title shows a pair found under the ceiling, one is excluded by it:
+        # the sentence has to name both, or the exclusion stays invisible.
+        chains = {"AAA": wide_ladder("AAA", strikes=10),
+                  "BBB": flat_ladder("BBB", strikes=10)}
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
+            run = run_funnel(
+                [candidate("AAA"), candidate("BBB")],
+                fetch_next_earnings=lambda _symbol: date(2027, 2, 1),
+                fetch_chain=lambda symbol: list(chains[symbol]),
+                day=REACTION, now_fn=NOW)
+        self.assertEqual([row["symbol"] for row in run.results], ["AAA"])
+        self.assertEqual([entry.symbol for entry in run.excluded], ["BBB"])
+        self.assertTrue(run.excluded[0].pairs_capped)
+        self.assertEqual(len(run.notes), 1)
+        self.assertIn("Bei 2 Titeln", run.notes[0])
+        self.assertIn("(5)", run.notes[0])
+        self.assertIn("GEFUNDENE", run.notes[0])
 
     def test_the_wide_search_stays_unbounded(self):
         # 100 .. 300 is a 200-point span. A width rule of our own (say "max 25
@@ -604,8 +686,8 @@ ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_labe
             "turnover_usd", "earnings_date", "next_earnings_date", "expiration", "dte",
             "long_strike", "short_strike", "long_delta", "short_delta", "net_debit",
             "max_loss", "max_profit", "rr", "net_return_pct", "liquidity", "open_interest",
-            "bid_ask_pct", "position_debit", "pairs_possible", "pairs_enumerated",
-            "pairs_limit", "pairs_capped"}
+            "bid_ask_pct", "position_debit", "pairs_possible", "pairs_possible_measured",
+            "pairs_possible_exact", "pairs_enumerated", "pairs_limit", "pairs_capped"}
 
 
 class EndpointTests(unittest.TestCase):
@@ -775,7 +857,8 @@ class EndpointTests(unittest.TestCase):
         chains.chains["AAA"] = wide_ladder("AAA", strikes=10)
         _a, body, _c, _d = self._get(fixture=(calendar, history, chains, dates))
         allgemein = body["notes"][0]
-        with mock.patch.object(gap_funnel_mod, "cap_note", lambda _rows: allgemein):
+        with mock.patch.object(gap_funnel_mod, "cap_note",
+                               lambda _rows, _excluded=None: allgemein):
             _a, doppelt, _c, _d = self._get(fixture=(calendar, history, chains, dates))
         self.assertEqual(doppelt["notes"].count(allgemein), 1)
         self.assertEqual(doppelt["notes"], body["notes"])
