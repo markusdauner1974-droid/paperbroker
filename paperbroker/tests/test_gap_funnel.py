@@ -26,9 +26,11 @@ import json
 import time
 import unittest
 from datetime import date, datetime, timedelta
+from unittest import mock
 
 import arrow
 
+from paperbroker import screener as screener_mod
 from paperbroker.assets import asset_factory
 from paperbroker.gap_funnel import (
     DEFAULT_MIN_OI,
@@ -51,7 +53,7 @@ from paperbroker.gap_funnel import (
 from paperbroker.gap_scan import GapBar
 from paperbroker.next_earnings import CODE_NO_API_KEY, NextEarningsError
 from paperbroker.quotes import OptionQuote
-from paperbroker.screener import BULL_CALL_DEBIT, VerticalPair
+from paperbroker.screener import BULL_CALL_DEBIT, MAX_PAIRS_PER_SECTION, VerticalPair
 from paperbroker.server import create_app
 
 NOW = lambda: arrow.get("2026-11-12T21:00:00Z")  # noqa: E731
@@ -166,7 +168,8 @@ class CriteriaTests(unittest.TestCase):
 # --- the pair -------------------------------------------------------------- #
 class SpreadTests(unittest.TestCase):
     def test_the_best_ratio_wins_and_the_hurdles_hold(self):
-        pair, criteria, note = best_spread(ladder_chain(), BULL_CALL_DEBIT, now_fn=NOW)
+        pair, criteria, note, coverage = best_spread(ladder_chain(), BULL_CALL_DEBIT,
+                                                     now_fn=NOW)
         self.assertIsNone(note)
         self.assertIsNotNone(pair)
         self.assertEqual((pair.long.asset.strike, pair.short.asset.strike), (100.0, 103.30))
@@ -177,7 +180,7 @@ class SpreadTests(unittest.TestCase):
     def test_a_one_to_one_point_eight_loses_against_one_to_two_point_three(self):
         section = [quote for quote in ladder_chain()
                    if quote.asset.strike in (100.0, 102.80, 103.30)]
-        pair, criteria, _note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
+        pair, criteria, _note, _coverage = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
         self.assertEqual(pair.short.asset.strike, 103.30)
         self.assertGreater(pair.net_return_pct(criteria), 200.0)
         # The 1:1.8 pair really is in the section and really is weaker.
@@ -187,30 +190,116 @@ class SpreadTests(unittest.TestCase):
     def test_a_long_delta_of_fifteen_is_out(self):
         section = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=15.0),
                    call("AAA", "2027-03-19", 105.00, 3.55, 3.65, delta=10.0)]
-        pair, _criteria, note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
+        pair, _criteria, note, _coverage = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
         self.assertIsNone(pair)
         self.assertIn("Delta", note)
 
     def test_a_debit_of_forty_cents_is_out(self):
         section = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=55.0),
                    call("AAA", "2027-03-19", 101.32, 3.60, 3.70, delta=45.0)]
-        pair, _criteria, note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
+        pair, _criteria, note, _coverage = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW)
         self.assertIsNone(pair)
         self.assertIn("Debit", note)
 
     def test_a_section_without_a_two_point_zero_ratio_is_named(self):
         section = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=55.0),
                    call("AAA", "2027-03-19", 102.80, 3.00, 3.10, delta=35.0)]
-        pair, _criteria, note = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW,
-                                           rr_min=DEFAULT_RR_MIN)
+        pair, _criteria, note, _coverage = best_spread(section, BULL_CALL_DEBIT, now_fn=NOW,
+                                                       rr_min=DEFAULT_RR_MIN)
         self.assertIsNone(pair)
         self.assertIn("R/R", note)
 
     def test_a_single_strike_is_a_named_dead_end(self):
-        pair, _criteria, note = best_spread(
+        pair, _criteria, note, _coverage = best_spread(
             [call("AAA", "2027-03-19", 100.0, 3.9, 4.0)], BULL_CALL_DEBIT, now_fn=NOW)
         self.assertIsNone(pair)
         self.assertIn("Strike-Paar", note)
+
+
+# --- how much of the expiry was searched ----------------------------------- #
+def wide_ladder(symbol="AAA", expiry="2027-03-19", strikes=10, start=100.0):
+    """``strikes`` calls of ONE expiry: 100 costs 4.00, every other bids 3.00.
+
+    ``net_debit`` is 1.00 for every pair and the width grows with the strike
+    distance, so the ratio grows with the width and the LAST strike of the
+    ladder is the best pair of the full search - which is exactly what a capped
+    enumeration never gets to build.
+    """
+    chain = [call(symbol, expiry, start, 3.90, 4.00, delta=55.0, oi=1200)]
+    for index in range(1, strikes):
+        chain.append(call(symbol, expiry, start + index, 3.00, 3.10, delta=30.0, oi=900))
+    return chain
+
+
+def run_one(chain, symbol="AAA", **kwargs):
+    """One title through the funnel: report date and chain answered from memory."""
+    return run_funnel([candidate(symbol)],
+                      fetch_next_earnings=lambda _symbol: date(2027, 2, 1),
+                      fetch_chain=lambda _symbol: list(chain),
+                      day=REACTION, now_fn=NOW, **kwargs)
+
+
+class PairSearchCoverageTests(unittest.TestCase):
+    """The 50 000-pair ceiling may cut the search - the answer must say so."""
+
+    def test_the_row_says_how_many_pairs_were_possible(self):
+        chain = ladder_chain()
+        row = run_one(chain).results[0]
+        strikes = {quote.asset.strike for quote in chain}
+        moeglich = len(strikes) * (len(strikes) - 1) // 2
+        self.assertEqual(len(strikes), 5)
+        # 5 strikes -> 10 combinations, all of them enumerated and all of them
+        # counted: the row's numbers are the chain's own arithmetic.
+        self.assertEqual(moeglich, 10)
+        self.assertEqual(row["pairs_possible"], moeglich)
+        self.assertEqual(row["pairs_enumerated"], moeglich)
+        self.assertEqual(row["pairs_limit"], MAX_PAIRS_PER_SECTION)
+        self.assertFalse(row["pairs_capped"])
+
+    def test_a_capped_search_is_named_in_the_answer(self):
+        chain = wide_ladder(strikes=10)
+        # The ceiling is a module constant, patched here to a size this chain
+        # reaches: 10 strikes are 45 combinations, 5 are built.
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
+            run = run_one(chain)
+        self.assertEqual(len(run.results), 1)
+        row = run.results[0]
+        self.assertTrue(row["pairs_capped"])
+        self.assertEqual(row["pairs_limit"], 5)
+        self.assertEqual(row["pairs_enumerated"], 5)
+        # The shown pair is the best one BUILT, not the best one that exists:
+        # the 105 short is the widest pair of the first five, the 109 (a ratio
+        # of 8.0) was never enumerated.
+        self.assertEqual(row["short_strike"], 105.0)
+        self.assertEqual(len(run.notes), 1)
+        self.assertIn("Deckel", run.notes[0])
+        self.assertIn("(5)", run.notes[0])
+        self.assertIn("GEFUNDENE", run.notes[0])
+
+    def test_a_complete_search_is_not_called_capped(self):
+        run = run_one(ladder_chain())
+        row = run.results[0]
+        self.assertFalse(row["pairs_capped"])
+        self.assertEqual(row["pairs_possible"], row["pairs_enumerated"])
+        # No ceiling was hit, so nothing may talk about one.
+        self.assertEqual(run.notes, [])
+        self.assertFalse(any("Deckel" in note for note in run.notes))
+
+    def test_the_wide_search_stays_unbounded(self):
+        # 100 .. 300 is a 200-point span. A width rule of our own (say "max 25
+        # points") would quietly drop the only pair this chain has - the agreed
+        # rule is "the best R/R of the WHOLE expiry", so the span IS the width.
+        chain = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=55.0, oi=1200),
+                 call("AAA", "2027-03-19", 300.0, 0.10, 0.20, delta=25.0, oi=900)]
+        criteria = criteria_for(chain)
+        self.assertEqual(criteria.pair_max_width, 200.0)      # max - min, nothing else
+        self.assertEqual(criteria.pair_max_width, max(q.asset.strike for q in chain)
+                         - min(q.asset.strike for q in chain))
+        pair, _criteria, note, coverage = best_spread(chain, BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(note)
+        self.assertIsNotNone(pair)
+        self.assertEqual(pair.strike_width, 200.0)
+        self.assertFalse(coverage["capped"])
 
 
 # --- liquidity ------------------------------------------------------------- #
@@ -478,7 +567,8 @@ ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_labe
             "turnover_usd", "earnings_date", "next_earnings_date", "expiration", "dte",
             "long_strike", "short_strike", "long_delta", "short_delta", "net_debit",
             "max_loss", "max_profit", "rr", "net_return_pct", "liquidity", "open_interest",
-            "bid_ask_pct", "position_debit"}
+            "bid_ask_pct", "position_debit", "pairs_possible", "pairs_enumerated",
+            "pairs_limit", "pairs_capped"}
 
 
 class EndpointTests(unittest.TestCase):

@@ -61,7 +61,12 @@ from datetime import date, datetime
 from .gap_scan import GAP_DOWN, GAP_UP, STRATEGY_BEAR_PUT_DEBIT, STRATEGY_BULL_CALL_DEBIT
 from .next_earnings import CODE_NO_API_KEY, NextEarningsError
 from .quote_age import MODE_LAST_AVAILABLE
-from .screener import PAIR_SEARCH_WITHIN_WIDTH, ScreenerCriteria, vertical_spreads
+from .screener import (
+    MAX_PAIRS_PER_SECTION,
+    PAIR_SEARCH_WITHIN_WIDTH,
+    ScreenerCriteria,
+    vertical_spreads,
+)
 
 #: Reward/risk floor: the best case must be worth at least twice the risk.
 DEFAULT_RR_MIN = 2.0
@@ -215,8 +220,12 @@ def criteria_for(section):
     ``pair_mode`` is ``within_width`` with the section's whole strike span as the
     width - that is what "every combination of the expiry" means here, and the
     width is taken from the chain instead of a made-up large number so the
-    enumeration cannot silently stop at an arbitrary bound (the screener's own
-    50 000-pair ceiling still applies and is reported by it).
+    enumeration cannot silently stop at an arbitrary bound. The screener's own
+    50 000-pair ceiling (``MAX_PAIRS_PER_SECTION``) still applies - it is a
+    memory bound, not a width rule - and this funnel now carries its report
+    (``possible`` / ``enumerated`` / ``capped`` / ``limit``) through
+    ``spread_candidates`` into every row and into the run's notes, so a capped
+    search can no longer look like a complete one.
     """
     strikes = [strike for strike in (_quote_parts(quote)[0] for quote in section or ())
                if isinstance(strike, (int, float))]
@@ -280,7 +289,7 @@ def legs_liquid(pair, min_oi=DEFAULT_MIN_OI):
 
 
 def spread_candidates(section, strategy, *, now_fn=None):
-    """``(kept, criteria, sample_drop)`` for one expiry and one strategy.
+    """``(kept, criteria, sample_drop, coverage)`` for one expiry and one strategy.
 
     ``vertical_spreads`` owns the pair rules (both legs quoted, debit inside
     (0, width), the legs' own filters), so this function adds nothing but the
@@ -288,35 +297,48 @@ def spread_candidates(section, strategy, *, now_fn=None):
     sentences when it kept nothing - "OI 40 < 100" explains an empty section
     far better than "no pair", and it is the pipeline's wording, not a second
     opinion about the same chain.
+
+    ``coverage`` is the screener's report of the search that really happened
+    (``mode``, ``possible``, ``enumerated``, ``capped``, ``limit``), taken over
+    unchanged: the ceiling is the only thing that can cut this search short, and
+    a run that hit it must be able to say so. An empty dict means "no search
+    happened" (no section, or a single strike) - the caller reports ``None`` for
+    those numbers instead of a zero that would look like a measurement.
     """
     criteria = criteria_for(section)
     if not section or criteria.pair_max_width is None:
-        return [], criteria, None
-    kept, dropped = vertical_spreads(section, criteria, strategy=strategy, now_fn=now_fn)
+        return [], criteria, None, {}
+    coverage = {}
+    kept, dropped = vertical_spreads(section, criteria, strategy=strategy, now_fn=now_fn,
+                                     coverage=coverage)
     kept = [pair for pair in kept if pair.net_return_pct(criteria) is not None]
     kept.sort(key=lambda pair: (-pair.net_return_pct(criteria), pair.long.asset.strike,
                                 pair.short.asset.strike))
-    return kept, criteria, (None if kept or not dropped else str(dropped[0][1]))
+    return kept, criteria, (None if kept or not dropped else str(dropped[0][1])), coverage
 
 
 def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
                 min_long_delta=DEFAULT_MIN_LONG_DELTA,
                 min_net_debit=DEFAULT_MIN_NET_DEBIT):
-    """``(pair, criteria, note)`` - the best qualifying pair, or ``(None, criteria, note)``.
+    """``(pair, criteria, note, coverage)`` - the best qualifying pair, or ``(None, ...)``.
 
     "Best" is the highest ``net_return_pct`` (i.e. the highest reward/risk) among
     the pairs that clear ALL three hurdles: the ratio itself, the |delta| of the
     bought leg and the minimum debit. The three are checked in that order so the
     note names the hurdle that mattered when nothing qualifies.
+
+    ``coverage`` is the search's own report, passed through from
+    ``spread_candidates`` on every path - including the ones where nothing
+    qualified: a capped search is capped whether or not it produced a winner.
     """
-    kept, criteria, sample_drop = spread_candidates(section, strategy, now_fn=now_fn)
+    kept, criteria, sample_drop, coverage = spread_candidates(section, strategy, now_fn=now_fn)
     if not kept:
         if not section:
-            return None, criteria, "keine Kontrakte in diesem Verfall"
+            return None, criteria, "keine Kontrakte in diesem Verfall", coverage
         if criteria.pair_max_width is None:
-            return None, criteria, "nur ein Strike gelistet - kein Strike-Paar möglich"
+            return None, criteria, "nur ein Strike gelistet - kein Strike-Paar möglich", coverage
         return None, criteria, ("kein gültiges Strike-Paar im Screening"
-                                + (f" (z. B. {sample_drop})" if sample_drop else ""))
+                                + (f" (z. B. {sample_drop})" if sample_drop else "")), coverage
 
     ratios = 0
     deltas = 0
@@ -333,24 +355,32 @@ def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
         if pair.net_debit is None or pair.net_debit < min_net_debit:
             continue
         debits += 1
-        return pair, criteria, None
+        return pair, criteria, None, coverage
     if not ratios:
         return None, criteria, (f"kein Paar mit R/R >= {rr_min:.1f} "
-                                f"({len(kept)} Paare geprüft)")
+                                f"({len(kept)} Paare geprüft)"), coverage
     if not deltas:
         return None, criteria, (f"R/R erfüllt, aber |Delta| des Long-Legs < "
-                                f"{min_long_delta:.0f} ({ratios} Paare geprüft)")
+                                f"{min_long_delta:.0f} ({ratios} Paare geprüft)"), coverage
     return None, criteria, (f"R/R und Delta erfüllt, aber Netto-Debit < "
-                            f"{min_net_debit:.2f} USD ({deltas} Paare geprüft)")
+                            f"{min_net_debit:.2f} USD ({deltas} Paare geprüft)"), coverage
 
 
-def spread_row(candidate, pair, criteria, expiration, day):
-    """One result row of the agreed contract - numbers rounded, nothing invented."""
+def spread_row(candidate, pair, criteria, expiration, day, coverage=None):
+    """One result row of the agreed contract - numbers rounded, nothing invented.
+
+    ``coverage`` is the pair search's report (``spread_candidates``): the row
+    says how many pairs were possible, how many were looked at, what ceiling
+    applied and whether it was hit. Without a report (no chain, one strike) all
+    four stay ``None`` - a zero would read as "measured, nothing found", which is
+    the opposite of "not measured".
+    """
     ratio = pair.net_return_pct(criteria)
     expiry = _as_date(expiration)
     scanned = _as_date(day)
     long_delta = getattr(pair.long, "delta", None)
     short_delta = getattr(pair.short, "delta", None)
+    report = coverage or {}
     return {
         "symbol": candidate.get("symbol"),
         "name": candidate.get("name"),
@@ -384,6 +414,14 @@ def spread_row(candidate, pair, criteria, expiration, day):
         "bid_ask_pct": [_round2(bid_ask_pct(pair.long)),
                         _round2(bid_ask_pct(pair.short))],
         "position_debit": _round2(pair.position_debit(criteria)),
+        # The pair search's own report: the ceiling is real (50 000 pairs per
+        # section) and a search that hit it did NOT see every combination. The
+        # row carries the numbers so the answer cannot present a cut search as a
+        # complete one - "capped" is the only reading of a cut that is honest.
+        "pairs_possible": report.get("possible"),
+        "pairs_enumerated": report.get("enumerated"),
+        "pairs_limit": report.get("limit"),
+        "pairs_capped": report.get("capped"),
     }
 
 
@@ -418,12 +456,17 @@ class FunnelRun:
     ``results``, ``excluded`` and ``failures`` are disjoint and cover every
     candidate that went in - a title is either traded, explained or reported as
     unanswerable, never silently missing.
+
+    ``notes`` carries what the counters cannot: a sentence about the run as a
+    whole (a capped pair search, for instance). It stays separate from the rows
+    because it is a statement about the answer, not about one title.
     """
 
     results: list = field(default_factory=list)
     excluded: list = field(default_factory=list)
     failures: list = field(default_factory=list)
     counts: dict = field(default_factory=dict)
+    notes: list = field(default_factory=list)
 
 
 def _classify_chain_error(exc):
@@ -502,9 +545,9 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
 
     # 4) the best debit spread of that expiry
     section = slice_chain(chain, expiration)
-    pair, criteria, note = best_spread(section, strategy, now_fn=now_fn, rr_min=rr_min,
-                                       min_long_delta=min_long_delta,
-                                       min_net_debit=min_net_debit)
+    pair, criteria, note, coverage = best_spread(
+        section, strategy, now_fn=now_fn, rr_min=rr_min,
+        min_long_delta=min_long_delta, min_net_debit=min_net_debit)
     if pair is not None:
         liquid, liquid_note = legs_liquid(pair, min_oi)
         if not liquid:
@@ -513,9 +556,33 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         return None, Exclusion(symbol, REASON_NO_SPREAD,
                                f"Verfall {expiration.isoformat()}: {note}"), None, stages
     stages["spread"] = True
-    row = spread_row(candidate, pair, criteria, expiration, day)
+    row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage)
     row["next_earnings_date"] = next_earnings.isoformat()
     return row, None, None, stages
+
+
+def cap_note(rows):
+    """The sentence a capped pair search has to be named by, or ``None``.
+
+    The ceiling (``MAX_PAIRS_PER_SECTION``) cuts the enumeration at a fixed
+    point, so on such a title the shown R/R is the best pair that was FOUND, not
+    the best that exists - the pairs further down the enumeration were never
+    built. Saying that once, for the whole answer, is the difference between a
+    limitation and a silent one. The number in brackets is the ceiling the rows
+    actually ran against, not a constant this module happens to know.
+    """
+    capped = [row for row in rows or () if row.get("pairs_capped")]
+    if not capped:
+        return None
+    limits = sorted({row.get("pairs_limit") for row in capped
+                     if isinstance(row.get("pairs_limit"), int)})
+    grenze = limits[0] if limits else MAX_PAIRS_PER_SECTION
+    # "50 000", not "50,000": the notes are German prose, the grouping is a space.
+    zahl = f"{grenze:,}".replace(",", " ")
+    titel = f"{len(capped)} Titel" if len(capped) == 1 else f"{len(capped)} Titeln"
+    return (f"Bei {titel} war die Paarsuche am Deckel ({zahl}) - dort ist das "
+            f"gezeigte R/R das beste GEFUNDENE Paar; ein besseres Paar weiter "
+            f"hinten in der Aufzählung wurde nicht geprüft.")
 
 
 def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None,
@@ -532,7 +599,9 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
     ``deadline_seconds`` bounds the WHOLE run. Every candidate is still asked -
     only the waiting ends - and a title that has not finished by then is named
     ``deadline_exceeded`` in ``failures``. Nothing is raised for a single title:
-    a symbol is either a row, an exclusion or a failure.
+    a symbol is either a row, an exclusion or a failure. ``notes`` adds what the
+    counters cannot say - a capped pair search is named there, because its rows
+    show the best pair FOUND, not the best that exists.
     """
     rows = list(candidates or ())
     counts = {"with_next_earnings": 0, "with_chain": 0, "with_expiry_after_earnings": 0,
@@ -592,4 +661,9 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
     run.results.sort(key=lambda entry: (-abs(entry.get("gap_pct") or 0.0),
                                         str(entry.get("symbol") or "")))
     counts["shown"] = len(run.results)
+    # One sentence for the whole answer when a search hit the ceiling: every
+    # R/R on such a row is the best pair FOUND, not the best that exists.
+    gekappt = cap_note(run.results)
+    if gekappt:
+        run.notes.append(gekappt)
     return run
