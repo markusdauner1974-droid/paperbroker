@@ -1038,11 +1038,12 @@ def _fixture():
 
 
 CONTRACT_KEYS = {"schema_version", "day", "day_state", "threshold_pct", "min_turnover_usd",
-                 "rr_min", "min_oi", "counts", "results",
+                 "rr_min", "min_oi", "max_required_move_pct", "counts", "results",
                  "excluded", "failures", "notes"}
 COUNT_KEYS = ("calendar_rows", "gaps_computed", "over_threshold", "turnover_passed",
               "price_passed", "candidates", "with_next_earnings",
-              "with_expiry_after_earnings", "with_chain", "with_spread_ge_rr", "shown")
+              "with_expiry_after_earnings", "with_chain", "with_spread_ge_rr",
+              "with_reachable_move", "shown")
 ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_label", "close",
             "turnover_usd", "earnings_date", "next_earnings_date", "expiration", "dte",
             "long_strike", "short_strike", "long_delta", "short_delta", "net_debit",
@@ -1075,6 +1076,18 @@ class EndpointTests(unittest.TestCase):
         self.assertTrue(all(isinstance(note, str) for note in body["notes"]))
         for row in body["results"]:
             self.assertEqual(set(row), ROW_KEYS)
+
+    def test_results_are_sorted_by_the_hit_rate_not_by_the_gap(self):
+        # The gap order would put AAA (|10 %|) first; the ORDER is the measured
+        # frequency, and BBB reaches its required move more often.
+        _antwort, body, _chains, _dates = self._get()
+        self.assertEqual([row["symbol"] for row in body["results"]], ["BBB", "AAA"])
+        self.assertGreater(body["results"][0]["hit_rate_pct"],
+                           body["results"][1]["hit_rate_pct"])
+        self.assertGreater(abs(body["results"][1]["gap_pct"]),
+                           abs(body["results"][0]["gap_pct"]))
+        rates = [row["hit_rate_pct"] for row in body["results"]]
+        self.assertEqual(sorted(rates, reverse=True), rates)
 
     def test_the_row_carries_the_agreed_numbers(self):
         _antwort, body, _chains, _dates = self._get()
@@ -1135,6 +1148,72 @@ class EndpointTests(unittest.TestCase):
         # ONE chain request per symbol, for the whole chain (no expiry).
         self.assertEqual(sorted(symbol for symbol, _expiry in chains.calls), ["AAA", "BBB"])
         self.assertTrue(all(expiry is None for _symbol, expiry in chains.calls))
+
+    def test_the_answer_names_the_move_bound_it_applied(self):
+        _antwort, body, _chains, _dates = self._get()
+        self.assertEqual(body["max_required_move_pct"], 20.0)
+
+    def test_a_tighter_move_bound_empties_the_list_and_names_the_reason(self):
+        # A bound of 1 % is below both required moves (7.61 % and 8.18 %): no
+        # row, two exclusions with their numbers - and no history request.
+        _antwort, body, _chains, _dates = self._get(f"?day={DAY}&max_required_move_pct=1")
+        self.assertEqual(body["max_required_move_pct"], 1.0)
+        self.assertEqual(body["results"], [])
+        self.assertEqual(body["counts"]["with_reachable_move"], 0)
+        self.assertEqual(body["counts"]["with_spread_ge_rr"], 2)
+        gruende = {entry["symbol"]: entry for entry in body["excluded"]
+                   if entry["reason"] == gap_funnel_mod.REASON_MOVE_TOO_FAR}
+        self.assertEqual(set(gruende), {"AAA", "BBB"})
+        for eintrag in gruende.values():
+            self.assertEqual(eintrag["reason"], gap_funnel_mod.REASON_MOVE_TOO_FAR)
+            self.assertEqual(eintrag["max_required_move_pct"], 1.0)
+            self.assertIsNotNone(eintrag["required_move_pct"])
+
+    def test_a_move_bound_above_the_rows_keeps_them(self):
+        _antwort, body, _chains, _dates = self._get(f"?day={DAY}&max_required_move_pct=30")
+        self.assertEqual(body["max_required_move_pct"], 30.0)
+        self.assertEqual([row["symbol"] for row in body["results"]], ["BBB", "AAA"])
+        self.assertEqual(body["counts"]["with_reachable_move"], 2)
+
+    def test_an_unusable_move_bound_is_a_400(self):
+        for wert in ("0", "-5", "101", "abc", "nan", "inf"):
+            with self.subTest(wert=wert):
+                antwort, body, _chains, _dates = self._get(
+                    f"?day={DAY}&max_required_move_pct={wert}")
+                self.assertEqual(antwort.status_code, 400)
+                self.assertEqual(body["error"], "invalid_parameter")
+                self.assertIn("max_required_move_pct", body["message"])
+
+    def test_the_reachability_fields_carry_two_decimals_or_none(self):
+        _antwort, body, _chains, _dates = self._get()
+        for row in body["results"]:
+            for name in ("volatility_pct", "daily_move_pct", "hit_rate_pct",
+                         "required_move_pct"):
+                wert = row[name]
+                self.assertIsNotNone(wert, name)
+                self.assertEqual(round(wert, 2), wert, name)
+            self.assertEqual(row["history_state"], "ok")
+            self.assertIsInstance(row["windows_measured"], int)
+            self.assertGreater(row["windows_measured"], 0)
+            self.assertIn(row["required_move_direction"], ("up", "down"))
+
+    def test_a_short_history_is_null_and_not_zero(self):
+        # 40 sessions cannot answer a question about a 155-session window: the
+        # row keeps nulls and a named state - a 0 % would read as "measured,
+        # never happened".
+        calendar, history, chains, dates = _fixture()
+        history.bars["BBB"] = _series(92.0, count=40)
+        antwort, body, _chains, _dates = self._get(
+            fixture=(calendar, history, chains, dates))
+        self.assertEqual(antwort.status_code, 200)
+        bbb = next(row for row in body["results"] if row["symbol"] == "BBB")
+        self.assertEqual(bbb["history_state"], "too_short")
+        self.assertIsNone(bbb["hit_rate_pct"])
+        self.assertIsNone(bbb["volatility_pct"])
+        self.assertIsNone(bbb["daily_move_pct"])
+        self.assertEqual(bbb["windows_measured"], 0)
+        # A row without a measurement stands behind a measured one.
+        self.assertEqual(body["results"][0]["symbol"], "AAA")
 
     def test_a_broken_chain_is_a_failure_not_a_row(self):
         calendar, history, chains, dates = _fixture()
