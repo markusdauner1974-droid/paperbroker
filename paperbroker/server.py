@@ -26,7 +26,7 @@ from urllib.parse import urlencode
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
 
-from . import exclusions, gap_funnel, quote_age
+from . import exclusions, gap_funnel, quote_age, spread_detail
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
@@ -1227,8 +1227,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             kandidat -= timedelta(days=1)
         return None
 
-    def _gap_scan_args():
-        """``day`` and the four numbers of one gap scan, or a ready JSON error.
+    def _gap_day():
+        """``(day, reaction, error)`` of the request - one validation, three routes.
 
         The day is validated before it touches the calendar: a string that is
         no date would otherwise be asked for and come back as "no rows", i.e.
@@ -1250,6 +1250,120 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         ``_US_CLOSE_HOUR_ET`` - the evening scan of the day that just closed is
         the normal use, and a date-only check would forbid exactly that.
         """
+        day = (request.args.get("day") or "").strip()
+        # Exactly the agreed shape: the code alone, nothing to explain.
+        if not day or not _DATE_RE.match(day):
+            return None, None, _gap_scan_error(400, "invalid_day")
+        try:
+            reaction = datetime.strptime(day, "%Y-%m-%d").date()
+        except ValueError:
+            return None, None, _gap_scan_error(400, "invalid_day")
+
+        # The calendar's own "today" (New York), never the UTC date: after
+        # 19:00 ET a UTC date is already the next day.
+        heute = _us_today(now_fn)
+        if reaction > heute:
+            return None, None, _gap_scan_error(
+                400, "invalid_day", "the reaction day lies in the future"
+            )
+        # A closed market has no session to measure. Checked BEFORE the close
+        # check below, because "Saturday, still open" is the wrong sentence for
+        # a day that never opened at all.
+        if not is_us_trading_day(reaction):
+            return None, None, _gap_scan_error(
+                400, "invalid_day", "the reaction day is no US trading day"
+            )
+        if reaction == heute:
+            # Same date is not the same session: before the close the day has
+            # no close to measure, from 16:00 ET on it does.
+            jetzt_et = arrow.get(now_fn()).to("America/New_York")
+            if jetzt_et.hour < _US_CLOSE_HOUR_ET:
+                return None, None, _gap_scan_error(
+                    400, "invalid_day", "the reaction session has not closed yet"
+                )
+        return day, reaction, None
+
+    def _gap_calendar(day, reaction):
+        """Both sessions of one gap day: ``(by_day, previous, error)``.
+
+        The three gap routes (scan, spreads, one spread's detail) ask the same
+        two questions of the calendar - the reaction day and its previous
+        TRADING day - and every one of them has to fail the same way: a 503 when
+        the calendar is not configured or not readable, never a quiet day built
+        from half a candidate set. That rule is written here once.
+        """
+        previous = _gap_previous_trading_day(reaction)
+        if previous is None:
+            # No session inside the window is no answer: the calendar is not
+            # believable, and a calendar-day fallback would hide Friday's rows.
+            app.logger.error("gap calendar: no trading day before %s", day)
+            return {}, None, _gap_scan_error(
+                503, "calendar_unavailable",
+                f"no US trading day within {_GAP_PREVIOUS_LOOKBACK_DAYS} days "
+                f"before {day} - the trading calendar is unusable",
+            )
+        tage = {DAY_PREV: previous.isoformat(), DAY_TODAY: day}
+
+        try:
+            antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("gap calendar: calendar failed for %s and %s",
+                                 tage[DAY_PREV], day)
+            return {}, None, _gap_scan_error(
+                503, "calendar_unavailable", "the earnings calendar could not be read"
+            )
+        roh = antwort.get("days") if isinstance(antwort, dict) else None
+        roh = roh if isinstance(roh, dict) else {}
+        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
+        if gesamt == "not_configured":
+            # Setup fact, not an outage - and it is the same answer as no
+            # calendar at all: there is no candidate set to build.
+            return {}, None, _gap_scan_error(
+                503, "calendar_unavailable",
+                "no earnings source is configured - there is nothing to scan",
+                source_code="not_configured",
+            )
+
+        # The reaction day is checked FIRST: it is the subject of the request,
+        # so its failure is the one worth naming. Both days must be readable -
+        # half a candidate set would look like a quiet day, not like a hole.
+        gelesen = {}
+        for schluessel in (DAY_TODAY, DAY_PREV):
+            iso = tage[schluessel]
+            eintrag = roh.get(iso)
+            if not isinstance(eintrag, dict):
+                # No entry for a requested day is no answer, not an empty day.
+                quell_code, quell_status, message = _calendar_failure(
+                    antwort.get("error") if isinstance(antwort, dict) else None, iso
+                )
+                return {}, None, _gap_scan_error(
+                    503, "calendar_unavailable", message,
+                    source_code=quell_code, source_status=quell_status,
+                )
+            zustand = str(eintrag.get("state") or gesamt or "unavailable")
+            zeilen = eintrag.get("rows") or []
+            if zustand == "not_configured":
+                return {}, None, _gap_scan_error(
+                    503, "calendar_unavailable",
+                    "no earnings source is configured - there is nothing to scan",
+                    source_code="not_configured",
+                )
+            if zustand == "unavailable" or not isinstance(zeilen, list):
+                quell_code, quell_status, message = _calendar_failure(eintrag.get("error"), iso)
+                return {}, None, _gap_scan_error(
+                    503, "calendar_unavailable", message,
+                    source_code=quell_code, source_status=quell_status,
+                )
+            gelesen[schluessel] = {"state": zustand, "rows": zeilen}
+        return gelesen, previous, None
+
+    def _gap_scan_args():
+        """``day`` and the four numbers of one gap scan, or a ready JSON error.
+
+        The day itself is validated by ``_gap_day`` (400 for everything that is
+        not a finished US session); this function adds the four limits of the
+        scan, each with its own error code.
+        """
         erlaubt = {"day"} | set(_GAP_SCAN_PARAMETERS)
         unbekannt = sorted(set(request.args) - erlaubt)
         if unbekannt:
@@ -1264,37 +1378,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 400, "duplicate_parameter", f"duplicate parameter(s): {', '.join(doppelt)}"
             )
 
-        day = (request.args.get("day") or "").strip()
-        # Exactly the agreed shape: the code alone, nothing to explain.
-        if not day or not _DATE_RE.match(day):
-            return None, _gap_scan_error(400, "invalid_day")
-        try:
-            reaction = datetime.strptime(day, "%Y-%m-%d").date()
-        except ValueError:
-            return None, _gap_scan_error(400, "invalid_day")
-
-        # The calendar's own "today" (New York), never the UTC date: after
-        # 19:00 ET a UTC date is already the next day.
-        heute = _us_today(now_fn)
-        if reaction > heute:
-            return None, _gap_scan_error(
-                400, "invalid_day", "the reaction day lies in the future"
-            )
-        # A closed market has no session to measure. Checked BEFORE the close
-        # check below, because "Saturday, still open" is the wrong sentence for
-        # a day that never opened at all.
-        if not is_us_trading_day(reaction):
-            return None, _gap_scan_error(
-                400, "invalid_day", "the reaction day is no US trading day"
-            )
-        if reaction == heute:
-            # Same date is not the same session: before the close the day has
-            # no close to measure, from 16:00 ET on it does.
-            jetzt_et = arrow.get(now_fn()).to("America/New_York")
-            if jetzt_et.hour < _US_CLOSE_HOUR_ET:
-                return None, _gap_scan_error(
-                    400, "invalid_day", "the reaction session has not closed yet"
-                )
+        day, reaction, fehler = _gap_day()
+        if fehler is not None:
+            return None, fehler
 
         limits = {}
         for name, default, ceiling, integer, minimum, code in (
@@ -1361,69 +1447,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             return fehler
         day = args["day"]
         reaction = args["reaction"]
-        previous = _gap_previous_trading_day(reaction)
-        if previous is None:
-            # No session inside the window is no answer: the calendar is not
-            # believable, and a calendar-day fallback would hide Friday's rows.
-            app.logger.error("gap scan: no trading day before %s", day)
-            return _gap_scan_error(
-                503, "calendar_unavailable",
-                f"no US trading day within {_GAP_PREVIOUS_LOOKBACK_DAYS} days "
-                f"before {day} - the trading calendar is unusable",
-            )
-        tage = {DAY_PREV: previous.isoformat(), DAY_TODAY: day}
-
-        try:
-            antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
-        except Exception:                                    # noqa: BLE001 - classified here
-            app.logger.exception("gap scan: calendar failed for %s and %s",
-                                 tage[DAY_PREV], day)
-            return _gap_scan_error(
-                503, "calendar_unavailable", "the earnings calendar could not be read"
-            )
-        roh = antwort.get("days") if isinstance(antwort, dict) else None
-        roh = roh if isinstance(roh, dict) else {}
-        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
-        if gesamt == "not_configured":
-            # Setup fact, not an outage - and it is the same answer as no
-            # calendar at all: there is no candidate set to build.
-            return _gap_scan_error(
-                503, "calendar_unavailable",
-                "no earnings source is configured - there is nothing to scan",
-                source_code="not_configured",
-            )
-
-        # The reaction day is checked FIRST: it is the subject of the request,
-        # so its failure is the one worth naming. Both days must be readable -
-        # half a candidate set would look like a quiet day, not like a hole.
-        gelesen = {}
-        for schluessel in (DAY_TODAY, DAY_PREV):
-            iso = tage[schluessel]
-            eintrag = roh.get(iso)
-            if not isinstance(eintrag, dict):
-                # No entry for a requested day is no answer, not an empty day.
-                quell_code, quell_status, message = _calendar_failure(
-                    antwort.get("error") if isinstance(antwort, dict) else None, iso
-                )
-                return _gap_scan_error(
-                    503, "calendar_unavailable", message,
-                    source_code=quell_code, source_status=quell_status,
-                )
-            zustand = str(eintrag.get("state") or gesamt or "unavailable")
-            zeilen = eintrag.get("rows") or []
-            if zustand == "not_configured":
-                return _gap_scan_error(
-                    503, "calendar_unavailable",
-                    "no earnings source is configured - there is nothing to scan",
-                    source_code="not_configured",
-                )
-            if zustand == "unavailable" or not isinstance(zeilen, list):
-                quell_code, quell_status, message = _calendar_failure(eintrag.get("error"), iso)
-                return _gap_scan_error(
-                    503, "calendar_unavailable", message,
-                    source_code=quell_code, source_status=quell_status,
-                )
-            gelesen[schluessel] = {"state": zustand, "rows": zeilen}
+        gelesen, previous, fehler = _gap_calendar(day, reaction)
+        if fehler is not None:
+            return fehler
 
         kandidatenzeilen = reaction_day_rows(
             gelesen[DAY_PREV]["rows"],
@@ -1592,61 +1618,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             return fehler
         day = args["day"]
         reaction = args["reaction"]
-        previous = _gap_previous_trading_day(reaction)
-        if previous is None:
-            app.logger.error("gap spreads: no trading day before %s", day)
-            return _gap_scan_error(
-                503, "calendar_unavailable",
-                f"no US trading day within {_GAP_PREVIOUS_LOOKBACK_DAYS} days "
-                f"before {day} - the trading calendar is unusable",
-            )
-        tage = {DAY_PREV: previous.isoformat(), DAY_TODAY: day}
-
-        try:
-            antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
-        except Exception:                                    # noqa: BLE001 - classified here
-            app.logger.exception("gap spreads: calendar failed for %s and %s",
-                                 tage[DAY_PREV], day)
-            return _gap_scan_error(
-                503, "calendar_unavailable", "the earnings calendar could not be read"
-            )
-        roh = antwort.get("days") if isinstance(antwort, dict) else None
-        roh = roh if isinstance(roh, dict) else {}
-        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
-        if gesamt == "not_configured":
-            return _gap_scan_error(
-                503, "calendar_unavailable",
-                "no earnings source is configured - there is nothing to scan",
-                source_code="not_configured",
-            )
-
-        gelesen = {}
-        for schluessel in (DAY_TODAY, DAY_PREV):
-            iso = tage[schluessel]
-            eintrag = roh.get(iso)
-            if not isinstance(eintrag, dict):
-                quell_code, quell_status, message = _calendar_failure(
-                    antwort.get("error") if isinstance(antwort, dict) else None, iso
-                )
-                return _gap_scan_error(
-                    503, "calendar_unavailable", message,
-                    source_code=quell_code, source_status=quell_status,
-                )
-            zustand = str(eintrag.get("state") or gesamt or "unavailable")
-            zeilen = eintrag.get("rows") or []
-            if zustand == "not_configured":
-                return _gap_scan_error(
-                    503, "calendar_unavailable",
-                    "no earnings source is configured - there is nothing to scan",
-                    source_code="not_configured",
-                )
-            if zustand == "unavailable" or not isinstance(zeilen, list):
-                quell_code, quell_status, message = _calendar_failure(eintrag.get("error"), iso)
-                return _gap_scan_error(
-                    503, "calendar_unavailable", message,
-                    source_code=quell_code, source_status=quell_status,
-                )
-            gelesen[schluessel] = {"state": zustand, "rows": zeilen}
+        gelesen, previous, fehler = _gap_calendar(day, reaction)
+        if fehler is not None:
+            return fehler
 
         kandidatenzeilen = reaction_day_rows(
             gelesen[DAY_PREV]["rows"],
@@ -1782,6 +1756,260 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             failures=[eintrag.as_dict() for eintrag in lauf.failures],
             notes=notes,
         )
+
+    # ------------------------------------------------------------------ #
+    # ONE spread of that list, in full (GET /api/v1/gap-spreads/detail).  #
+    #                                                                     #
+    # The list answers WHICH spread a candidate trades and what it costs. #
+    # This route answers what that ONE spread looks like: both legs with  #
+    # their quotes, the four numbers of the position, the model value     #
+    # today beside the exact payout at expiration, and the six scenarios. #
+    #                                                                     #
+    # The spread is re-derived through the SAME stages as the list        #
+    # (calendar -> gap -> direction -> report date -> chain -> expiry ->  #
+    # qualifying pair) instead of being taken from the client: the page   #
+    # may only name a symbol and a day, so a strike sent by a browser     #
+    # could never move the answer away from the row it claims to describe.#
+    # Cost is one gap request and one chain request, not the whole day.   #
+    # ------------------------------------------------------------------ #
+    #: The exclusion of the funnel -> the code this route answers with. A
+    #: title that never had a chain is ``chain_unavailable`` from here: the
+    #: missing thing is the chain, and a made-up second code would only be a
+    #: synonym with a different spelling.
+    _SPREAD_DETAIL_CODES = {
+        gap_funnel.REASON_NO_NEXT_EARNINGS: "no_next_earnings",
+        gap_funnel.REASON_NO_EXPIRY: "no_expiry_after_earnings",
+        gap_funnel.REASON_NO_SPREAD: "no_spread_ge_rr",
+        gap_funnel.REASON_NOT_OPTIONABLE: "chain_unavailable",
+    }
+    #: A ticker as the calendar spells it - six characters, one dot for a class.
+    _SPREAD_DETAIL_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}([.\-][A-Z0-9]{1,3})?$")
+
+    def _spread_detail_args():
+        """``symbol``/``day``/``reaction`` of one detail request, or an error.
+
+        The route knows exactly two parameters. Everything the list allows to
+        move its thresholds (``gap_threshold_pct``, ``min_turnover_usd``,
+        ``max_candidates``, ``min_price``) is NOT re-accepted here: the detail
+        re-derives the row with the route's defaults, and accepting a different
+        threshold would let one request describe a spread the list never showed.
+        """
+        erlaubt = {"day", "symbol"}
+        unbekannt = sorted(set(request.args) - erlaubt)
+        if unbekannt:
+            return None, _gap_scan_error(
+                400, "unknown_parameter",
+                f"unknown parameter(s): {', '.join(unbekannt)}. "
+                f"Allowed: day, symbol",
+            )
+        doppelt = sorted(name for name in erlaubt if len(request.args.getlist(name)) > 1)
+        if doppelt:
+            return None, _gap_scan_error(
+                400, "duplicate_parameter", f"duplicate parameter(s): {', '.join(doppelt)}"
+            )
+        day, reaction, fehler = _gap_day()
+        if fehler is not None:
+            return None, fehler
+        symbol = (request.args.get("symbol") or "").strip().upper()
+        if not _SPREAD_DETAIL_SYMBOL_RE.match(symbol):
+            # No ticker shape, no ticker: "unknown" is the honest answer, and it
+            # costs neither the calendar nor the chain a request.
+            return None, _gap_scan_error(
+                404, "unknown_symbol", f"{symbol or '?'} ist kein gültiges Symbol."
+            )
+        return {"symbol": symbol, "day": day, "reaction": reaction}, None
+
+    def _detail_leg(section, strike, option_type):
+        """The contract of ``section`` at ``strike`` and ``option_type``, or ``None``.
+
+        The strike is compared with a tolerance: the row carries it rounded to
+        two decimals, and a strike of 96.70 must still find its contract. A leg
+        that is not in the chain is not invented - the caller answers 404.
+        """
+        if not isinstance(strike, (int, float)):
+            return None
+        for quote in section or ():
+            asset = getattr(quote, "asset", None)
+            if option_type is not None and getattr(asset, "option_type", None) != option_type:
+                continue
+            wert = getattr(asset, "strike", None)
+            if isinstance(wert, (int, float)) and math.isfinite(float(wert)):
+                if abs(float(wert) - float(strike)) < 1e-6:
+                    return quote
+        return None
+
+    @app.get("/api/v1/gap-spreads/detail")
+    def api_gap_spreads_detail():
+        """One spread of the funnel's list: legs, numbers, series, scenarios.
+
+        ``symbol`` and ``day`` are the whole request. The spread itself is
+        re-derived with the SAME stages and the SAME defaults as
+        ``/api/v1/gap-spreads`` (gap threshold, turnover, price, report date,
+        expiry strictly after it, best pair with R/R >= 2, |delta| of the bought
+        leg >= 20, net debit >= 0.50 USD), so the answer describes the row the
+        page clicked and not a second opinion about the same chain.
+
+        A missing chain, a chain that lost one of the two legs, a day that is
+        no finished session and a symbol that has no row that day are all named:
+        404 ``chain_unavailable`` / ``leg_not_listed`` / ``unknown_symbol`` and
+        400 ``invalid_day``. There is no partial answer - half a spread would
+        price as if the other half did not exist.
+        """
+        args, fehler = _spread_detail_args()
+        if fehler is not None:
+            return fehler
+        symbol, day, reaction = args["symbol"], args["day"], args["reaction"]
+
+        gelesen, previous, fehler = _gap_calendar(day, reaction)
+        if fehler is not None:
+            return fehler
+        # The candidate rows of that day, exactly as the list builds them: a
+        # title may have reported after the PREVIOUS session, so looking only at
+        # the reaction day's rows would call half the list unknown.
+        kandidatenzeilen = reaction_day_rows(
+            gelesen[DAY_PREV]["rows"],
+            gelesen[DAY_TODAY]["rows"],
+            previous_date=previous,
+            day_date=reaction,
+        )
+        zeile = next((eintrag for eintrag in kandidatenzeilen
+                      if eintrag.get("symbol") == symbol), None)
+        if zeile is None:
+            return _gap_scan_error(
+                404, "unknown_symbol",
+                f"{symbol} steht am {day} nicht im Reaktionskalender - zu diesem "
+                f"Titel gibt es an diesem Tag keine Zeile.",
+            )
+
+        try:
+            gemessen = fetch_gaps([symbol], reaction, adapter=gap_adapter,
+                                  deadline_seconds=_GAP_DEADLINE_SECONDS)
+        except Exception:                                    # noqa: BLE001 - one 503, not HTML
+            app.logger.exception("spread detail: measurement failed for %s", symbol)
+            return _gap_scan_error(
+                503, "gap_source_failed", "the gap source could not be read"
+            )
+        code = gemessen.failures.get(symbol)
+        if code is not None:
+            return _gap_scan_error(
+                404, "no_gap",
+                f"Der Gap von {symbol} ließ sich am {day} nicht messen ({code}).",
+            )
+
+        ausgewaehlt = select_candidates(
+            gemessen.rows,
+            threshold_pct=DEFAULT_THRESHOLD_PCT,
+            min_turnover_usd=DEFAULT_MIN_TURNOVER_USD,
+            max_candidates=DEFAULT_MAX_CANDIDATES,
+            min_price=DEFAULT_MIN_PRICE,
+        )
+        kandidat = next((eintrag for eintrag in ausgewaehlt if eintrag.symbol == symbol), None)
+        if kandidat is None:
+            return _gap_scan_error(
+                404, "no_candidate",
+                f"{symbol} ist am {day} kein Kandidat des Trichters (Schwelle "
+                f"{DEFAULT_THRESHOLD_PCT:.1f} %, Umsatz >= "
+                f"{DEFAULT_MIN_TURNOVER_USD:.0f} USD, Kurs >= "
+                f"{DEFAULT_MIN_PRICE:.2f} USD).",
+            )
+
+        # One candidate, one chain request - memoised, because the legs are
+        # looked up in the SAME chain the funnel priced.
+        ketten = {}
+
+        def _chain(ticker):
+            if ticker not in ketten:
+                ketten[ticker] = broker.get_options(ticker, None)
+            return ketten[ticker]
+
+        try:
+            lauf = gap_funnel.run_funnel(
+                [{
+                    "symbol": kandidat.symbol,
+                    "name": zeile.get("name"),
+                    "gap_pct": kandidat.gap_pct,
+                    "direction": kandidat.direction,
+                    "strategy": kandidat.strategy,
+                    "close": kandidat.close,
+                    "turnover_usd": kandidat.turnover_usd,
+                    "earnings_date": zeile.get("earnings_date"),
+                }],
+                fetch_next_earnings=next_earnings_adapter.get_next_earnings,
+                fetch_chain=_chain,
+                day=reaction,
+                now_fn=now_fn,
+                max_workers=1,
+                deadline_seconds=gap_funnel.DEFAULT_DEADLINE_SECONDS,
+                rr_min=gap_funnel.DEFAULT_RR_MIN,
+                min_oi=gap_funnel.DEFAULT_MIN_OI,
+            )
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("spread detail: funnel failed for %s", symbol)
+            return _gap_scan_error(
+                503, "scan_failed", "the spread scan could not be completed"
+            )
+
+        if lauf.results:
+            row = lauf.results[0]
+        elif lauf.excluded:
+            grund = lauf.excluded[0]
+            return _gap_scan_error(
+                404, _SPREAD_DETAIL_CODES.get(grund.reason, "no_spread_ge_rr"),
+                grund.message,
+            )
+        else:
+            fehlschlag = lauf.failures[0] if lauf.failures else None
+            return _gap_scan_error(
+                404, "chain_unavailable",
+                fehlschlag.message if fehlschlag
+                else f"Die Optionskette von {symbol} ist nicht lesbar.",
+            )
+
+        chain = ketten.get(symbol) or []
+        section = gap_funnel.slice_chain(chain, row["expiration"])
+        option_type = gap_funnel.strategy_option_type(row["strategy"])
+        lang = _detail_leg(section, row["long_strike"], option_type)
+        kurz = _detail_leg(section, row["short_strike"], option_type)
+        if lang is None or kurz is None:
+            fehlend = row["long_strike"] if lang is None else row["short_strike"]
+            return _gap_scan_error(
+                404, "leg_not_listed",
+                f"Der Strike {fehlend} fehlt in der Kette von {symbol} zum "
+                f"Verfall {row['expiration']}.",
+            )
+
+        # The centre of the chart: the chain's own underlying price when it
+        # carries one, else the close of the reaction day. Named in the answer,
+        # because a price axis drawn around the wrong number is a lie with a
+        # correct-looking shape.
+        spot = None
+        for quote in section:
+            wert = getattr(quote, "underlying_price", None)
+            if isinstance(wert, (int, float)) and math.isfinite(float(wert)) and float(wert) > 0:
+                spot = float(wert)
+                break
+        spot_source = "chain_underlying"
+        if spot is None:
+            spot = row.get("close")
+            spot_source = "row_close"
+
+        try:
+            detail = spread_detail.build_detail(
+                symbol=symbol,
+                name=row.get("name"),
+                day=reaction,
+                strategy=row.get("strategy"),
+                strategy_label=row.get("strategy_label"),
+                expiration=datetime.strptime(row["expiration"], "%Y-%m-%d").date(),
+                option_type=option_type,
+                long_quote=lang,
+                short_quote=kurz,
+                spot=spot,
+                spot_source=spot_source,
+            )
+        except spread_detail.SpreadDetailError as exc:
+            return _gap_scan_error(404, exc.code, exc.message)
+        return jsonify(detail)
 
     def _earnings_view(ticker, expirations, offered):
         """What the page shows - derived from the same calls the API makes.
