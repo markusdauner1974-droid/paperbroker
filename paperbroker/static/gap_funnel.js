@@ -31,6 +31,9 @@
     empty: document.getElementById('funnel-empty'),
     wrap: document.getElementById('funnel-table-wrap'),
     tbody: document.getElementById('funnel-tbody'),
+    detail: document.getElementById('funnel-detail'),
+    detailSummary: document.getElementById('funnel-detail-summary'),
+    detailBody: document.getElementById('funnel-detail-body'),
     excludedBlock: document.getElementById('funnel-excluded-block'),
     excludedSummary: document.getElementById('funnel-excluded-summary'),
     excluded: document.getElementById('funnel-excluded'),
@@ -44,6 +47,11 @@
   // Mindest-OI bleiben beim Server: ein Feld dafuer waere eine zweite Wahrheit
   // neben seinen Standardwerten.
   var API = '/api/v1/gap-spreads';
+  // Das Detail EINES Spreads: nur Symbol und Tag. Welche Strikes und welcher
+  // Verfall gelten, entscheidet die Route mit denselben Stufen wie die Liste -
+  // der Browser schickt keine Strike-Wahl, die zur Zeile im Widerspruch stehen
+  // koennte.
+  var DETAIL_API = '/api/v1/gap-spreads/detail';
 
   // Die Strategie waehlt die Route. Hier steht nur, wie sie heisst, falls die
   // Antwort keinen Klartext mitliefert.
@@ -67,6 +75,7 @@
   var generation = 0;      // nur die neueste Anfrage darf zeichnen
   var timer = null;
   var current = null;      // {day, body, at}
+  var detailGeneration = 0;  // dasselbe fuer das Detail eines Spreads
 
   function n(value) { return typeof value === 'number' && isFinite(value) ? value : 0; }
 
@@ -99,6 +108,18 @@
 
   function liquidityWord(value) {
     return value === 'full' ? 'voll liquide' : 'dünn';
+  }
+
+  // Ein Vorzeichen ist eine Aussage, kein Schmuck: "+185,00" und "-145,00"
+  // stehen als Text da, damit die Richtung nicht an einer Farbe haengt.
+  function signedDe(value, digits) {
+    if (!num(value)) return '–';
+    return (value > 0 ? '+' : '') + de(value, digits);
+  }
+
+  function pctText(value) {
+    if (!num(value)) return '–';
+    return (value > 0 ? '+' : '') + de(value, 0) + ' %';
   }
 
   function two(value) { return (value < 10 ? '0' : '') + value; }
@@ -187,6 +208,7 @@
     el.notes.textContent = '';
     el.stale.hidden = true;
     el.stale.textContent = '';
+    clearDetail();
     hideList(el.excludedBlock, el.excluded);
     hideList(el.failuresBlock, el.failures);
   }
@@ -332,6 +354,24 @@
         : 'nächster bekannter Bericht'));
     row.appendChild(optionsCell(entry));
 
+    // Die ZEILE ist der Griff zum Detail - kein Knopf, kein Chevron. Sie ist
+    // per Tab erreichbar (tabindex), nennt ihr Ziel (aria-controls) und ihren
+    // Zustand (aria-expanded, vom Setzen der aktiven Zeile gepflegt).
+    row.className = 'row-detail';
+    row.setAttribute('tabindex', '0');
+    row.setAttribute('aria-expanded', 'false');
+    row.setAttribute('aria-controls', 'funnel-detail');
+    row.addEventListener('click', function () {
+      loadDetail(entry.symbol, row);
+    });
+    row.addEventListener('keydown', function (ev) {
+      // Enter und Leertaste oeffnen wie ein Klick. Space muss gebremst werden,
+      // sonst scrollt die Seite, statt das Detail zu laden.
+      if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+      ev.preventDefault();
+      loadDetail(entry.symbol, row);
+    });
+
     return row;
   }
 
@@ -368,6 +408,321 @@
     return entry.message || entry.code || 'Grund unbekannt';
   }
 
+  // --- Detail eines Spreads ------------------------------------------------ //
+
+  function setActiveRow(row) {
+    var rows = el.tbody.childNodes || [];
+    for (var i = 0; i < rows.length; i += 1) {
+      var aktiv = rows[i] === row;
+      rows[i].setAttribute('aria-expanded', aktiv ? 'true' : 'false');
+      if (aktiv) rows[i].classList.add('row-active');
+      else rows[i].classList.remove('row-active');
+    }
+  }
+
+  function clearDetail() {
+    detailGeneration += 1;             // eine laufende Anfrage darf nicht mehr zeichnen
+    if (!el.detail) return;
+    el.detail.hidden = true;
+    el.detail.open = false;
+    if (el.detailSummary) el.detailSummary.textContent = 'Detail zum Spread';
+    if (el.detailBody) el.detailBody.textContent = '';
+  }
+
+  function openDetail(summary) {
+    if (!el.detail) return;
+    el.detail.hidden = false;
+    el.detail.open = true;
+    if (el.detailSummary) el.detailSummary.textContent = summary;
+    // In den Blick scrollen, nicht springen: der Block steht zwischen Tabelle
+    // und Ausschluessen, also direkt unter der geklickten Zeile.
+    if (typeof el.detail.scrollIntoView === 'function') {
+      el.detail.scrollIntoView({ block: 'nearest' });
+    }
+  }
+
+  function messageForDetail(antwort) {
+    var body = antwort.body;
+    var code = body && body.error;
+    if (code === 'unknown_symbol') {
+      return 'Zu diesem Titel gibt es an diesem Tag keine Zeile.';
+    }
+    if (code === 'leg_not_listed') {
+      return 'Ein Leg dieses Spreads liegt nicht in der Kette.';
+    }
+    if (code === 'chain_unavailable') {
+      return 'Die Optionskette dieses Titels ist nicht lesbar.';
+    }
+    if (code === 'no_next_earnings') {
+      return 'Für diesen Titel ist kein nächster Berichtstermin bekannt.';
+    }
+    if (code === 'no_expiry_after_earnings') {
+      return 'Kein gelisteter Verfall liegt nach dem nächsten Bericht.';
+    }
+    if (code === 'no_candidate' || code === 'no_spread_ge_rr' || code === 'no_gap') {
+      return body && body.message ? body.message
+        : 'Dieser Titel ist an diesem Tag kein Kandidat des Trichters.';
+    }
+    return messageFor(antwort.status, body);
+  }
+
+  function loadDetail(symbol, row) {
+    if (!current || !symbol) return;
+    var day = current.day;
+    var gen = detailGeneration + 1;
+    detailGeneration = gen;
+    setActiveRow(row);
+    openDetail('Detail zu ' + symbol + ' — lädt …');
+    el.detailBody.textContent = '';
+
+    fetch(DETAIL_API + '?symbol=' + encodeURIComponent(symbol)
+        + '&day=' + encodeURIComponent(day),
+      { headers: { Accept: 'application/json' }, cache: 'no-store' })
+      .then(function (res) {
+        return res.text().then(function (text) {
+          var body = null;
+          try { body = JSON.parse(text); } catch (err) { body = null; }
+          return { ok: res.ok, status: res.status, body: body };
+        });
+      })
+      .then(function (antwort) {
+        if (gen !== detailGeneration) return;
+        if (!antwort.ok) {
+          renderDetailError(symbol, messageForDetail(antwort));
+          return;
+        }
+        if (!antwort.body || typeof antwort.body !== 'object') {
+          renderDetailError(symbol, 'Die Antwort war kein JSON.');
+          return;
+        }
+        renderDetail(antwort.body);
+      })
+      .catch(function (err) {
+        if (gen !== detailGeneration) return;
+        renderDetailError(symbol, 'Detail für ' + symbol + ' fehlgeschlagen: ' + err.message);
+      });
+  }
+
+  function renderDetailError(symbol, text) {
+    el.detailBody.textContent = '';
+    var fehler = document.createElement('p');
+    fehler.className = 'err';
+    fehler.textContent = text;
+    el.detailBody.appendChild(fehler);
+    // Der Block bleibt offen und die Zeile aktiv: ein zweiter Klick ist der
+    // zweite Versuch, kein neuer Zustand.
+    openDetail('Detail zu ' + symbol);
+  }
+
+  function subtitle(text) {
+    var p = document.createElement('p');
+    p.className = 'detail-sub';
+    p.textContent = text;
+    return p;
+  }
+
+  function table(headers, rows) {
+    var tabelle = document.createElement('table');
+    tabelle.className = 'detail-table';
+    var thead = document.createElement('thead');
+    var kopf = document.createElement('tr');
+    headers.forEach(function (text) {
+      var th = document.createElement('th');
+      th.textContent = text;
+      kopf.appendChild(th);
+    });
+    thead.appendChild(kopf);
+    tabelle.appendChild(thead);
+    var tbody = document.createElement('tbody');
+    rows.forEach(function (zellen) {
+      var tr = document.createElement('tr');
+      zellen.forEach(function (value) {
+        var td = document.createElement('td');
+        td.textContent = String(value);
+        tr.appendChild(td);
+      });
+      tbody.appendChild(tr);
+    });
+    tabelle.appendChild(tbody);
+    return tabelle;
+  }
+
+  function legTable(legs) {
+    var rows = (Array.isArray(legs) ? legs : []).map(function (leg) {
+      return [
+        leg.side === 'short' ? 'Short' : 'Long',
+        de(leg.strike, 2),
+        de(leg.bid, 2),
+        de(leg.ask, 2),
+        de(leg.mid, 2),
+        num(leg.iv) ? de(leg.iv, 2) + ' %' : '–',
+        de(leg.open_interest, 0),
+        de(leg.delta, 2)
+      ];
+    });
+    return table(['Seite', 'Strike', 'Bid', 'Ask', 'Mid', 'IV', 'OI', 'Delta'], rows);
+  }
+
+  function scenarioTable(scenarios) {
+    var rows = (Array.isArray(scenarios) ? scenarios : []).map(function (s) {
+      return [
+        pctText(s.change_pct),
+        de(s.underlying, 2),
+        signedDe(s.pl_expiry, 2),
+        signedDe(s.delta, 2),
+        signedDe(s.gamma, 2),
+        signedDe(s.vega, 2),
+        signedDe(s.theta, 2)
+      ];
+    });
+    return table(['Prozent', 'Basiswert', 'G&V', 'Delta', 'Gamma', 'Vega', 'Theta'], rows);
+  }
+
+  var SVG_NS = 'http://www.w3.org/2000/svg';
+
+  function svgNode(name, attrs) {
+    var node = document.createElementNS(SVG_NS, name);
+    if (attrs) {
+      Object.keys(attrs).forEach(function (key) {
+        node.setAttribute(key, String(attrs[key]));
+      });
+    }
+    return node;
+  }
+
+  // Zwei Kurven in EINEM Bild: heute (durchgezogen, aus dem Modell) und bei
+  // Verfall (gestrichelt, exakt). Nulllinie, Marker am Spot, Achsen in Preis
+  // und G&V. Gezeichnet aus der Serie der Antwort, nicht aus einer zweiten
+  // Rechnung im Browser.
+  function chart(detail) {
+    var serie = Array.isArray(detail.series) ? detail.series : [];
+    var box = svgNode('svg', {
+      viewBox: '0 0 680 320',
+      role: 'img',
+      'aria-label': 'G&V von ' + (detail.symbol || '') + ' heute und bei Verfall'
+    });
+    if (!serie.length || !num(detail.spot)) return box;
+
+    var width = 680, height = 320, padL = 58, padR = 16, padT = 14, padB = 34;
+    var preise = serie.map(function (p) { return p.price; });
+    var xmin = Math.min.apply(null, preise);
+    var xmax = Math.max.apply(null, preise);
+    var werte = [0];
+    serie.forEach(function (p) {
+      if (num(p.pl_expiry)) werte.push(p.pl_expiry);
+      if (num(p.pl_today)) werte.push(p.pl_today);
+    });
+    var ymin = Math.min.apply(null, werte);
+    var ymax = Math.max.apply(null, werte);
+    if (ymax === ymin) ymax = ymin + 1;
+
+    function x(price) { return padL + (price - xmin) / (xmax - xmin) * (width - padL - padR); }
+    function y(pl) { return padT + (ymax - pl) / (ymax - ymin) * (height - padT - padB); }
+
+    function pfad(key) {
+      var teile = [];
+      serie.forEach(function (p) {
+        if (!num(p[key])) return;
+        teile.push((teile.length ? 'L' : 'M') + x(p.price).toFixed(1) + ' ' + y(p[key]).toFixed(1));
+      });
+      return teile.join(' ');
+    }
+
+    // Rahmen und Nulllinie: ohne sie ist eine Kurve nur eine Linie.
+    box.appendChild(svgNode('rect', {
+      x: padL, y: padT, width: width - padL - padR, height: height - padT - padB,
+      fill: 'none', stroke: 'rgba(250,250,250,.10)'
+    }));
+    box.appendChild(svgNode('line', {
+      x1: padL, y1: y(0), x2: width - padR, y2: y(0),
+      stroke: 'rgba(250,250,250,.36)', 'stroke-width': 1
+    }));
+
+    box.appendChild(svgNode('path', {
+      d: pfad('pl_today'), fill: 'none', stroke: '#fafafa', 'stroke-width': 1.6
+    }));
+    box.appendChild(svgNode('path', {
+      d: pfad('pl_expiry'), fill: 'none', stroke: '#e05534', 'stroke-width': 1.6,
+      'stroke-dasharray': '5 4'
+    }));
+
+    if (detail.spot >= xmin && detail.spot <= xmax) {
+      box.appendChild(svgNode('line', {
+        x1: x(detail.spot), y1: padT, x2: x(detail.spot), y2: height - padB,
+        stroke: 'rgba(250,250,250,.36)', 'stroke-dasharray': '2 4'
+      }));
+      var spotText = svgNode('text', {
+        x: x(detail.spot) + 4, y: padT + 10, fill: 'rgba(250,250,250,.62)',
+        'font-size': 10, 'font-family': 'monospace'
+      });
+      spotText.textContent = 'Spot ' + de(detail.spot, 2);
+      box.appendChild(spotText);
+    }
+
+    // Achsenbeschriftung: G&V links (max, 0, min), Preis unten (min, max).
+    [[ymax, 'G&V ' + de(ymax, 0)], [0, '0'], [ymin, 'G&V ' + de(ymin, 0)]]
+      .forEach(function (paar) {
+        var label = svgNode('text', {
+          x: padL - 6, y: y(paar[0]) + 3, fill: 'rgba(250,250,250,.48)',
+          'font-size': 10, 'font-family': 'monospace', 'text-anchor': 'end'
+        });
+        label.textContent = paar[1];
+        box.appendChild(label);
+      });
+    [[xmin, de(xmin, 2)], [xmax, de(xmax, 2)]].forEach(function (paar, index) {
+      var label = svgNode('text', {
+        x: paar[0], y: height - padB + 16, fill: 'rgba(250,250,250,.48)',
+        'font-size': 10, 'font-family': 'monospace',
+        'text-anchor': index === 0 ? 'start' : 'end'
+      });
+      label.textContent = 'Preis ' + paar[1];
+      box.appendChild(label);
+    });
+
+    return box;
+  }
+
+  function renderDetail(detail) {
+    el.detailBody.textContent = '';
+
+    var kopf = document.createElement('p');
+    kopf.className = 'detail-head';
+    kopf.textContent = (detail.symbol || '–')
+      + (detail.name ? ' · ' + detail.name : '')
+      + ' · ' + (detail.strategy_label || STRATEGY[detail.strategy] || '–')
+      + ' · Verfall ' + (detail.expiration || '–')
+      + ' · Debit ' + de(detail.net_debit, 2)
+      + ' · max. Verlust ' + de(detail.max_loss, 2)
+      + ' · Break-even ' + de(detail.breakeven, 2)
+      + ' · max. Gewinn ' + de(detail.max_profit, 2)
+      + ' · R/R 1 zu ' + de(detail.rr, 2);
+    el.detailBody.appendChild(kopf);
+
+    el.detailBody.appendChild(subtitle('Beide Legs'));
+    el.detailBody.appendChild(legTable(detail.legs));
+
+    el.detailBody.appendChild(subtitle('G&V über den Kurs — heute und bei Verfall'));
+    var chartBox = document.createElement('div');
+    chartBox.className = 'detail-chart';
+    chartBox.appendChild(chart(detail));
+    el.detailBody.appendChild(chartBox);
+
+    el.detailBody.appendChild(subtitle('Szenarien'));
+    el.detailBody.appendChild(scenarioTable(detail.scenarios));
+
+    var notes = Array.isArray(detail.notes) ? detail.notes.filter(Boolean) : [];
+    if (notes.length) {
+      var hinweis = document.createElement('p');
+      hinweis.className = 'detail-notes';
+      hinweis.textContent = notes.join(' ');
+      el.detailBody.appendChild(hinweis);
+    }
+
+    openDetail('Detail zu ' + (detail.symbol || '–') + ' · '
+      + (detail.strategy_label || STRATEGY[detail.strategy] || '–')
+      + ' · Verfall ' + (detail.expiration || '–'));
+  }
+
   function render() {
     var body = current.body;
     var ergebnisse = Array.isArray(body.results) ? body.results : [];
@@ -376,6 +731,10 @@
     var counts = body.counts || {};
     var notes = Array.isArray(body.notes) ? body.notes.filter(Boolean) : [];
 
+    // Ein neuer Lauf baut neue Zeilen: das Detail der alten Zeile ist damit
+    // veraltet und geht zu - ein Block, der zu einer Zeile zeigt, die es nicht
+    // mehr gibt, waere eine falsche Auskunft.
+    clearDetail();
     el.tbody.innerHTML = '';
     ergebnisse.forEach(function (entry, index) {
       el.tbody.appendChild(buildRow(entry, index));

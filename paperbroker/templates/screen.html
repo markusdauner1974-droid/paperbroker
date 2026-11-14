@@ -81,6 +81,17 @@
     /* Die Richtung traegt Pfeil UND Wort - nie allein die Farbe. */
     .dir{color:var(--ink);font-weight:600}
 
+    /* Die Ergebniszeile SELBST ist der Griff zum Detail: kein Knopf in der
+       Zeile, kein Chevron. Cursor, Hover und Fokusring sagen, dass sie laedt;
+       der geoeffnete Block und aria-expanded bestaetigen es. */
+    tbody tr.row-detail{cursor:pointer}
+    tbody tr.row-detail:hover{background:rgba(250,250,250,.06)}
+    tbody tr.row-detail:focus-visible{outline:2px solid var(--primary);
+      outline-offset:-2px}
+    tbody tr.row-detail[aria-expanded="true"]{background:rgba(224,85,52,.10)}
+    tbody tr.row-detail[aria-expanded="true"] td:first-child{
+      box-shadow:inset 3px 0 0 var(--primary)}
+
     /* Ausschluesse und Fehlschlaege: zugeklappt, damit eine leere Liste ruhig
        aussieht. Aufgeklappt nennt jede Zeile ihren Grund in Klartext. */
     .dropped-summary{border-top:1px dotted var(--hair);border-radius:0;background:none;
@@ -96,6 +107,21 @@
     .dropped-summary li{padding:5px 0;border-bottom:1px dotted var(--hair-soft);
       display:flex;justify-content:space-between;gap:16px}
     .dropped-summary li b{color:var(--ink);font-weight:600}
+
+    /* Das Detail eines Spreads: Kopfzeile, Leg-Tabelle, eine gezeichnete
+       G&V-Kurve (SVG aus dem Skript, keine Fremdbibliothek), Szenarien. */
+    .detail-head{font-family:var(--font-mono);font-size:11px;color:var(--ink);
+      margin:4px 0 10px;line-height:1.8}
+    .detail-sub{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--faint);margin:16px 0 4px}
+    .detail-table{font-size:10.5px;margin:0}
+    .detail-table th,.detail-table td{padding:4px 8px;text-align:right;
+      border-bottom:1px dotted var(--hair-soft)}
+    .detail-table th:first-child,.detail-table td:first-child{text-align:left}
+    .detail-chart{margin:4px 0 0;overflow-x:auto}
+    .detail-chart svg{display:block;width:100%;max-width:680px;height:auto}
+    .detail-notes{font-size:11px;color:var(--faint);margin:14px 0 12px;
+      max-width:90ch}
 
     footer{border-top:1px dotted var(--hair);margin:34px 0 0;padding:14px 0 0}
     footer .note{font-size:11.5px;color:var(--faint)}
@@ -153,6 +179,10 @@
         <tbody id="funnel-tbody"></tbody>
       </table>
     </div>
+    <details class="dropped-summary" id="funnel-detail" hidden>
+      <summary id="funnel-detail-summary">Detail zum Spread</summary>
+      <div id="funnel-detail-body"></div>
+    </details>
     <details class="dropped-summary" id="funnel-excluded-block" hidden>
       <summary id="funnel-excluded-summary">Ausschlüsse</summary>
       <ul id="funnel-excluded"></ul>
