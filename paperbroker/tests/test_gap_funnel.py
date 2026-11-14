@@ -1387,6 +1387,28 @@ class AlternativeSpreadTests(unittest.TestCase):
             self.assertGreaterEqual(abs(float(kandidat.long.delta)), 20.0)
             self.assertGreaterEqual(kandidat.net_debit, 0.50)
 
+    def test_no_alternative_may_need_more_movement_than_the_row(self):
+        # The row is excluded beyond the cap, so an alternative beyond it may not
+        # be offered: the detail would show what the list is forbidden to show.
+        # Every rung of this ladder needs more than 5 %, so nothing is left.
+        chain = variant_ladder("AAA")
+        pair, _criteria = self._pick(chain)
+        alts, _ = alternative_spreads(
+            chain, BULL_CALL_DEBIT, primary=pair, close=100.0, now_fn=NOW,
+            max_required_move_pct=5.0)
+        self.assertEqual(alts, [])
+
+    def test_the_cap_cuts_the_ladder_at_the_same_number_as_the_row(self):
+        # 6.00 % fits under a 7 % cap, 7.65 % and 8.00 % and 11.35 % do not -
+        # so exactly one rung survives and it is the nearest one.
+        chain = variant_ladder("AAA")
+        pair, _criteria = self._pick(chain)
+        alts, _ = alternative_spreads(
+            chain, BULL_CALL_DEBIT, primary=pair, close=100.0, now_fn=NOW,
+            max_required_move_pct=7.0)
+        self.assertEqual([label for label, _entry in alts], [VARIANT_LABELS[0]])
+        self.assertLessEqual(abs(alts[0][1]["move"]), 7.0)
+
     def test_the_hurdles_of_the_pick_apply_too(self):
         # ladder_chain carries four pairs, but only ONE clears all three hurdles
         # (102.80 loses the ratio, 105.00 the delta, 101.32 the debit) - so a

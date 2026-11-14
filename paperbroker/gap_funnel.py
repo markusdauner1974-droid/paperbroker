@@ -568,6 +568,7 @@ def qualifying_pairs(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
 def alternative_spreads(section, strategy, *, primary, close, now_fn=None,
                         rr_min=DEFAULT_RR_MIN, min_long_delta=DEFAULT_MIN_LONG_DELTA,
                         min_net_debit=DEFAULT_MIN_NET_DEBIT,
+                        max_required_move_pct=DEFAULT_MAX_REQUIRED_MOVE_PCT,
                         count=DEFAULT_VARIANT_COUNT):
     """``(alternatives, criteria)`` - up to ``count`` other structures of the expiry.
 
@@ -606,6 +607,10 @@ def alternative_spreads(section, strategy, *, primary, close, now_fn=None,
         entry["move"] = required_move_of(entry["pair"], close)
         free.append(entry)
     movable = [entry for entry in free if entry["move"] is not None]
+    if max_required_move_pct is not None:
+        # Same rule as the row: a distance beyond the cap is excluded, not relabelled.
+        movable = [entry for entry in movable
+                   if abs(entry["move"]) <= max_required_move_pct]
     if not movable:
         return [], criteria
 
@@ -908,7 +913,8 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
     stages["spread"] = True
     alternatives, _variant_criteria = alternative_spreads(
         section, strategy, primary=pair, close=candidate.get("close"), now_fn=now_fn,
-        rr_min=rr_min, min_long_delta=min_long_delta, min_net_debit=min_net_debit)
+        rr_min=rr_min, min_long_delta=min_long_delta, min_net_debit=min_net_debit,
+        max_required_move_pct=max_required_move_pct)
     row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage,
                      section=section, alternatives=alternatives)
     row["next_earnings_date"] = next_earnings.isoformat()
