@@ -403,8 +403,11 @@ class TestThePageIsOneFunnel(unittest.TestCase):
         # Der Untertitel nennt die vier Bedingungen des Trichters.
         self.assertIn("Earnings-Gap", seite)
         self.assertIn("Verfall nach dem nächsten Bericht", seite)
-        # Die Regel steht im Kopf: R/R-Floor UND Grenze der nötigen Bewegung.
-        self.assertIn("Zugelassen: R/R ≥ 1:2 und eine nötige Bewegung bis", seite)
+        # Die Regel steht im Kopf: R/R-Floor UND Grenze der noetigen Bewegung -
+        # beide als eigene Knoten, weil der laufende Request sie mitbringt.
+        self.assertIn("Zugelassen: R/R ≥", seite)
+        self.assertIn('id="funnel-rr"', seite)
+        self.assertIn('id="funnel-cap"', seite)
         self.assertEqual(1, seite.count("<h1>"))
 
     def test_one_date_field_one_button_and_yesterday_as_default(self):

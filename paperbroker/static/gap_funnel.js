@@ -34,6 +34,10 @@
     tbody: document.getElementById('funnel-tbody'),
     foot: document.getElementById('funnel-foot'),
     cap: document.getElementById('funnel-cap'),
+    // Die Kopfzeile nennt dieselbe Huerde wie die Zaehlerzeile. Sie wird aus
+    // ``limits`` gefuellt, nicht im Template festgeschrieben - sonst behauptet
+    // die Seite eine Grenze, die der Lauf nicht benutzt hat.
+    rr: document.getElementById('funnel-rr'),
     detail: document.getElementById('funnel-detail'),
     detailSummary: document.getElementById('funnel-detail-summary'),
     detailBody: document.getElementById('funnel-detail-body'),
@@ -1318,6 +1322,7 @@
     var fehlschlaege = Array.isArray(body.failures) ? body.failures : [];
     var counts = body.counts || {};
     if (el.cap) el.cap.textContent = moveCap(body);
+    if (el.rr) el.rr.textContent = rrHurdleText(body);
     var notes = Array.isArray(body.notes) ? body.notes.filter(Boolean) : [];
 
     // Ein neuer Lauf baut neue Zeilen: das Detail der alten Zeile ist damit
