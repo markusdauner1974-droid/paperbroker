@@ -65,7 +65,12 @@
     .stats{font-size:12.5px;color:var(--muted);margin:16px 0 0;max-width:90ch}
     .stats b{color:var(--ink);font-family:var(--font-mono);font-size:12px;font-weight:600}
 
-    .tbl{min-width:0;overflow-x:auto;margin:18px 0 0}
+    /* Die Tabelle ist so breit wie ihr Inhalt: bei schmalem Fenster scrollt sie
+       IN ihrem Kasten seitwaerts, statt die letzte Spalte unter den Rand zu
+       schieben. Die Nummer bleibt dabei stehen, damit die Zeile lesbar bleibt. */
+    .tbl{min-width:0;max-width:100%;overflow-x:auto;overflow-y:visible;margin:18px 0 0;
+      scrollbar-width:thin;scrollbar-color:var(--hair) transparent;
+      -webkit-overflow-scrolling:touch}
     table{width:100%;border-collapse:collapse;font-family:var(--font-mono);font-size:10.5px;
       font-variant-numeric:tabular-nums}
     th,td{text-align:right;padding:6px 7px;border-bottom:1px dotted var(--hair-soft);
@@ -76,7 +81,11 @@
     th:first-child,td:first-child,
     th:nth-child(2),td:nth-child(2),
     th:nth-child(4),td:nth-child(4){text-align:left}
+    .tbl th:first-child,.tbl td:first-child{position:sticky;left:0;z-index:1;
+      background:var(--base)}
     tbody tr:hover{background:rgba(250,250,250,.035)}
+    tbody tr:hover td:first-child{background:#0c161c}
+    tbody tr[aria-expanded="true"] td:first-child{background:#1e191a}
     .sub{display:block;font-size:9.5px;color:var(--faint);letter-spacing:.04em}
     /* Die Richtung traegt Pfeil UND Wort - nie allein die Farbe. */
     .dir{color:var(--ink);font-weight:600}
@@ -118,8 +127,21 @@
     .detail-table th,.detail-table td{padding:4px 8px;text-align:right;
       border-bottom:1px dotted var(--hair-soft)}
     .detail-table th:first-child,.detail-table td:first-child{text-align:left}
-    .detail-chart{margin:4px 0 0;overflow-x:auto}
-    .detail-chart svg{display:block;width:100%;max-width:680px;height:auto}
+    /* Das Bild nimmt die Breite seines Kastens: keine feste Pixelbreite, kein
+       Deckel - sonst zeichnet es nur die halbe Panelbreite. Die Hoehe folgt aus
+       dem Seitenverhaeltnis der viewBox, also verzerrt nichts. */
+    .detail-chart{margin:4px 0 0;max-width:100%;overflow-x:auto}
+    .detail-chart svg{display:block;width:100%;max-width:100%;height:auto}
+    .detail-legend{display:flex;flex-wrap:wrap;gap:6px 20px;margin:8px 0 2px;
+      font-family:var(--font-mono);font-size:10px;color:var(--muted)}
+    .detail-legend-item{display:inline-flex;align-items:center;gap:8px}
+    .detail-legend i{display:inline-block;width:24px;height:0;
+      border-top:1.6px solid var(--ink)}
+    /* Gleiches Strichmuster wie die Kurve im Bild (5 4), nicht das
+       Browser-eigene "dashed". */
+    .detail-legend i.dashed{border-top:0;height:2px;
+      background-image:repeating-linear-gradient(90deg,
+        var(--primary) 0 5px,transparent 5px 9px)}
     .detail-notes{font-size:11px;color:var(--faint);margin:14px 0 12px;
       max-width:90ch}
 

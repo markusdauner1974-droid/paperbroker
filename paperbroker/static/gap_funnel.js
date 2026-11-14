@@ -422,6 +422,7 @@
 
   function clearDetail() {
     detailGeneration += 1;             // eine laufende Anfrage darf nicht mehr zeichnen
+    letztesDetail = null;
     if (!el.detail) return;
     el.detail.hidden = true;
     el.detail.open = false;
@@ -590,20 +591,113 @@
     return node;
   }
 
+  // Rueckfallbreite, wenn der Block noch keine messbare Breite hat (etwa weil
+  // er versteckt ist). Sonst gilt, was der Kasten wirklich breit ist.
+  var CHART_W = 960;
+
+  // Das zuletzt gezeichnete Detail: ein breiteres Fenster zeichnet damit neu.
+  var letztesDetail = null;
+
+  // Gezeichnet wird in Pixeln der Breite, die der Block JETZT hat: so bleibt
+  // die Schrift 11 px gross statt bei schmalem Fenster auf 6 px zu schrumpfen,
+  // und das Bild fuellt den Kasten trotzdem ganz, weil viewBox und Kasten
+  // dieselbe Breite haben (width 100 %).
+  function chartBreite() {
+    var kasten = el.detailBody;
+    var breite = kasten && num(kasten.clientWidth) ? kasten.clientWidth : CHART_W;
+    return Math.max(420, Math.min(1600, Math.round(breite)));
+  }
+
+  // Kurstticks: 50 %, 70 %, 90 %, 110 %, 130 %, 150 %, 170 % des Spot, auf
+  // Cent gerundet und auf die gezeichnete Spanne beschnitten. Liegen weniger
+  // als fuenf in der Spanne (Serie enger als der Bereich), wird die Achse
+  // gleichmaessig geteilt - eine Achse ohne Beschriftung ist keine Achse.
+  function kursTicks(spot, xmin, xmax) {
+    var anteile = [0.5, 0.7, 0.9, 1.1, 1.3, 1.5, 1.7];
+    var ticks = [];
+    anteile.forEach(function (anteil) {
+      var preis = Math.round(spot * anteil * 100) / 100;
+      if (preis < xmin - 1e-9 || preis > xmax + 1e-9) return;
+      if (ticks.indexOf(preis) >= 0) return;
+      ticks.push(preis);
+    });
+    if (ticks.length >= 5) return ticks;
+    ticks = [];
+    for (var i = 0; i <= 5; i += 1) {
+      ticks.push(Math.round((xmin + (xmax - xmin) * i / 5) * 100) / 100);
+    }
+    return ticks;
+  }
+
+  // Wie viele Nachkommastellen eine Achsenstufe braucht: eine Stufe von 2,5
+  // ist als "3" falsch beschriftet.
+  function stellenVon(ticks) {
+    if (ticks.length < 2) return 0;
+    var abstand = Math.abs(ticks[1] - ticks[0]);
+    return Math.abs(abstand - Math.round(abstand)) > 1e-9 ? 1 : 0;
+  }
+
+  // G&V-Ticks: runde Stufen (1, 2, 2,5, 5, 10 x Zehnerpotenz), damit die
+  // Beschriftung "0" und "100" heisst und nicht "-7" und "+56". Die Null ist
+  // immer dabei, weil die Nulllinie die eine wichtige Linie im Bild ist.
+  function gvTicks(ymin, ymax) {
+    var spanne = ymax - ymin;
+    var roh = spanne / 4;
+    var stufe = Math.pow(10, Math.floor(Math.log(roh) / Math.LN10));
+    var kandidaten = [1, 2, 2.5, 5, 10];
+    var schritt = stufe * 10;
+    for (var i = 0; i < kandidaten.length; i += 1) {
+      if (stufe * kandidaten[i] >= roh) { schritt = stufe * kandidaten[i]; break; }
+    }
+    function sammle(weite) {
+      var aus = [];
+      var start = Math.ceil(ymin / weite - 1e-9) * weite;
+      for (var wert = start; wert <= ymax + 1e-9 && aus.length < 9; wert += weite) {
+        aus.push(Math.round(wert * 1000) / 1000);
+      }
+      return aus;
+    }
+    var ticks = sammle(schritt);
+    // Zu grob gestuft (nur drei Linien): eine Stufe feiner, aber nicht feiner
+    // als noetig - eine Achse mit fuenf Zahlen liest sich, eine mit zwanzig nicht.
+    while (ticks.length < 4 && schritt > spanne / 12) {
+      schritt = schritt / 2;
+      ticks = sammle(schritt);
+    }
+    return ticks;
+  }
+
   // Zwei Kurven in EINEM Bild: heute (durchgezogen, aus dem Modell) und bei
-  // Verfall (gestrichelt, exakt). Nulllinie, Marker am Spot, Achsen in Preis
-  // und G&V. Gezeichnet aus der Serie der Antwort, nicht aus einer zweiten
-  // Rechnung im Browser.
+  // Verfall (gestrichelt, exakt). Nulllinie, Marker am Spot, beschriftete
+  // Achsen in Kurs und G&V. Gezeichnet aus der Serie der Antwort, nicht aus
+  // einer zweiten Rechnung im Browser.
   function chart(detail) {
     var serie = Array.isArray(detail.series) ? detail.series : [];
+    var breite = chartBreite();
+    var hoehe = Math.max(280, Math.min(560, Math.round(breite * 0.375)));
     var box = svgNode('svg', {
-      viewBox: '0 0 680 320',
+      viewBox: '0 0 ' + breite + ' ' + hoehe,
+      preserveAspectRatio: 'xMidYMid meet',
+      width: '100%',
+      class: 'detail-chart-svg',
       role: 'img',
-      'aria-label': 'G&V von ' + (detail.symbol || '') + ' heute und bei Verfall'
+      'aria-label': 'G&V von ' + (detail.symbol || '') + ': durchgezogen heute,'
+        + ' gestrichelt bei Verfall'
     });
+    // Titel und Beschreibung sind der Text, den ein Screenreader statt der
+    // Linien liest; aria-label allein nennt nur die Kurven, nicht die Achsen.
+    var titel = svgNode('title');
+    titel.textContent = 'G&V je Spread über den Kurs — heute und bei Verfall';
+    box.appendChild(titel);
+    var beschreibung = svgNode('desc');
+    beschreibung.textContent = 'Durchgezogene Linie: G&V heute nach dem Modell. '
+      + 'Gestrichelte Linie: G&V bei Verfall. Senkrechte Linie: Kurs '
+      + de(detail.spot, 2) + '. Waagerechte Achse: Kurs. Senkrechte Achse: '
+      + 'G&V in US-Dollar je Spread.';
+    box.appendChild(beschreibung);
     if (!serie.length || !num(detail.spot)) return box;
 
-    var width = 680, height = 320, padL = 58, padR = 16, padT = 14, padB = 34;
+    var padL = 84, padR = 22, padT = 18, padB = 56;
     var preise = serie.map(function (p) { return p.price; });
     var xmin = Math.min.apply(null, preise);
     var xmax = Math.max.apply(null, preise);
@@ -615,9 +709,18 @@
     var ymin = Math.min.apply(null, werte);
     var ymax = Math.max.apply(null, werte);
     if (ymax === ymin) ymax = ymin + 1;
+    // Ein Polster von 6 %: sonst kleben Minimum und Maximum der Kurve am
+    // Rahmen und die Linie sieht aus wie die Kante des Bildes.
+    var polster = (ymax - ymin) * 0.06;
+    var ylo = ymin - polster;
+    var yhi = ymax + polster;
 
-    function x(price) { return padL + (price - xmin) / (xmax - xmin) * (width - padL - padR); }
-    function y(pl) { return padT + (ymax - pl) / (ymax - ymin) * (height - padT - padB); }
+    var plotX = padL, plotY = padT;
+    var plotW = breite - padL - padR;
+    var plotH = hoehe - padT - padB;
+
+    function x(price) { return plotX + (price - xmin) / (xmax - xmin) * plotW; }
+    function y(pl) { return plotY + (yhi - pl) / (yhi - ylo) * plotH; }
 
     function pfad(key) {
       var teile = [];
@@ -630,11 +733,36 @@
 
     // Rahmen und Nulllinie: ohne sie ist eine Kurve nur eine Linie.
     box.appendChild(svgNode('rect', {
-      x: padL, y: padT, width: width - padL - padR, height: height - padT - padB,
+      x: plotX, y: plotY, width: plotW, height: plotH,
       fill: 'none', stroke: 'rgba(250,250,250,.10)'
     }));
+
+    // Werte auf der G&V-Achse: runde Stufen, Null immer dabei. Die Zahl steht
+    // links der Achse in ihrem eigenen Rand - so ueberlappt keine Beschriftung
+    // den Rahmen.
+    var gvWerte = gvTicks(ylo, yhi);
+    var gvStellen = stellenVon(gvWerte);
+    gvWerte.forEach(function (wert) {
+      var yy = y(wert);
+      box.appendChild(svgNode('line', {
+        x1: plotX, y1: yy, x2: plotX + plotW, y2: yy,
+        stroke: 'rgba(250,250,250,.06)', 'stroke-width': 1
+      }));
+      box.appendChild(svgNode('line', {
+        x1: plotX - 5, y1: yy, x2: plotX, y2: yy,
+        stroke: 'rgba(250,250,250,.30)', 'stroke-width': 1
+      }));
+      var yLabel = svgNode('text', {
+        x: plotX - 10, y: yy + 3.5, fill: 'rgba(250,250,250,.62)',
+        'font-size': 11, 'font-family': 'monospace', 'text-anchor': 'end',
+        class: 'chart-y-tick'
+      });
+      yLabel.textContent = signedDe(wert, gvStellen);
+      box.appendChild(yLabel);
+    });
+
     box.appendChild(svgNode('line', {
-      x1: padL, y1: y(0), x2: width - padR, y2: y(0),
+      x1: plotX, y1: y(0), x2: plotX + plotW, y2: y(0),
       stroke: 'rgba(250,250,250,.36)', 'stroke-width': 1
     }));
 
@@ -648,38 +776,81 @@
 
     if (detail.spot >= xmin && detail.spot <= xmax) {
       box.appendChild(svgNode('line', {
-        x1: x(detail.spot), y1: padT, x2: x(detail.spot), y2: height - padB,
-        stroke: 'rgba(250,250,250,.36)', 'stroke-dasharray': '2 4'
+        x1: x(detail.spot), y1: plotY, x2: x(detail.spot), y2: plotY + plotH,
+        stroke: 'rgba(250,250,250,.46)', 'stroke-dasharray': '2 4'
       }));
+      var naheRand = x(detail.spot) > plotX + plotW - 78;
       var spotText = svgNode('text', {
-        x: x(detail.spot) + 4, y: padT + 10, fill: 'rgba(250,250,250,.62)',
-        'font-size': 10, 'font-family': 'monospace'
+        // unten am Rand, nicht oben: dort liegen die Plateaus der Kurven
+        x: x(detail.spot) + (naheRand ? -5 : 5), y: plotY + plotH - 8,
+        fill: 'rgba(250,250,250,.80)', 'font-size': 11, 'font-family': 'monospace',
+        'text-anchor': naheRand ? 'end' : 'start', class: 'chart-spot',
+        // dunkler Rand um die Schrift: die Linie dahinter kreuzt die Zahl
+        // nicht, ohne dass ein Kasten die Kurve verdeckt
+        stroke: '#091217', 'stroke-width': 3, 'stroke-linejoin': 'round',
+        'paint-order': 'stroke'
       });
       spotText.textContent = 'Spot ' + de(detail.spot, 2);
       box.appendChild(spotText);
     }
 
-    // Achsenbeschriftung: G&V links (max, 0, min), Preis unten (min, max).
-    [[ymax, 'G&V ' + de(ymax, 0)], [0, '0'], [ymin, 'G&V ' + de(ymin, 0)]]
-      .forEach(function (paar) {
-        var label = svgNode('text', {
-          x: padL - 6, y: y(paar[0]) + 3, fill: 'rgba(250,250,250,.48)',
-          'font-size': 10, 'font-family': 'monospace', 'text-anchor': 'end'
-        });
-        label.textContent = paar[1];
-        box.appendChild(label);
+    // Preisachse: 50 % bis 170 % des Spot als Ticks, damit auch die Mitte
+    // einen Wert traegt und nicht nur der linke Rand. Beschriftet mit dem
+    // Kurs, nicht mit dem Prozentwert - die Kurve laeuft ueber den Kurs.
+    kursTicks(detail.spot, xmin, xmax).forEach(function (preis) {
+      var xx = x(preis);
+      box.appendChild(svgNode('line', {
+        x1: xx, y1: plotY + plotH, x2: xx, y2: plotY + plotH + 5,
+        stroke: 'rgba(250,250,250,.30)', 'stroke-width': 1
+      }));
+      var xLabel = svgNode('text', {
+        x: xx, y: plotY + plotH + 18, fill: 'rgba(250,250,250,.62)',
+        'font-size': 11, 'font-family': 'monospace', 'text-anchor': 'middle',
+        class: 'chart-x-tick'
       });
-    [[xmin, de(xmin, 2)], [xmax, de(xmax, 2)]].forEach(function (paar, index) {
-      var label = svgNode('text', {
-        x: paar[0], y: height - padB + 16, fill: 'rgba(250,250,250,.48)',
-        'font-size': 10, 'font-family': 'monospace',
-        'text-anchor': index === 0 ? 'start' : 'end'
-      });
-      label.textContent = 'Preis ' + paar[1];
-      box.appendChild(label);
+      xLabel.textContent = de(preis, 2);
+      box.appendChild(xLabel);
     });
 
+    // Achsentitel: die eine Zeile sagt, was die Zahlen bedeuten.
+    var kursTitel = svgNode('text', {
+      x: plotX + plotW / 2, y: hoehe - 8, fill: 'rgba(250,250,250,.48)',
+      'font-size': 11, 'font-family': 'monospace', 'text-anchor': 'middle',
+      class: 'chart-axis-title'
+    });
+    kursTitel.textContent = 'Kurs';
+    box.appendChild(kursTitel);
+
+    var gvMitte = plotY + plotH / 2;
+    var gvTitel = svgNode('text', {
+      x: 14, y: gvMitte, fill: 'rgba(250,250,250,.48)', 'font-size': 11,
+      'font-family': 'monospace', 'text-anchor': 'middle',
+      transform: 'rotate(-90 14 ' + gvMitte + ')', class: 'chart-axis-title'
+    });
+    gvTitel.textContent = 'G&V (USD je Spread)';
+    box.appendChild(gvTitel);
+
     return box;
+  }
+
+  // Die Legende steht unter dem Bild in Textform: sie nennt beide Linien in
+  // Worten, und der Strich daneben ist das zweite Signal - nie allein die
+  // Farbe, nie allein die Strichart.
+  function chartLegend() {
+    var legende = document.createElement('div');
+    legende.className = 'detail-legend';
+    [['solid', 'heute (Modell)'], ['dashed', 'bei Verfall']].forEach(function (paar) {
+      var zeile = document.createElement('span');
+      zeile.className = 'detail-legend-item';
+      var strich = document.createElement('i');
+      strich.className = paar[0];
+      zeile.appendChild(strich);
+      var wort = document.createElement('span');
+      wort.textContent = paar[1];
+      zeile.appendChild(wort);
+      legende.appendChild(zeile);
+    });
+    return legende;
   }
 
   function renderDetail(detail) {
@@ -705,7 +876,9 @@
     var chartBox = document.createElement('div');
     chartBox.className = 'detail-chart';
     chartBox.appendChild(chart(detail));
+    chartBox.appendChild(chartLegend());
     el.detailBody.appendChild(chartBox);
+    letztesDetail = detail;
 
     el.detailBody.appendChild(subtitle('Szenarien'));
     el.detailBody.appendChild(scenarioTable(detail.scenarios));
@@ -776,6 +949,24 @@
   // Vorgabe ist gestern - der letzte abgeschlossene Kalendertag. Kein Lauf beim
   // Laden der Seite: gefiltert wird auf Klick.
   if (!el.day.value) el.day.value = yesterday();
+
+  // Ein breiteres Fenster zeichnet das Bild neu: gezeichnet wird in Pixeln der
+  // aktuellen Breite, damit die Schrift 11 px bleibt. Ohne das schrumpft die
+  // Beschriftung mit, sobald der Kasten schmaler wird.
+  var resizeTimer = null;
+  if (typeof window !== 'undefined' && window.addEventListener) {
+    window.addEventListener('resize', function () {
+      if (!letztesDetail) return;
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(function () {
+        resizeTimer = null;
+        var kasten = el.detailBody && el.detailBody.querySelector
+          ? el.detailBody.querySelector('.detail-chart') : null;
+        if (!kasten || !kasten.firstChild) return;
+        kasten.replaceChild(chart(letztesDetail), kasten.firstChild);
+      }, 150);
+    });
+  }
 
   el.run.addEventListener('click', function () { run(el.day.value.trim()); });
   el.day.addEventListener('keydown', function (ev) {

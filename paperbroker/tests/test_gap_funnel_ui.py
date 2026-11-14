@@ -210,6 +210,7 @@ function tree(node) {
   return {
     tag: String(node.tagName || ''),
     attrs: node.attrs || {},
+    cls: node.className || (node.attrs || {}).class || '',
     text: node.textContent,
     children: (node.childNodes || []).filter((c) => c.tagName).map(tree)
   };
@@ -253,6 +254,7 @@ function report(prevented) {
       tree: tree(body),
       paths: paths.map((p) => p.attrs),
       svgs: svgs.length,
+      svgAttrs: svgs.map((sv) => sv.attrs),
       tables: tables.map((t) => ({
         headers: findAll(t, (n) => String(n.tagName).toLowerCase() === 'th').map((n) => n.textContent),
         rows: findAll(t, (n) => String(n.tagName).toLowerCase() === 'tr').length - 1,
@@ -398,6 +400,23 @@ def _all_text(node):
     return " ".join(out)
 
 
+def _nodes(node, predicate):
+    """Every node of the rendered tree that matches, depth first."""
+    out = [node] if predicate(node) else []
+    for child in node.get("children") or []:
+        out.extend(_nodes(child, predicate))
+    return out
+
+
+def _by_class(node, name):
+    """Nodes whose class attribute carries ``name`` (one class of several)."""
+    return _nodes(node, lambda n: name in str(n.get("cls") or "").split())
+
+
+def _by_tag(node, name):
+    return _nodes(node, lambda n: str(n.get("tag", "")).lower() == name)
+
+
 class TestTheBlockSitsBetweenTableAndExclusions(unittest.TestCase):
     def test_the_markup_carries_one_closed_block(self):
         seite = _page()
@@ -522,6 +541,7 @@ class TestWhatTheBlockShows(unittest.TestCase):
 
     def test_the_chart_is_one_svg_with_two_curves(self):
         panel = _render(actions=["click:0"])
+        self.assertEqual(1, panel["detail"]["svgs"])
         self.assertEqual(2, len(panel["detail"]["paths"]))
         pfade = panel["detail"]["paths"]
         # heute durchgezogen, Verfall gestrichelt - zwei verschiedene Kurven
@@ -532,7 +552,73 @@ class TestWhatTheBlockShows(unittest.TestCase):
             self.assertIn("L", pfad["d"])
         # Marker und Achsen sind Text, keine Farbe allein
         self.assertIn("Spot 9,19", panel["detail"]["text"])
-        self.assertIn("Preis 4,60", panel["detail"]["text"])
+        self.assertEqual(["Kurs", "G&V (USD je Spread)"],
+                         [n["text"] for n in _by_class(panel["detail"]["tree"],
+                                                       "chart-axis-title")])
+
+    def test_the_chart_fills_its_container(self):
+        panel = _render(actions=["click:0"])
+        svg = panel["detail"]["svgAttrs"][0]
+        # Die Breite kommt vom Kasten, nicht aus einer Pixelzahl.
+        self.assertEqual("100%", svg.get("width"))
+        self.assertTrue(svg.get("viewBox"))
+        self.assertEqual("xMidYMid meet", svg.get("preserveAspectRatio"))
+        # keine feste Hoehe: das Bild folgt dem Seitenverhaeltnis der viewBox
+        self.assertNotIn("height", svg)
+        # und das Blatt deckelt das Bild nicht mehr bei 680 px
+        regel = re.search(r"\.detail-chart svg\{([^}]*)\}", _page())
+        assert regel is not None
+        css = regel.group(1).replace(" ", "")
+        self.assertIn("width:100%", css)
+        self.assertIn("max-width:100%", css)
+        self.assertIn("height:auto", css)
+        self.assertNotIn("680", css)
+
+    def test_the_chart_names_both_curves(self):
+        panel = _render(actions=["click:0"])
+        legenden = _by_class(panel["detail"]["tree"], "detail-legend")
+        self.assertEqual(1, len(legenden))
+        text = _all_text(legenden[0])
+        self.assertIn("heute", text)
+        self.assertIn("bei Verfall", text)
+        # Strichart als zweites Signal neben dem Wort, nicht nur die Farbe.
+        self.assertEqual({"solid", "dashed"},
+                         {n["cls"] for n in _by_tag(legenden[0], "i")})
+        # Fuer Screenreader: Titel und Beschreibung im Bild selbst.
+        svg = _by_tag(panel["detail"]["tree"], "svg")[0]
+        self.assertTrue(_by_tag(svg, "title"))
+        self.assertTrue(_by_tag(svg, "desc"))
+        self.assertIn("heute", svg["attrs"]["aria-label"])
+        self.assertIn("Verfall", svg["attrs"]["aria-label"])
+
+    def test_the_chart_labels_the_price_axis(self):
+        panel = _render(actions=["click:0"])
+        tree = panel["detail"]["tree"]
+        ticks = _by_class(tree, "chart-x-tick")
+        self.assertGreaterEqual(len(ticks), 5)
+        werte = [t["text"] for t in ticks]
+        # jede Marke eine Zahl mit Dezimalkomma, keine doppelt
+        for wert in werte:
+            self.assertRegex(wert, r"^\d+,\d{2}$")
+        self.assertEqual(len(werte), len(set(werte)))
+        # in Kursreihenfolge: links kleiner Kurs, rechts groesser
+        zahlen = [float(w.replace(",", ".")) for w in werte]
+        self.assertEqual(sorted(zahlen), zahlen)
+        # auch die G&V-Achse traegt Werte, nicht nur den Rahmen
+        self.assertGreaterEqual(len(_by_class(tree, "chart-y-tick")), 5)
+
+    def test_the_table_scrolls_sideways_instead_of_cutting_the_last_column(self):
+        seite = _page()
+        kasten = re.search(r"\.tbl\{([^}]*)\}", seite)
+        assert kasten is not None
+        self.assertIn("overflow-x:auto", kasten.group(1).replace(" ", ""))
+        self.assertIn("max-width:100%", kasten.group(1).replace(" ", ""))
+        # Die Nummer bleibt beim Scrollen stehen: die Zeile bleibt zuordenbar.
+        sticky = re.search(r"\.tbl th:first-child,\.tbl td:first-child\{([^}]*)\}",
+                           seite)
+        assert sticky is not None
+        self.assertIn("position:sticky", sticky.group(1).replace(" ", ""))
+        self.assertIn("left:0", sticky.group(1).replace(" ", ""))
 
     def test_the_scenarios_are_six_rows_with_seven_columns(self):
         panel = _render(actions=["click:0"])
