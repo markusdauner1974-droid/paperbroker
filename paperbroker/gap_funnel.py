@@ -117,6 +117,24 @@ DEFAULT_FEES = 0.0
 DEFAULT_MULTIPLIER = 100
 DEFAULT_QUANTITY = 1
 
+#: The characters an alternative structure can have, in the order the page
+#: shows them. The row itself is the HEBEL and is NOT one of them: a list that
+#: offers the pick as its own first alternative compares nothing.
+VARIANT_NEAR_MONEY = "nah am Geld"
+VARIANT_AT_RESISTANCE = "am Widerstand"
+VARIANT_TIGHTEST_SPREAD = "engster Spread"
+VARIANT_LABELS = (VARIANT_NEAR_MONEY, VARIANT_AT_RESISTANCE, VARIANT_TIGHTEST_SPREAD)
+#: How the detail names the row's own structure - the character of the pick.
+ROW_PICK_LABEL = "Hebel (Zeile)"
+#: How many alternatives a row may carry: three characters, not a menu.
+DEFAULT_VARIANT_COUNT = len(VARIANT_LABELS)
+#: The 52 weeks the resistance level is called after, in SESSIONS: a year of
+#: trading is ~252 sessions, and counting calendar days would let a holiday
+#: week move the high.
+RESISTANCE_HIGH_SESSIONS = 252
+#: The moving averages that count as resistance, in sessions.
+RESISTANCE_MA_WINDOWS = (20, 50, 200)
+
 LIQUIDITY_THIN = "thin"
 LIQUIDITY_FULL = "full"
 LIQUIDITIES = (LIQUIDITY_THIN, LIQUIDITY_FULL)
@@ -519,7 +537,237 @@ def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
         f"< {min_net_debit:.2f} USD", len(kept), coverage, section, strategy), coverage
 
 
-def spread_row(candidate, pair, criteria, expiration, day, coverage=None, section=None):
+def _strike_pair(pair):
+    """The pair's identity: its two strikes, so it cannot be offered twice."""
+
+    def one(side):
+        asset = getattr(getattr(pair, side, None), "asset", None)
+        strike = getattr(asset, "strike", None)
+        return None if not isinstance(strike, (int, float)) else round(float(strike), 6)
+
+    return (one("long"), one("short"))
+
+
+def _long_strike(pair):
+    """The bought leg's strike as a float, or ``None``."""
+    asset = getattr(getattr(pair, "long", None), "asset", None)
+    strike = getattr(asset, "strike", None)
+    return None if not isinstance(strike, (int, float)) else float(strike)
+
+
+def worse_leg_spread(pair):
+    """The WIDER of the two legs' bid-ask percentages, or ``None``.
+
+    A spread is only as tradable as its worse leg - the tight one cannot be
+    sold without the wide one. ``bid_ask_pct`` already answers ``None`` for a
+    leg without a readable two-sided market (and therefore without a positive
+    mid), so such a pair carries no number here either: it drops out of the
+    tightest-spread character instead of winning it with half a measurement.
+    """
+    long_pct = bid_ask_pct(pair.long)
+    short_pct = bid_ask_pct(pair.short)
+    if long_pct is None or short_pct is None:
+        return None
+    return max(long_pct, short_pct)
+
+
+def resistance_levels(bars, close):
+    """The levels ABOVE ``close`` the history holds, the nearest first.
+
+    Four numbers, all of them read from the daily closes of the title (the
+    same bars the reachability of the row is measured on): the 52-week high
+    (the highest close of the last ``RESISTANCE_HIGH_SESSIONS`` sessions) and
+    the 20/50/200-session moving averages. Only levels STRICTLY above the close
+    count - a level the price already stands on is no resistance - and a
+    window the history is too short for contributes nothing rather than a
+    shorter average that would pretend to be the same line.
+
+    An empty list is the honest answer for a title at its all-time high: there
+    is no level above it, and the character is then omitted instead of being
+    filled with the second-best idea.
+    """
+    price = _round2(close)
+    if price is None or price <= 0:
+        return []
+    closes = reachability.closes_oldest_first(bars)
+    if not closes:
+        return []
+    levels = []
+    head = closes[-RESISTANCE_HIGH_SESSIONS:]
+    if head:
+        levels.append(max(head))
+    for window in RESISTANCE_MA_WINDOWS:
+        if len(closes) >= window:
+            levels.append(sum(closes[-window:]) / window)
+    strictly_above = [level for level in levels
+                      if math.isfinite(level) and level > float(close)]
+    return sorted(set(round(level, 6) for level in strictly_above))
+
+
+def qualifying_pairs(section, strategy, *, close=None, now_fn=None,
+                     rr_min=DEFAULT_RR_MIN, min_long_delta=DEFAULT_MIN_LONG_DELTA,
+                     min_net_debit=DEFAULT_MIN_NET_DEBIT):
+    """Every pair of the expiry that clears the row's three hurdles, with its move.
+
+    "Qualifying" means exactly what it means for the funnel's own pick - the
+    reward/risk floor, the |delta| of the bought leg and the minimum debit, in
+    that order. An alternative that would have been rejected as a first choice
+    must not be offered as a second one, so the same three hurdles apply
+    unchanged. Each entry carries ``pair``, ``ratio`` (the screener's
+    percentage) and ``move`` (``required_move_of`` against ``close``, ``None``
+    when the close or the break-even is unusable).
+    """
+    kept, criteria, _sample_drop, _coverage = spread_candidates(
+        section, strategy, now_fn=now_fn)
+    entries = []
+    for pair in kept:
+        ratio = pair.net_return_pct(criteria)
+        if ratio is None or ratio < rr_min * 100:
+            continue
+        delta = getattr(pair.long, "delta", None)
+        if delta is None or abs(float(delta)) < min_long_delta:
+            continue
+        if pair.net_debit is None or pair.net_debit < min_net_debit:
+            continue
+        entries.append({"pair": pair, "ratio": ratio,
+                        "move": required_move_of(pair, close)})
+    return entries
+
+
+def _variant_history(bars, move, dte):
+    """``hit_rate_pct``/``windows_measured`` of one variant, from the row's bars.
+
+    ``reachability.measure`` is the one recipe for this number, so it is called
+    with the VARIANT's distance and the ROW's ``dte`` - the same window the row
+    is measured over. Without bars there is nothing to measure and both fields
+    stay ``None``: an unmeasured frequency is not 0 %.
+    """
+    if bars is None:
+        return {"hit_rate_pct": None, "windows_measured": None}
+    fields = reachability.measure(bars, move, dte)
+    return {"hit_rate_pct": fields["hit_rate_pct"],
+            "windows_measured": fields["windows_measured"]}
+
+
+def variant_row(entry, label, *, bars, dte):
+    """One alternative in the numbers of the row - rounded, nothing invented."""
+    pair = entry["pair"]
+    ratio = entry["ratio"]
+    move = entry.get("move")
+    return {
+        "label": label,
+        "long_strike": _round2(getattr(pair.long.asset, "strike", None)),
+        "short_strike": _round2(getattr(pair.short.asset, "strike", None)),
+        "net_debit": _round2(pair.net_debit),
+        "max_loss": _round2(pair.max_loss),
+        "max_profit": _round2(pair.max_profit),
+        "rr": None if ratio is None else _round2(ratio / 100.0),
+        "required_move_pct": _round2(move),
+        # The wider leg, not the pair's average: the spread one PAYS is the one
+        # that has to be crossed.
+        "bid_ask_pct": _round2(worse_leg_spread(pair)),
+        **_variant_history(bars, move, dte),
+        "liquidity": liquidity_of(pair),
+        "open_interest": [getattr(pair.long, "open_interest", None),
+                          getattr(pair.short, "open_interest", None)],
+    }
+
+
+def variant_characters(section, strategy, *, primary, close, bars=None, dte=None,
+                       now_fn=None, rr_min=DEFAULT_RR_MIN,
+                       min_long_delta=DEFAULT_MIN_LONG_DELTA,
+                       min_net_debit=DEFAULT_MIN_NET_DEBIT,
+                       max_required_move_pct=DEFAULT_MAX_REQUIRED_MOVE_PCT,
+                       count=DEFAULT_VARIANT_COUNT):
+    """Up to ``count`` other structures of the SAME expiry, as named characters.
+
+    The alternatives are not a ladder of ratios - they are three readings of the
+    same chain, each answering a different question a reader can have:
+
+    * ``NAH AM GELD`` - the bought strike closest to the close: the structure
+      that moves first when the underlying does.
+    * ``AM WIDERSTAND`` - the pair whose bought strike sits closest to the
+      NEAREST level above the price (52-week high, MA20/50/200). That is the
+      structure that pays when the reaction runs into the next wall. Without a
+      level above the close - a title at its all-time high - the character is
+      omitted; it is never filled with the second-best idea.
+    * ``ENGSTER SPREAD`` - the smallest WORSE leg spread, i.e. the pair that
+      costs the least to cross. A leg without a readable two-sided market
+      cannot win this, because half a spread is not a tight one.
+
+    Every candidate clears the row's three hurdles (``qualifying_pairs``) AND
+    the row's reachability cap: a structure the underlying cannot reach is not
+    an alternative, it is the same trap with another label. The row's own pair
+    is removed first, and a pair claimed by an earlier character is not offered
+    again - so two characters that point at the same strikes yield ONE variant,
+    not a duplicate.
+
+    Each variant carries the frequency of its own distance, measured on the
+    SAME bars as the row (``reachability.measure``, the row's ``dte``). An empty
+    list is a fact ("no other structure clears the same hurdles"), never ``None``.
+    """
+    if primary is None or count <= 0 or close is None:
+        return []
+    entries = qualifying_pairs(
+        section, strategy, close=close, now_fn=now_fn, rr_min=rr_min,
+        min_long_delta=min_long_delta, min_net_debit=min_net_debit)
+
+    taken = {_strike_pair(primary)}
+    free = []
+    for entry in entries:
+        key = _strike_pair(entry["pair"])
+        if key in taken:
+            continue
+        taken.add(key)
+        move = entry.get("move")
+        # A distance that cannot be computed cannot be checked against the cap,
+        # and an unchecked cap is not passed.
+        if move is None:
+            continue
+        if max_required_move_pct is not None and abs(move) > max_required_move_pct:
+            continue
+        free.append(entry)
+    if not free:
+        return []
+
+    levels = resistance_levels(bars, close)
+
+    def nearest_to(level):
+        return min(free, key=lambda entry: (abs(_long_strike(entry["pair"]) - level),
+                                            abs(entry["move"]), -entry["ratio"]))
+
+    def tightest():
+        priced = [entry for entry in free if worse_leg_spread(entry["pair"]) is not None]
+        if not priced:
+            return None
+        return min(priced, key=lambda entry: (worse_leg_spread(entry["pair"]),
+                                              -entry["ratio"]))
+
+    candidates = [
+        (VARIANT_NEAR_MONEY, nearest_to(close)),
+        # No level above the close is no character - not a substitute.
+        (VARIANT_AT_RESISTANCE, nearest_to(levels[0]) if levels else None),
+        (VARIANT_TIGHTEST_SPREAD, tightest()),
+    ]
+
+    chosen = []
+    claimed = set()
+    for label, entry in candidates:
+        if entry is None or len(chosen) >= count:
+            continue
+        key = _strike_pair(entry["pair"])
+        if key in claimed:
+            # Dedupe: the FIRST character keeps the pair, the later one is
+            # dropped - never re-pointed at a different pair.
+            continue
+        claimed.add(key)
+        chosen.append((label, entry))
+
+    return [variant_row(entry, label, bars=bars, dte=dte) for label, entry in chosen]
+
+
+def spread_row(candidate, pair, criteria, expiration, day, coverage=None, section=None,
+               variants=None):
     """One result row of the agreed contract - numbers rounded, nothing invented.
 
     ``coverage`` is the pair search's report (``spread_candidates``) and
@@ -599,6 +847,10 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None, sectio
         "pairs_enumerated": report.get("enumerated"),
         "pairs_limit": report.get("limit"),
         "pairs_capped": report.get("capped"),
+        # The alternatives of the SAME expiry as named characters (see
+        # ``variant_characters``). Empty is a fact - "no other structure clears
+        # the same hurdles" - and never ``None``.
+        "variants": list(variants or ()),
     }
 
 
@@ -684,22 +936,29 @@ def _classify_chain_error(exc):
 
 def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
             rr_min, min_oi, min_long_delta, min_net_debit, max_required_move_pct):
-    """One candidate through the funnel -> ``(row, exclusion, failure, stages)``.
+    """One candidate through the funnel -> ``(row, exclusion, failure, stages, context)``.
 
     Runs inside a worker, so it never raises: every failure that leaves it is a
     classified object, because one broken title must not cost the other 29.
+
+    ``context`` is what the history phase needs to build the row's variants
+    (``variant_characters``): the section, the chosen pair and the hurdles the
+    alternatives have to clear too. It is returned instead of stashed on the row
+    so the answer's shape stays exactly the documented row - and it is ``None``
+    for a title that did not become a row, because a title without a spread has
+    no alternatives either.
     """
     symbol = str(candidate.get("symbol") or "").strip().upper()
     stages = {"next_earnings": False, "chain": False, "expiry": False, "spread": False,
               "move": False}
     if not symbol:
         return None, Exclusion("", REASON_NO_NEXT_EARNINGS,
-                               "Ein Kandidat ohne Symbol hat keinen Berichtstermin."), None, stages
+                               "Ein Kandidat ohne Symbol hat keinen Berichtstermin."), None, stages, None
 
     strategy = STRATEGY_BY_DIRECTION.get(candidate.get("direction"))
     if strategy is None:
         return None, Exclusion(symbol, REASON_NO_SPREAD,
-                               "Der Gap hat keine Richtung - keine Debit-Strategie."), None, stages
+                               "Der Gap hat keine Richtung - keine Debit-Strategie."), None, stages, None
 
     # 1) the next report date
     try:
@@ -708,16 +967,16 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         if exc.code == CODE_NO_API_KEY:
             # A missing key is a configuration fact, and the contract names it as
             # "no next earnings" - not as a failure of this title.
-            return None, Exclusion(symbol, REASON_NO_NEXT_EARNINGS, exc.message), None, stages
-        return None, None, Failure(symbol, exc.code, exc.message), stages
+            return None, Exclusion(symbol, REASON_NO_NEXT_EARNINGS, exc.message), None, stages, None
+        return None, None, Failure(symbol, exc.code, exc.message), stages, None
     except Exception as exc:                    # noqa: BLE001 - boundary by design
         return None, None, Failure(symbol, "next_earnings_failed",
                                    f"Der Berichtstermin konnte nicht gelesen werden "
-                                   f"({type(exc).__name__})."), stages
+                                   f"({type(exc).__name__})."), stages, None
     if next_earnings is None:
         return None, Exclusion(symbol, REASON_NO_NEXT_EARNINGS,
                                "Die Quelle nennt für diesen Titel keinen "
-                               "Berichtstermin im Fenster."), None, stages
+                               "Berichtstermin im Fenster."), None, stages, None
     stages["next_earnings"] = True
 
     # 2) the chain - one request per symbol, all expiries in it
@@ -726,11 +985,11 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
     except Exception as exc:                    # noqa: BLE001 - boundary by design
         reason, code, message = _classify_chain_error(exc)
         if reason is None:
-            return None, None, Failure(symbol, code, message), stages
-        return None, Exclusion(symbol, reason, message), None, stages
+            return None, None, Failure(symbol, code, message), stages, None
+        return None, Exclusion(symbol, reason, message), None, stages, None
     if not chain:
         return None, Exclusion(symbol, REASON_NOT_OPTIONABLE,
-                               "Die Kette dieses Titels enthält keinen Kontrakt."), None, stages
+                               "Die Kette dieses Titels enthält keinen Kontrakt."), None, stages, None
     stages["chain"] = True
 
     # 3) the first listed expiry strictly after the report
@@ -739,7 +998,7 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         return None, Exclusion(
             symbol, REASON_NO_EXPIRY,
             f"Kein gelisteter Verfall liegt nach dem Berichtstermin "
-            f"{next_earnings.isoformat()}."), None, stages
+            f"{next_earnings.isoformat()}."), None, stages, None
     stages["expiry"] = True
 
     # 4) the best debit spread of that expiry
@@ -761,7 +1020,7 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
             pairs_capped=bool(report.get("capped")),
             pairs_enumerated=report.get("enumerated"),
             pairs_possible=possible_pairs(section, strategy_option_type(strategy)),
-        ), None, stages
+        ), None, stages, None
     stages["spread"] = True
     row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage,
                      section=section)
@@ -777,9 +1036,16 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
             move_too_far_message(move, max_required_move_pct),
             required_move_pct=move,
             max_required_move_pct=max_required_move_pct,
-        ), None, stages
+        ), None, stages, None
     stages["move"] = True
-    return row, None, None, stages
+    context = {
+        "section": section, "strategy": strategy, "primary": pair,
+        "close": candidate.get("close"), "dte": row.get("dte"),
+        "now_fn": now_fn, "rr_min": rr_min,
+        "min_long_delta": min_long_delta, "min_net_debit": min_net_debit,
+        "max_required_move_pct": max_required_move_pct,
+    }
+    return row, None, None, stages, context
 
 
 def cap_note(rows, excluded=None):
@@ -816,13 +1082,21 @@ def cap_note(rows, excluded=None):
 
 def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORKERS,
                          deadline_seconds=DEFAULT_HISTORY_DEADLINE_SECONDS,
-                         history_bars=reachability.HISTORY_BARS):
+                         history_bars=reachability.HISTORY_BARS,
+                         contexts=None):
     """Fill every row's history numbers - in parallel, bounded, never guessed.
 
     Only rows that already have a spread are measured (they are the ones whose
     distance to break-even is known), and one request per row is all this
     costs: ``fetch_daily(symbol, fromdate, history_bars)`` answers the daily
     bars newest first, exactly as ``gap_scan`` asks for them.
+
+    ``contexts`` maps ``id(row)`` to the variant context of that row
+    (``_assess``): the bars of the SAME request are then handed to
+    ``variant_characters``, so the alternatives are named from the history the
+    row itself was measured on - one request, one set of bars, no second
+    opinion about the same title. A row without a context (or without a source)
+    keeps ``variants = []``.
 
     ``deadline_seconds`` bounds the whole phase. A title that has not answered
     by then keeps its row with ``history_state=source_failed`` and no numbers -
@@ -835,6 +1109,7 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
     rows = list(rows or ())
     if not rows:
         return rows
+    contexts = contexts or {}
     fromdate = reachability.fromdate_for(day)
     if fetch_daily is None or fromdate is None:
         for row in rows:
@@ -846,7 +1121,10 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
         # ``dte`` is CALENDAR days (the column the page shows); ``measure``
         # converts it into the sessions the window is counted in and returns
         # both numbers (``window_sessions``, ``window_calendar_days``).
-        return reachability.measure(bars, row.get("required_move_pct"), row.get("dte"))
+        fields = reachability.measure(bars, row.get("required_move_pct"), row.get("dte"))
+        context = contexts.get(id(row))
+        variants = [] if context is None else variant_characters(bars=bars, **context)
+        return fields, variants
 
     budget = None if deadline_seconds is None else max(0.0, float(deadline_seconds))
     pool = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
@@ -867,10 +1145,12 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
             row.update(reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED))
             continue
         try:
-            fields = future.result()
+            fields, variants = future.result()
         except Exception:                   # noqa: BLE001 - a source failure is a state
             fields = reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED)
+            variants = []
         row.update(fields)
+        row["variants"] = variants
     return rows
 
 
@@ -933,6 +1213,9 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
     counts = {"with_next_earnings": 0, "with_chain": 0, "with_expiry_after_earnings": 0,
               "with_spread_ge_rr": 0, "with_reachable_move": 0, "shown": 0}
     run = FunnelRun(counts=counts)
+    # id(row) -> the variant context of that row, filled as the rows come in and
+    # handed to the history phase (which owns the bars).
+    contexts = {}
     if not rows:
         return run
 
@@ -972,7 +1255,7 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
                                         "Zeitbudgets."))
             continue
         try:
-            row, exclusion, failure, stages = future.result()
+            row, exclusion, failure, stages, context = future.result()
         except Exception as exc:                # noqa: BLE001 - a bug is not a 500
             run.failures.append(Failure(symbol, "funnel_error",
                                         f"Die Prüfung ist gescheitert "
@@ -990,6 +1273,10 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
             counts["with_reachable_move"] += 1
         if row is not None:
             run.results.append(row)
+            if context is not None:
+                # The variant context of THIS row, keyed by identity: the
+                # history phase rebuilds the characters from the same bars.
+                contexts[id(row)] = context
         elif exclusion is not None:
             run.excluded.append(exclusion)
         elif failure is not None:
@@ -997,10 +1284,11 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
 
     # The history phase: one request per SHOWN row (a title without a spread has
     # no distance to measure), bounded like the chain stage. It runs before the
-    # sort because the measured frequency is what the answer is ordered by.
+    # sort because the measured frequency is what the answer is ordered by - and
+    # it names the alternatives of each row from the same bars (``contexts``).
     measure_reachability(
         run.results, fetch_daily=fetch_daily, day=day, max_workers=max_workers,
-        deadline_seconds=history_deadline_seconds)
+        deadline_seconds=history_deadline_seconds, contexts=contexts)
     # Ordered by reachability: highest measured hit rate first, the rows without
     # a measurement behind them, ties broken by the shorter distance and then by
     # the bigger gap (``result_sort_key`` holds the whole rule).

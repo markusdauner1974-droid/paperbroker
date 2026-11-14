@@ -1052,7 +1052,7 @@ ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_labe
             "pairs_possible_exact", "pairs_enumerated", "pairs_limit", "pairs_capped",
             "required_move_pct", "required_move_direction", "volatility_pct",
             "daily_move_pct", "hit_rate_pct", "windows_measured",
-            "window_sessions", "window_calendar_days", "history_state"}
+            "window_sessions", "window_calendar_days", "history_state", "variants"}
 
 
 class EndpointTests(unittest.TestCase):
