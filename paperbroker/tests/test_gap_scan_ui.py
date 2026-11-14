@@ -57,7 +57,8 @@ PANEL_JS = Path(paperbroker.__file__).parent / "static" / "gap_funnel.js"
 HEADERS = [
     "Nummer", "Symbol", "Gap Prozent", "Strategie", "Kurs",
     "Strikes (Long / Short)", "Debit", "maximaler Verlust", "maximaler Gewinn",
-    "R/R", "Verfall", "DTE", "nächster Bericht", "Optionen",
+    "R/R", "nötig %", "Schwankung", "Treffer", "Verfall", "DTE",
+    "nächster Bericht", "Optionen",
 ]
 
 #: node is the JS engine of the harness below - no package, no build step.
@@ -322,7 +323,9 @@ def _entry(symbol="CTVA", name="Corteva Inc.", gap=-24.3, direction="down",
            expiration="2027-03-19", dte=126, long_strike=10.0, short_strike=7.5,
            long_delta=-0.62, short_delta=-0.31, net_debit=1.35, max_loss=135.0,
            max_profit=115.0, rr=2.13, liquidity="full", oi=(820, 410),
-           ba=(6.1, 9.4), position_debit=135.0):
+           ba=(6.1, 9.4), position_debit=135.0, required_move=-1.0,
+           required_direction="down", volatility=54.2, daily_move=3.1,
+           hit_rate=24.5, windows=394, history_state="ok"):
     """One row of the documented answer shape."""
     return {
         "symbol": symbol, "name": name, "gap_pct": gap, "direction": direction,
@@ -335,6 +338,11 @@ def _entry(symbol="CTVA", name="Corteva Inc.", gap=-24.3, direction="down",
         "rr": rr, "net_return_pct": 85.2, "liquidity": liquidity,
         "open_interest": list(oi), "bid_ask_pct": list(ba),
         "position_debit": position_debit,
+        "required_move_pct": required_move,
+        "required_move_direction": required_direction,
+        "volatility_pct": volatility, "daily_move_pct": daily_move,
+        "hit_rate_pct": hit_rate, "windows_measured": windows,
+        "history_state": history_state,
     }
 
 
@@ -343,7 +351,8 @@ def _counts(**over):
         "calendar_rows": 128, "gaps_computed": 117, "over_threshold": 27,
         "turnover_passed": 27, "price_passed": 24, "candidates": 19,
         "with_next_earnings": 14, "with_expiry_after_earnings": 13,
-        "with_chain": 9, "with_spread_ge_rr": 4, "shown": 3,
+        "with_chain": 9, "with_spread_ge_rr": 4, "with_reachable_move": 3,
+        "shown": 3,
     }
     counts.update(over)
     return counts
@@ -359,6 +368,7 @@ def _body(results=None, excluded=None, failures=None, notes=None, day_state="liv
         "min_turnover_usd": 5_000_000.0,
         "rr_min": 2.0,
         "min_oi": 100,
+        "max_required_move_pct": 20.0,
         "counts": counts if counts is not None else _counts(),
         "results": [] if results is None else results,
         "excluded": [] if excluded is None else excluded,
@@ -393,7 +403,8 @@ class TestThePageIsOneFunnel(unittest.TestCase):
         # Der Untertitel nennt die vier Bedingungen des Trichters.
         self.assertIn("Earnings-Gap", seite)
         self.assertIn("Verfall nach dem nächsten Bericht", seite)
-        self.assertIn("R/R mindestens 1 zu 2", seite)
+        # Die Regel steht im Kopf: R/R-Floor UND Grenze der nötigen Bewegung.
+        self.assertIn("Zugelassen: R/R ≥ 1:2 und eine nötige Bewegung bis", seite)
         self.assertEqual(1, seite.count("<h1>"))
 
     def test_one_date_field_one_button_and_yesterday_as_default(self):
@@ -404,7 +415,7 @@ class TestThePageIsOneFunnel(unittest.TestCase):
         self.assertNotIn('id="funnel-day" value=', seite)
         self.assertEqual(1, seite.count('type="date"'))
 
-    def test_the_table_has_the_fourteen_agreed_columns(self):
+    def test_the_table_has_the_seventeen_agreed_columns(self):
         seite = _page()
         kopf = seite.split("<thead>")[1].split("</thead>")[0]
         spalten = [t.strip() for t in re.findall(r"<th>(.*?)</th>", kopf, re.S)]
@@ -461,11 +472,11 @@ class TestTheRowsSpeakTheAnswer(unittest.TestCase):
         panel = _render(_answer(200, _body(results=_three())), click=True)
         self.assertEqual("/api/v1/gap-spreads?day=" + DAY, panel["url"])
 
-    def test_one_candidate_becomes_one_row_of_fourteen_cells(self):
+    def test_one_candidate_becomes_one_row_of_seventeen_cells(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
         self.assertEqual(3, len(panel["rows"]))
         self.assertFalse(panel["tableHidden"])
-        self.assertEqual([14] * 3, [len(r["cells"]) for r in panel["rows"]])
+        self.assertEqual([17] * 3, [len(r["cells"]) for r in panel["rows"]])
         self.assertEqual(["CTVA", "UPCO", "MIDW"], [r["symbol"] for r in panel["rows"]])
 
     def test_the_cells_carry_the_numbers_of_the_answer(self):
@@ -487,17 +498,17 @@ class TestTheRowsSpeakTheAnswer(unittest.TestCase):
         self.assertEqual("115,00", erste[8])
         # R/R als Satz, mit Dezimalkomma.
         self.assertEqual("1 zu 2,1", erste[9])
-        self.assertEqual("2027-03-19", erste[10])
-        self.assertEqual("126", erste[11])
-        self.assertEqual("2027-02-01", erste[12])
+        self.assertEqual("2027-03-19", erste[13])
+        self.assertEqual("126", erste[14])
+        self.assertEqual("2027-02-01", erste[15])
 
     def test_the_options_cell_names_both_legs_and_the_liquidity(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
-        erste = panel["rows"][0]["cells"][13]
+        erste = panel["rows"][0]["cells"][16]
         self.assertIn("OI 820 / 410", erste)
         self.assertIn("Bid-Ask 6,1 % / 9,4 %", erste)
         self.assertIn("voll liquide", erste)
-        zweite = panel["rows"][1]["cells"][13]
+        zweite = panel["rows"][1]["cells"][16]
         self.assertIn("OI 140 / 120", zweite)
         self.assertIn("dünn", zweite)
         self.assertNotIn("voll liquide", zweite)
@@ -522,19 +533,21 @@ class TestTheCounterLine(unittest.TestCase):
         self.assertEqual(
             "117 Gaps gemessen, 27 über Umsatzhürde, 19 Kandidaten, "
             "14 mit nächstem Termin, 13 mit passendem Verfall, "
-            "4 mit R/R mindestens 1 zu 2, 3 angezeigt",
+            "4 mit R/R mindestens 1 zu 2, 3 mit nötiger Bewegung bis 20 %, "
+            "3 angezeigt",
             panel["counts"],
         )
 
     def test_the_line_follows_the_counts_and_nothing_else(self):
         counts = _counts(gaps_computed=4, turnover_passed=2, candidates=1,
                          with_next_earnings=1, with_expiry_after_earnings=1,
-                         with_spread_ge_rr=1, shown=1)
+                         with_spread_ge_rr=1, with_reachable_move=1, shown=1)
         panel = _render(_answer(200, _body(results=[_entry()], counts=counts)), click=True)
         self.assertEqual(
             "4 Gaps gemessen, 2 über Umsatzhürde, 1 Kandidat, "
             "1 mit nächstem Termin, 1 mit passendem Verfall, "
-            "1 mit R/R mindestens 1 zu 2, 1 angezeigt",
+            "1 mit R/R mindestens 1 zu 2, 1 mit nötiger Bewegung bis 20 %, "
+            "1 angezeigt",
             panel["counts"],
         )
 
