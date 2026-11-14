@@ -13,7 +13,7 @@ What is pinned here, in the order of the requirement:
 * the table carries exactly the fourteen agreed columns, in that order,
 * a candidate of the documented answer shape becomes one row: gap with arrow
   AND word, strategy label, close, both strikes, debit, max loss, max profit,
-  R/R as "1 zu 2,3", expiry, DTE, next report, and an options cell with both
+  R/R as "1 : 2,3", expiry, DTE, next report, and an options cell with both
   open interests, both bid/ask percentages and the liquidity word,
 * the counter line names every hurdle of the funnel in plain German, built from
   ``counts`` alone,
@@ -56,7 +56,7 @@ PANEL_JS = Path(paperbroker.__file__).parent / "static" / "gap_funnel.js"
 #: The agreed columns, in the agreed order.
 HEADERS = [
     "Nummer", "Symbol", "Gap Prozent", "Strategie", "Kurs",
-    "Strikes (Long / Short)", "Debit", "maximaler Verlust", "maximaler Gewinn",
+    "Strikes (Long / Short)", "maximaler Verlust", "maximaler Gewinn",
     "R/R", "nötig %", "Schwankung", "Treffer", "Verfall", "DTE",
     "nächster Bericht", "Optionen",
 ]
@@ -415,7 +415,7 @@ class TestThePageIsOneFunnel(unittest.TestCase):
         self.assertNotIn('id="funnel-day" value=', seite)
         self.assertEqual(1, seite.count('type="date"'))
 
-    def test_the_table_has_the_seventeen_agreed_columns(self):
+    def test_the_table_has_the_sixteen_agreed_columns(self):
         seite = _page()
         kopf = seite.split("<thead>")[1].split("</thead>")[0]
         spalten = [t.strip() for t in re.findall(r"<th>(.*?)</th>", kopf, re.S)]
@@ -472,11 +472,11 @@ class TestTheRowsSpeakTheAnswer(unittest.TestCase):
         panel = _render(_answer(200, _body(results=_three())), click=True)
         self.assertEqual("/api/v1/gap-spreads?day=" + DAY, panel["url"])
 
-    def test_one_candidate_becomes_one_row_of_seventeen_cells(self):
+    def test_one_candidate_becomes_one_row_of_sixteen_cells(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
         self.assertEqual(3, len(panel["rows"]))
         self.assertFalse(panel["tableHidden"])
-        self.assertEqual([17] * 3, [len(r["cells"]) for r in panel["rows"]])
+        self.assertEqual([16] * 3, [len(r["cells"]) for r in panel["rows"]])
         self.assertEqual(["CTVA", "UPCO", "MIDW"], [r["symbol"] for r in panel["rows"]])
 
     def test_the_cells_carry_the_numbers_of_the_answer(self):
@@ -493,22 +493,21 @@ class TestTheRowsSpeakTheAnswer(unittest.TestCase):
         self.assertEqual("9,19", erste[4])
         self.assertIn("10,0 / 7,5", erste[5])
         self.assertIn("Long / Short", erste[5])
-        self.assertEqual("1,35", erste[6])
-        self.assertEqual("135,00", erste[7])
-        self.assertEqual("115,00", erste[8])
-        # R/R als Satz, mit Dezimalkomma.
-        self.assertEqual("1 zu 2,1", erste[9])
-        self.assertEqual("2027-03-19", erste[13])
-        self.assertEqual("126", erste[14])
-        self.assertEqual("2027-02-01", erste[15])
+        self.assertEqual("135,00", erste[6])
+        self.assertEqual("115,00", erste[7])
+        # Risiko : Gewinn, mit Dezimalkomma.
+        self.assertEqual("1 : 2,1", erste[8])
+        self.assertEqual("2027-03-19", erste[12])
+        self.assertEqual("126", erste[13])
+        self.assertEqual("2027-02-01", erste[14])
 
     def test_the_options_cell_names_both_legs_and_the_liquidity(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
-        erste = panel["rows"][0]["cells"][16]
+        erste = panel["rows"][0]["cells"][15]
         self.assertIn("OI 820 / 410", erste)
         self.assertIn("Bid-Ask 6,1 % / 9,4 %", erste)
         self.assertIn("voll liquide", erste)
-        zweite = panel["rows"][1]["cells"][16]
+        zweite = panel["rows"][1]["cells"][15]
         self.assertIn("OI 140 / 120", zweite)
         self.assertIn("dünn", zweite)
         self.assertNotIn("voll liquide", zweite)
@@ -533,7 +532,7 @@ class TestTheCounterLine(unittest.TestCase):
         self.assertEqual(
             "117 Gaps gemessen, 27 über Umsatzhürde, 19 Kandidaten, "
             "14 mit nächstem Termin, 13 mit passendem Verfall, "
-            "4 mit R/R mindestens 1 zu 2, 3 mit nötiger Bewegung bis 20 %, "
+            "4 mit R/R mindestens 1 : 2, 3 mit nötiger Bewegung bis 20 %, "
             "3 angezeigt",
             panel["counts"],
         )
@@ -546,7 +545,7 @@ class TestTheCounterLine(unittest.TestCase):
         self.assertEqual(
             "4 Gaps gemessen, 2 über Umsatzhürde, 1 Kandidat, "
             "1 mit nächstem Termin, 1 mit passendem Verfall, "
-            "1 mit R/R mindestens 1 zu 2, 1 mit nötiger Bewegung bis 20 %, "
+            "1 mit R/R mindestens 1 : 2, 1 mit nötiger Bewegung bis 20 %, "
             "1 angezeigt",
             panel["counts"],
         )
@@ -590,7 +589,7 @@ class TestTheEmptyStateAndTheLists(unittest.TestCase):
         texte = " | ".join(item["text"] for item in panel["excluded"]["items"])
         self.assertIn("kein nächster Bericht bekannt", texte)
         self.assertIn("kein Verfall nach dem nächsten Bericht", texte)
-        self.assertIn("kein Spread mit R/R mindestens 1 zu 2", texte)
+        self.assertIn("kein Spread mit R/R mindestens 1 : 2", texte)
         self.assertIn("keine gelisteten Optionen", texte)
         self.assertIn("Optionskette nicht lesbar", texte)
         # der Bezeichner bleibt im Tooltip, nicht in der Zeile

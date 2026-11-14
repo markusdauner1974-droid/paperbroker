@@ -454,6 +454,27 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
         kopf = seite.split("<thead>")[1].split("</thead>")[0]
         return [t.strip() for t in re.findall(r"<th>(.*?)</th>", kopf, re.S)]
 
+    def test_the_table_keeps_loss_without_a_duplicate_debit_column(self):
+        headers = self._headers()
+        self.assertNotIn("Debit", headers)
+        self.assertEqual(headers.count("maximaler Verlust"), 1)
+        panel = _render()
+        for cells in panel["cells"]:
+            self.assertEqual(len(cells), len(headers))
+        self.assertEqual(panel["cells"][0][6], "135,00")
+        self.assertEqual(panel["cells"][0][7], "115,00")
+
+    def test_the_ratio_uses_a_colon_and_decimal_comma(self):
+        entry = {**_row(), "rr": 8.1}
+        detail = _detail()
+        detail["rr"] = 8.1
+        panel = _render(list_body={**_list(), "results": [entry]},
+                        details=[{"status": 200, "body": detail}], actions=["click:0"])
+        self.assertEqual(panel["cells"][0][8], "1 : 8,1")
+        self.assertIn("R/R 1 : 8,1", panel["detail"]["text"])
+        self.assertNotIn("1 zu", panel["detail"]["text"])
+        self.assertIn("R/R mindestens 1 : 2", panel["counts"])
+
     def test_the_three_columns_stand_directly_after_the_ratio(self):
         spalten = self._headers()
         stelle = spalten.index("R/R")
@@ -468,19 +489,19 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
     def test_the_row_shows_all_three_numbers_in_order(self):
         panel = _render(actions=[])
         zellen = panel["cells"][0]
-        # Nach R/R (Index 9) folgen noetig %, Schwankung, Treffer.
-        self.assertIn("↓ -5,9 %", zellen[10])
-        self.assertIn("54,2 %", zellen[11])
-        self.assertIn("Tag 3,1 %", zellen[11])
-        self.assertIn("31 %", zellen[12])
-        self.assertIn("n=394", zellen[12])
+        # Nach R/R (Index 8) folgen noetig %, Schwankung, Treffer.
+        self.assertIn("↓ -5,9 %", zellen[9])
+        self.assertIn("54,2 %", zellen[10])
+        self.assertIn("Tag 3,1 %", zellen[10])
+        self.assertIn("31 %", zellen[11])
+        self.assertIn("n=394", zellen[11])
 
     def test_the_hit_cell_names_the_sessions_behind_the_rate(self):
         # Die Zelle nennt BEIDE Einheiten: n = Zahl der Fenster, HT = ihre
         # Laenge in Handelstagen. dte (126) steht in der Verfallspalte daneben -
         # Kalendertage, nicht Handelstage.
         panel = _render(actions=[])
-        treffer = panel["cells"][0][12]
+        treffer = panel["cells"][0][11]
         self.assertIn("n=394", treffer)
         self.assertIn("87 HT", treffer)
         self.assertNotIn("126 HT", treffer)
@@ -490,14 +511,14 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
         # nicht "0 HT" (eine Laenge von null gibt es nicht).
         panel = _render(list_body={**_list(), "results": [
             _row("SPIR", hit=None, windows=0, sessions=0, state="too_short")]})
-        treffer = panel["cells"][0][12]
+        treffer = panel["cells"][0][11]
         self.assertNotIn("HT", treffer)
         self.assertIn("zu wenig Historie", treffer)
 
     def test_a_rising_move_carries_the_up_arrow_and_the_plus(self):
         panel = _render(list_body={**_list(), "results": [
             _row("LAND", "up", "Bull Call", move=10.1)]})
-        zelle = panel["cells"][0][10]
+        zelle = panel["cells"][0][9]
         self.assertIn("↑", zelle)
         self.assertIn("+10,1 %", zelle)
         self.assertIn("steigen", zelle)
@@ -509,12 +530,12 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
             _row("SPIR", move=None, volatility=None, daily=None, hit=None,
                  windows=0, sessions=0, state="too_short")]})
         zellen = panel["cells"][0]
+        self.assertIn("—", zellen[9])
+        self.assertNotIn("0 %", zellen[9])
         self.assertIn("—", zellen[10])
-        self.assertNotIn("0 %", zellen[10])
         self.assertIn("—", zellen[11])
-        self.assertIn("—", zellen[12])
-        self.assertNotIn("n=0", zellen[12])
-        self.assertIn("zu wenig Historie", zellen[12])
+        self.assertNotIn("n=0", zellen[11])
+        self.assertIn("zu wenig Historie", zellen[11])
 
     def test_the_foot_explains_the_frequency_with_window_length_and_count(self):
         panel = _render(actions=[])
@@ -596,7 +617,7 @@ class TestTheRowItselfLoadsTheDetail(unittest.TestCase):
         self.assertIn("CTVA", panel["detail"]["summary"])
         self.assertIn("Bear Put", panel["detail"]["text"])
         self.assertIn("2027-03-19", panel["detail"]["text"])
-        self.assertIn("1 zu 0,85", panel["detail"]["text"])
+        self.assertIn("1 : 0,8", panel["detail"]["text"])
         self.assertEqual("true", panel["rows"][0]["expanded"])
 
     def test_the_row_is_keyboard_reachable(self):
@@ -658,7 +679,7 @@ class TestWhatTheBlockShows(unittest.TestCase):
         self.assertIn("max. Verlust 135,00", text)
         self.assertIn("Break-even 8,65", text)
         self.assertIn("max. Gewinn 115,00", text)
-        self.assertIn("R/R 1 zu 0,85", text)
+        self.assertIn("R/R 1 : 0,8", text)
 
     def test_both_legs_are_a_row_with_quote_iv_oi_and_delta(self):
         panel = _render(actions=["click:0"])
