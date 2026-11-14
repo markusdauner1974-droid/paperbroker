@@ -19,7 +19,9 @@ Pinned, in the order of the requirement:
   floor while 500 + a 10 % spread is the ``full`` floor,
 * the counters chain the stages and every excluded title names its reason,
 * the endpoint answers the agreed JSON contract, sorted by |gap_pct| descending,
-* a title without a report date costs NO chain request.
+* a title without a report date costs NO chain request,
+* the funnel's own notes (the pair search's ceiling) reach the HTTP answer,
+  after the general ones and each sentence only once.
 """
 
 import json
@@ -31,6 +33,7 @@ from unittest import mock
 
 import arrow
 
+from paperbroker import gap_funnel as gap_funnel_mod
 from paperbroker import screener as screener_mod
 from paperbroker.assets import asset_factory
 from paperbroker.gap_funnel import (
@@ -736,6 +739,47 @@ class EndpointTests(unittest.TestCase):
         antwort, body, _chains, _dates = self._get(f"?day={DAY}&nonsense=1")
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(body["error"], "unknown_parameter")
+
+    def test_a_capped_pair_search_is_named_in_the_http_answer(self):
+        # Ten strikes are 45 combinations; a ceiling of 5 cuts the enumeration,
+        # so every R/R of such a title is the best pair FOUND, not the best.
+        # The module knows that - the ANSWER has to say it.
+        calendar, history, chains, dates = _fixture()
+        chains.chains["AAA"] = wide_ladder("AAA", strikes=10)
+        _a, offen, _c, _d = self._get(fixture=(calendar, history, chains, dates))
+        self.assertFalse(any("Deckel" in note for note in offen["notes"]))
+        with mock.patch.object(screener_mod, "MAX_PAIRS_PER_SECTION", 5):
+            antwort, body, _chains, _dates = self._get(
+                fixture=(calendar, history, chains, dates))
+        self.assertEqual(antwort.status_code, 200)
+        aaa = body["results"][0]
+        self.assertEqual(aaa["symbol"], "AAA")
+        self.assertTrue(aaa["pairs_capped"])
+        self.assertEqual(aaa["pairs_limit"], 5)
+        deckel = [note for note in body["notes"] if "Deckel" in note]
+        self.assertEqual(len(deckel), 1)
+        # The sentence names the ceiling the rows really ran against (5, not
+        # the module's 50 000) and the number of titles affected.
+        self.assertIn("(5)", deckel[0])
+        self.assertIn("Bei 1 Titel", deckel[0])
+        self.assertIn("GEFUNDENE", deckel[0])
+        # The run's sentence comes AFTER the general block, never instead of it.
+        self.assertEqual(body["notes"][-1], deckel[0])
+        self.assertEqual(body["notes"][:len(offen["notes"])], offen["notes"])
+
+    def test_the_notes_carry_no_duplicates(self):
+        # The general block and the run CAN name the same thing (here forced by
+        # handing the run a sentence the block already carries): it still stands
+        # in the answer once, in the place the general note has.
+        calendar, history, chains, dates = _fixture()
+        chains.chains["AAA"] = wide_ladder("AAA", strikes=10)
+        _a, body, _c, _d = self._get(fixture=(calendar, history, chains, dates))
+        allgemein = body["notes"][0]
+        with mock.patch.object(gap_funnel_mod, "cap_note", lambda _rows: allgemein):
+            _a, doppelt, _c, _d = self._get(fixture=(calendar, history, chains, dates))
+        self.assertEqual(doppelt["notes"].count(allgemein), 1)
+        self.assertEqual(doppelt["notes"], body["notes"])
+        self.assertEqual(len(doppelt["notes"]), len(set(doppelt["notes"])))
 
 
 if __name__ == "__main__":  # pragma: no cover

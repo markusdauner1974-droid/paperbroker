@@ -1756,6 +1756,16 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 f"{int(gap_funnel.DEFAULT_DEADLINE_SECONDS)} s nicht fertig "
                 f"geprüft (deadline_exceeded)."
             )
+        # The run's OWN notes are part of this answer, not a module secret: a
+        # capped pair search makes every shown R/R "the best pair FOUND", and a
+        # limitation that never reaches the JSON is a silent one. Appended last
+        # (general notes, then the run's), each sentence once - the general
+        # block and the run may name the same thing.
+        gesehen = set(notes)
+        for hinweis in lauf.notes:
+            if hinweis and hinweis not in gesehen:
+                gesehen.add(hinweis)
+                notes.append(hinweis)
 
         return jsonify(
             schema_version=_GAP_SPREADS_SCHEMA_VERSION,
