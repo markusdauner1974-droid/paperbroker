@@ -26,7 +26,7 @@ from urllib.parse import urlencode
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
 
-from . import exclusions, quote_age
+from . import exclusions, gap_funnel, quote_age
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
@@ -76,6 +76,7 @@ from .gap_scan import (
 # cannot drift from ``scan_gaps``: it imports the helper instead of re-deriving
 # "selected" or "turnover_passed" from the rows a second time.
 from .gap_scan import _counts as gap_run_counts
+from .next_earnings import NextEarningsAdapter
 from .PaperBroker import PaperBroker
 from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
 from .screener import (
@@ -438,7 +439,7 @@ def _us_today(now_fn):
 
 
 def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=None,
-               gap_adapter=None):
+               gap_adapter=None, next_earnings_adapter=None):
     """now_fn: injectable clock for tests (default: real arrow.get).
 
     The screener's 30-min-stale guard compares quote_timestamp against
@@ -452,6 +453,14 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     adapter, built ONCE here with a bounded cache: a past close never changes,
     so a second request for the same day must not load the whole day again.
     An injected ``gap_adapter`` wins over that default (tests, other sources).
+
+    ``next_earnings_adapter`` is the THIRD source: the next report date per
+    title for ``GET /api/v1/gap-spreads`` (Finnhub's calendar, see
+    ``next_earnings.py`` - Nasdaq's per-symbol endpoint answers no date at all).
+    ``None`` builds the real adapter once, with a 12 h file cache under
+    ``/app/.cache``; an injected one wins (tests, another vendor). The key is
+    read from ``FINNHUB_API_KEY`` at query time, never at import time, and a run
+    without it answers ``no_next_earnings`` instead of guessing a date.
     """
     app = Flask(__name__, template_folder="templates")
     if now_fn is None:
@@ -471,6 +480,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             earnings_adapter = NasdaqEarningsAdapter(now_fn=now_fn)
         else:
             earnings_adapter = NullEarningsAdapter(now_fn=now_fn)
+    if next_earnings_adapter is None:
+        # One adapter (and one cache file) for the lifetime of the app: the
+        # funnel asks up to six titles in parallel and must not re-query a
+        # symbol it already knows.
+        next_earnings_adapter = NextEarningsAdapter(now_fn=now_fn)
     broker = PaperBroker(quote_adapter=quote_adapter)
 
     # JSON error contract for the API (CodeRabbit finding): abort() would
@@ -1518,6 +1532,257 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             failures=dict(gemessen.failures),
         )
 
+    # ------------------------------------------------------------------ #
+    # The gap candidates, priced as debit spreads (GET /api/v1/gap-spreads).#
+    #                                                                     #
+    # The route above answers WHO moved how far. This one answers what   #
+    # that move would cost to trade: next report date (Finnhub), the     #
+    # first listed expiry strictly after it, one chain request per        #
+    # symbol, the best debit spread of the gap's direction - and NOTHING  #
+    # for a title that cannot be priced, named with the step that stopped #
+    # it. The gap stage is not re-implemented: it is the same three calls  #
+    # (reaction_day_rows -> fetch_gaps -> select_candidates) the gap scan  #
+    # makes, with the same defaults, so both answers describe one day.    #
+    # ------------------------------------------------------------------ #
+    # The version of THIS answer's shape. Bumped when a field changes
+    # meaning, so a consumer can switch instead of guessing.
+    _GAP_SPREADS_SCHEMA_VERSION = "1.0"
+    _GAP_SPREADS_NOTES = (
+        "Gerechnet wird auf dem letzten verfügbaren Marktstand "
+        "(data_mode=last_available) - es gibt keinen Altersfilter.",
+        "R/R = net_return_pct / 100, Gebühren eingeschlossen "
+        "(fees=0.0 USD je Position, weil dieses Repo keine Gebührenordnung kennt).",
+        "Verfall: die erste gelistete Reihe STRIKT nach dem nächsten "
+        "Berichtstermin; ohne Berichtstermin oder ohne spätere Reihe entfällt "
+        "der Kandidat.",
+        "Strike-Paar: alle Kombinationen des Verfalls, höchstes R/R - aber nur "
+        "mit |Delta| des Long-Legs >= 20 und Netto-Debit >= 0.50 USD.",
+        "Laufzeit (dte) in Kalendertagen ab dem gescannten Tag, nicht ab heute.",
+    )
+
+    @app.get("/api/v1/gap-spreads")
+    def api_gap_spreads():
+        """The gap candidates of one reaction day, run through the option funnel.
+
+        ``day`` is the same reaction session ``/api/v1/gap-scan`` measures, and
+        the candidates are the same ones - the three gap calls are repeated here
+        with the same defaults (threshold 2 %, turnover 5 M USD, price 5 USD), so
+        a row of this answer is a row of that answer plus a priced spread.
+
+        Four questions per candidate, in the order of the funnel:
+        ``no_next_earnings`` (Finnhub could not name a date - including the case
+        of a missing key, which is a setup fact and never a guess),
+        ``no_expiry_after_earnings`` (no listed series after the report),
+        ``not_optionable`` (the source lists no usable chain) and
+        ``no_spread_ge_rr`` (no pair with R/R >= 2.0, |delta| of the bought leg
+        >= 20 and a net debit >= 0.50 USD). A source that FAILS - a block, a
+        throttle, a timeout - is not an exclusion but a ``failures`` entry with
+        its class, exactly like the earnings scan: the difference between "this
+        title has nothing" and "we could not ask" is the whole point of the two
+        lists.
+
+        One chain request per symbol, six in parallel, and a whole-run deadline:
+        a title that has not finished by then is named ``deadline_exceeded``
+        rather than holding the request. The answer is always a 200 with counts
+        that describe the whole day - only a calendar that cannot be read is a
+        503, because then there is no candidate set at all.
+        """
+        args, fehler = _gap_scan_args()
+        if fehler is not None:
+            return fehler
+        day = args["day"]
+        reaction = args["reaction"]
+        previous = _gap_previous_trading_day(reaction)
+        if previous is None:
+            app.logger.error("gap spreads: no trading day before %s", day)
+            return _gap_scan_error(
+                503, "calendar_unavailable",
+                f"no US trading day within {_GAP_PREVIOUS_LOOKBACK_DAYS} days "
+                f"before {day} - the trading calendar is unusable",
+            )
+        tage = {DAY_PREV: previous.isoformat(), DAY_TODAY: day}
+
+        try:
+            antwort = earnings_adapter.get_calendar_days(dict(tage)) or {}
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("gap spreads: calendar failed for %s and %s",
+                                 tage[DAY_PREV], day)
+            return _gap_scan_error(
+                503, "calendar_unavailable", "the earnings calendar could not be read"
+            )
+        roh = antwort.get("days") if isinstance(antwort, dict) else None
+        roh = roh if isinstance(roh, dict) else {}
+        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
+        if gesamt == "not_configured":
+            return _gap_scan_error(
+                503, "calendar_unavailable",
+                "no earnings source is configured - there is nothing to scan",
+                source_code="not_configured",
+            )
+
+        gelesen = {}
+        for schluessel in (DAY_TODAY, DAY_PREV):
+            iso = tage[schluessel]
+            eintrag = roh.get(iso)
+            if not isinstance(eintrag, dict):
+                quell_code, quell_status, message = _calendar_failure(
+                    antwort.get("error") if isinstance(antwort, dict) else None, iso
+                )
+                return _gap_scan_error(
+                    503, "calendar_unavailable", message,
+                    source_code=quell_code, source_status=quell_status,
+                )
+            zustand = str(eintrag.get("state") or gesamt or "unavailable")
+            zeilen = eintrag.get("rows") or []
+            if zustand == "not_configured":
+                return _gap_scan_error(
+                    503, "calendar_unavailable",
+                    "no earnings source is configured - there is nothing to scan",
+                    source_code="not_configured",
+                )
+            if zustand == "unavailable" or not isinstance(zeilen, list):
+                quell_code, quell_status, message = _calendar_failure(eintrag.get("error"), iso)
+                return _gap_scan_error(
+                    503, "calendar_unavailable", message,
+                    source_code=quell_code, source_status=quell_status,
+                )
+            gelesen[schluessel] = {"state": zustand, "rows": zeilen}
+
+        kandidatenzeilen = reaction_day_rows(
+            gelesen[DAY_PREV]["rows"],
+            gelesen[DAY_TODAY]["rows"],
+            previous_date=previous,
+            day_date=reaction,
+        )
+        try:
+            gemessen = fetch_gaps(
+                [zeile["symbol"] for zeile in kandidatenzeilen], reaction,
+                adapter=gap_adapter, deadline_seconds=_GAP_DEADLINE_SECONDS,
+            )
+        except Exception:                                    # noqa: BLE001 - one 503, not HTML
+            app.logger.exception("gap spreads: measurement failed for %s", day)
+            return _gap_scan_error(
+                503, "gap_source_failed", "the gap source could not be read"
+            )
+
+        ausgewaehlt = select_candidates(
+            gemessen.rows,
+            threshold_pct=args["gap_threshold_pct"],
+            min_turnover_usd=args["min_turnover_usd"],
+            max_candidates=args["max_candidates"],
+            min_price=args["min_price"],
+        )
+        # The numbers of the gap stage have ONE definition (``gap_scan._counts``),
+        # the same one the gap scan answers with - this route only renames them
+        # into the agreed contract of THIS answer.
+        basis = gap_run_counts(
+            kandidatenzeilen,
+            gemessen.rows,
+            ausgewaehlt,
+            gemessen.failures,
+            args["gap_threshold_pct"],
+            args["min_turnover_usd"],
+            args["min_price"],
+        )
+
+        nach_symbol = {zeile["symbol"]: zeile for zeile in kandidatenzeilen}
+        kandidaten = []
+        for kandidat in ausgewaehlt:
+            zeile = nach_symbol.get(kandidat.symbol) or {}
+            kandidaten.append({
+                "symbol": kandidat.symbol,
+                "name": zeile.get("name"),
+                "gap_pct": kandidat.gap_pct,
+                "direction": kandidat.direction,
+                # The strategy follows the direction of the gap; the funnel
+                # restates the same table rather than trusting this field.
+                "strategy": kandidat.strategy,
+                "close": kandidat.close,
+                "turnover_usd": kandidat.turnover_usd,
+                "earnings_date": zeile.get("earnings_date"),
+            })
+
+        try:
+            lauf = gap_funnel.run_funnel(
+                kandidaten,
+                # The adapter owns the key, the window and the 12 h cache; this
+                # route only asks per symbol.
+                fetch_next_earnings=next_earnings_adapter.get_next_earnings,
+                # ONE request per ticker: every expiry of the chain is sliced
+                # locally, exactly as the earnings scan does it.
+                fetch_chain=lambda symbol: broker.get_options(symbol, None),
+                day=reaction,
+                now_fn=now_fn,
+                max_workers=gap_funnel.DEFAULT_MAX_WORKERS,
+                deadline_seconds=gap_funnel.DEFAULT_DEADLINE_SECONDS,
+                rr_min=gap_funnel.DEFAULT_RR_MIN,
+                min_oi=gap_funnel.DEFAULT_MIN_OI,
+            )
+        except Exception:                                    # noqa: BLE001 - classified here
+            app.logger.exception("gap spreads funnel failed for %s", day)
+            return _gap_scan_error(
+                503, "scan_failed", "the spread scan could not be completed"
+            )
+
+        # The chain of the funnel, stage by stage: calendar rows -> gaps ->
+        # threshold/turnover/price -> candidates -> report date -> chain ->
+        # expiry -> qualifying spread -> shown. A title can never be counted as
+        # having passed a stage it never reached.
+        zaehler = {
+            "calendar_rows": basis["candidate_rows"],
+            "gaps_computed": basis["gaps_computed"],
+            "over_threshold": basis["over_threshold"],
+            "turnover_passed": basis["turnover_passed"],
+            "price_passed": basis["price_passed"],
+            "candidates": basis["selected"],
+            "with_next_earnings": lauf.counts["with_next_earnings"],
+            "with_expiry_after_earnings": lauf.counts["with_expiry_after_earnings"],
+            "with_chain": lauf.counts["with_chain"],
+            "with_spread_ge_rr": lauf.counts["with_spread_ge_rr"],
+            "shown": lauf.counts["shown"],
+        }
+        notes = list(_GAP_SPREADS_NOTES)
+        if kandidaten and not lauf.counts["with_next_earnings"] and any(
+                "FINNHUB_API_KEY" in str(e.message) for e in lauf.excluded):
+            notes.append(
+                "Ohne FINNHUB_API_KEY lässt sich kein Berichtstermin lesen - "
+                "jeder Kandidat endet dann bei no_next_earnings."
+            )
+        verspaetet = sum(1 for failure in lauf.failures
+                         if failure.code == gap_funnel.CODE_DEADLINE)
+        if verspaetet:
+            notes.append(
+                f"{verspaetet} Kandidat(en) wurden innerhalb von "
+                f"{int(gap_funnel.DEFAULT_DEADLINE_SECONDS)} s nicht fertig "
+                f"geprüft (deadline_exceeded)."
+            )
+        # The run's OWN notes are part of this answer, not a module secret: a
+        # capped pair search makes every shown R/R "the best pair FOUND", and a
+        # limitation that never reaches the JSON is a silent one. Appended last
+        # (general notes, then the run's), each sentence once - the general
+        # block and the run may name the same thing.
+        gesehen = set(notes)
+        for hinweis in lauf.notes:
+            if hinweis and hinweis not in gesehen:
+                gesehen.add(hinweis)
+                notes.append(hinweis)
+
+        return jsonify(
+            schema_version=_GAP_SPREADS_SCHEMA_VERSION,
+            day=day,
+            # The reaction day's own state, passed through - never upgraded.
+            day_state=gelesen[DAY_TODAY]["state"],
+            threshold_pct=args["gap_threshold_pct"],
+            min_turnover_usd=args["min_turnover_usd"],
+            rr_min=gap_funnel.DEFAULT_RR_MIN,
+            min_oi=gap_funnel.DEFAULT_MIN_OI,
+            counts=zaehler,
+            results=lauf.results,
+            excluded=[eintrag.as_dict() for eintrag in lauf.excluded],
+            failures=[eintrag.as_dict() for eintrag in lauf.failures],
+            notes=notes,
+        )
+
     def _earnings_view(ticker, expirations, offered):
         """What the page shows - derived from the same calls the API makes.
 
@@ -1752,13 +2017,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     def index():
         ticker = request.args.get("ticker", "").upper().strip()
         expiration = request.args.get("expiration", "").strip()
-        # The calendar is decoration: its adapter call must never break the
-        # screener. `?no_calendar` is the escape hatch for tests and bookmarks
-        # that only need the form. It acts by its PRESENCE - any value,
-        # including the empty one a bare `?no_calendar` produces, means "off".
-        # A truthiness test would read that empty spelling as "on" and spend
-        # the three queries the caller just declined.
-        calendar = None if "no_calendar" in request.args else _calendar_view()
+        # The page shows no calendar and no per-ticker earnings panel, so it
+        # asks no source for either: a plain load spends no adapter call (and
+        # no network round trip). `?no_calendar` stays a known parameter only
+        # so an old bookmark is not reported as an unknown one.
         error = None
         hint = None
         results = dropped = dates = selectable = quotes = None
@@ -1859,13 +2121,6 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         top = results[0].quote if results else None
         dte = top.asset.get_days_to_expiration(now_fn()) if top is not None else None
         feed_time = getattr(top, "quote_timestamp", None) if top is not None else None
-        # Earnings-Termin und Verfallsfenster. Only when the chain was read, so
-        # the panel never claims "no expiration after earnings" for a ticker
-        # whose chain was not loaded. A failure here degrades the panel, never
-        # the page.
-        earnings_view = None
-        if ticker and dates is not None:
-            earnings_view = _earnings_view(ticker, dates, offered)
         # L: label and the two legs are printed from the same table the calculation
         # used - one source for the wording, no second copy in the template.
         spez = STRATEGIES.get(strategy or "")
@@ -1904,8 +2159,6 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             freshness_limit=criteria.max_quote_age_min,
             dte=dte,
             trend=_trend_display(ticker) if ticker else None,
-            earnings=earnings_view,
-            calendar=calendar,
             # The day scan is the page's second action: what it may send and
             # what its table is called come from one server-side table.
             scan=scan_view_data(),

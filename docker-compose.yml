@@ -17,6 +17,13 @@
 #                  and the app behaves exactly as if the variables were
 #                  absent (no badge, no exception). The provider is only
 #                  created when URL AND token are both set.
+#   FINNHUB_API_KEY
+#                  key for Finnhub's earnings calendar, used by
+#                  GET /api/v1/gap-spreads to find each title's NEXT report
+#                  date (Nasdaq's per-symbol endpoint answers no date at all).
+#                  Empty = no key: the scan then names every candidate
+#                  no_next_earnings instead of guessing a date. The cache is
+#                  written under /app/.cache (the volume below), TTL 12 h.
 
 services:
   paperbroker-screener:
@@ -41,6 +48,9 @@ services:
       # The code default is OFF on purpose (a deploy must not silently start
       # calling an external service); this stack is the place that switches it on.
       - PAPERBROKER_EARNINGS_SOURCE=${PAPERBROKER_EARNINGS_SOURCE:-nasdaq}
+      # Next earnings date for /api/v1/gap-spreads. Empty by default: without a
+      # key that endpoint still answers, with no_next_earnings for each title.
+      - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
 
 volumes:
   cboe_cache:

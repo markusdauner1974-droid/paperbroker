@@ -1,4 +1,4 @@
-"""Offline tests for the earnings routes and the page panel.
+"""Offline tests for the earnings routes.
 
 Flask test client, fake quote adapter, fake earnings adapter: no network, no
 clock drift. The last class pins that the existing option-chain API is not
@@ -15,6 +15,7 @@ from paperbroker.adapters.earnings.NasdaqEarningsAdapter import (
     DayCalendarStore,
     EarningsCache,
     NasdaqEarningsAdapter,
+    NullEarningsAdapter,
     OptionableSymbolsStore,
 )
 from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
@@ -68,6 +69,11 @@ class _FakeEarnings:
         if self.boom:
             raise RuntimeError("adapter exploded")
         return self.body
+
+    def get_calendar_days(self, days):
+        # The old page view still asks for the calendar (dead markup); a fake
+        # without the method would raise an unrelated AttributeError.
+        return {"days": {}, "state": "unavailable", "fetched_at_utc": None}
 
 
 class _ChainAdapter:
@@ -305,31 +311,58 @@ class TestEarningsWindowRoute(unittest.TestCase):
         self.assertIn("earnings_date_in_past", [g["code"] for g in koerper["decision"]["reasons"]])
 
 
-class TestPage(unittest.TestCase):
-    def test_the_panel_shows_the_date_the_exit_and_the_expiry(self):
-        seite = _client().get("/?ticker=AAPL")
-        self.assertEqual(seite.status_code, 200)
-        html = seite.get_data(as_text=True)
-        self.assertIn("Earnings-Termin", html)
-        self.assertIn("2026-11-02", html)
-        self.assertIn("nachbörslich", html)
-        self.assertIn("geschätzt", html)
-        self.assertIn("2026-11-20", html)
-        self.assertIn("2026-10-30", html)
-        self.assertIn("erfüllt", html)
+class TestTheWindowNamesItsFacts(unittest.TestCase):
+    """The facts the old panel printed are still carried - by the answer.
 
-    def test_the_panel_makes_missing_data_visible(self):
-        app = create_app(quote_adapter=_ChainAdapter(), now_fn=CLOCK)
-        html = app.test_client().get("/?ticker=AAPL").get_data(as_text=True)
-        self.assertIn("Earnings-Termin", html)
-        self.assertIn("UNBEKANNT", html)
-        self.assertIn("Keine Earnings-Quelle konfiguriert", html)
-        self.assertIn("nicht entscheidbar", html)
+    The page panel that showed date, session, confirmation and the chosen
+    expiry is gone with the old screen; /api/v1/earnings-window keeps every one
+    of those facts, so the cases are pinned there instead of on markup that no
+    longer exists.
+    """
+
+    def test_the_window_names_the_date_the_session_and_the_expiry(self):
+        koerper = _client().get("/api/v1/earnings-window?ticker=AAPL").get_json()
+        self.assertEqual(koerper["earnings"]["next_earnings_date"], "2026-11-02")
+        self.assertEqual(koerper["earnings"]["release_session"], "after_market")
+        self.assertEqual(koerper["earnings"]["date_confirmation"], "estimated")
+        # the expiry after the report is the choice; the one before it is named
+        # as excluded instead of silently vanishing
+        self.assertEqual(koerper["expirations"]["after_earnings"], ["2026-11-20"])
+        self.assertEqual(koerper["expirations"]["selected"], "2026-11-20")
+        self.assertEqual(koerper["expirations"]["on_or_before_earnings"], ["2026-10-30"])
+        self.assertEqual(koerper["expirations"]["excluded"],
+                         [{"date": "2026-10-30",
+                           "reason": "expiration_on_or_before_earnings"}])
+        self.assertTrue(koerper["decision"]["eligible"])
+        # the estimate is said out loud, not implied
+        self.assertTrue([n for n in koerper["decision"]["notes"] if "Schätzung" in n])
+
+    def test_missing_data_is_named_and_blocks(self):
+        # No configured source: the answer says UNKNOWN, names the flag, blocks
+        # the decision and never invents a date.
+        koerper = _client(earnings=NullEarningsAdapter()).get(
+            "/api/v1/earnings-window?ticker=AAPL").get_json()
+        self.assertEqual(koerper["earnings"]["status"], STATUS_UNKNOWN)
+        self.assertIsNone(koerper["earnings"]["next_earnings_date"])
+        self.assertIn(FLAG_SOURCE_NOT_CONFIGURED,
+                      koerper["earnings"]["quality_flags"])
+        self.assertFalse(koerper["decision"]["eligible"])
+        self.assertIsNone(koerper["expirations"]["selected"])
+        self.assertTrue([g for g in koerper["decision"]["reasons"]
+                         if g["code"] == FLAG_SOURCE_NOT_CONFIGURED
+                         and "Keine Earnings-Quelle konfiguriert" in g["message"]])
 
     def test_an_earnings_failure_does_not_break_the_page(self):
+        # The funnel page still calls the earnings view for a ticker; a raising
+        # adapter must cost the answer, never the page.
         seite = _client(earnings=_FakeEarnings(boom=True)).get("/?ticker=AAPL")
         self.assertEqual(seite.status_code, 200)
-        self.assertIn("konnten für diesen Ticker nicht gelesen werden", seite.get_data(as_text=True))
+        self.assertIn("Gap-Spread-Trichter", seite.get_data(as_text=True))
+        # ... and the route names the failure instead of guessing a date
+        antwort = _client(earnings=_FakeEarnings(boom=True)).get(
+            "/api/v1/earnings-window?ticker=AAPL")
+        self.assertEqual(antwort.status_code, 503)
+        self.assertEqual(antwort.get_json()["error"]["code"], "earnings_source_failed")
 
 
 class TestOptionChainCompatibility(unittest.TestCase):

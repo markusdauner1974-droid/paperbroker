@@ -1003,7 +1003,12 @@ class TestSnapshotCacheReuse(_ChainTestCase):
 # --------------------------------------------------------------------- #
 
 class TestScreenerRoutesPreserved(_ChainTestCase):
-    """11: /healthz, /api/screen and / behave as before the new route."""
+    """11: /healthz and /api/screen behave as before the new route.
+
+    ``/`` is served as well, but it is no longer the screen: it is the
+    gap-spread funnel. Only its liveness is pinned here - the page itself has
+    its own tests in ``test_gap_scan_ui.py``.
+    """
 
     def setUp(self):
         self.adapter = _FakeChainAdapter(records=_fixture_records(),
@@ -1039,7 +1044,7 @@ class TestScreenerRoutesPreserved(_ChainTestCase):
     def test_the_page_still_renders(self):
         res = self.client.get("/")
         self.assertEqual(res.status_code, 200)
-        self.assertIn("Options-Screener", res.get_data(as_text=True))
+        self.assertIn("Gap-Spread-Trichter", res.get_data(as_text=True))
 
 
 # --------------------------------------------------------------------- #
