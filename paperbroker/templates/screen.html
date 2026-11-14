@@ -92,6 +92,31 @@
     tbody tr:hover td:first-child{background:#0c161c}
     tbody tr[aria-expanded="true"] td:first-child{background:#1e191a}
     .sub{display:block;font-size:9.5px;color:var(--faint);letter-spacing:.04em}
+
+    /* Der Zaehler am Zeilenanfang und der Schalter ueber der Tabelle: beide
+       sind Textknoepfe ohne Rahmen, weil sie die Liste ordnen und nicht
+       ausloesen. */
+    /* Der Zaehler bekommt ein FESTES Feld: so steht die Nummer der Zeile in
+       jeder Zeile an derselben Stelle - auch neben dem Zaehler und unter ihm in
+       den Unterzeilen (1.1, 1.2). Ohne das Feld wandert die Nummer mit der
+       Breite des Zaehlers und die Hierarchie liest sich verkehrt. */
+    .funnel-toggle{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.04em;
+      background:none;border:0;color:var(--muted);cursor:pointer;padding:0;
+      border-radius:0;display:inline-block;min-width:30px;text-align:left;
+      margin-right:6px}
+    .funnel-toggle:hover{color:var(--primary)}
+    .rank-num{color:var(--faint)}
+    .funnel-groups{display:flex;justify-content:flex-end;margin:16px 0 0}
+
+    /* Die Unterzeilen sind Alternativen EINER Zeile: eingerueckt, gedaempft,
+       mit eigener Nummer (1.1). Sie tragen dieselben Spalten wie die Zeile,
+       weil sie dieselben Fragen beantworten - nur mit anderen Strikes. */
+    tbody tr.sub-row td{opacity:.72;background:rgba(250,250,250,.02)}
+    /* 7 px Zellenrand + 30 px Zaehlerfeld + 6 px Abstand: 1.1 steht genau
+       unter der 1 der Hauptzeile. */
+    tbody tr.sub-row td:first-child{padding-left:43px}
+    tbody tr.sub-row td:nth-child(2){padding-left:18px}
+    tbody tr.sub-row:hover td{opacity:.92}
     /* Die Richtung traegt Pfeil UND Wort - nie allein die Farbe. */
     .dir{color:var(--ink);font-weight:600}
 
@@ -184,6 +209,13 @@
     <p class="stats" id="funnel-counts" aria-live="polite" hidden></p>
     <p class="note" id="funnel-notes" hidden></p>
     <p class="note" id="funnel-empty" hidden></p>
+    {# Ein Schalter fuer alle Gruppen: die Liste soll nicht drei Klicks je Titel
+       kosten, wenn jemand alle Alternativen sehen will. Einzeln bleibt jede
+       Gruppe ueber ihren Zaehler bedienbar. #}
+    <div class="funnel-groups" id="funnel-groups">
+      <button type="button" class="funnel-btn" id="funnel-expand-all"
+              aria-controls="funnel-tbody" aria-expanded="false" hidden>alle aufklappen</button>
+    </div>
     <div class="tbl" id="funnel-table-wrap" hidden>
       <table id="funnel-table">
         <thead>

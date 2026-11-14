@@ -35,6 +35,7 @@ import shutil
 import subprocess
 import tempfile
 import unittest
+import urllib.parse
 from pathlib import Path
 
 import paperbroker
@@ -127,14 +128,14 @@ class El {
 
 const ids = ['gap-funnel', 'funnel-day', 'funnel-run', 'funnel-state', 'funnel-error',
   'funnel-counts', 'funnel-notes', 'funnel-stale', 'funnel-empty', 'funnel-table-wrap',
-  'funnel-tbody', 'funnel-foot', 'funnel-cap', 'funnel-detail',
+  'funnel-tbody', 'funnel-foot', 'funnel-cap', 'funnel-expand-all', 'funnel-detail',
   'funnel-detail-summary', 'funnel-detail-body',
   'funnel-excluded-block', 'funnel-excluded-summary', 'funnel-excluded',
   'funnel-failures-block', 'funnel-failures-summary', 'funnel-failures'];
 const nodes = {};
 ids.forEach((id) => {
   let tag = 'div';
-  if (id === 'funnel-run') tag = 'button';
+  if (id === 'funnel-run' || id === 'funnel-expand-all') tag = 'button';
   if (id === 'funnel-day') tag = 'input';
   if (id === 'funnel-state' || id === 'funnel-notes') tag = 'p';
   if (id.indexOf('summary') >= 0) tag = 'summary';
@@ -144,8 +145,8 @@ ids.forEach((id) => {
 });
 
 ['funnel-error', 'funnel-counts', 'funnel-notes', 'funnel-stale', 'funnel-empty',
-  'funnel-table-wrap', 'funnel-foot', 'funnel-detail', 'funnel-excluded-block',
-  'funnel-failures-block']
+  'funnel-table-wrap', 'funnel-foot', 'funnel-expand-all', 'funnel-detail',
+  'funnel-excluded-block', 'funnel-failures-block']
   .forEach((id) => { nodes[id].hidden = true; });
 nodes['funnel-day'].type = 'date';
 
@@ -227,15 +228,50 @@ function findAll(node, predicate, out) {
 
 function rows() { return nodes['funnel-tbody'].childNodes.filter((c) => c.tagName); }
 
+function buttonsIn(tr) {
+  return findAll(tr, (n) => String(n.tagName).toUpperCase() === 'BUTTON');
+}
+
+function isSub(tr) {
+  return String(tr.className || '').split(/\s+/).indexOf('sub-row') >= 0;
+}
+
+// Die Unterzeilen der i-ten Gruppe: die Zeilen zwischen ihrer Hauptzeile und
+// der naechsten Hauptzeile.
+function subsOf(index) {
+  const out = [];
+  let gesehen = -1;
+  rows().forEach((tr) => {
+    if (!isSub(tr)) { gesehen += 1; return; }
+    if (gesehen === index) out.push(tr);
+  });
+  return out;
+}
+
+function rankOf(tr) {
+  const spanne = findAll(tr, (n) => String(n.className || '').split(/\s+/)
+    .indexOf('rank-num') >= 0)[0];
+  return spanne ? spanne.textContent.trim() : null;
+}
+
 function rowInfo(tr) {
+  const knopf = buttonsIn(tr)[0];
   return {
+    rank: rankOf(tr),
     symbol: tr.attrs['data-symbol'],
+    variant: tr.attrs['data-variant'] || null,
+    id: tr.attrs['id'] || null,
+    hidden: !!tr.hidden,
+    sub: isSub(tr),
     expanded: tr.attrs['aria-expanded'],
     controls: tr.attrs['aria-controls'],
     tabindex: tr.attrs['tabindex'],
     role: tr.attrs['role'] || null,
     className: tr.className,
-    buttons: findAll(tr, (n) => String(n.tagName).toUpperCase() === 'BUTTON').length,
+    buttons: buttonsIn(tr).length,
+    buttonText: knopf ? knopf.textContent : null,
+    buttonExpanded: knopf ? knopf.attrs['aria-expanded'] : null,
+    buttonControls: knopf ? knopf.attrs['aria-controls'] : null,
     links: findAll(tr, (n) => String(n.tagName).toUpperCase() === 'A').length
   };
 }
@@ -274,6 +310,11 @@ function report(prevented) {
       })),
       scrolled: nodes['funnel-detail'].scrolled
     },
+    expandAll: {
+      hidden: nodes['funnel-expand-all'].hidden,
+      text: nodes['funnel-expand-all'].textContent,
+      expanded: nodes['funnel-expand-all'].attrs['aria-expanded'] || null
+    },
     pageError: nodes['funnel-error'].hidden ? null : nodes['funnel-error'].textContent,
     detailBlockCount: findAll(document.getElementById('gap-funnel'),
       (n) => n.attrs && n.attrs.id === 'funnel-detail').length,
@@ -291,6 +332,37 @@ async function main() {
     const parts = spec.split(':');
     if (parts[0] === 'scan') nodes['funnel-run'].click();
     if (parts[0] === 'click') rows()[Number(parts[1])].click();
+    if (parts[0] === 'btn') {
+      // Ein Klick auf den Zaehler - MIT Blasen bis zur Zeile, wie im Browser:
+      // bleibt er nicht stehen (stopPropagation), laedt die Zeile das Detail.
+      const tr = rows()[Number(parts[1])];
+      const knopf = buttonsIn(tr)[0];
+      if (knopf) {
+        const ev = { type: 'click', target: knopf, defaultPrevented: false,
+          preventDefault() {}, stopPropagation() { ev.stopped = true; } };
+        knopf.dispatchEvent(ev);
+        if (!ev.stopped) tr.click();
+      }
+    }
+    if (parts[0] === 'btnkey') {
+      const tr = rows()[Number(parts[1])];
+      const knopf = buttonsIn(tr)[0];
+      if (knopf) {
+        const taste = parts[2] === 'Space' ? ' ' : (parts[2] || 'Enter');
+        const ev = { type: 'keydown', key: taste, defaultPrevented: false,
+          preventDefault() { ev.defaultPrevented = true; },
+          stopPropagation() { ev.stopped = true; } };
+        knopf.dispatchEvent(ev);
+        if (!ev.stopped) tr.dispatchEvent(ev);
+        prevented.push({ spec, prevented: ev.defaultPrevented });
+      }
+    }
+    if (parts[0] === 'sub') {
+      const liste = subsOf(Number(parts[1]));
+      const stelle = liste[Number(parts[2])];
+      if (stelle) stelle.click();
+    }
+    if (parts[0] === 'all') nodes['funnel-expand-all'].click();
     if (parts[0] === 'key') {
       const taste = parts[2] === 'Space' ? ' ' : (parts[2] || 'Enter');
       const ev = { type: 'keydown', key: taste, defaultPrevented: false,
@@ -314,6 +386,7 @@ def _detail(symbol="CTVA", label="Bear Put"):
         "day": DAY, "strategy": "bear_put_debit", "strategy_label": label,
         "expiration": "2027-03-19", "dte": 126, "spot": 9.19,
         "spot_source": "chain_underlying",
+        "structure_label": "Hebel (Zeile)", "is_row_pick": True,
         "strikes": {"long": 10.0, "short": 7.5},
         "legs": [
             {"side": "long", "strike": 10.0, "bid": 1.32, "ask": 1.38, "mid": 1.35,
@@ -343,9 +416,33 @@ def _detail(symbol="CTVA", label="Bear Put"):
     }
 
 
+def _variant(label="nah am Geld", long_strike=13.0, short_strike=17.0, debit=0.90,
+             max_profit=310.0, rr=3.44, move=-4.8, bid_ask=8.4, hit=22.0,
+             windows=394, liquidity="full", oi=(820, 410)):
+    """One character of the row, in the fields the list delivers."""
+    return {"label": label, "long_strike": long_strike, "short_strike": short_strike,
+            "net_debit": debit, "max_loss": round(debit * 100, 2),
+            "max_profit": max_profit, "rr": rr, "required_move_pct": move,
+            "bid_ask_pct": bid_ask, "hit_rate_pct": hit,
+            "windows_measured": windows, "liquidity": liquidity,
+            "open_interest": list(oi)}
+
+
+def _detail_structure(long_strike=13.0, short_strike=17.0, label="nah am Geld"):
+    """The detail answer of ONE alternative - not the pick."""
+    detail = _detail()
+    detail.update({
+        "structure_label": label, "is_row_pick": False,
+        "strikes": {"long": long_strike, "short": short_strike},
+        "net_debit": 0.90, "max_loss": 90.0, "max_profit": 310.0,
+        "breakeven": 12.1, "rr": 3.44,
+    })
+    return detail
+
+
 def _row(symbol="CTVA", direction="down", label="Bear Put", move=-5.9,
          volatility=54.2, daily=3.1, hit=31.0, windows=394, state="ok",
-         sessions=87):
+         sessions=87, variants=None):
     """One row of the documented answer, with its reachability numbers.
 
     ``move`` is the required move in percent (-5.9 % against a break-even of
@@ -370,6 +467,7 @@ def _row(symbol="CTVA", direction="down", label="Bear Put", move=-5.9,
         "hit_rate_pct": hit, "windows_measured": windows,
         "window_sessions": sessions, "window_calendar_days": 126,
         "history_state": state,
+        "variants": list(variants or []),
     }
 
 
@@ -586,11 +684,13 @@ class TestTheBlockSitsBetweenTableAndExclusions(unittest.TestCase):
         self.assertLess(tabelle, detail)
         self.assertLess(detail, ausschluesse)
 
-    def test_the_block_is_not_a_second_table_and_carries_no_button(self):
+    def test_the_block_adds_no_table_and_only_the_two_switches(self):
         seite = _page()
-        # Nur die eine Ergebnistabelle; der Detailblock hat keinen eigenen Knopf.
+        # Nur die eine Ergebnistabelle; die beiden Knoepfe sind der Lauf und der
+        # Schalter "alle aufklappen" - der Detailblock hat keinen eigenen.
         self.assertEqual(1, seite.count("<table"))
-        self.assertEqual(1, seite.count("<button"))
+        self.assertEqual(2, seite.count("<button"))
+        self.assertIn('id="funnel-expand-all"', seite)
         self.assertNotIn("onclick=", seite)
 
     def test_nothing_is_open_before_a_row_is_chosen(self):
@@ -634,13 +734,14 @@ class TestTheRowItselfLoadsTheDetail(unittest.TestCase):
         # Space darf die Seite nicht scrollen
         self.assertTrue(space["prevented"][0]["prevented"])
 
-    def test_a_row_announces_its_target_and_never_carries_a_button(self):
+    def test_a_row_announces_its_target_and_a_title_without_alternatives_has_no_toggle(self):
         panel = _render(actions=[])
         for row in panel["rows"]:
             self.assertEqual("0", row["tabindex"])
             self.assertEqual("false", row["expanded"])
             self.assertEqual("funnel-detail", row["controls"])
             self.assertIsNone(row["role"])          # keine role="button"
+            # Ohne Alternativen gibt es nichts aufzuklappen - also keinen Knopf.
             self.assertEqual(0, row["buttons"])
             self.assertEqual(0, row["links"])
             self.assertIn("row-detail", row["className"])
@@ -819,6 +920,174 @@ class TestAnErrorStaysInsideTheBlock(unittest.TestCase):
         # Kein Alert: der Lauf selbst ist nicht gescheitert, nur sein Detail.
         self.assertIsNone(panel["pageError"])
         self.assertIn("HTTP 500", panel["detail"]["text"])
+
+
+def _three_variants():
+    """The three characters of one row, in the order the route delivers them."""
+    return [
+        _variant("nah am Geld", 13.0, 17.0, 0.90, 310.0, 3.44, -4.8, 8.4, 22.0),
+        _variant("am Widerstand", 15.0, 22.0, 1.10, 590.0, 5.36, -8.1, 12.4, 12.0),
+        _variant("engster Spread", 10.0, 13.0, 1.40, 160.0, 1.14, -2.2, 4.1, 41.0),
+    ]
+
+
+class TestTheAlternativesAreSubRows(unittest.TestCase):
+    """Die Alternativen stehen als Unterzeilen 1.1, 1.2, 1.3 in der Liste.
+
+    Der Zaehler ``▸ +3`` klappt NUR die Gruppe auf, die Hauptzeile oeffnet ihr
+    Detail, die Unterzeile das ihre - mit Verfall, Long und Short dieser
+    Struktur. Der Schalter ``alle aufklappen`` oeffnet alle Gruppen und laesst
+    jede danach einzeln wieder zuklappen.
+    """
+
+    def _list(self, rows=None):
+        """CTVA mit drei Alternativen, UPCO ohne: eine Gruppe und ein Titel
+        ohne Knopf in derselben Liste."""
+        return {**_list(), "results": rows if rows is not None else [
+            _row(variants=_three_variants()), _row("UPCO", "up", "Bull Call")]}
+
+    def _two_groups(self):
+        """Zwei Titel MIT Alternativen - fuer den Schalter ueber der Tabelle."""
+        return {**_list(), "results": [
+            _row(variants=_three_variants()),
+            _row("UPCO", "up", "Bull Call", variants=[
+                _variant("nah am Geld", 5.0, 7.0, 0.70, 130.0, 1.86, -3.1, 6.2, 44.0),
+                _variant("engster Spread", 4.0, 6.0, 0.80, 120.0, 1.50, -1.9, 3.3, 51.0)]),
+        ]}
+
+    def _params(self, url):
+        return dict(urllib.parse.parse_qsl(url.split("?", 1)[1]))
+
+    def test_the_counter_names_the_number_of_alternatives(self):
+        panel = _render(list_body=self._list())
+        zeilen = panel["rows"]
+        self.assertEqual(5, len(zeilen))          # 1 + 1.1 + 1.2 + 1.3 + 2
+        self.assertEqual("▸ +3", zeilen[0]["buttonText"])
+        self.assertEqual("false", zeilen[0]["buttonExpanded"])
+        self.assertEqual("funnel-sub-1-1 funnel-sub-1-2 funnel-sub-1-3",
+                         zeilen[0]["buttonControls"])
+        # Titel ohne Alternativen: kein Knopf, die Zelle traegt nur die Nummer.
+        self.assertEqual(0, zeilen[4]["buttons"])
+        self.assertIsNone(zeilen[4]["buttonText"])
+
+    def test_the_sub_rows_carry_their_number_and_their_character(self):
+        panel = _render(list_body=self._list())
+        nummern = [panel["cells"][i][0] for i in (1, 2, 3)]
+        self.assertEqual(["1.1", "1.2", "1.3"], nummern)
+        self.assertEqual("CTVA · nah am Geld", panel["cells"][1][1])
+        self.assertEqual("CTVA · engster Spread", panel["cells"][3][1])
+        # Die Strikes der Unterzeile sind IHRE, nicht die der Hauptzeile.
+        self.assertIn("13,0 / 17,0", panel["cells"][1][5])
+        self.assertIn("15,0 / 22,0", panel["cells"][2][5])
+
+    def test_a_title_without_alternatives_keeps_its_rank_without_a_button(self):
+        panel = _render(list_body={**_list(), "results": [_row("UPCO", "up", "Bull Call")]})
+        self.assertEqual(1, len(panel["rows"]))
+        self.assertEqual(0, panel["rows"][0]["buttons"])
+        self.assertEqual("1", panel["rows"][0]["rank"])
+        self.assertEqual("1", panel["cells"][0][0])
+
+    def test_the_counter_opens_only_the_group_and_loads_no_detail(self):
+        panel = _render(list_body=self._list(), actions=["btn:0"])
+        # Eine Anfrage: die Liste. Der Zaehler hat kein Detail geladen.
+        self.assertEqual(1, len(panel["urls"]))
+        self.assertTrue(panel["detail"]["hidden"])
+        self.assertEqual("▾ +3", panel["rows"][0]["buttonText"])
+        self.assertEqual("true", panel["rows"][0]["buttonExpanded"])
+        self.assertEqual([False, False, False], [panel["rows"][i]["hidden"] for i in (1, 2, 3)])
+        # Die zweite Zeile hat keine Alternativen - sie bleibt unberuehrt.
+        self.assertEqual(0, panel["rows"][4]["buttons"])
+
+    def test_a_click_again_closes_the_group(self):
+        panel = _render(list_body=self._list(), actions=["btn:0", "btn:0"])
+        self.assertEqual("▸ +3", panel["rows"][0]["buttonText"])
+        self.assertEqual([True, True, True], [panel["rows"][i]["hidden"] for i in (1, 2, 3)])
+
+    def test_a_sub_row_opens_the_detail_of_that_structure(self):
+        panel = _render(list_body=self._list(),
+                        details=[{"status": 200, "body": _detail_structure()}],
+                        actions=["btn:0", "sub:0:0"])
+        self.assertEqual(2, len(panel["urls"]))
+        params = self._params(panel["urls"][1])
+        self.assertEqual({"symbol", "day", "expiration", "long", "short"}, set(params))
+        self.assertEqual("CTVA", params["symbol"])
+        self.assertEqual(DAY, params["day"])
+        self.assertEqual("2027-03-19", params["expiration"])
+        self.assertEqual("13", params["long"])
+        self.assertEqual("17", params["short"])
+        self.assertTrue(panel["detail"]["open"])
+        self.assertIn("13/17 · nah am Geld", panel["detail"]["text"])
+        # Die Unterzeile ist markiert, nicht die Hauptzeile.
+        self.assertEqual("true", panel["rows"][1]["expanded"])
+        self.assertEqual("false", panel["rows"][0]["expanded"])
+
+    def test_the_main_row_still_opens_the_detail_of_the_row(self):
+        panel = _render(list_body=self._list(), actions=["click:0"])
+        params = self._params(panel["urls"][1])
+        self.assertEqual({"symbol", "day"}, set(params))
+        self.assertIn("10/7,5 · Hebel (Zeile)", panel["detail"]["text"])
+
+    def test_the_detail_of_an_alternative_shows_the_alternatives_numbers(self):
+        panel = _render(list_body=self._list(),
+                        details=[{"status": 200, "body": _detail_structure(
+                            15.0, 22.0, "am Widerstand")}],
+                        actions=["btn:0", "sub:0:1"])
+        text = panel["detail"]["text"]
+        # 1.2 braucht -8,1 % und traf in 12 % der Fenster - nicht die Zahlen
+        # der Hauptzeile (-5,9 %, 31 %).
+        self.assertIn("nötig -8,1 %", text)
+        self.assertIn("Treffer 12 %", text)
+        self.assertNotIn("nötig -5,9 %", text)
+        self.assertIn("15/22 · am Widerstand", text)
+
+    def test_alle_aufklappen_opens_every_group(self):
+        panel = _render(list_body=self._two_groups(), actions=["all"])
+        self.assertEqual("alle zuklappen", panel["expandAll"]["text"])
+        self.assertEqual("true", panel["expandAll"]["expanded"])
+        self.assertEqual([False, False, False, False, False],
+                         [row["hidden"] for row in panel["rows"] if row["sub"]])
+        self.assertEqual("▾ +3", panel["rows"][0]["buttonText"])
+        self.assertEqual("▾ +2", panel["rows"][4]["buttonText"])
+
+    def test_one_group_can_close_after_the_switch_opened_all(self):
+        panel = _render(list_body=self._two_groups(), actions=["all", "btn:0"])
+        self.assertEqual([True, True, True], [panel["rows"][i]["hidden"] for i in (1, 2, 3)])
+        self.assertEqual("▸ +3", panel["rows"][0]["buttonText"])
+        # Die andere Gruppe bleibt offen: der Schalter ist keine Klammer.
+        self.assertEqual("▾ +2", panel["rows"][4]["buttonText"])
+        self.assertEqual([False, False], [panel["rows"][5]["hidden"], panel["rows"][6]["hidden"]])
+
+    def test_the_groups_stay_together_in_the_sorted_order(self):
+        panel = _render(list_body=self._list())
+        nummern = [row["rank"] for row in panel["rows"]]
+        self.assertEqual(["1", "1.1", "1.2", "1.3", "2"], nummern)
+
+    def test_enter_on_the_counter_opens_the_group_only(self):
+        panel = _render(list_body=self._list(), actions=["btnkey:0:Enter"])
+        self.assertEqual(1, len(panel["urls"]))
+        self.assertEqual("▾ +3", panel["rows"][0]["buttonText"])
+        self.assertTrue(panel["prevented"][0]["prevented"])
+        self.assertFalse(panel["rows"][1]["hidden"])
+
+    def test_enter_on_the_main_row_opens_the_detail(self):
+        panel = _render(list_body=self._list(), actions=["key:0:Enter"])
+        self.assertEqual(2, len(panel["urls"]))
+        self.assertEqual({"symbol", "day"}, set(self._params(panel["urls"][1])))
+        self.assertTrue(panel["detail"]["open"])
+
+    def test_the_detail_carries_no_second_alternatives_block(self):
+        panel = _render(list_body=self._list(),
+                        details=[{"status": 200, "body": _detail_structure()}],
+                        actions=["btn:0", "sub:0:0"])
+        # Leg-Tabelle und Szenarien - und keine dritte Tabelle mit Varianten.
+        self.assertEqual(2, len(panel["detail"]["tables"]))
+        self.assertNotIn("keine weitere Struktur", panel["detail"]["text"])
+
+    def test_the_switch_is_hidden_without_a_group(self):
+        panel = _render(list_body={**_list(), "results": [_row()]})
+        self.assertTrue(panel["expandAll"]["hidden"])
+        gemischt = _render(list_body=self._list())
+        self.assertFalse(gemischt["expandAll"]["hidden"])
 
 
 class TestThePanelStaysFreeOfForeignCode(unittest.TestCase):

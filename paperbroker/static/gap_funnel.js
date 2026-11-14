@@ -27,6 +27,7 @@
     error: document.getElementById('funnel-error'),
     counts: document.getElementById('funnel-counts'),
     notes: document.getElementById('funnel-notes'),
+    expandAll: document.getElementById('funnel-expand-all'),
     stale: document.getElementById('funnel-stale'),
     empty: document.getElementById('funnel-empty'),
     wrap: document.getElementById('funnel-table-wrap'),
@@ -81,6 +82,7 @@
   var timer = null;
   var current = null;      // {day, body, at}
   var detailGeneration = 0;  // dasselbe fuer das Detail eines Spreads
+  var groups = [];         // die aufklappbaren Gruppen der aktuellen Tabelle
 
   function n(value) { return typeof value === 'number' && isFinite(value) ? value : 0; }
 
@@ -108,6 +110,20 @@
   // Risiko : Gewinn, mit deutschem Dezimalkomma.
   function rrText(value) {
     return num(value) ? '1 : ' + de(value, 1) : '–';
+  }
+
+  // Ein Strike, wie ihn der Kopf der Struktur zeigt: ganze Strikes ohne
+  // Nachkomma (13, nicht 13,00), krumme mit beiden Stellen (102,75).
+  function strikeText(value) {
+    if (!num(value)) return '–';
+    if (value % 1 === 0) return String(value);
+    return de(value, 2).replace(/0$/, '');
+  }
+
+  // Derselbe Strike als PARAMETER der Route: ein Punkt, kein Komma - die
+  // Anzeige spricht deutsch, die Adresse nicht.
+  function strikeParam(value) {
+    return num(value) ? String(value) : '';
   }
 
   function liquidityWord(value) {
@@ -269,6 +285,8 @@
 
   function clearResult() {
     current = null;
+    groups = [];
+    syncExpandAll();
     el.tbody.innerHTML = '';
     el.wrap.hidden = true;
     el.counts.hidden = true;
@@ -373,16 +391,25 @@
     return td;
   }
 
+  // Optionen: Open Interest beider Legs und die Spanne, die man zahlt. Eine
+  // Unterzeile traegt EINE Spanne - die schlechtere der beiden Legs, so rechnet
+  // die Route sie; sie als Paar zu drucken waere eine zweite, erfundene Zahl.
   function optionsCell(entry) {
     var oi = Array.isArray(entry.open_interest) ? entry.open_interest : [];
-    var ba = Array.isArray(entry.bid_ask_pct) ? entry.bid_ask_pct : [];
+    var paare = Array.isArray(entry.bid_ask_pct);
+    var ba = paare ? entry.bid_ask_pct : [];
     var td = document.createElement('td');
-    td.title = 'Open Interest beider Legs (Long / Short) · Bid-Ask-Aufschlag in '
-      + 'Prozent des Mittelkurses, je Leg';
+    td.title = paare
+      ? 'Open Interest beider Legs (Long / Short) · Bid-Ask-Aufschlag in '
+        + 'Prozent des Mittelkurses, je Leg'
+      : 'Open Interest beider Legs (Long / Short) · Bid-Ask-Aufschlag der '
+        + 'schlechteren Leg in Prozent ihres Mittelkurses';
     td.textContent = 'OI ' + de(oi[0], 0) + ' / ' + de(oi[1], 0);
     var spreads = document.createElement('span');
     spreads.className = 'sub';
-    spreads.textContent = 'Bid-Ask ' + de(ba[0], 1) + ' % / ' + de(ba[1], 1) + ' %';
+    spreads.textContent = paare
+      ? 'Bid-Ask ' + de(ba[0], 1) + ' % / ' + de(ba[1], 1) + ' %'
+      : 'Bid-Ask max ' + de(entry.bid_ask_pct, 1) + ' %';
     td.appendChild(spreads);
     var liquid = document.createElement('span');
     liquid.className = 'sub';
@@ -391,40 +418,37 @@
     return td;
   }
 
-  function buildRow(entry, index) {
-    var row = document.createElement('tr');
-    row.setAttribute('data-symbol', entry.symbol || '');
-    row.setAttribute('data-direction', entry.direction || '');
-
-    row.appendChild(cell(String(index + 1), '', 'Rang nach Größe des Gaps'));
-
-    row.appendChild(stacked(entry.symbol || '–', entry.name || ''));
-
+  // Die vierzehn Zellen NACH Nummer und Symbol - fuer die Hauptzeile und fuer
+  // ihre Unterzeilen dieselben. Deshalb nimmt die Funktion eine SICHT und keine
+  // Zeile: eine Unterzeile ist eine Struktur mit denselben Fragen.
+  function bodyCells(entry) {
+    var zellen = [];
     var richtung = directionWord(entry.direction);
-    row.appendChild(stacked(richtung.arrow + ' ' + gapText(entry.gap_pct), richtung.word,
+
+    zellen.push(stacked(richtung.arrow + ' ' + gapText(entry.gap_pct), richtung.word,
       'dir', 'Gap: Schluss des Reaktionstags gegen den Schluss davor'));
 
-    var strategie = entry.strategy_label || STRATEGY[entry.strategy] || '–';
-    row.appendChild(cell(strategie, '', entry.strategy || ''));
+    zellen.push(cell(entry.strategy_label || STRATEGY[entry.strategy] || '–', '',
+      entry.strategy || ''));
 
-    row.appendChild(cell(de(entry.close, 2), '', 'Schlusskurs des Reaktionstags'));
+    zellen.push(cell(de(entry.close, 2), '', 'Schlusskurs des Reaktionstags'));
 
-    row.appendChild(stacked(de(entry.long_strike, 1) + ' / ' + de(entry.short_strike, 1),
+    zellen.push(stacked(de(entry.long_strike, 1) + ' / ' + de(entry.short_strike, 1),
       'Long / Short', '',
       'Long ' + de(entry.long_strike, 1) + ' · Short ' + de(entry.short_strike, 1)));
 
-    row.appendChild(cell(de(entry.max_loss, 2), '', 'maximaler Verlust je Einheit'));
-    row.appendChild(cell(de(entry.max_profit, 2), '', 'maximaler Gewinn je Einheit'));
-    row.appendChild(cell(rrText(entry.rr), '', 'Gewinn zu Verlust bei Verfall'));
+    zellen.push(cell(de(entry.max_loss, 2), '', 'maximaler Verlust je Einheit'));
+    zellen.push(cell(de(entry.max_profit, 2), '', 'maximaler Gewinn je Einheit'));
+    zellen.push(cell(rrText(entry.rr), '', 'Gewinn zu Verlust bei Verfall'));
 
     // Noetige Bewegung: Vorzeichen UND Pfeil, damit die Richtung nicht an einer
-    // Zahl hängt, die man als Betrag lesen könnte.
-    row.appendChild(stacked(moveArrow(entry.required_move_pct) + moveText(entry.required_move_pct),
+    // Zahl haengt, die man als Betrag lesen könnte.
+    zellen.push(stacked(moveArrow(entry.required_move_pct) + moveText(entry.required_move_pct),
       num(entry.required_move_pct) ? (entry.required_move_pct > 0 ? 'steigen' : 'fallen') : '',
       'dir', 'Bewegung bis zum Break-even des Spreads, in Prozent des Schlusses am Reaktionstag'));
 
     // Schwankung: annualisiert oben, der mittlere Tagesausschlag klein darunter.
-    row.appendChild(stacked(num(entry.volatility_pct) ? de(entry.volatility_pct, 1) + ' %' : '—',
+    zellen.push(stacked(num(entry.volatility_pct) ? de(entry.volatility_pct, 1) + ' %' : '—',
       num(entry.daily_move_pct) ? 'Tag ' + de(entry.daily_move_pct, 1) + ' %' : '',
       '', 'Schwankung: annualisierte Streuung der Tagesrenditen; darunter der mittlere Tagesausschlag'));
 
@@ -437,41 +461,209 @@
         && num(entry.window_sessions) && entry.window_sessions > 0) {
       fensterText += ' · ' + entry.window_sessions + ' HT';
     }
-    row.appendChild(stacked(num(entry.hit_rate_pct) ? de(entry.hit_rate_pct, 0) + ' %' : '—',
+    zellen.push(stacked(num(entry.hit_rate_pct) ? de(entry.hit_rate_pct, 0) + ' %' : '—',
       fensterText, '',
       'Anteil der vergangenen Fenster von '
         + (num(entry.window_sessions) && entry.window_sessions > 0 ? entry.window_sessions : 'dte')
         + ' Handelstagen, in denen der Kurs die nötige Bewegung mindestens erreicht hat'
         + ' (Fensterlänge in Handelstagen; dte nebenan in Kalendertagen)'));
 
-    row.appendChild(cell(entry.expiration || '–', '',
-      'Verfall nach dem nächsten Bericht'));
-    row.appendChild(cell(num(entry.dte) ? String(entry.dte) : '–', '',
+    zellen.push(cell(entry.expiration || '–', '', 'Verfall nach dem nächsten Bericht'));
+    zellen.push(cell(num(entry.dte) ? String(entry.dte) : '–', '',
       'Kalendertage bis Verfall'));
-    row.appendChild(cell(entry.next_earnings_date || '–', '',
+    zellen.push(cell(entry.next_earnings_date || '–',
       entry.earnings_date ? 'Bericht des Reaktionstags: ' + entry.earnings_date
         : 'nächster bekannter Bericht'));
-    row.appendChild(optionsCell(entry));
+    zellen.push(optionsCell(entry));
+    return zellen;
+  }
 
-    // Die ZEILE ist der Griff zum Detail - kein Knopf, kein Chevron. Sie ist
-    // per Tab erreichbar (tabindex), nennt ihr Ziel (aria-controls) und ihren
-    // Zustand (aria-expanded, vom Setzen der aktiven Zeile gepflegt).
+  // Eine Variante als SICHT auf dieselben vierzehn Spalten: Strikes, Debit,
+  // Gewinn, R/R, noetige Bewegung, Treffer und Optionen sind ihre eigenen;
+  // Gap, Kurs, Strategie, Verfall, Laufzeit und Bericht gehoeren zum Titel und
+  // bleiben die der Zeile. Die Schwankung kommt aus demselben Bars wie die der
+  // Zeile, deshalb steht sie hier unveraendert.
+  function variantView(entry, variant) {
+    return {
+      symbol: entry.symbol,
+      name: entry.name,
+      gap_pct: entry.gap_pct,
+      direction: entry.direction,
+      strategy: entry.strategy,
+      strategy_label: entry.strategy_label,
+      close: entry.close,
+      long_strike: variant.long_strike,
+      short_strike: variant.short_strike,
+      max_loss: variant.max_loss,
+      max_profit: variant.max_profit,
+      rr: variant.rr,
+      required_move_pct: variant.required_move_pct,
+      volatility_pct: entry.volatility_pct,
+      daily_move_pct: entry.daily_move_pct,
+      hit_rate_pct: variant.hit_rate_pct,
+      windows_measured: variant.windows_measured,
+      window_sessions: entry.window_sessions,
+      history_state: null,
+      expiration: entry.expiration,
+      dte: entry.dte,
+      next_earnings_date: entry.next_earnings_date,
+      earnings_date: entry.earnings_date,
+      open_interest: variant.open_interest,
+      bid_ask_pct: variant.bid_ask_pct,
+      liquidity: variant.liquidity
+    };
+  }
+
+  // Die Nummer der Hauptzeile - und, wenn es Alternativen gibt, der Zaehler
+  // davor. Der Zaehler klappt NUR die Gruppe auf; er oeffnet kein Detail, weil
+  // "wie viele" und "welche" zwei verschiedene Fragen sind.
+  function rankCell(entry, rank, group) {
+    var td = document.createElement('td');
+    td.className = 'rank';
+    var count = Array.isArray(entry.variants) ? entry.variants.length : 0;
+    if (count > 0) {
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'funnel-toggle';
+      button.textContent = '▸ +' + count;
+      button.setAttribute('aria-expanded', 'false');
+      button.setAttribute('aria-controls', group.ids.join(' '));
+      button.title = count === 1
+        ? 'die eine Alternative dieser Zeile aufklappen'
+        : count + ' Alternativen dieser Zeile aufklappen';
+      button.addEventListener('click', function (ev) {
+        // Das Ereignis darf nicht zur Zeile durchlaufen: sonst oeffnete der
+        // Zaehler beim Aufklappen auch das Detail.
+        if (ev && typeof ev.stopPropagation === 'function') ev.stopPropagation();
+        setGroup(group, !group.open);
+      });
+      // Enter und Leertaste oeffnen wie ein Klick. preventDefault haelt die
+      // native Ausloesung des Knopfes zurueck - sonst schaltete die Taste
+      // zweimal und die Gruppe bliebe zu.
+      button.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+        ev.preventDefault();
+        if (typeof ev.stopPropagation === 'function') ev.stopPropagation();
+        setGroup(group, !group.open);
+      });
+      group.button = button;
+      td.appendChild(button);
+    }
+    var nummer = document.createElement('span');
+    nummer.className = 'rank-num';
+    nummer.textContent = rank;
+    td.appendChild(nummer);
+    return td;
+  }
+
+  function buildRow(entry, rank, group) {
+    var row = document.createElement('tr');
+    row.setAttribute('data-symbol', entry.symbol || '');
+    row.setAttribute('data-direction', entry.direction || '');
+
+    row.appendChild(rankCell(entry, rank, group));
+    row.appendChild(stacked(entry.symbol || '–', entry.name || ''));
+    bodyCells(entry).forEach(function (td) { row.appendChild(td); });
+
+    // Die ZEILE ist der Griff zum Detail - der Zaehler in ihrer ersten Zelle
+    // ist der Griff zur Gruppe. Sie ist per Tab erreichbar (tabindex), nennt
+    // ihr Ziel (aria-controls) und ihren Zustand (aria-expanded, vom Setzen
+    // der aktiven Zeile gepflegt).
     row.className = 'row-detail';
     row.setAttribute('tabindex', '0');
     row.setAttribute('aria-expanded', 'false');
     row.setAttribute('aria-controls', 'funnel-detail');
     row.addEventListener('click', function () {
-      loadDetail(entry.symbol, row);
+      loadDetail(entry.symbol, row, null);
     });
     row.addEventListener('keydown', function (ev) {
       // Enter und Leertaste oeffnen wie ein Klick. Space muss gebremst werden,
       // sonst scrollt die Seite, statt das Detail zu laden.
       if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
       ev.preventDefault();
-      loadDetail(entry.symbol, row);
+      loadDetail(entry.symbol, row, null);
     });
 
     return row;
+  }
+
+  // Eine Unterzeile: die Alternative SELBST, eingerueckt, mit ihrer Nummer
+  // 1.1 und ihrem Charakter im Symbolfeld. Ein Klick oeffnet ihr Detail - mit
+  // Verfall, Long und Short DIESER Struktur.
+  function buildSubRow(entry, variant, number, id) {
+    var row = document.createElement('tr');
+    row.className = 'sub-row row-detail';
+    row.setAttribute('id', id);
+    row.setAttribute('data-symbol', entry.symbol || '');
+    row.setAttribute('data-variant', variant.label || '');
+    row.setAttribute('tabindex', '0');
+    row.setAttribute('aria-expanded', 'false');
+    row.setAttribute('aria-controls', 'funnel-detail');
+    row.hidden = true;
+
+    var nummer = document.createElement('td');
+    nummer.className = 'rank';
+    var subNummer = document.createElement('span');
+    subNummer.className = 'rank-num';
+    subNummer.textContent = number;
+    nummer.appendChild(subNummer);
+    row.appendChild(nummer);
+
+    row.appendChild(stacked((entry.symbol || '–') + ' · ' + (variant.label || '–'), ''));
+
+    bodyCells(variantView(entry, variant)).forEach(function (td) { row.appendChild(td); });
+
+    // Die Varianten gehoeren zum Verfall der Zeile (so baut die Route sie):
+    // genau dieser Verfall und diese zwei Strikes werden angefragt.
+    function open() { loadStructure(entry, variant, row); }
+    row.addEventListener('click', open);
+    row.addEventListener('keydown', function (ev) {
+      if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+      ev.preventDefault();
+      open();
+    });
+    return row;
+  }
+
+  function loadStructure(entry, variant, row) {
+    loadDetail(entry.symbol, row, {
+      expiration: entry.expiration,
+      long: variant.long_strike,
+      short: variant.short_strike
+    });
+  }
+
+  // Die Gruppen der Tabelle. Eine Gruppe ist EINE Hauptzeile mit ihren
+  // Unterzeilen; aufgeklappt wird sie einzeln (Zaehler) oder alle zusammen
+  // (Schalter ueber der Tabelle).
+  function setGroup(group, open) {
+    group.open = !!open;
+    for (var i = 0; i < group.subs.length; i += 1) {
+      group.subs[i].hidden = !group.open;
+    }
+    if (group.button) {
+      group.button.textContent = (group.open ? '▾ +' : '▸ +') + group.count;
+      group.button.setAttribute('aria-expanded', group.open ? 'true' : 'false');
+    }
+    syncExpandAll();
+  }
+
+  function allGroupsOpen() {
+    if (!groups.length) return false;
+    for (var i = 0; i < groups.length; i += 1) {
+      if (!groups[i].open) return false;
+    }
+    return true;
+  }
+
+  // Der Schalter nennt, was er TUT, nicht was gerade ist: sind alle Gruppen
+  // offen, schliesst er sie - und heisst dann "alle zuklappen".
+  function syncExpandAll() {
+    if (!el.expandAll) return;
+    var offen = allGroupsOpen();
+    el.expandAll.hidden = !groups.length;
+    el.expandAll.textContent = offen ? 'alle zuklappen' : 'alle aufklappen';
+    el.expandAll.setAttribute('aria-expanded', offen ? 'true' : 'false');
   }
 
   function reasonText(entry) {
@@ -566,7 +758,10 @@
     return messageFor(antwort.status, body);
   }
 
-  function loadDetail(symbol, row) {
+  // Der Aufruf nennt den Titel und den Tag - und, wenn eine Unterzeile
+  // geklickt wurde, die STRUKTUR (Verfall, Long, Short). Ohne Struktur
+  // antwortet die Route mit der Trichter-Auswahl.
+  function loadDetail(symbol, row, structure) {
     if (!current || !symbol) return;
     var day = current.day;
     var gen = detailGeneration + 1;
@@ -575,8 +770,15 @@
     openDetail('Detail zu ' + symbol + ' — lädt …');
     el.detailBody.textContent = '';
 
-    fetch(DETAIL_API + '?symbol=' + encodeURIComponent(symbol)
-        + '&day=' + encodeURIComponent(day),
+    var url = DETAIL_API + '?symbol=' + encodeURIComponent(symbol)
+      + '&day=' + encodeURIComponent(day);
+    if (structure) {
+      url += '&expiration=' + encodeURIComponent(structure.expiration || '')
+        + '&long=' + encodeURIComponent(strikeParam(structure.long))
+        + '&short=' + encodeURIComponent(strikeParam(structure.short));
+    }
+
+    fetch(url,
       { headers: { Accept: 'application/json' }, cache: 'no-store' })
       .then(function (res) {
         return res.text().then(function (text) {
@@ -964,13 +1166,57 @@
     return null;
   }
 
+  // Die Zahlen der Erreichbarkeit gehoeren zur STRUKTUR, nicht zum Titel: 1.1
+  // hat ihre eigene noetige Bewegung und ihre eigene Trefferquote, gemessen an
+  // denselben Bars und derselben Laufzeit wie die Zeile. Eine Struktur, die die
+  // Liste nicht kennt (also kein Charakter ist), bekommt keine Zahl geliehen.
+  function structureFor(detail) {
+    var zeile = rowFor(detail.symbol);
+    if (!zeile) return null;
+    if (detail.is_row_pick) return zeile;
+    var strikes = detail.strikes || {};
+    var liste = Array.isArray(zeile.variants) ? zeile.variants : [];
+    for (var i = 0; i < liste.length; i += 1) {
+      var variante = liste[i];
+      if (num(variante.long_strike) && num(variante.short_strike)
+          && Math.abs(variante.long_strike - strikes.long) < 1e-6
+          && Math.abs(variante.short_strike - strikes.short) < 1e-6) {
+        return {
+          required_move_pct: variante.required_move_pct,
+          volatility_pct: zeile.volatility_pct,
+          daily_move_pct: zeile.daily_move_pct,
+          hit_rate_pct: variante.hit_rate_pct,
+          windows_measured: variante.windows_measured,
+          window_sessions: zeile.window_sessions,
+          dte: zeile.dte,
+          history_state: null
+        };
+      }
+    }
+    return { required_move_pct: null, volatility_pct: null, daily_move_pct: null,
+      hit_rate_pct: null, windows_measured: null, window_sessions: null,
+      dte: zeile.dte, history_state: null };
+  }
+
+  // Der Kopf nennt die STRUKTUR: welches Paar, und welcher Charakter es hat.
+  // "NU · 13/17 · nah am Geld" sagt in einer Zeile, was der Block zeigt.
+  function structureHead(detail) {
+    var strikes = detail.strikes || {};
+    var text = detail.symbol || '–';
+    if (num(strikes.long) && num(strikes.short)) {
+      text += ' · ' + strikeText(strikes.long) + '/' + strikeText(strikes.short);
+    }
+    if (detail.structure_label) text += ' · ' + detail.structure_label;
+    return text;
+  }
+
   function renderDetail(detail) {
     el.detailBody.textContent = '';
-    var zeile = rowFor(detail.symbol);
+    var zeile = structureFor(detail);
 
     var kopf = document.createElement('p');
     kopf.className = 'detail-head';
-    kopf.textContent = (detail.symbol || '–')
+    kopf.textContent = structureHead(detail)
       + (detail.name ? ' · ' + detail.name : '')
       + ' · ' + (detail.strategy_label || STRATEGY[detail.strategy] || '–')
       + ' · Verfall ' + (detail.expiration || '–')
@@ -1041,9 +1287,30 @@
     // mehr gibt, waere eine falsche Auskunft.
     clearDetail();
     el.tbody.innerHTML = '';
+    groups = [];
+    // Jede Zeile kommt mit ihren Unterzeilen in die Tabelle - zusammen und in
+    // dieser Reihenfolge. Die Sortierung der Route ordnet die ZEILEN; die
+    // Gruppe haengt an ihrer Zeile, damit sie beim Sortieren nicht zerfaellt.
     ergebnisse.forEach(function (entry, index) {
-      el.tbody.appendChild(buildRow(entry, index));
+      var rank = String(index + 1);
+      var varianten = Array.isArray(entry.variants) ? entry.variants : [];
+      var ids = varianten.map(function (_variante, stelle) {
+        return 'funnel-sub-' + rank + '-' + (stelle + 1);
+      });
+      var group = { rank: rank, count: varianten.length, ids: ids, subs: [],
+        open: false, button: null };
+      el.tbody.appendChild(buildRow(entry, rank, group));
+      varianten.forEach(function (variante, stelle) {
+        var sub = buildSubRow(entry, variante, rank + '.' + (stelle + 1), ids[stelle]);
+        group.subs.push(sub);
+        el.tbody.appendChild(sub);
+      });
+      if (varianten.length) {
+        groups.push(group);
+        setGroup(group, false);
+      }
     });
+    syncExpandAll();
 
     el.counts.textContent = countsText(counts, body);
     el.counts.hidden = false;
@@ -1107,6 +1374,14 @@
   }
 
   el.run.addEventListener('click', function () { run(el.day.value.trim()); });
+  // "alle aufklappen" schaltet ALLE Gruppen zugleich - und laesst jeder Gruppe
+  // danach ihren eigenen Zaehler: der Schalter ist eine Abkuerzung, kein Modus.
+  if (el.expandAll) {
+    el.expandAll.addEventListener('click', function () {
+      var offen = !allGroupsOpen();
+      groups.forEach(function (group) { setGroup(group, offen); });
+    });
+  }
   el.day.addEventListener('keydown', function (ev) {
     if (ev.key !== 'Enter') return;
     ev.preventDefault();
