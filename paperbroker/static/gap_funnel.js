@@ -1023,6 +1023,18 @@
     // Die Alternativen derselben Kette stehen darunter, weil erst der Vergleich
     // zeigt, was der hohe R/R kostet - naemlich den Weg bis zum Break-even.
     var varianten = zeile && Array.isArray(zeile.variants) ? zeile.variants : [];
+    if (zeile && !varianten.length) {
+      // "nothing to offer" is an answer, not an empty space: the funnel looked
+      // and every other structure of this expiry missed at least one hurdle.
+      el.detailBody.appendChild(subtitle('Weitere Strukturen im selben Verfall'));
+      var keine = document.createElement('p');
+      keine.className = 'detail-notes';
+      keine.textContent = 'Keine weitere Struktur dieses Verfalls erfüllt dieselben Hürden '
+        + '(R/R mindestens 1 : 2, |Delta| des Long-Legs mindestens 20, Debit mindestens '
+        + '0,50 USD, nötige Bewegung bis zur Grenze). Die Zeile ist damit die einzige '
+        + 'zulässige Struktur dieses Verfalls.';
+      el.detailBody.appendChild(keine);
+    }
     if (varianten.length) {
       el.detailBody.appendChild(subtitle('Weitere Strukturen im selben Verfall'));
       el.detailBody.appendChild(variantTable(varianten));

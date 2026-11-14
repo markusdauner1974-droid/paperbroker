@@ -830,11 +830,14 @@ class TestTheAlternativesOfTheSameExpiry(unittest.TestCase):
         # Die Alternativen sind Alternativen - der Satz sagt, worauf sie sich beziehen.
         self.assertIn("dieselben drei Hürden", text)
 
-    def test_a_row_without_alternatives_shows_no_block(self):
+    def test_a_row_without_alternatives_says_so_instead_of_staying_silent(self):
         # Der Regelfall von ``ladder_chain``: genau ein Paar besteht die Hürden.
+        # "nichts anzubieten" ist eine Antwort - der Block nennt sie, statt zu fehlen.
         panel = _render(actions=["click:0"])
         self.assertEqual(2, len(panel["detail"]["tables"]))
-        self.assertNotIn("Weitere Strukturen", panel["detail"]["text"])
+        text = panel["detail"]["text"]
+        self.assertIn("Weitere Strukturen im selben Verfall", text)
+        self.assertIn("Keine weitere Struktur", text)
 
     def test_the_block_is_a_table_and_not_a_second_list(self):
         body = _list()
