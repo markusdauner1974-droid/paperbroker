@@ -190,11 +190,11 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNotNone(fields["volatility_pct"])
         self.assertIsNotNone(fields["daily_move_pct"])
         self.assertIsNotNone(fields["hit_rate_pct"])
-        # The window is counted in SESSIONS: this series spans only 81 calendar
-        # days, so its own density is 81/365 and round(20 * 81/365) = 4
-        # sessions - not the 20 calendar days it was asked for.
-        self.assertEqual(fields["window_sessions"], 4)
-        self.assertEqual(fields["windows_measured"], 81 - 4)
+        # This synthetic series has a bar on every calendar day: 81 sessions
+        # over 81 observed days means density 1, not 81/365. A 20-calendar-day
+        # horizon therefore contains 20 sessions and leaves 61 windows.
+        self.assertEqual(fields["window_sessions"], 20)
+        self.assertEqual(fields["windows_measured"], 81 - 20)
 
     def test_too_short_a_history_is_named_and_guesses_nothing(self):
         bars = bars_newest_first(series([0.01] * 40))          # 41 closes
@@ -278,6 +278,38 @@ class SessionWindowTests(unittest.TestCase):
         self.assertLess(reachability.session_density(bars), 0.60)
         self.assertEqual(reachability.sessions_for(126, bars),
                          round(126 * in_year / 365))
+
+    def test_young_daily_history_uses_its_observed_calendar_span(self):
+        bars = bars_newest_first([100.0] * 81)
+        self.assertAlmostEqual(reachability.session_density(bars), 1.0)
+        self.assertEqual(reachability.sessions_for(126, bars), 126)
+
+    def test_young_weekday_history_is_not_diluted_by_a_full_year(self):
+        # 81 weekdays ending on a Friday span exactly 113 calendar days.
+        bars = weekday_bars_newest_first([100.0] * 81, end=date(2026, 11, 13))
+        for ordered in (bars, list(reversed(bars)), bars + bars):
+            with self.subTest(order_length=len(ordered)):
+                self.assertAlmostEqual(reachability.session_density(ordered), 81 / 113)
+                self.assertEqual(reachability.sessions_for(126, ordered), 90)
+
+    def test_exactly_the_minimum_density_bars_use_the_observed_span(self):
+        bars = bars_newest_first([100.0] * 60)
+        self.assertEqual(reachability.session_density(bars), 1.0)
+        self.assertEqual(reachability.sessions_for(126, bars), 126)
+
+    def test_many_old_bars_do_not_bypass_the_recent_density_minimum(self):
+        newest = date(2026, 11, 13)
+        recent = [bar(100.0, newest - timedelta(days=index)) for index in range(59)]
+        old = [bar(100.0, newest - timedelta(days=365 + index)) for index in range(100)]
+        self.assertAlmostEqual(reachability.session_density(recent + old),
+                               reachability.FALLBACK_SESSIONS_PER_DAY)
+
+    def test_young_history_cannot_measure_an_artificially_short_window(self):
+        bars = weekday_bars_newest_first([100.0] * 81, end=date(2026, 11, 13))
+        fields = reachability.measure(bars, 5.0, 126)
+        self.assertEqual(fields["history_state"], "too_short")
+        self.assertIsNone(fields["hit_rate_pct"])
+        self.assertEqual(fields["windows_measured"], 0)
 
     def test_the_fallback_density_is_252_over_365(self):
         # 40 bars in a year is no basis for a rhythm of its own: the US

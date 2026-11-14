@@ -186,7 +186,9 @@ def session_density(bars):
     """Sessions per CALENDAR day, estimated from ``bars`` themselves.
 
     The count is the sessions that traded within the 365 calendar days before
-    the NEWEST bar, divided by those 365 days: a full-year title lands near
+    the NEWEST bar, divided by the observed calendar span capped at 365 days
+    (both endpoints included). A history shorter than a year is not diluted
+    by days before its first observation. A full-year title lands near
     252 / 365 = 0.69, a title with halts or thin listing below that. The order
     of ``bars`` is not relied on - ``fetch_daily`` answers newest first, but
     the estimate only needs the dates, so the newest one is taken as the
@@ -204,7 +206,9 @@ def session_density(bars):
     recent = sum(1 for day in days if day > first)
     if recent < MIN_DENSITY_BARS:
         return FALLBACK_SESSIONS_PER_DAY
-    return recent / DENSITY_LOOKBACK_DAYS
+    # Use only observed history, not a full year before a young series began.
+    covered = min(DENSITY_LOOKBACK_DAYS, (days[-1] - days[0]).days + 1)
+    return recent / covered
 
 
 def sessions_for(calendar_days, bars):
