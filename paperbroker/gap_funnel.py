@@ -498,6 +498,69 @@ def spread_candidates(section, strategy, *, now_fn=None):
     return kept, criteria, (None if kept or not dropped else str(dropped[0][1])), coverage
 
 
+def _enumerate(section, strategy, *, now_fn=None):
+    """``(kept, criteria, sample_drop, coverage)`` - ONE enumeration of the section.
+
+    The first half of ``best_spread``, standing on its own because a row needs
+    its pairs TWICE: once to pick the spread, once to name the alternatives
+    (``variant_characters``). Handing the SAME list to the second step
+    (``_select``/``qualifying_pairs``) is what keeps a row at one enumeration -
+    ``spread_candidates`` builds every strike pair of the section, up to
+    ``MAX_PAIRS_PER_SECTION``, and running it twice per row doubles that work
+    inside the deadline-bounded workers for no new information.
+    """
+    return spread_candidates(section, strategy, now_fn=now_fn)
+
+
+def _select(kept, criteria, *, rr_min=DEFAULT_RR_MIN,
+            min_long_delta=DEFAULT_MIN_LONG_DELTA,
+            min_net_debit=DEFAULT_MIN_NET_DEBIT, section=None, sample_drop=None,
+            coverage=None, strategy=None):
+    """``(pair, note, coverage)`` - the best pair of an ALREADY enumerated list.
+
+    The second half of ``best_spread``: it checks the three hurdles against the
+    order ``_enumerate`` produced and never searches the section again.
+    ``section``/``sample_drop``/``strategy`` are only read to WORD the note when
+    nothing qualifies (and to name the ceiling of a capped search) - they do not
+    change which pair wins.
+    """
+    if not kept:
+        if not section:
+            return None, "keine Kontrakte in diesem Verfall", coverage
+        if criteria.pair_max_width is None:
+            return None, "nur ein Strike gelistet - kein Strike-Paar möglich", coverage
+        return None, ("kein gültiges Strike-Paar im Screening"
+                      + (f" (z. B. {sample_drop})" if sample_drop else "")), coverage
+
+    ratios = 0
+    deltas = 0
+    debits = 0
+    for pair in kept:
+        ratio = pair.net_return_pct(criteria)
+        if ratio is None or ratio < rr_min * 100:
+            continue
+        ratios += 1
+        delta = getattr(pair.long, "delta", None)
+        if delta is None or abs(float(delta)) < min_long_delta:
+            continue
+        deltas += 1
+        if pair.net_debit is None or pair.net_debit < min_net_debit:
+            continue
+        debits += 1
+        return pair, None, coverage
+    if not ratios:
+        return None, _capped_counts(
+            f"kein Paar mit R/R >= {rr_min:.1f}", len(kept), coverage, section,
+            strategy), coverage
+    if not deltas:
+        return None, _capped_counts(
+            f"R/R erfüllt ({ratios} von {len(kept)}), aber |Delta| des Long-Legs "
+            f"< {min_long_delta:.0f}", len(kept), coverage, section, strategy), coverage
+    return None, _capped_counts(
+        f"R/R und Delta erfüllt ({deltas} von {len(kept)}), aber Netto-Debit "
+        f"< {min_net_debit:.2f} USD", len(kept), coverage, section, strategy), coverage
+
+
 def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
                 min_long_delta=DEFAULT_MIN_LONG_DELTA,
                 min_net_debit=DEFAULT_MIN_NET_DEBIT):
@@ -517,43 +580,17 @@ def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
     ``coverage`` is the search's own report, passed through from
     ``spread_candidates`` on every path - including the ones where nothing
     qualified: a capped search is capped whether or not it produced a winner.
-    """
-    kept, criteria, sample_drop, coverage = spread_candidates(section, strategy, now_fn=now_fn)
-    if not kept:
-        if not section:
-            return None, criteria, "keine Kontrakte in diesem Verfall", coverage
-        if criteria.pair_max_width is None:
-            return None, criteria, "nur ein Strike gelistet - kein Strike-Paar möglich", coverage
-        return None, criteria, ("kein gültiges Strike-Paar im Screening"
-                                + (f" (z. B. {sample_drop})" if sample_drop else "")), coverage
 
-    ratios = 0
-    deltas = 0
-    debits = 0
-    for pair in kept:
-        ratio = pair.net_return_pct(criteria)
-        if ratio is None or ratio < rr_min * 100:
-            continue
-        ratios += 1
-        delta = getattr(pair.long, "delta", None)
-        if delta is None or abs(float(delta)) < min_long_delta:
-            continue
-        deltas += 1
-        if pair.net_debit is None or pair.net_debit < min_net_debit:
-            continue
-        debits += 1
-        return pair, criteria, None, coverage
-    if not ratios:
-        return None, criteria, _capped_counts(
-            f"kein Paar mit R/R >= {rr_min:.1f}", len(kept), coverage, section,
-            strategy), coverage
-    if not deltas:
-        return None, criteria, _capped_counts(
-            f"R/R erfüllt ({ratios} von {len(kept)}), aber |Delta| des Long-Legs "
-            f"< {min_long_delta:.0f}", len(kept), coverage, section, strategy), coverage
-    return None, criteria, _capped_counts(
-        f"R/R und Delta erfüllt ({deltas} von {len(kept)}), aber Netto-Debit "
-        f"< {min_net_debit:.2f} USD", len(kept), coverage, section, strategy), coverage
+    The section is enumerated exactly ONCE (``_enumerate`` + ``_select``): a
+    caller that also needs the pairs themselves uses those two halves instead of
+    this wrapper, so the second need does not cost a second search.
+    """
+    kept, criteria, sample_drop, coverage = _enumerate(section, strategy, now_fn=now_fn)
+    pair, note, coverage = _select(
+        kept, criteria, rr_min=rr_min, min_long_delta=min_long_delta,
+        min_net_debit=min_net_debit, section=section, sample_drop=sample_drop,
+        coverage=coverage, strategy=strategy)
+    return pair, criteria, note, coverage
 
 
 def _strike_pair(pair):
@@ -625,7 +662,7 @@ def resistance_levels(bars, close):
 
 def qualifying_pairs(section, strategy, *, close=None, now_fn=None,
                      rr_min=DEFAULT_RR_MIN, min_long_delta=DEFAULT_MIN_LONG_DELTA,
-                     min_net_debit=DEFAULT_MIN_NET_DEBIT):
+                     min_net_debit=DEFAULT_MIN_NET_DEBIT, kept=None, criteria=None):
     """Every pair of the expiry that clears the row's three hurdles, with its move.
 
     "Qualifying" means exactly what it means for the funnel's own pick - the
@@ -635,9 +672,18 @@ def qualifying_pairs(section, strategy, *, close=None, now_fn=None,
     unchanged. Each entry carries ``pair``, ``ratio`` (the screener's
     percentage) and ``move`` (``required_move_of`` against ``close``, ``None``
     when the close or the break-even is unusable).
+
+    ``kept``/``criteria`` are the row's OWN enumeration (``_enumerate``): when
+    they are handed in, the section is NOT searched again - the hurdles are
+    checked against the same list, in the same order, the pick was taken from.
+    A row that needs both its spread and its alternatives therefore enumerates
+    its strike pairs once, not twice.
     """
-    kept, criteria, _sample_drop, _coverage = spread_candidates(
-        section, strategy, now_fn=now_fn)
+    if kept is None:
+        kept, criteria, _sample_drop, _coverage = spread_candidates(
+            section, strategy, now_fn=now_fn)
+    elif criteria is None:
+        criteria = criteria_for(section)
     entries = []
     for pair in kept:
         ratio = pair.net_return_pct(criteria)
@@ -697,7 +743,7 @@ def variant_characters(section, strategy, *, primary, close, bars=None, dte=None
                        min_long_delta=DEFAULT_MIN_LONG_DELTA,
                        min_net_debit=DEFAULT_MIN_NET_DEBIT,
                        max_required_move_pct=DEFAULT_MAX_REQUIRED_MOVE_PCT,
-                       count=DEFAULT_VARIANT_COUNT):
+                       count=DEFAULT_VARIANT_COUNT, kept=None, criteria=None):
     """Up to ``count`` other structures of the SAME expiry, as named characters.
 
     The alternatives are not a ladder of ratios - they are three readings of the
@@ -723,13 +769,21 @@ def variant_characters(section, strategy, *, primary, close, bars=None, dte=None
 
     Each variant carries the frequency of its own distance, measured on the
     SAME bars as the row (``reachability.measure``, the row's ``dte``). An empty
-    list is a fact ("no other structure clears the same hurdles"), never ``None``.
+    list is a fact ("no other structure clears the same hurdles") - this
+    function never answers ``None``: whether a ladder could be BUILT at all is
+    the row's question and is answered where the row is filled
+    (``measure_reachability``, ``variants`` ``null`` vs ``[]``).
+
+    ``kept``/``criteria`` are passed straight to ``qualifying_pairs``: the run
+    hands the row's OWN enumeration in, so naming the alternatives does not
+    search the section a second time.
     """
     if primary is None or count <= 0 or close is None:
         return []
     entries = qualifying_pairs(
         section, strategy, close=close, now_fn=now_fn, rr_min=rr_min,
-        min_long_delta=min_long_delta, min_net_debit=min_net_debit)
+        min_long_delta=min_long_delta, min_net_debit=min_net_debit,
+        kept=kept, criteria=criteria)
 
     taken = {_strike_pair(primary)}
     free = []
@@ -1020,11 +1074,15 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
             f"{next_earnings.isoformat()}."), None, stages, None
     stages["expiry"] = True
 
-    # 4) the best debit spread of that expiry
+    # 4) the best debit spread of that expiry - ONE enumeration of the section,
+    # whose pair list is kept in the context: the history phase names the row's
+    # alternatives from the SAME list instead of searching the section again.
     section = slice_chain(chain, expiration)
-    pair, criteria, note, coverage = best_spread(
-        section, strategy, now_fn=now_fn, rr_min=rr_min,
-        min_long_delta=min_long_delta, min_net_debit=min_net_debit)
+    kept, criteria, sample_drop, coverage = _enumerate(section, strategy, now_fn=now_fn)
+    pair, note, coverage = _select(
+        kept, criteria, rr_min=rr_min, min_long_delta=min_long_delta,
+        min_net_debit=min_net_debit, section=section, sample_drop=sample_drop,
+        coverage=coverage, strategy=strategy)
     if pair is not None:
         liquid, liquid_note = legs_liquid(pair, min_oi)
         if not liquid:
@@ -1063,6 +1121,9 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         "now_fn": now_fn, "rr_min": rr_min,
         "min_long_delta": min_long_delta, "min_net_debit": min_net_debit,
         "max_required_move_pct": max_required_move_pct,
+        # The row's OWN enumeration: the alternatives are checked against the
+        # list this pick came from, not against a second search of the section.
+        "kept": kept, "criteria": criteria,
     }
     return row, None, None, stages, context
 
@@ -1114,8 +1175,9 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
     (``_assess``): the bars of the SAME request are then handed to
     ``variant_characters``, so the alternatives are named from the history the
     row itself was measured on - one request, one set of bars, no second
-    opinion about the same title. A row without a context (or without a source)
-    keeps ``variants = []``.
+    opinion about the same title. The context carries the row's own pair list
+    (``kept``), so naming the alternatives does not enumerate the section a
+    second time.
 
     ``deadline_seconds`` bounds the whole phase. A title that has not answered
     by then keeps its row with ``history_state=source_failed`` and no numbers -

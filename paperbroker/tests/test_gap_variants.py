@@ -33,6 +33,7 @@ is exactly the order of ``VARIANT_LABELS``.
 
 import unittest
 from datetime import date, timedelta
+from unittest import mock
 
 import arrow
 
@@ -41,7 +42,7 @@ from paperbroker import reachability
 from paperbroker.gap_scan import GapBar
 from paperbroker.screener import BULL_CALL_DEBIT, VerticalPair
 from paperbroker.server import create_app
-from paperbroker.tests.test_gap_funnel import DAY, NOW, _Chains, _FakeCalendar, _History, _NextEarnings, calendar_row, call
+from paperbroker.tests.test_gap_funnel import DAY, NOW, _Chains, _FakeCalendar, _History, _NextEarnings, calendar_row, call, candidate
 
 EXPIRY = "2027-03-19"
 CLOSE = 101.0
@@ -427,6 +428,72 @@ class TheRunCarriesTheCharacters(unittest.TestCase):
         row = self._row()
         self.assertIn("variants", row)
         self.assertIsInstance(row["variants"], list)
+
+
+def _funnel(chain, *, close=CLOSE, bars=None, history=True):
+    """One title (``AAA``) through the whole funnel, history source optional.
+
+    ``close`` is set AFTER ``candidate`` (which multiplies it into a turnover):
+    the row's close is what the alternatives are measured against, and a title
+    without one must reach the funnel as ``None``.
+    """
+    kandidat = dict(candidate("AAA", close=CLOSE))
+    kandidat["close"] = close
+    return gf.run_funnel(
+        [kandidat],
+        fetch_next_earnings=lambda _symbol: date(2027, 2, 1),
+        fetch_chain=lambda _symbol: list(chain),
+        # A ``date``, not the route's string: the history window is derived from
+        # it, and a string is no day (``reachability.fromdate_for``).
+        day=date(2026, 11, 12), now_fn=NOW,
+        fetch_daily=None if not history else _History(
+            {"AAA": level_bars() if bars is None else bars}).fetch_daily,
+    )
+
+
+class OneEnumerationPerRow(unittest.TestCase):
+    """A row that names alternatives still searches its section exactly ONCE.
+
+    ``best_spread`` and ``qualifying_pairs`` both start at ``spread_candidates``,
+    and that function builds EVERY strike pair of the section (up to
+    ``MAX_PAIRS_PER_SECTION`` = 50 000). A row that ran it once to pick and once
+    more to name its alternatives did that work twice, in the deadline-bounded
+    worker - so the count is a property worth a test, not an implementation
+    detail.
+    """
+
+    def test_one_candidate_with_variants_enumerates_its_pairs_once(self):
+        calls = []
+        original = gf.spread_candidates
+
+        def counted(*args, **kwargs):
+            calls.append(args[:2])
+            return original(*args, **kwargs)
+
+        with mock.patch.object(gf, "spread_candidates", counted):
+            run = _funnel(character_chain())
+
+        self.assertEqual(len(run.results), 1)
+        row = run.results[0]
+        # The candidate HAS alternatives, so both needs really occurred.
+        self.assertEqual(labels(row["variants"]), list(gf.VARIANT_LABELS))
+        self.assertEqual(len(calls), 1)
+
+    def test_the_alternatives_are_the_ones_of_the_same_list(self):
+        """Reusing the list cannot change WHAT is offered - only how often."""
+        shared = _funnel(character_chain()).results[0]["variants"]
+        pair, criteria, _note, _coverage = gf.best_spread(character_chain(),
+                                                          BULL_CALL_DEBIT, now_fn=NOW)
+        kept, criteria, _sample_drop, _coverage = gf._enumerate(
+            character_chain(), BULL_CALL_DEBIT, now_fn=NOW)
+        handed = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
+                                       close=CLOSE, bars=level_bars(), dte=127,
+                                       now_fn=NOW, kept=kept, criteria=criteria)
+        searched = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
+                                         close=CLOSE, bars=level_bars(), dte=127,
+                                         now_fn=NOW, kept=None, criteria=None)
+        self.assertEqual(handed, searched)
+        self.assertEqual(labels(handed), labels(shared))
 
 
 if __name__ == "__main__":
