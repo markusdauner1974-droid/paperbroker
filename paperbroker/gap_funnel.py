@@ -921,9 +921,13 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None, sectio
         "pairs_limit": report.get("limit"),
         "pairs_capped": report.get("capped"),
         # The alternatives of the SAME expiry as named characters (see
-        # ``variant_characters``). Empty is a fact - "no other structure clears
-        # the same hurdles" - and never ``None``.
-        "variants": list(variants or ()),
+        # ``variant_characters``). ``None`` and ``[]`` are two different facts:
+        # ``None`` means NO ladder could be built (no close, no bars - nothing
+        # was named), ``[]`` means built and empty ("no other structure clears
+        # the same hurdles"). The UI shows no counter in either case; only the
+        # contract tells them apart, and a row may not claim a check that never
+        # happened.
+        "variants": None if variants is None else list(variants),
     }
 
 
@@ -1160,6 +1164,20 @@ def cap_note(rows, excluded=None):
             f"der Aufzählung wurde nicht geprüft.")
 
 
+def _row_variants(context, bars):
+    """The row's alternatives, or ``None`` when no ladder could be built.
+
+    ``None`` is NOT "nothing qualifies" - it says the ladder was never built:
+    there is no context (no pick, so no section to name alternatives from), no
+    close (no distance, so neither a move nor a cap) or no bars. The row must
+    not look checked in that case. ``[]`` stays reserved for a ladder that was
+    built and holds nothing.
+    """
+    if not context or context.get("close") is None or not bars:
+        return None
+    return variant_characters(bars=bars, **context)
+
+
 def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORKERS,
                          deadline_seconds=DEFAULT_HISTORY_DEADLINE_SECONDS,
                          history_bars=reachability.HISTORY_BARS,
@@ -1179,6 +1197,12 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
     (``kept``), so naming the alternatives does not enumerate the section a
     second time.
 
+    ``variants`` distinguishes two facts that both show no counter: ``None``
+    when no structure could be built (no context, no close, no bars - the row
+    was never named) and ``[]`` when the ladder was built and holds nothing.
+    A row without a source therefore reads ``variants = None``: it cannot say
+    "checked, nothing else fits" about a check that never ran.
+
     ``deadline_seconds`` bounds the whole phase. A title that has not answered
     by then keeps its row with ``history_state=source_failed`` and no numbers -
     the same honesty as ``too_short``: an unmeasured frequency is not 0 %.
@@ -1195,6 +1219,8 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
     if fetch_daily is None or fromdate is None:
         for row in rows:
             row.update(reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED))
+            # No bars, no ladder: nothing was named, so nothing may look named.
+            row["variants"] = None
         return rows
 
     def _one(row):
@@ -1203,9 +1229,7 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
         # converts it into the sessions the window is counted in and returns
         # both numbers (``window_sessions``, ``window_calendar_days``).
         fields = reachability.measure(bars, row.get("required_move_pct"), row.get("dte"))
-        context = contexts.get(id(row))
-        variants = [] if context is None else variant_characters(bars=bars, **context)
-        return fields, variants
+        return fields, _row_variants(contexts.get(id(row)), bars)
 
     budget = None if deadline_seconds is None else max(0.0, float(deadline_seconds))
     pool = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
@@ -1224,12 +1248,13 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
     for row, future in pairs:
         if future not in finished:
             row.update(reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED))
+            row["variants"] = None
             continue
         try:
             fields, variants = future.result()
         except Exception:                   # noqa: BLE001 - a source failure is a state
             fields = reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED)
-            variants = []
+            variants = None
         row.update(fields)
         row["variants"] = variants
     return rows

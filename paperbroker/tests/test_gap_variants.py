@@ -496,5 +496,40 @@ class OneEnumerationPerRow(unittest.TestCase):
         self.assertEqual(labels(handed), labels(shared))
 
 
+class NoLadderVersusEmptyLadder(unittest.TestCase):
+    """``variants: null`` is "never named"; ``[]`` is "named, nothing fits".
+
+    Both show no counter, so the difference is only visible in the contract -
+    which is exactly why it has to be there: a row may not claim a check that
+    never ran.
+    """
+
+    def test_without_a_history_source_the_row_says_null(self):
+        run = _funnel(character_chain(), history=False)
+        self.assertEqual(len(run.results), 1)
+        self.assertIsNone(run.results[0]["variants"])
+
+    def test_without_a_close_no_ladder_can_be_named(self):
+        run = _funnel(character_chain(), close=None)
+        self.assertEqual(len(run.results), 1)
+        self.assertIsNone(run.results[0]["variants"])
+
+    def test_a_built_ladder_without_another_qualifying_pair_is_empty(self):
+        # One valid pair of two strikes: the pick has no alternative, but the
+        # ladder WAS built from the row's own close and bars.
+        chain = [call("AAA", EXPIRY, 100.0, 3.90, 4.00, delta=55.0),
+                 call("AAA", EXPIRY, 103.30, 3.00, 3.10, delta=30.0)]
+        run = _funnel(chain)
+        self.assertEqual(len(run.results), 1)
+        self.assertEqual(run.results[0]["variants"], [])
+
+    def test_a_row_without_a_source_says_null_not_empty(self):
+        # Even a row that arrives carrying ``[]`` must not keep it: without a
+        # source no ladder was named, and "[]" would read as "checked".
+        row = {"symbol": "AAA", "required_move_pct": 1.0, "dte": 127, "variants": []}
+        gf.measure_reachability([row], fetch_daily=None, day=date(2026, 11, 12))
+        self.assertIsNone(row["variants"])
+
+
 if __name__ == "__main__":
     unittest.main()
