@@ -23,6 +23,7 @@ Pinned, in the order of the requirement:
 """
 
 import json
+import threading
 import time
 import unittest
 from datetime import date, datetime, timedelta
@@ -456,6 +457,39 @@ class FunnelRunTests(unittest.TestCase):
         self.assertEqual({entry.code for entry in run.failures}, {"deadline_exceeded"})
         self.assertEqual(len(run.failures), 2)
         self.assertEqual(run.results, [])
+
+    def test_unfinished_work_is_cancelled_at_the_deadline(self):
+        started = []
+        gate = threading.Event()
+
+        def blocking_chain(symbol):
+            started.append(symbol)
+            # The request outlives the deadline; it is released by the test, not
+            # by the run - so anything that starts after the answer was built is
+            # work the run should never have queued.
+            gate.wait(5.0)
+            return ladder_chain(symbol)
+
+        symbols = ["AAA", "BBB", "CCC", "DDD", "EEE", "FFF"]
+        try:
+            run = run_funnel([candidate(symbol) for symbol in symbols],
+                             fetch_next_earnings=lambda symbol: date(2027, 2, 1),
+                             fetch_chain=blocking_chain,
+                             day=REACTION, now_fn=NOW,
+                             max_workers=2, deadline_seconds=0.1)
+            # Two workers, both stuck in their chain: nothing else CAN start
+            # before the deadline, so exactly two requests are in flight.
+            self.assertEqual(len(started), 2)
+            self.assertEqual({entry.code for entry in run.failures}, {"deadline_exceeded"})
+            self.assertEqual(len(run.failures), 6)
+            self.assertEqual(run.results, [])
+            # Releasing the in-flight requests must not be answered by four more
+            # chains: the queued titles were cancelled, not left in the queue.
+            gate.set()
+            time.sleep(0.3)
+            self.assertEqual(len(started), 2)
+        finally:
+            gate.set()
 
     def test_an_empty_candidate_list_is_an_empty_run(self):
         run = run_funnel([], fetch_next_earnings=lambda symbol: None,

@@ -598,10 +598,12 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
 
     ``deadline_seconds`` bounds the WHOLE run. Every candidate is still asked -
     only the waiting ends - and a title that has not finished by then is named
-    ``deadline_exceeded`` in ``failures``. Nothing is raised for a single title:
-    a symbol is either a row, an exclusion or a failure. ``notes`` adds what the
-    counters cannot say - a capped pair search is named there, because its rows
-    show the best pair FOUND, not the best that exists.
+    ``deadline_exceeded`` in ``failures``. Work that had not STARTED by then is
+    cancelled, so the run does not go on fetching for titles it no longer
+    reports; a request already in flight finishes in the background. Nothing is
+    raised for a single title: a symbol is either a row, an exclusion or a
+    failure. ``notes`` adds what the counters cannot say - a capped pair search
+    is named there, because its rows show the best pair FOUND, not the best.
     """
     rows = list(candidates or ())
     counts = {"with_next_earnings": 0, "with_chain": 0, "with_expiry_after_earnings": 0,
@@ -613,6 +615,7 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
     budget = None if deadline_seconds is None else max(0.0, float(deadline_seconds))
     pool = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
     pairs = []
+    finished = set()
     try:
         pairs = [(row, pool.submit(
             _assess, row,
@@ -620,11 +623,20 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
             day=day, now_fn=now_fn, rr_min=rr_min, min_oi=min_oi,
             min_long_delta=min_long_delta, min_net_debit=min_net_debit))
             for row in rows]
-        finished, _open = wait([future for _row, future in pairs], timeout=budget)
+        finished, open_futures = wait([future for _row, future in pairs], timeout=budget)
+        # Cancelling BEFORE the shutdown is the deadline: a worker that never
+        # started would otherwise be handed the next queued title after the
+        # answer went out, and the run would keep asking Finnhub and the chain
+        # for titles it already reported as ``deadline_exceeded``. Only a future
+        # that has not started can be cancelled - one already RUNNING keeps its
+        # single in-flight request (cancelling a running call is not a thing),
+        # which is exactly what the deadline accepts.
+        for future in open_futures:
+            future.cancel()
     finally:
         # Not waiting on an expired deadline is the deadline: the unanswered
-        # titles are already accounted for below, and the running chains finish
-        # in the background rather than holding the request.
+        # titles are already accounted for below, and a chain that was already
+        # in flight finishes in the background rather than holding the request.
         pool.shutdown(wait=budget is None)
 
     for candidate, future in pairs:
