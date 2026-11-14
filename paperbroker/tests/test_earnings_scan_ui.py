@@ -190,7 +190,7 @@ class TestThePageNeedsNoOtherContext(unittest.TestCase):
         # Vier Bedingungen: Gap, Optionen, Verfall nach dem Bericht und die
         # Regel des Trichters - R/R-Floor UND die Grenze der nötigen Bewegung.
         for teil in ("Earnings-Gap", "Optionen", "Verfall nach dem nächsten Bericht",
-                     "R/R ≥ 1:2", "nötige Bewegung bis"):
+                     "R/R ≥", 'id="funnel-rr"', "nötige Bewegung bis"):
             with self.subTest(teil=teil):
                 self.assertIn(teil, untertitel)
 

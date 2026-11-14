@@ -134,7 +134,7 @@ class El {
 
 const ids = ['gap-funnel', 'funnel-day', 'funnel-run', 'funnel-state', 'funnel-error',
   'funnel-counts', 'funnel-notes', 'funnel-stale', 'funnel-empty', 'funnel-table-wrap',
-  'funnel-tbody', 'funnel-foot', 'funnel-cap', 'funnel-expand-all', 'funnel-detail',
+  'funnel-tbody', 'funnel-foot', 'funnel-cap', 'funnel-rr', 'funnel-expand-all', 'funnel-detail',
   'funnel-detail-summary', 'funnel-detail-body',
   'funnel-excluded-block', 'funnel-excluded-summary', 'funnel-excluded',
   'funnel-failures-block', 'funnel-failures-summary', 'funnel-failures'];
@@ -301,6 +301,7 @@ function report(prevented) {
     foot: nodes['funnel-foot'].textContent,
     footHidden: nodes['funnel-foot'].hidden,
     cap: nodes['funnel-cap'].textContent,
+    rr: nodes['funnel-rr'].textContent,
     detail: {
       hidden: nodes['funnel-detail'].hidden,
       open: nodes['funnel-detail'].open,
@@ -620,8 +621,22 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
         self.assertEqual(spalten[stelle + 4], "Verfall")
 
     def test_the_head_names_the_rule_of_the_run(self):
+        # Die Kopfzeile traegt die Huerde als eigenen Knoten: sie wird aus
+        # ``limits`` gefuellt und nicht im Template festgeschrieben.
         seite = _page()
-        self.assertIn("Zugelassen: R/R ≥ 1:2 und eine nötige Bewegung bis", seite)
+        self.assertIn('id="funnel-rr"', seite)
+        self.assertIn('id="funnel-cap"', seite)
+
+    def test_the_head_follows_the_limits_of_the_response(self):
+        # Ein Lauf mit anderer Huerde darf nicht behaupten, es seien 1 : 2.
+        limits = {**_list()["limits"], "rr_min": 2.5}
+        panel = _render(list_body={**_list(), "limits": limits, "results": []})
+        self.assertEqual("1 : 2,5", panel["rr"])
+
+    def test_the_head_falls_back_without_limits(self):
+        alt = {name: wert for name, wert in _list().items() if name != "limits"}
+        panel = _render(list_body={**alt, "results": []})
+        self.assertEqual("1 : 2", panel["rr"])
 
     def test_the_row_shows_all_three_numbers_in_order(self):
         panel = _render(actions=[])
