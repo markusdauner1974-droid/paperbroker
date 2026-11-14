@@ -417,6 +417,12 @@ def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
     bought leg and the minimum debit. The three are checked in that order so the
     note names the hurdle that mattered when nothing qualifies.
 
+    ``checked`` in that note is ALWAYS the number of valid pairs (``len(kept)``)
+    - the pairs the screener's own rules kept - never the size of a stage. How
+    many pairs cleared the ratio (or the ratio and the delta) is a different
+    number and stands INSIDE the sentence ("R/R erfüllt (3 von 10), aber ..."),
+    so the label "N gültige Paare" keeps meaning what it says on every path.
+
     ``coverage`` is the search's own report, passed through from
     ``spread_candidates`` on every path - including the ones where nothing
     qualified: a capped search is capped whether or not it produced a winner.
@@ -452,11 +458,11 @@ def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
             strategy), coverage
     if not deltas:
         return None, criteria, _capped_counts(
-            f"R/R erfüllt, aber |Delta| des Long-Legs < {min_long_delta:.0f}",
-            ratios, coverage, section, strategy), coverage
+            f"R/R erfüllt ({ratios} von {len(kept)}), aber |Delta| des Long-Legs "
+            f"< {min_long_delta:.0f}", len(kept), coverage, section, strategy), coverage
     return None, criteria, _capped_counts(
-        f"R/R und Delta erfüllt, aber Netto-Debit < {min_net_debit:.2f} USD",
-        deltas, coverage, section, strategy), coverage
+        f"R/R und Delta erfüllt ({deltas} von {len(kept)}), aber Netto-Debit "
+        f"< {min_net_debit:.2f} USD", len(kept), coverage, section, strategy), coverage
 
 
 def spread_row(candidate, pair, criteria, expiration, day, coverage=None, section=None):

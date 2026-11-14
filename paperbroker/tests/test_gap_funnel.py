@@ -129,6 +129,29 @@ def ladder_chain(symbol="AAA", expiry="2027-03-19"):
     ]
 
 
+def ratio_star_ladder(symbol="AAA", expiry="2027-03-19", center_delta=15.0):
+    """Ten calls of ONE expiry: 45 combinations, 10 valid pairs, 3 above 2:1.
+
+    The 100 call (0.45 / 0.50) is the only sane long leg: its six 0.02-spaced
+    partners (0.10 / 2.50) and the three wide ones at 102.72 / 102.82 / 102.92
+    all risk 0.40 USD, so the six near pairs stay at 1.50 .. 1.75 and the three
+    wide ones reach 5.8 .. 6.3 - exactly three clear the 2:1 floor. The cheap
+    ask on 102.72 adds ONE more valid pair (102.72 / 102.92, 0.18 debit, a ratio
+    of 0.11) so the section counts ten; every partner-partner pair is incoherent
+    (debit >= width) and stays out. ``center_delta`` decides which hurdle fires:
+    15 sends the three 2:1 pairs to the DELTA branch, 55 lets them through to
+    the debit floor - the pair count stays 10 either way.
+    """
+    chain = [call(symbol, expiry, 100.0, 0.45, 0.50, delta=center_delta, oi=1200)]
+    for index in range(6):
+        chain.append(call(symbol, expiry, 101.0 + index * 0.02, 0.10, 2.50,
+                          delta=10.0, oi=900))
+    chain.append(call(symbol, expiry, 102.72, 0.10, 0.28, delta=10.0, oi=900))
+    chain.append(call(symbol, expiry, 102.82, 0.10, 2.50, delta=10.0, oi=900))
+    chain.append(call(symbol, expiry, 102.92, 0.10, 2.50, delta=10.0, oi=900))
+    return chain
+
+
 # --- expiry ---------------------------------------------------------------- #
 class ExpiryTests(unittest.TestCase):
     def test_first_listed_series_after_the_report(self):
@@ -218,6 +241,31 @@ class SpreadTests(unittest.TestCase):
             [call("AAA", "2027-03-19", 100.0, 3.9, 4.0)], BULL_CALL_DEBIT, now_fn=NOW)
         self.assertIsNone(pair)
         self.assertIn("Strike-Paar", note)
+
+    def test_the_exclusion_counts_valid_pairs_not_the_stage_count(self):
+        # 45 combinations, 10 valid pairs, 3 of them above 2:1 - and every long
+        # leg of those three is a 15-delta, so the DELTA hurdle is the one that
+        # fired. "3 gültige Paare" would pass the stage size off as the pair
+        # count: the label keeps the 10, the stage number stands in the sentence.
+        pair, _criteria, note, _coverage = best_spread(
+            ratio_star_ladder(), BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(pair)
+        self.assertIn("(3 von 10)", note)
+        self.assertIn("(10 gültige Paare von 45 aufgezählten Paaren)", note)
+        self.assertNotIn("3 gültige Paare", note)
+        self.assertIn("Delta", note)
+
+    def test_the_debit_branch_counts_valid_pairs_too(self):
+        # Same section with a 55-delta long leg: the three 2:1 pairs clear the
+        # delta as well and die on the 0.50 USD debit floor. The label is still
+        # the pair count (10); the three are the stage, not the section.
+        pair, _criteria, note, _coverage = best_spread(
+            ratio_star_ladder(center_delta=55.0), BULL_CALL_DEBIT, now_fn=NOW)
+        self.assertIsNone(pair)
+        self.assertIn("(3 von 10)", note)
+        self.assertIn("(10 gültige Paare von 45 aufgezählten Paaren)", note)
+        self.assertNotIn("3 gültige Paare", note)
+        self.assertIn("Netto-Debit", note)
 
 
 # --- how much of the expiry was searched ----------------------------------- #
