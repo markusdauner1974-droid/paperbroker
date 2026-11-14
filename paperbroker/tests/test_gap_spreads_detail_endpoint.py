@@ -34,7 +34,7 @@ import arrow
 
 from paperbroker import gap_funnel
 from paperbroker.gap_scan import GapSourceError
-from paperbroker.server import create_app
+from paperbroker.server import _same_strike, create_app
 from paperbroker.tests.test_gap_funnel import (
     DAY,
     PREVIOUS,
@@ -45,6 +45,7 @@ from paperbroker.tests.test_gap_funnel import (
     _History,
     _NextEarnings,
     calendar_row,
+    call,
     ladder_chain,
 )
 from paperbroker.tests.test_gap_variants import bars_from, character_chain
@@ -379,6 +380,79 @@ class DetailErrorTest(unittest.TestCase):
         antwort, body = _get(f"?symbol=AAA&day={DAY}&long_strike=100")
         self.assertEqual(antwort.status_code, 400)
         self.assertEqual(body["error"], "unknown_parameter")
+
+
+class StrikePrecisionTest(unittest.TestCase):
+    """A listed strike with THREE decimals and the two-decimal value the row keeps.
+
+    An adjusted contract (after a split or a dividend) can list 15.335. The row
+    publishes every strike rounded to two decimals - 15.34 - and the page sends
+    that number back. A ``1e-6`` comparison called those two different and
+    answered ``leg_not_listed`` for a contract that IS listed; the match is one
+    at the precision the row stores.
+
+    The chain is the same gap fixture as above, priced around 13.6 so that
+    15.335 / 17.0 is the funnel's own pick: debit 0.55 - 0.04 = 0.51, width
+    1.665, R/R 2.27 - while 10 / 15.335 (0.94) and 10 / 17 (1.22) stay below it.
+    The break-even (15.845) is 16.5 % above the close, so the row clears the
+    20 % move cap and reaches the leg lookup at all.
+    """
+
+    def _chains(self):
+        kette = [
+            call("AAA", "2027-03-19", 10.0, 3.10, 3.20, delta=70.0),
+            call("AAA", "2027-03-19", 15.335, 0.45, 0.55, delta=30.0),
+            call("AAA", "2027-03-19", 17.0, 0.04, 0.06, delta=20.0),
+        ]
+        for quote in kette:
+            quote.underlying_price = 13.6
+        return _Chains({"AAA": kette})
+
+    def _get(self, query):
+        calendar = _FakeCalendar({
+            PREVIOUS: [calendar_row("AAA", session="after_market", name="Alpha Corp")],
+            DAY: [calendar_row("DDD", session="after_market")],
+        })
+        history = _History({"AAA": bars_from([12.95] * 255 + [12.95, 13.6])})
+        client = create_app(
+            quote_adapter=self._chains(),
+            earnings_adapter=calendar,
+            gap_adapter=history,
+            next_earnings_adapter=_NextEarnings({"AAA": date(2027, 2, 1)}),
+            now_fn=CLOCK,
+        ).test_client()
+        antwort = client.get(DETAIL + query)
+        return antwort, antwort.get_json()
+
+    def test_the_rounded_strike_of_the_row_finds_its_listed_leg(self):
+        # ``long=15.34`` is exactly what the row carries for the listed 15.335.
+        antwort, body = self._get(
+            f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=15.34&short=17")
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual([leg["side"] for leg in body["legs"]], ["long", "short"])
+        self.assertEqual([leg["strike"] for leg in body["legs"]],
+                         [round(15.335, 2), 17.0])
+        self.assertEqual(body["net_debit"], 0.51)
+        # The pair IS the row's pick, so the answer names its character.
+        self.assertTrue(body["is_row_pick"])
+        self.assertEqual(body["structure_label"], gap_funnel.ROW_PICK_LABEL)
+
+    def test_the_pick_itself_prices_without_a_named_structure(self):
+        # No ``expiration``/``long``/``short``: the route takes the row's own
+        # (rounded) strikes - the same round trip, one stage earlier.
+        antwort, body = self._get(f"?symbol=AAA&day={DAY}")
+        self.assertEqual(antwort.status_code, 200)
+        self.assertEqual([leg["strike"] for leg in body["legs"]],
+                         [round(15.335, 2), 17.0])
+
+    def test_two_strikes_are_the_same_at_two_decimals(self):
+        # The rule the lookup and the character both use, directly.
+        self.assertTrue(_same_strike(15.335, 15.34))
+        self.assertTrue(_same_strike(15.34, 15.335))
+        self.assertTrue(_same_strike(17, 17.0))
+        self.assertFalse(_same_strike(15.335, 15.44))
+        self.assertFalse(_same_strike(15.335, None))
+        self.assertFalse(_same_strike("15.335", 15.34))
 
 
 if __name__ == "__main__":

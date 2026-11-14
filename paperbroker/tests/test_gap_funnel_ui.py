@@ -297,6 +297,7 @@ function report(prevented) {
     rows: rows().map(rowInfo),
     cells: rows().map(cells),
     counts: nodes['funnel-counts'].textContent,
+    excluded: nodes['funnel-excluded'].textContent,
     foot: nodes['funnel-foot'].textContent,
     footHidden: nodes['funnel-foot'].hidden,
     cap: nodes['funnel-cap'].textContent,
@@ -482,6 +483,10 @@ def _list():
         "schema_version": "1.0", "day": DAY, "day_state": "live",
         "threshold_pct": 5.0, "min_turnover_usd": 5_000_000.0, "rr_min": 2.0,
         "min_oi": 100, "max_required_move_pct": 20.0,
+        # Die Huerden des Laufs in EINEM Block: die Texte der Seite nennen
+        # keine Zahl mehr aus eigener Kenntnis, sondern diese.
+        "limits": {"rr_min": 2.0, "min_long_delta": 20.0, "min_net_debit": 0.5,
+                   "max_required_move_pct": 20.0},
         "counts": {"calendar_rows": 128, "gaps_computed": 117, "over_threshold": 27,
                    "turnover_passed": 27, "price_passed": 24, "candidates": 19,
                    "with_next_earnings": 14, "with_expiry_after_earnings": 13,
@@ -578,6 +583,34 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
         self.assertIn("R/R 1 : 8,1", panel["detail"]["text"])
         self.assertNotIn("1 zu", panel["detail"]["text"])
         self.assertIn("R/R mindestens 1 : 2", panel["counts"])
+
+    def test_the_ratio_hurdle_is_written_from_the_answer(self):
+        # ``limits.rr_min`` 2.5 - die Seite schreibt BEIDE Stellen aus der
+        # Antwort (Zaehlerzeile und Ausschlusssatz), nicht aus eigenem Wissen.
+        limits = {**_list()["limits"], "rr_min": 2.5}
+        panel = _render(list_body={**_list(), "limits": limits,
+                                   "excluded": [{"symbol": "SPIR",
+                                                 "reason": "no_spread_ge_rr",
+                                                 "message": "kein Paar"}]})
+        self.assertIn("mit R/R mindestens 1 : 2,5", panel["counts"])
+        self.assertIn("kein Spread mit R/R mindestens 1 : 2,5", panel["excluded"])
+        self.assertNotIn("1 : 2 ", panel["counts"])
+
+    def test_without_limits_the_old_sentence_stays(self):
+        # Ein alter Server liefert kein ``limits``: die Seite faellt auf den
+        # heutigen Satz zurueck, statt "1 : undefined" zu schreiben.
+        alt = {name: wert for name, wert in _list().items() if name != "limits"}
+        alt["excluded"] = [{"symbol": "SPIR", "reason": "no_spread_ge_rr"}]
+        panel = _render(list_body=alt)
+        self.assertIn("mit R/R mindestens 1 : 2", panel["counts"])
+        self.assertIn("kein Spread mit R/R mindestens 1 : 2", panel["excluded"])
+        self.assertNotIn("undefined", panel["counts"] + panel["excluded"])
+
+    def test_the_move_cap_is_read_from_the_limits_block(self):
+        limits = {**_list()["limits"], "max_required_move_pct": 35.0}
+        panel = _render(list_body={**_list(), "limits": limits,
+                                   "max_required_move_pct": 35.0})
+        self.assertIn("nötiger Bewegung bis 35 %", panel["counts"])
 
     def test_the_three_columns_stand_directly_after_the_ratio(self):
         spalten = self._headers()
@@ -1045,6 +1078,35 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
         self.assertIn("Treffer 12 %", text)
         self.assertNotIn("nötig -5,9 %", text)
         self.assertIn("15/22 · am Widerstand", text)
+
+    def test_an_adjusted_strike_matches_the_rounded_number_of_the_row(self):
+        # Ein adjustierter Kontrakt: die Kette listet 15,335, die Zeile traegt
+        # 15,34, das Detail kommt mit 15,34. Beide sind DERSELBE Strike - sonst
+        # stuenden Striche statt der Zahlen dieser Alternative.
+        zeile = _row(variants=[_variant("nah am Geld", long_strike=15.335,
+                                        short_strike=17.0)])
+        panel = _render(list_body={**_list(), "results": [zeile]},
+                        details=[{"status": 200, "body": _detail_structure(
+                            15.34, 17.0, "nah am Geld")}],
+                        actions=["btn:0", "sub:0:0"])
+        text = panel["detail"]["text"]
+        self.assertIn("nötig -4,8 %", text)
+        self.assertIn("Treffer 22 %", text)
+        self.assertNotIn("nötig —", text)
+
+    def test_a_strike_a_cent_away_is_not_the_alternative(self):
+        # Die Toleranz ist ein halber Cent: 15,44 ist NICHT 15,335, und die
+        # Seite leiht sich dessen Zahlen nicht.
+        zeile = _row(variants=[_variant("nah am Geld", long_strike=15.335,
+                                        short_strike=17.0)])
+        panel = _render(list_body={**_list(), "results": [zeile]},
+                        details=[{"status": 200, "body": _detail_structure(
+                            15.44, 17.0, "nah am Geld")}],
+                        actions=["btn:0", "sub:0:0"])
+        text = panel["detail"]["text"]
+        self.assertIn("nötig —", text)
+        self.assertNotIn("nötig -4,8 %", text)
+        self.assertNotIn("Treffer 22 %", text)
 
     def test_alle_aufklappen_opens_every_group(self):
         panel = _render(list_body=self._two_groups(), actions=["all"])

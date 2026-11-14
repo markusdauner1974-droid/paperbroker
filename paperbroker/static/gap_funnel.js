@@ -64,16 +64,34 @@
   };
   // Grund eines Ausschlusses in Klartext. Der Code selbst bleibt im Tooltip -
   // ein Leser soll den Grund lesen, nicht einen Bezeichner entziffern.
+  //
+  // Die R/R-Huerde steht NICHT hier: sie gehoert zur Antwort
+  // (``limits.rr_min``, siehe ``rrHurdleText``). Eine Grenze, die die Datei
+  // selbst kennt, wuerde bei jedem Lauf mit anderer Huerde luegen.
   var REASONS = {
     no_next_earnings: 'kein nächster Bericht bekannt',
     no_expiry_after_earnings: 'kein Verfall nach dem nächsten Bericht',
-    no_spread_ge_rr: 'kein Spread mit R/R mindestens 1 : 2',
     not_optionable: 'keine gelisteten Optionen',
     chain_unavailable: 'Optionskette nicht lesbar'
     // move_too_far fehlt hier ABSICHTLICH: der Satz der Route nennt die noetige
     // Bewegung UND die Grenze ("Der Kurs müsste sich um 61,3 % steigen;
     // zugelassen sind 20 %.") - ein Etikett waere weniger Auskunft, nicht mehr.
   };
+
+  // Die R/R-Huerde im Klartext, aus der Antwort statt aus dieser Datei: die
+  // Route nennt in ``limits``, welche Grenze sie angewandt hat. Fehlt der
+  // Block (aeltere Antwort), bleibt die heutige Vorgabe stehen - ein alter
+  // Server liefert dann den alten Satz, keine kaputte Seite.
+  var RR_HURDLE_FALLBACK = '1 : 2';
+
+  function rrHurdleText(body) {
+    var limits = body && body.limits;
+    if (limits && num(limits.rr_min)) {
+      return '1 : ' + de(limits.rr_min, 1).replace(/,0$/, '');
+    }
+    return RR_HURDLE_FALLBACK;
+  }
+
   var DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
   var STALE = 'Kalenderstand veraltet — die Zeilen stammen aus einem alten '
     + 'Kalenderstand und können sich noch ändern.';
@@ -87,6 +105,18 @@
   function n(value) { return typeof value === 'number' && isFinite(value) ? value : 0; }
 
   function num(value) { return typeof value === 'number' && isFinite(value); }
+
+  // Strikes werden auf die Genauigkeit verglichen, in der die Zeile sie
+  // SPEICHERT: zwei Dezimalen. Ein adjustierter Kontrakt mit 15,335 kommt als
+  // 15,34 zurueck - ein 1e-6-Fenster fände ihn nie, ein halber Cent ist genau
+  // die Breite, die eine solche Zelle danebenliegen kann. Die Route prueft
+  // dieselbe Genauigkeit (``_same_strike``), damit Anzeige und Antwort
+  // dasselbe Paar meinen.
+  var STRIKE_TOLERANCE = 0.005;
+
+  function sameStrike(one, other) {
+    return num(one) && num(other) && Math.abs(one - other) <= STRIKE_TOLERANCE;
+  }
 
   // Deutsche Zahlen: Dezimalkomma, kein Punkt. Sonst liest der Leser "1.35" als
   // Tausender und "135.00" als Hundertfünfunddreißig.
@@ -215,8 +245,13 @@
 
   // Die Grenze der noetigen Bewegung, die dieser Lauf wirklich benutzt hat -
   // nicht die Vorgabe der Seite: eine Antwort mit anderer Grenze muss als
-  // solche lesbar sein.
+  // solche lesbar sein. Sie steht in ``limits``; die aeltere Antwort trug sie
+  // nur oben, und ganz ohne Zahl bleibt die Vorgabe der Seite.
   function moveCap(body) {
+    var limits = body && body.limits;
+    if (limits && num(limits.max_required_move_pct)) {
+      return de(limits.max_required_move_pct, 0);
+    }
     return num(body && body.max_required_move_pct) ? de(body.max_required_move_pct, 0) : '20';
   }
 
@@ -230,7 +265,7 @@
       plural(n(counts.candidates), 'Kandidat', 'Kandidaten'),
       n(counts.with_next_earnings) + ' mit nächstem Termin',
       n(counts.with_expiry_after_earnings) + ' mit passendem Verfall',
-      n(counts.with_spread_ge_rr) + ' mit R/R mindestens 1 : 2',
+      n(counts.with_spread_ge_rr) + ' mit R/R mindestens ' + rrHurdleText(body),
       n(counts.with_reachable_move) + ' mit nötiger Bewegung bis ' + moveCap(body) + ' %',
       n(counts.shown) + ' angezeigt'
     ].join(', ');
@@ -666,7 +701,10 @@
     el.expandAll.setAttribute('aria-expanded', offen ? 'true' : 'false');
   }
 
-  function reasonText(entry) {
+  function reasonText(entry, body) {
+    if (entry && entry.reason === 'no_spread_ge_rr') {
+      return 'kein Spread mit R/R mindestens ' + rrHurdleText(body);
+    }
     return REASONS[entry.reason] || entry.message || entry.reason || 'Grund unbekannt';
   }
 
@@ -1179,8 +1217,8 @@
     for (var i = 0; i < liste.length; i += 1) {
       var variante = liste[i];
       if (num(variante.long_strike) && num(variante.short_strike)
-          && Math.abs(variante.long_strike - strikes.long) < 1e-6
-          && Math.abs(variante.short_strike - strikes.short) < 1e-6) {
+          && sameStrike(variante.long_strike, strikes.long)
+          && sameStrike(variante.short_strike, strikes.short)) {
         return {
           required_move_pct: variante.required_move_pct,
           volatility_pct: zeile.volatility_pct,
@@ -1343,7 +1381,7 @@
     }
 
     fillList(el.excludedBlock, el.excludedSummary, el.excluded, ausschluesse,
-      'Ausschlüsse', reasonText);
+      'Ausschlüsse', function (entry) { return reasonText(entry, body); });
     fillList(el.failuresBlock, el.failuresSummary, el.failures, fehlschlaege,
       'Fehlschläge', failureText);
 

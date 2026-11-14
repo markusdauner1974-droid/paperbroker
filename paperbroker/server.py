@@ -439,6 +439,21 @@ def _us_today(now_fn):
     return arrow.get(now_fn()).to("America/New_York").date()
 
 
+def _same_strike(one, other):
+    """Two strikes are the same when they agree at the precision the row KEEPS.
+
+    Every strike the funnel publishes is rounded to two decimals
+    (``gap_funnel._round2``), so a listed contract of 15.335 reaches the page as
+    15.34 and comes back as ``long=15.34``. Comparing the raw numbers (a
+    ``1e-6`` window) would call those two different and answer ``leg_not_listed``
+    for a contract that IS listed; comparing them at two decimals is exactly the
+    precision the round trip carries.
+    """
+    if not isinstance(one, (int, float)) or not isinstance(other, (int, float)):
+        return False
+    return round(float(one), 2) == round(float(other), 2)
+
+
 def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=None,
                gap_adapter=None, next_earnings_adapter=None):
     """now_fn: injectable clock for tests (default: real arrow.get).
@@ -1657,7 +1672,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         calls and puts alike (``abs``). A row that needs more is excluded as
         ``move_too_far`` with both numbers on the exclusion. The reward/risk
         ratio keeps its floor and has NO ceiling - the distance is the filter,
-        because a ratio says nothing about whether the move was ever seen. That
+        because a ratio says nothing about whether the move was ever seen. The
+        four hurdles this run applied are named together in ``limits``
+        (``rr_min``, ``min_long_delta``, ``min_net_debit``,
+        ``max_required_move_pct``) - an additive object under the same
+        ``schema_version`` 1.0, so the page can write its sentences from the
+        numbers that actually ran instead of from a hardcoded 2:1. That
         frequency is measured per row from the daily history
         (``volatility_pct``, ``daily_move_pct``, ``hit_rate_pct``,
         ``windows_measured``, ``history_state``), after the funnel and only for
@@ -1744,6 +1764,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 deadline_seconds=gap_funnel.DEFAULT_DEADLINE_SECONDS,
                 rr_min=gap_funnel.DEFAULT_RR_MIN,
                 min_oi=gap_funnel.DEFAULT_MIN_OI,
+                # Named explicitly so the answer's ``limits`` and the run cannot
+                # drift apart: what the page writes as a sentence is what ran.
+                min_long_delta=gap_funnel.DEFAULT_MIN_LONG_DELTA,
+                min_net_debit=gap_funnel.DEFAULT_MIN_NET_DEBIT,
                 max_required_move_pct=max_move,
                 # The SAME adapter the gap stage used (one bounded cache): the
                 # reachability numbers need about two years of sessions, so the
@@ -1812,6 +1836,19 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             # The filter this answer actually applied - a run with a different
             # bound must be readable as such, not as the default.
             max_required_move_pct=max_move,
+            # The hurdles of this run in ONE object, additive to the fields above
+            # (schema_version stays 1.0): the page writes "R/R mindestens 1 : 2"
+            # from ``limits.rr_min`` instead of printing a hardcoded 2 that a
+            # request with another bound would contradict. ``rr_min``,
+            # ``min_long_delta`` and ``min_net_debit`` are code constants today,
+            # ``max_required_move_pct`` is per request - the object names all
+            # four so a reader never has to know which is which.
+            limits={
+                "rr_min": gap_funnel.DEFAULT_RR_MIN,
+                "min_long_delta": gap_funnel.DEFAULT_MIN_LONG_DELTA,
+                "min_net_debit": gap_funnel.DEFAULT_MIN_NET_DEBIT,
+                "max_required_move_pct": max_move,
+            },
             counts=zaehler,
             results=lauf.results,
             excluded=[eintrag.as_dict() for eintrag in lauf.excluded],
@@ -1868,12 +1905,6 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         except (TypeError, ValueError):
             return None
         return number if math.isfinite(number) else None
-
-    def _same_strike(one, other):
-        """Two strikes are the same within the tolerance the legs are found with."""
-        if not isinstance(one, (int, float)) or not isinstance(other, (int, float)):
-            return False
-        return abs(float(one) - float(other)) < 1e-6
 
     def _structure_label(row, expiration, row_expiration, long_strike, short_strike):
         """The character of a listed structure, or ``None`` if it has none.
@@ -1947,9 +1978,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     def _detail_leg(section, strike, option_type):
         """The contract of ``section`` at ``strike`` and ``option_type``, or ``None``.
 
-        The strike is compared with a tolerance: the row carries it rounded to
-        two decimals, and a strike of 96.70 must still find its contract. A leg
-        that is not in the chain is not invented - the caller answers 404.
+        The strike is compared at the precision the row STORES it (two
+        decimals): the row carries a listed 96.70 as 96.70 and an adjusted
+        15.335 as 15.34, and both must find their contract. A leg that is not in
+        the chain is not invented - the caller answers 404.
         """
         if not isinstance(strike, (int, float)):
             return None
@@ -1959,7 +1991,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 continue
             wert = getattr(asset, "strike", None)
             if isinstance(wert, (int, float)) and math.isfinite(float(wert)):
-                if abs(float(wert) - float(strike)) < 1e-6:
+                if _same_strike(wert, strike):
                     return quote
         return None
 

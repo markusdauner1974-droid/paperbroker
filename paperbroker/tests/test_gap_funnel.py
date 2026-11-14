@@ -1038,8 +1038,10 @@ def _fixture():
 
 
 CONTRACT_KEYS = {"schema_version", "day", "day_state", "threshold_pct", "min_turnover_usd",
-                 "rr_min", "min_oi", "max_required_move_pct", "counts", "results",
+                 "rr_min", "min_oi", "max_required_move_pct", "limits", "counts", "results",
                  "excluded", "failures", "notes"}
+#: The four hurdles of the run, in one additive object (``schema_version`` 1.0).
+LIMIT_KEYS = {"rr_min", "min_long_delta", "min_net_debit", "max_required_move_pct"}
 COUNT_KEYS = ("calendar_rows", "gaps_computed", "over_threshold", "turnover_passed",
               "price_passed", "candidates", "with_next_earnings",
               "with_expiry_after_earnings", "with_chain", "with_spread_ge_rr",
@@ -1153,6 +1155,26 @@ class EndpointTests(unittest.TestCase):
     def test_the_answer_names_the_move_bound_it_applied(self):
         _antwort, body, _chains, _dates = self._get()
         self.assertEqual(body["max_required_move_pct"], 20.0)
+
+    def test_the_answer_names_all_four_hurdles_in_one_object(self):
+        # Additive to ``schema_version`` 1.0: the page writes its sentences from
+        # these numbers instead of repeating a hardcoded 2:1 as prose.
+        _antwort, body, _chains, _dates = self._get()
+        self.assertEqual(body["schema_version"], "1.0")
+        self.assertEqual(set(body["limits"]), LIMIT_KEYS)
+        self.assertEqual(body["limits"]["rr_min"], DEFAULT_RR_MIN)
+        self.assertEqual(body["limits"]["min_long_delta"],
+                         gap_funnel_mod.DEFAULT_MIN_LONG_DELTA)
+        self.assertEqual(body["limits"]["min_net_debit"],
+                         gap_funnel_mod.DEFAULT_MIN_NET_DEBIT)
+        self.assertEqual(body["limits"]["max_required_move_pct"], 20.0)
+
+    def test_the_limits_follow_the_move_bound_of_the_request(self):
+        # The one hurdle that is per request: a bound of 30 must read 30 there
+        # too, not the default of the page.
+        _antwort, body, _chains, _dates = self._get(f"?day={DAY}&max_required_move_pct=30")
+        self.assertEqual(body["limits"]["max_required_move_pct"], 30.0)
+        self.assertEqual(body["limits"]["rr_min"], DEFAULT_RR_MIN)
 
     def test_a_tighter_move_bound_empties_the_list_and_names_the_reason(self):
         # A bound of 1 % is below both required moves (7.61 % and 8.18 %): no
