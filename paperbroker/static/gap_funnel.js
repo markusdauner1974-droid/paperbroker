@@ -66,7 +66,7 @@
   var REASONS = {
     no_next_earnings: 'kein nächster Bericht bekannt',
     no_expiry_after_earnings: 'kein Verfall nach dem nächsten Bericht',
-    no_spread_ge_rr: 'kein Spread mit R/R mindestens 1 zu 2',
+    no_spread_ge_rr: 'kein Spread mit R/R mindestens 1 : 2',
     not_optionable: 'keine gelisteten Optionen',
     chain_unavailable: 'Optionskette nicht lesbar'
     // move_too_far fehlt hier ABSICHTLICH: der Satz der Route nennt die noetige
@@ -105,10 +105,9 @@
     return { arrow: '–', word: 'unbekannt' };
   }
 
-  // "1 zu 2,3" - das Verhaeltnis als Satz, weil "2,3 : 1" auf einem
-  // Bildschirm mit schmaler Spalte als zwei Zahlen gelesen wird.
+  // Risiko : Gewinn, mit deutschem Dezimalkomma.
   function rrText(value) {
-    return num(value) ? '1 zu ' + de(value, 1) : '–';
+    return num(value) ? '1 : ' + de(value, 1) : '–';
   }
 
   function liquidityWord(value) {
@@ -215,7 +214,7 @@
       plural(n(counts.candidates), 'Kandidat', 'Kandidaten'),
       n(counts.with_next_earnings) + ' mit nächstem Termin',
       n(counts.with_expiry_after_earnings) + ' mit passendem Verfall',
-      n(counts.with_spread_ge_rr) + ' mit R/R mindestens 1 zu 2',
+      n(counts.with_spread_ge_rr) + ' mit R/R mindestens 1 : 2',
       n(counts.with_reachable_move) + ' mit nötiger Bewegung bis ' + moveCap(body) + ' %',
       n(counts.shown) + ' angezeigt'
     ].join(', ');
@@ -414,7 +413,6 @@
       'Long / Short', '',
       'Long ' + de(entry.long_strike, 1) + ' · Short ' + de(entry.short_strike, 1)));
 
-    row.appendChild(cell(de(entry.net_debit, 2), '', 'Debit je Einheit'));
     row.appendChild(cell(de(entry.max_loss, 2), '', 'maximaler Verlust je Einheit'));
     row.appendChild(cell(de(entry.max_profit, 2), '', 'maximaler Gewinn je Einheit'));
     row.appendChild(cell(rrText(entry.rr), '', 'Gewinn zu Verlust bei Verfall'));
@@ -980,7 +978,7 @@
       + ' · max. Verlust ' + de(detail.max_loss, 2)
       + ' · Break-even ' + de(detail.breakeven, 2)
       + ' · max. Gewinn ' + de(detail.max_profit, 2)
-      + ' · R/R 1 zu ' + de(detail.rr, 2)
+      + ' · R/R ' + rrText(detail.rr)
       + (zeile ? ' · nötig ' + moveText(zeile.required_move_pct)
         + ' · Schwankung ' + (num(zeile.volatility_pct) ? de(zeile.volatility_pct, 1) + ' %' : '—')
         + ' · Treffer ' + (num(zeile.hit_rate_pct) ? de(zeile.hit_rate_pct, 0) + ' %' : '—') : '');
