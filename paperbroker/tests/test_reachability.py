@@ -55,6 +55,23 @@ def bars_newest_first(closes):
     return out
 
 
+def weekday_bars_newest_first(closes, end=date(2026, 11, 11)):
+    """``GapBar`` list on TRADING days only, newest first.
+
+    A real title does not trade on weekends, so 126 calendar days hold about
+    90 bars and not 126 - the density the conversion has to reproduce. The
+    dates walk backwards from ``end`` and skip Saturday and Sunday.
+    """
+    day = end
+    out = []
+    for close in reversed(closes):
+        while day.weekday() >= 5:
+            day = day - timedelta(days=1)
+        out.append(bar(close, day))
+        day = day - timedelta(days=1)
+    return out
+
+
 class RequiredMoveTests(unittest.TestCase):
     def test_a_call_has_to_rise_to_its_break_even(self):
         # break-even 110 against a close of 100: exactly +10 %.
@@ -173,7 +190,11 @@ class MeasureTests(unittest.TestCase):
         self.assertIsNotNone(fields["volatility_pct"])
         self.assertIsNotNone(fields["daily_move_pct"])
         self.assertIsNotNone(fields["hit_rate_pct"])
-        self.assertEqual(fields["windows_measured"], 81 - 20)
+        # The window is counted in SESSIONS: this series spans only 81 calendar
+        # days, so its own density is 81/365 and round(20 * 81/365) = 4
+        # sessions - not the 20 calendar days it was asked for.
+        self.assertEqual(fields["window_sessions"], 4)
+        self.assertEqual(fields["windows_measured"], 81 - 4)
 
     def test_too_short_a_history_is_named_and_guesses_nothing(self):
         bars = bars_newest_first(series([0.01] * 40))          # 41 closes
@@ -208,6 +229,91 @@ class MeasureTests(unittest.TestCase):
             wert = fields[name]
             self.assertIsNotNone(wert)
             self.assertEqual(round(wert, 2), wert)
+
+
+class SessionWindowTests(unittest.TestCase):
+    """The window is counted in SESSIONS; ``dte`` stays CALENDAR days."""
+
+    def test_the_window_is_counted_in_sessions_not_calendar_days(self):
+        # One spike and back: the close is 10 % above the start on the FIFTH
+        # bar and back at the start level on the seventh. A 5-session window
+        # therefore hits, a 7-session window does not - and 7 CALENDAR days of
+        # remaining life are 5 sessions, so ``measure`` has to find the hit.
+        closes = [100.0] * 400
+        closes[5] = 110.0
+        bars = weekday_bars_newest_first(closes)
+
+        self.assertEqual(reachability.sessions_for(7, bars), 5)
+        rate5, windows5 = reachability.count_hits(closes, 10.0, 5)
+        self.assertEqual(windows5, len(closes) - 5)
+        self.assertAlmostEqual(rate5, 100.0 / (len(closes) - 5), places=9)
+        rate7, _windows7 = reachability.count_hits(closes, 10.0, 7)
+        self.assertEqual(rate7, 0.0)
+
+        fields = reachability.measure(bars, 10.0, 7)
+        self.assertEqual(fields["history_state"], "ok")
+        self.assertEqual(fields["window_sessions"], 5)
+        self.assertEqual(fields["window_calendar_days"], 7)
+        self.assertEqual(fields["windows_measured"], len(closes) - 5)
+        self.assertGreater(fields["hit_rate_pct"], 0.0)
+
+    def test_the_density_comes_from_the_title_itself(self):
+        # Two years of weekday bars, but a quarter of them missing (a halt):
+        # the title's own year delivers far fewer sessions per calendar day
+        # than the 252/365 convention, and that lower density is what counts.
+        halt_from, halt_to = date(2026, 1, 1), date(2026, 4, 1)
+        days = []
+        day = date(2026, 11, 11)
+        while day > date(2024, 11, 11):
+            if day.weekday() < 5 and not (halt_from <= day < halt_to):
+                days.append(day)
+            day = day - timedelta(days=1)
+        bars = [bar(100.0, session) for session in days]
+
+        newest = days[0]
+        in_year = sum(1 for session in days
+                      if session > newest - timedelta(days=365))
+        self.assertAlmostEqual(reachability.session_density(bars),
+                               in_year / 365, places=12)
+        self.assertLess(reachability.session_density(bars), 0.60)
+        self.assertEqual(reachability.sessions_for(126, bars),
+                         round(126 * in_year / 365))
+
+    def test_the_fallback_density_is_252_over_365(self):
+        # 40 bars in a year is no basis for a rhythm of its own: the US
+        # convention of 252 sessions in 365 calendar days is used instead.
+        bars = [bar(100.0, date(2026, 11, 11) - timedelta(days=9 * index))
+                for index in range(40)]
+        self.assertAlmostEqual(reachability.session_density(bars),
+                               reachability.FALLBACK_SESSIONS_PER_DAY, places=12)
+        self.assertAlmostEqual(reachability.FALLBACK_SESSIONS_PER_DAY,
+                               252 / 365, places=12)
+        self.assertEqual(reachability.sessions_for(365, bars), 252)
+        self.assertEqual(reachability.sessions_for(7, bars), 5)
+
+    def test_a_missing_calendar_distance_has_no_session_window(self):
+        bars = weekday_bars_newest_first([100.0] * 400)
+        self.assertIsNone(reachability.sessions_for(None, bars))
+        self.assertIsNone(reachability.sessions_for(0, bars))
+        self.assertIsNone(reachability.sessions_for(-5, bars))
+        self.assertIsNone(reachability.sessions_for(float("nan"), bars))
+
+    def test_the_row_keeps_calendar_days_and_names_the_sessions(self):
+        # A normal weekday series: 126 calendar days are about 90 sessions -
+        # the row must show BOTH, under their own names, and the sessions must
+        # be fewer than the calendar days.
+        closes = series([0.01, -0.008] * 300)          # 601 closes
+        bars = weekday_bars_newest_first(closes)
+        fields = reachability.measure(bars, 5.0, 126)
+
+        self.assertEqual(fields["history_state"], "ok")
+        self.assertEqual(fields["window_calendar_days"], 126)
+        self.assertEqual(fields["window_sessions"],
+                         reachability.sessions_for(126, bars))
+        self.assertLess(fields["window_sessions"], 126)
+        self.assertGreater(fields["window_sessions"], 60)
+        self.assertEqual(fields["windows_measured"],
+                         len(closes) - fields["window_sessions"])
 
 
 class LookbackTests(unittest.TestCase):

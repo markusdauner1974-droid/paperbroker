@@ -221,25 +221,41 @@
     ].join(', ');
   }
 
-  // Der Fuss erklaert, was "Treffer" misst - und nennt Fensterlaenge und Anzahl,
-  // soweit sie fuer den Lauf eindeutig sind. Zwei verschiedene dte an einem Tag
-  // sind kein Grund, eine Zahl zu erfinden: dann steht das Wort da.
+  // Eine Formulierung fuer Fuss UND Methodik-Absatz: welche Fenster gemessen
+  // wurden (HANDELSTAGE), welche Restlaufzeit sie abdecken (KALENDERTAGE) und
+  // an wie vielen Fenstern. Zwei Einheiten, zwei Namen - "dte-Handelstage"
+  // gibt es nicht, dte allein ist die Kalenderdistanz bis Verfall.
+  function hitSentence(sessions, calendarDays, windows) {
+    return 'Treffer = Anteil der vergangenen Fenster von ' + sessions
+      + ' Handelstagen (≈ ' + calendarDays + ' Kalendertage bis Verfall), in denen '
+      + 'der Kurs die nötige Bewegung mindestens erreicht hat; gemessen an '
+      + windows + ' Fenstern aus höchstens 520 Tagesbars.';
+  }
+
+  // Der Fuss erklaert, was "Treffer" misst - und nennt Fensterlaenge in
+  // Handelstagen, Restlaufzeit in Kalendertagen und Anzahl der Fenster, soweit
+  // sie fuer den Lauf eindeutig sind. Zwei verschiedene Laufzeiten an einem Tag
+  // sind kein Grund, eine Zahl zu erfinden: dann steht "dte" da.
   function footText(rows, body) {
     var dten = [];
     var fenster = [];
+    var laengen = [];
     (Array.isArray(rows) ? rows : []).forEach(function (entry) {
       if (num(entry.dte) && dten.indexOf(entry.dte) < 0) dten.push(entry.dte);
+      if (num(entry.window_sessions) && entry.window_sessions > 0
+          && laengen.indexOf(entry.window_sessions) < 0) {
+        laengen.push(entry.window_sessions);
+      }
       if (num(entry.windows_measured) && entry.windows_measured > 0
           && fenster.indexOf(entry.windows_measured) < 0) {
         fenster.push(entry.windows_measured);
       }
     });
-    var laenge = dten.length === 1 ? String(dten[0]) : 'dte';
+    var sessions = laengen.length === 1 ? String(laengen[0]) : 'dte';
+    var kalender = dten.length === 1 ? String(dten[0]) : 'dte';
     var anzahl = fenster.length === 1 ? String(fenster[0]) : 'n';
-    return 'Treffer = Anteil der vergangenen ' + laenge + '-Handelstage-Fenster, '
-      + 'in denen der Kurs die nötige Bewegung mindestens erreicht hat; gemessen an '
-      + anzahl + ' Fenstern aus 2 Jahren Tageshistorie (bis 520 Tagesbars). '
-      + 'Eine Häufigkeit, keine Wahrscheinlichkeit.';
+    return hitSentence(sessions, kalender, anzahl)
+      + ' Eine Häufigkeit, keine Wahrscheinlichkeit.';
   }
 
   // "Kein Kandidat" nennt IMMER die Zahl der Ausschluesse: ein Tag, an dem
@@ -414,11 +430,21 @@
       num(entry.daily_move_pct) ? 'Tag ' + de(entry.daily_move_pct, 1) + ' %' : '',
       '', 'Schwankung: annualisierte Streuung der Tagesrenditen; darunter der mittlere Tagesausschlag'));
 
-    // Treffer: die gemessene Häufigkeit, darunter die Zahl der Fenster.
+    // Treffer: die gemessene Häufigkeit, darunter die Zahl der Fenster und -
+    // klein - ihre Länge in HANDELSTAGEN. dte in der Spalte daneben ist die
+    // Kalenderdistanz; die beiden Zahlen sind absichtlich nicht dieselbe.
+    var fensterText = num(entry.windows_measured) && entry.windows_measured > 0
+      ? 'n=' + entry.windows_measured : historyWord(entry.history_state);
+    if (num(entry.windows_measured) && entry.windows_measured > 0
+        && num(entry.window_sessions) && entry.window_sessions > 0) {
+      fensterText += ' · ' + entry.window_sessions + ' HT';
+    }
     row.appendChild(stacked(num(entry.hit_rate_pct) ? de(entry.hit_rate_pct, 0) + ' %' : '—',
-      num(entry.windows_measured) && entry.windows_measured > 0
-        ? 'n=' + entry.windows_measured : historyWord(entry.history_state),
-      '', 'Anteil der vergangenen dte-Handelstage-Fenster, in denen der Kurs die nötige Bewegung mindestens erreicht hat'));
+      fensterText, '',
+      'Anteil der vergangenen Fenster von '
+        + (num(entry.window_sessions) && entry.window_sessions > 0 ? entry.window_sessions : 'dte')
+        + ' Handelstagen, in denen der Kurs die nötige Bewegung mindestens erreicht hat'
+        + ' (Fensterlänge in Handelstagen; dte nebenan in Kalendertagen)'));
 
     row.appendChild(cell(entry.expiration || '–', '',
       'Verfall nach dem nächsten Bericht'));
@@ -975,14 +1001,18 @@
     el.detailBody.appendChild(scenarioTable(detail.scenarios));
 
     // Der Methodik-Absatz steht bei den Notizen des Details, nicht im Kopf: er
-    // nennt Fensterlaenge und Anzahl - die zwei Zahlen, ohne die eine
-    // Trefferquote nicht lesbar ist.
-    if (zeile && num(zeile.dte) && num(zeile.windows_measured) && zeile.windows_measured > 0) {
+    // nennt Fensterlaenge IN HANDELSTAGEN, die Restlaufzeit in KALENDERTAGEN
+    // und die Anzahl der Fenster - die drei Zahlen, ohne die eine Trefferquote
+    // nicht lesbar ist. Dieselbe Formulierung wie im Fuss.
+    if (zeile && num(zeile.window_sessions) && zeile.window_sessions > 0
+        && num(zeile.windows_measured) && zeile.windows_measured > 0) {
       var methodik = document.createElement('p');
       methodik.className = 'detail-notes';
-      methodik.textContent = 'Methodik: Fensterlänge ' + zeile.dte + ' Handelstage, '
-        + 'gemessen an ' + zeile.windows_measured + ' Fenstern aus 2 Jahren '
-        + 'Tageshistorie; eine Häufigkeit, keine Wahrscheinlichkeit.';
+      methodik.textContent = 'Methodik: ' + hitSentence(
+        zeile.window_sessions,
+        num(zeile.dte) ? zeile.dte : 'dte',
+        zeile.windows_measured)
+        + ' Eine Häufigkeit, keine Wahrscheinlichkeit.';
       el.detailBody.appendChild(methodik);
     }
 

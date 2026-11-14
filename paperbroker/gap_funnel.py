@@ -60,8 +60,9 @@ moves that far: measured on 2026-11-11, CRWV carried R/R 1:34 for a move of
 trade. So the funnel keeps the ratio floor (no ceiling) and adds an upper bound
 on the DISTANCE to break-even (``max_required_move_pct``, default 20 %), plus a
 measured frequency per row: how often this title covered that distance within
-``dte`` sessions before (``reachability.py``). A row that has to move further
-is excluded with ``move_too_far``.
+the spread's remaining life before - ``dte`` calendar days, converted to trading
+sessions in ``reachability.measure`` (``reachability.py``). A row that has to
+move further is excluded with ``move_too_far``.
 """
 
 from __future__ import annotations
@@ -842,6 +843,9 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
 
     def _one(row):
         bars = fetch_daily(row.get("symbol"), fromdate, history_bars)
+        # ``dte`` is CALENDAR days (the column the page shows); ``measure``
+        # converts it into the sessions the window is counted in and returns
+        # both numbers (``window_sessions``, ``window_calendar_days``).
         return reachability.measure(bars, row.get("required_move_pct"), row.get("dte"))
 
     budget = None if deadline_seconds is None else max(0.0, float(deadline_seconds))

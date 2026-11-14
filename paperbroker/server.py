@@ -1617,8 +1617,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         "in Prozent (Vorzeichen = Richtung); zugelassen ist ein Betrag bis "
         f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f} %. Das R/R hat weiterhin "
         "nur eine Untergrenze, keine Obergrenze.",
-        "Trefferquote = Anteil der vergangenen dte-Handelstage-Fenster, in denen "
-        "der Kurs die nötige Bewegung mindestens erreicht hat; gemessen an "
+        "Trefferquote = Anteil der vergangenen Fenster von so vielen "
+        "Handelstagen, wie die Laufzeit bis Verfall umfasst (dte in "
+        "Kalendertagen, je Zeile in window_sessions umgerechnet), in denen der "
+        "Kurs die nötige Bewegung mindestens erreicht hat; gemessen an "
         f"höchstens {HISTORY_BARS} Tagesbars. Eine Häufigkeit, "
         "keine Wahrscheinlichkeit.",
     )
