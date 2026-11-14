@@ -16,7 +16,12 @@ answer is what this file pins:
 * the error side: 404 ``chain_unavailable`` when the chain cannot be read, 404
   ``leg_not_listed`` when a leg of the row is not in the chain, 404
   ``unknown_symbol`` for a title that has no row that day, 400 ``invalid_day``,
-* no source call for a request that is already invalid.
+* no source call for a request that is already invalid,
+* the OPTIONAL structure: ``expiration``/``long``/``short`` (all three or none)
+  prices that listed pair instead of the pick, names it (``structure_label``,
+  ``is_row_pick``) and answers 400 ``incomplete_structure`` for two of the three,
+  404 ``expiration_not_listed`` for an unlisted series and 404 ``leg_not_listed``
+  for a strike that is not in the chain.
 
 No test touches a network: all four sources are fakes handed to ``create_app``.
 """

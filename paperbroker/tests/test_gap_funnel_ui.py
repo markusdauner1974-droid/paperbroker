@@ -10,8 +10,14 @@ Pinned here, in the order of the requirement:
 
 * the block exists in the markup, sits between the table and the exclusions, and
   is closed and invisible until a row is chosen,
-* the row carries ``tabindex``, ``aria-expanded`` and ``aria-controls`` - and NO
-  button, no chevron, nothing clickable inside it,
+* the row carries ``tabindex``, ``aria-expanded`` and ``aria-controls``; a row
+  WITH alternatives additionally carries one counter (``▸ +3``) in its first
+  cell, a row WITHOUT them carries none,
+* the counter opens only its group (``1.1``, ``1.2``, ``1.3``) and loads no
+  detail, while a click on a sub-row fetches the detail of THAT structure -
+  with ``expiration``, ``long`` and ``short``,
+* "alle aufklappen" opens every group and leaves each one individually
+  closable afterwards; the groups stay together in the sorted order,
 * a click on the row fetches that symbol and the SCANNED day, opens the block and
   marks exactly one row,
 * Enter and Space on the focused row do the same, and Space does not scroll,
@@ -1061,6 +1067,12 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
         panel = _render(list_body=self._list())
         nummern = [row["rank"] for row in panel["rows"]]
         self.assertEqual(["1", "1.1", "1.2", "1.3", "2"], nummern)
+        # Die Reihenfolge INNERHALB der Gruppe ist fest und NICHT die
+        # Trefferquote: 1.3 hat die beste Quote (41 %) und bleibt trotzdem
+        # hinter 1.1 (22 %) und 1.2 (12 %).
+        self.assertEqual([22.0, 12.0, 41.0],
+                         [variante["hit_rate_pct"] for variante in _three_variants()])
+        self.assertEqual("CTVA · engster Spread", panel["cells"][3][1])
 
     def test_enter_on_the_counter_opens_the_group_only(self):
         panel = _render(list_body=self._list(), actions=["btnkey:0:Enter"])

@@ -63,6 +63,25 @@ measured frequency per row: how often this title covered that distance within
 the spread's remaining life before - ``dte`` calendar days, converted to trading
 sessions in ``reachability.measure`` (``reachability.py``). A row that has to
 move further is excluded with ``move_too_far``.
+
+The alternatives are characters, not a ladder
+---------------------------------------------
+Beside the pick a row carries up to three OTHER structures of the same expiry,
+each named for what it is FOR: ``nah am Geld`` (the bought strike closest to the
+close), ``am Widerstand`` (the bought strike closest to the next level above the
+price - 52-week high, MA20/50/200 - and nothing at all when the price is at its
+high) and ``engster Spread`` (the smallest WORSE leg spread). The pick itself is
+the ``Hebel`` and is never among them: a list that opens with the trade one
+already has compares nothing.
+
+A character is a filter, not a decoration. Every alternative clears the same
+three hurdles as the row AND the same ``max_required_move_pct``: a structure the
+underlying cannot reach is the same trap with a friendlier name. Two characters
+that land on one strike pair yield ONE variant - the first keeps it, the second
+is dropped rather than re-pointed at something else. And each variant's
+``hit_rate_pct`` is measured with ``reachability.measure`` on the bars of the
+row, with the variant's own distance - which is why the variant context travels
+from ``_assess`` into the history phase instead of a second history request.
 """
 
 from __future__ import annotations
