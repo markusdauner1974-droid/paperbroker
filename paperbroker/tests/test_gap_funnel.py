@@ -25,6 +25,7 @@ Pinned, in the order of the requirement:
 """
 
 import json
+import math
 import threading
 import time
 import unittest
@@ -720,6 +721,200 @@ class FunnelRunTests(unittest.TestCase):
         self.assertEqual(run.counts["shown"], 0)
 
 
+# --- reachability: the distance cap and the measured frequency ------------- #
+def far_call_chain(symbol="AAA", expiry="2027-03-19"):
+    """A 2.3:1 call spread whose break-even sits 51 % above a 60 USD close."""
+    return [call(symbol, expiry, 90.0, 3.90, 4.00, delta=55.0, oi=1200),
+            call(symbol, expiry, 93.30, 3.00, 3.10, delta=30.0, oi=900)]
+
+
+def cheap_call_chain(symbol="AAA", expiry="2027-03-19"):
+    """A 2.3:1 call spread 1 % away from the close: break-even 101 on 100."""
+    return [call(symbol, expiry, 100.0, 3.90, 4.00, delta=55.0, oi=1200),
+            call(symbol, expiry, 103.30, 3.00, 3.10, delta=30.0, oi=900)]
+
+
+def far_put_chain(symbol="AAA", expiry="2027-03-19"):
+    """A 2.3:1 put spread whose break-even sits 21 % BELOW a 100 USD close."""
+    return [put(symbol, expiry, 80.0, 3.90, 4.00, delta=-55.0, oi=1200),
+            put(symbol, expiry, 76.70, 3.00, 3.10, delta=-30.0, oi=900)]
+
+
+class ReachabilityFunnelTests(unittest.TestCase):
+    """The upper bound on the DISTANCE, and the history behind every row."""
+
+    @staticmethod
+    def _run(candidates, chains, *, history=None, dates=None, **kwargs):
+        for symbol in chains:
+            dates = dates or {}
+            dates.setdefault(symbol, date(2027, 2, 1))
+        return run_funnel(
+            candidates,
+            fetch_next_earnings=lambda symbol: dates[symbol],
+            fetch_chain=lambda symbol: chains[symbol],
+            fetch_daily=history,
+            day=REACTION, now_fn=NOW, **kwargs)
+
+    def test_a_move_above_the_bound_is_excluded_with_both_numbers(self):
+        run = self._run([candidate("AAA", close=60.0)], {"AAA": far_call_chain()})
+        self.assertEqual(run.results, [])
+        grund = run.excluded[0]
+        self.assertEqual(grund.reason, gap_funnel_mod.REASON_MOVE_TOO_FAR)
+        # (91.00 / 60.00 - 1) * 100 = 51.67 % - the number, not a label.
+        self.assertEqual(grund.required_move_pct, 51.67)
+        self.assertEqual(grund.max_required_move_pct, 20.0)
+        self.assertEqual(grund.as_dict()["required_move_pct"], 51.67)
+        self.assertIn("51,67 % steigen", grund.message)
+        self.assertIn("zugelassen sind 20 %", grund.message)
+
+    def test_the_bound_holds_at_equality_and_only_break_above_it(self):
+        # break-even 101 on a close of 100 is exactly 1.00 %.
+        genau = self._run([candidate("AAA", close=100.0)], {"AAA": cheap_call_chain()},
+                          max_required_move_pct=1.0)
+        self.assertEqual(len(genau.results), 1)
+        self.assertEqual(genau.results[0]["required_move_pct"], 1.0)
+
+        knapp = self._run([candidate("AAA", close=100.0)], {"AAA": cheap_call_chain()},
+                          max_required_move_pct=0.99)
+        self.assertEqual(knapp.results, [])
+        self.assertEqual(knapp.excluded[0].reason, gap_funnel_mod.REASON_MOVE_TOO_FAR)
+
+    def test_the_default_bound_is_twenty_percent(self):
+        self.assertEqual(gap_funnel_mod.DEFAULT_MAX_REQUIRED_MOVE_PCT, 20.0)
+        run = self._run([candidate("AAA", close=60.0)], {"AAA": far_call_chain()})
+        self.assertEqual(run.excluded[0].max_required_move_pct, 20.0)
+
+    def test_the_bound_reads_the_absolute_move_of_a_put_too(self):
+        # A put spread breaks even BELOW the close: 79 on 100 is -21 %.
+        run = self._run([candidate("AAA", gap_pct=-9.0, direction="down", close=100.0)],
+                        {"AAA": far_put_chain()})
+        self.assertEqual(run.results, [])
+        grund = run.excluded[0]
+        self.assertEqual(grund.reason, gap_funnel_mod.REASON_MOVE_TOO_FAR)
+        self.assertEqual(grund.required_move_pct, -21.0)
+        self.assertIn("21 % fallen", grund.message)
+
+    def test_a_ratio_of_one_to_twenty_stays_a_row(self):
+        # No ratio ceiling: a 40-wide pair for a 1.00 debit is 1:39, and it stays
+        # as long as the move is reachable.
+        chain = [call("AAA", "2027-03-19", 100.0, 3.90, 4.00, delta=55.0, oi=1200),
+                 call("AAA", "2027-03-19", 140.0, 3.00, 3.10, delta=30.0, oi=900)]
+        run = self._run([candidate("AAA", close=100.0)], {"AAA": chain})
+        self.assertEqual(len(run.results), 1)
+        self.assertGreater(run.results[0]["rr"], 20.0)
+        self.assertEqual(run.results[0]["required_move_pct"], 1.0)
+
+    def test_the_row_carries_the_distance_and_the_direction(self):
+        run = self._run([candidate("AAA", close=100.0)], {"AAA": cheap_call_chain()})
+        row = run.results[0]
+        self.assertEqual(row["required_move_pct"], 1.0)
+        self.assertEqual(row["required_move_direction"], "up")
+
+    def test_the_counters_name_the_rows_that_passed_the_move(self):
+        run = self._run([candidate("AAA", close=100.0), candidate("BBB", close=60.0)],
+                        {"AAA": cheap_call_chain("AAA"), "BBB": far_call_chain("BBB")})
+        self.assertEqual(run.counts["with_spread_ge_rr"], 2)
+        self.assertEqual(run.counts["with_reachable_move"], 1)
+        self.assertEqual(run.counts["shown"], 1)
+
+    def test_only_rows_with_a_spread_cost_a_history_request(self):
+        gefragt = []
+
+        def history(symbol, fromdate, limit):
+            gefragt.append((symbol, fromdate, limit))
+            return _series(100.0)
+
+        run = self._run([candidate("AAA", close=100.0), candidate("BBB", close=60.0)],
+                        {"AAA": cheap_call_chain("AAA"), "BBB": far_call_chain("BBB")},
+                        history=history)
+        self.assertEqual([symbol for symbol, _f, _l in gefragt], ["AAA"])
+        # About two years of sessions, opened early enough for the count to
+        # close the window - one request per row, not per candidate.
+        symbol, fromdate, limit = gefragt[0]
+        self.assertEqual(limit, 520)
+        self.assertLess(fromdate, REACTION - timedelta(days=730))
+        self.assertEqual(run.results[0]["history_state"], "ok")
+
+    def test_a_failing_history_keeps_the_row_and_names_the_source(self):
+        def kaputt(_symbol, _fromdate, _limit):
+            raise RuntimeError("source down")
+
+        run = self._run([candidate("AAA", close=100.0)], {"AAA": cheap_call_chain()},
+                        history=kaputt)
+        self.assertEqual(len(run.results), 1)
+        row = run.results[0]
+        self.assertEqual(row["history_state"], "source_failed")
+        self.assertIsNone(row["hit_rate_pct"])
+        self.assertEqual(row["windows_measured"], 0)
+        # A failing history is not an exclusion and not a failure of the title.
+        self.assertEqual(run.excluded, [])
+        self.assertEqual(run.failures, [])
+
+    def test_a_run_without_a_history_source_says_so_per_row(self):
+        run = self._run([candidate("AAA", close=100.0)], {"AAA": cheap_call_chain()})
+        self.assertEqual(run.results[0]["history_state"], "source_failed")
+        self.assertIsNone(run.results[0]["hit_rate_pct"])
+
+    def test_a_short_history_is_too_short_not_zero(self):
+        run = self._run([candidate("AAA", close=100.0)], {"AAA": cheap_call_chain()},
+                        history=lambda _symbol, _fromdate, _limit: _series(100.0, count=40))
+        row = run.results[0]
+        self.assertEqual(row["history_state"], "too_short")
+        self.assertIsNone(row["hit_rate_pct"])
+        self.assertEqual(row["windows_measured"], 0)
+
+    def test_the_measured_row_carries_the_frequency(self):
+        # A wave of 20 % around 100 with a required move of 1 %: about half of
+        # the windows of 127 sessions end above their start, and the count is
+        # the series minus the window.
+        run = self._run([candidate("AAA", close=100.0)], {"AAA": cheap_call_chain()},
+                        history=lambda _symbol, _fromdate, _limit: _series(100.0, wave=20.0))
+        row = run.results[0]
+        self.assertEqual(row["history_state"], "ok")
+        self.assertEqual(row["windows_measured"], 520 - row["dte"])
+        self.assertGreater(row["hit_rate_pct"], 0.0)
+        self.assertLessEqual(row["hit_rate_pct"], 100.0)
+
+
+class ResultSortTests(unittest.TestCase):
+    """The order of the answer: the measured frequency decides."""
+
+    @staticmethod
+    def _row(symbol, rate, move, gap):
+        return {"symbol": symbol, "hit_rate_pct": rate, "required_move_pct": move,
+                "gap_pct": gap}
+
+    def test_the_higher_hit_rate_comes_first(self):
+        rows = [self._row("AAA", 10.0, 5.0, 20.0), self._row("BBB", 40.0, 5.0, 3.0)]
+        rows.sort(key=gap_funnel_mod.result_sort_key)
+        self.assertEqual([row["symbol"] for row in rows], ["BBB", "AAA"])
+
+    def test_rows_without_a_rate_stand_behind_every_measured_one(self):
+        rows = [self._row("AAA", None, 1.0, 30.0), self._row("BBB", 3.0, 15.0, 2.0)]
+        rows.sort(key=gap_funnel_mod.result_sort_key)
+        self.assertEqual([row["symbol"] for row in rows], ["BBB", "AAA"])
+
+    def test_a_tie_goes_to_the_shorter_move(self):
+        rows = [self._row("AAA", 20.0, 14.0, 30.0), self._row("BBB", 20.0, 4.0, 2.0)]
+        rows.sort(key=gap_funnel_mod.result_sort_key)
+        self.assertEqual([row["symbol"] for row in rows], ["BBB", "AAA"])
+
+    def test_the_unmeasured_rows_follow_the_same_rule_among_themselves(self):
+        rows = [self._row("AAA", None, 12.0, 30.0), self._row("BBB", None, 3.0, 2.0)]
+        rows.sort(key=gap_funnel_mod.result_sort_key)
+        self.assertEqual([row["symbol"] for row in rows], ["BBB", "AAA"])
+
+    def test_a_full_tie_falls_back_to_the_bigger_gap(self):
+        rows = [self._row("AAA", 20.0, 4.0, 2.0), self._row("BBB", 20.0, 4.0, 30.0)]
+        rows.sort(key=gap_funnel_mod.result_sort_key)
+        self.assertEqual([row["symbol"] for row in rows], ["BBB", "AAA"])
+
+    def test_the_order_is_total(self):
+        rows = [self._row("AAA", 20.0, 4.0, 2.0), self._row("BBB", 20.0, 4.0, 2.0)]
+        rows.sort(key=gap_funnel_mod.result_sort_key)
+        self.assertEqual([row["symbol"] for row in rows], ["AAA", "BBB"])
+
+
 # --- the endpoint ---------------------------------------------------------- #
 def calendar_row(symbol, session=None, name=None):
     return {"symbol": symbol, "name": name or f"{symbol} Inc.", "session": session,
@@ -785,6 +980,29 @@ def _bars(close, previous_close=100.0, volume=2_000_000.0):
     ]
 
 
+def _series(last_close, previous_close=100.0, count=520, wave=0.0, step=0.0,
+            volume=2_000_000.0):
+    """``count`` daily bars, NEWEST first, ending at the reaction day.
+
+    The first two bars are the gap of the fixture (reaction close against the
+    close right before it); the older ones swing around ``previous_close`` -
+    ``wave`` in percent of the price, ``step`` as a drift per session. Written
+    as a sine so the series is deterministic: no seed, no wall clock, and the
+    very same bars for every run.
+    """
+    bars = []
+    for index in range(count):
+        close = previous_close * (1.0 + wave / 100.0 * math.sin(index / 7.0)
+                                  - step / 100.0 * index)
+        if index == 0:
+            close = last_close
+        elif index == 1:
+            close = previous_close
+        bars.append(GapBar(session_date=REACTION - timedelta(days=index),
+                           open=close, close=close, volume=volume))
+    return bars
+
+
 def _client(calendar=None, history=None, chains=None, dates=None):
     return create_app(
         quote_adapter=chains or _Chains({}),
@@ -803,7 +1021,12 @@ def _fixture():
                    calendar_row("CCC", session="before_market")],
         DAY: [calendar_row("DDD", session="after_market")],   # no gap yet
     })
-    history = _History({"AAA": _bars(110.0), "BBB": _bars(92.0), "CCC": _bars(103.0)})
+    # Two years of sessions for every candidate: the reachability numbers of
+    # this answer are measured, not ``too_short``. AAA swings three times as
+    # hard as BBB, so the two hit rates differ and the order is checkable.
+    history = _History({"AAA": _series(110.0, wave=20.0),
+                        "BBB": _series(92.0, wave=8.0),
+                        "CCC": _series(103.0, wave=12.0)})
     chains = _Chains({
         "AAA": ladder_chain("AAA"),
         "BBB": [put("BBB", "2027-04-16", 100.0, 3.90, 4.00, delta=-60.0, oi=1200),
@@ -815,7 +1038,8 @@ def _fixture():
 
 
 CONTRACT_KEYS = {"schema_version", "day", "day_state", "threshold_pct", "min_turnover_usd",
-                 "rr_min", "min_oi", "counts", "results", "excluded", "failures", "notes"}
+                 "rr_min", "min_oi", "counts", "results",
+                 "excluded", "failures", "notes"}
 COUNT_KEYS = ("calendar_rows", "gaps_computed", "over_threshold", "turnover_passed",
               "price_passed", "candidates", "with_next_earnings",
               "with_expiry_after_earnings", "with_chain", "with_spread_ge_rr", "shown")
@@ -824,7 +1048,9 @@ ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_labe
             "long_strike", "short_strike", "long_delta", "short_delta", "net_debit",
             "max_loss", "max_profit", "rr", "net_return_pct", "liquidity", "open_interest",
             "bid_ask_pct", "position_debit", "pairs_possible", "pairs_possible_measured",
-            "pairs_possible_exact", "pairs_enumerated", "pairs_limit", "pairs_capped"}
+            "pairs_possible_exact", "pairs_enumerated", "pairs_limit", "pairs_capped",
+            "required_move_pct", "required_move_direction", "volatility_pct",
+            "daily_move_pct", "hit_rate_pct", "windows_measured", "history_state"}
 
 
 class EndpointTests(unittest.TestCase):
@@ -850,16 +1076,9 @@ class EndpointTests(unittest.TestCase):
         for row in body["results"]:
             self.assertEqual(set(row), ROW_KEYS)
 
-    def test_results_are_sorted_by_the_size_of_the_gap(self):
-        _antwort, body, _chains, _dates = self._get()
-        self.assertEqual([row["symbol"] for row in body["results"]], ["AAA", "BBB"])
-        self.assertEqual([row["gap_pct"] for row in body["results"]], [10.0, -8.0])
-        self.assertGreaterEqual(abs(body["results"][0]["gap_pct"]),
-                                abs(body["results"][1]["gap_pct"]))
-
     def test_the_row_carries_the_agreed_numbers(self):
         _antwort, body, _chains, _dates = self._get()
-        aaa = body["results"][0]
+        aaa = next(row for row in body["results"] if row["symbol"] == "AAA")
         self.assertEqual(aaa["name"], "Alpha Corp")
         self.assertEqual(aaa["direction"], "up")
         self.assertEqual(aaa["strategy"], "bull_call_debit")
@@ -881,7 +1100,7 @@ class EndpointTests(unittest.TestCase):
         self.assertEqual(len(aaa["bid_ask_pct"]), 2)
         self.assertEqual(aaa["position_debit"], 100.0)     # 1.00 x 100 x 1 + 0 fees
 
-        bbb = body["results"][1]
+        bbb = next(row for row in body["results"] if row["symbol"] == "BBB")
         self.assertEqual(bbb["direction"], "down")
         self.assertEqual(bbb["strategy"], "bear_put_debit")
         self.assertEqual(bbb["expiration"], "2027-04-16")
@@ -971,8 +1190,7 @@ class EndpointTests(unittest.TestCase):
             antwort, body, _chains, _dates = self._get(
                 fixture=(calendar, history, chains, dates))
         self.assertEqual(antwort.status_code, 200)
-        aaa = body["results"][0]
-        self.assertEqual(aaa["symbol"], "AAA")
+        aaa = next(row for row in body["results"] if row["symbol"] == "AAA")
         self.assertTrue(aaa["pairs_capped"])
         self.assertEqual(aaa["pairs_limit"], 5)
         deckel = [note for note in body["notes"] if "Deckel" in note]

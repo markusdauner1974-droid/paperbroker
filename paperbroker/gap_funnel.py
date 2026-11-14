@@ -13,6 +13,8 @@ becomes a row or is named with the step that stopped it:
    a reward/risk of at least ``DEFAULT_RR_MIN`` (2.0), a long leg whose |delta| is
    at least 20 and a net debit of at least 0.50 USD?
 4. how liquid are its two legs (``thin`` / ``full``)?
+5. can the underlying even GET to the break-even - and how often did it manage
+   that distance before (see "Reachability instead of a ratio ceiling")?
 
 Every step is a pure function over data a caller supplies, and the run around
 them (``run_funnel``) fetches in parallel with a whole-run deadline. Nothing
@@ -49,6 +51,17 @@ The spread is priced on the last available market state
 last print", and the answer says which print that was by construction of the
 chain. Every other filter of the screener pipeline (data completeness, spread
 readability, open interest) stays active - they are validity, not freshness.
+
+Reachability instead of a ratio ceiling
+---------------------------------------
+A reward/risk ratio says what a move would PAY, not whether the title ever
+moves that far: measured on 2026-11-11, CRWV carried R/R 1:34 for a move of
+61 %, LAND 1:7.3 for a move of 10 %. A ratio ceiling would delete the better
+trade. So the funnel keeps the ratio floor (no ceiling) and adds an upper bound
+on the DISTANCE to break-even (``max_required_move_pct``, default 20 %), plus a
+measured frequency per row: how often this title covered that distance within
+``dte`` sessions before (``reachability.py``). A row that has to move further
+is excluded with ``move_too_far``.
 """
 
 from __future__ import annotations
@@ -58,6 +71,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from . import reachability
 from .gap_scan import GAP_DOWN, GAP_UP, STRATEGY_BEAR_PUT_DEBIT, STRATEGY_BULL_CALL_DEBIT
 from .next_earnings import CODE_NO_API_KEY, NextEarningsError
 from .quote_age import MODE_LAST_AVAILABLE
@@ -80,6 +94,14 @@ FULL_MAX_SPREAD_PCT = 10.0
 DEFAULT_MIN_LONG_DELTA = 20.0
 #: Smallest net debit a ratio may be built on, in USD per share.
 DEFAULT_MIN_NET_DEBIT = 0.50
+#: How far the underlying may have to travel to the spread's break-even, in
+#: percent of the reaction day's close. An UPPER bound on the distance - the
+#: reward/risk ratio has none (see the module docstring).
+DEFAULT_MAX_REQUIRED_MOVE_PCT = 20.0
+#: The whole history phase's budget, in seconds. Only rows that already have a
+#: spread cost a request, and a title that has not answered by then keeps its
+#: row with ``history_state=source_failed`` - it never holds the answer.
+DEFAULT_HISTORY_DEADLINE_SECONDS = 60.0
 #: Six chains in parallel: the CBOE feed throttles earlier than that, and one
 #: request per symbol is all this funnel ever asks for.
 DEFAULT_MAX_WORKERS = 6
@@ -98,13 +120,16 @@ LIQUIDITY_THIN = "thin"
 LIQUIDITY_FULL = "full"
 LIQUIDITIES = (LIQUIDITY_THIN, LIQUIDITY_FULL)
 
-#: The four exclusion reasons of the agreed contract.
+#: The exclusion reasons of the agreed contract.
 REASON_NO_NEXT_EARNINGS = "no_next_earnings"
 REASON_NO_EXPIRY = "no_expiry_after_earnings"
 REASON_NO_SPREAD = "no_spread_ge_rr"
 REASON_NOT_OPTIONABLE = "not_optionable"
+#: The spread exists, but the underlying would have to travel further than
+#: ``max_required_move_pct`` to reach its break-even.
+REASON_MOVE_TOO_FAR = "move_too_far"
 EXCLUSION_REASONS = (REASON_NO_NEXT_EARNINGS, REASON_NO_EXPIRY, REASON_NO_SPREAD,
-                     REASON_NOT_OPTIONABLE)
+                     REASON_NOT_OPTIONABLE, REASON_MOVE_TOO_FAR)
 
 #: The chain-failure classes that mean "this title has no tradeable option chain"
 #: (values of ``CboeChainError.reason``, spelled here to keep this module free of
@@ -147,6 +172,34 @@ def _round2(value):
     if not math.isfinite(number):
         return None
     return round(number, 2)
+
+
+def _zahl(value):
+    """``20.0`` -> ``"20"``, ``61.25`` -> ``"61,25"`` - German comma, no dead zeros.
+
+    The sentence a title is excluded by names real numbers, so a cap of 20 must
+    read "20 %" and not "20,0 %", while 12.5 keeps its decimal.
+    """
+    text = f"{abs(float(value)):.2f}".rstrip("0").rstrip(".")
+    return text.replace(".", ",")
+
+
+def move_too_far_message(required_move_pct, max_required_move_pct):
+    """The sentence of a ``move_too_far`` exclusion, with both numbers."""
+    richtung = "steigen" if required_move_pct > 0 else "fallen"
+    return (f"Der Kurs müsste sich um {_zahl(required_move_pct)} % {richtung}; "
+            f"zugelassen sind {_zahl(max_required_move_pct)} %.")
+
+
+def required_move_of(pair, close):
+    """The distance from ``close`` to the pair's break-even, in percent.
+
+    The break-even is the spread's own (``pair.breakeven``: bought strike plus
+    the debit for a call, minus it for a put), so the number follows the trade
+    that is priced instead of being re-derived here. ``None`` when either side
+    is unusable - the row then carries no distance and the cap cannot judge it.
+    """
+    return reachability.required_move_pct(getattr(pair, "breakeven", None), close)
 
 
 def _quote_parts(quote):
@@ -483,6 +536,7 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None, sectio
     scanned = _as_date(day)
     long_delta = getattr(pair.long, "delta", None)
     short_delta = getattr(pair.short, "delta", None)
+    move = required_move_of(pair, candidate.get("close"))
     possible = possible_pairs(section, strategy_option_type(pair.strategy_id))
     # No section or a single strike is no search at all: nothing is measured,
     # so every pair number is ``None`` rather than a zero that would look one.
@@ -514,6 +568,16 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None, sectio
         # screener computed - one ratio, one rounding.
         "rr": None if ratio is None else _round2(ratio / 100.0),
         "net_return_pct": _round2(ratio),
+        # How far the underlying has to travel to reach this spread's
+        # break-even, in percent of the reaction day's close. The SIGN is the
+        # direction (+ = has to rise); the cap reads ``abs()``. ``None`` when
+        # the close or the break-even is unusable - never 0 as a stand-in.
+        "required_move_pct": _round2(move),
+        "required_move_direction": reachability.required_direction(_round2(move)),
+        # The history numbers are filled by the run's own phase
+        # (``measure_reachability``) - a row built alone carries ``None`` and
+        # says so, because a 0 % hit rate is a measurement and this is not.
+        **reachability.unmeasured(None),
         "liquidity": liquidity_of(pair),
         "open_interest": [getattr(pair.long, "open_interest", None),
                           getattr(pair.short, "open_interest", None)],
@@ -546,6 +610,10 @@ class Exclusion:
     R/R >= 2" is a statement about the prefix that was built, not about the
     expiry. The three fields are additive - a reason that never searched a
     section keeps ``pairs_capped=False`` and both numbers ``None``.
+
+    ``required_move_pct``/``max_required_move_pct`` belong to ``move_too_far``:
+    the distance the title needed and the bound it broke. Both stay ``None`` on
+    every other reason - those titles were never measured.
     """
 
     symbol: str
@@ -554,12 +622,16 @@ class Exclusion:
     pairs_capped: bool = False
     pairs_enumerated: int | None = None
     pairs_possible: int | None = None
+    required_move_pct: float | None = None
+    max_required_move_pct: float | None = None
 
     def as_dict(self):
         return {"symbol": self.symbol, "reason": self.reason, "message": self.message,
                 "pairs_capped": self.pairs_capped,
                 "pairs_enumerated": self.pairs_enumerated,
-                "pairs_possible": self.pairs_possible}
+                "pairs_possible": self.pairs_possible,
+                "required_move_pct": self.required_move_pct,
+                "max_required_move_pct": self.max_required_move_pct}
 
 
 @dataclass(frozen=True)
@@ -610,14 +682,15 @@ def _classify_chain_error(exc):
 
 
 def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
-            rr_min, min_oi, min_long_delta, min_net_debit):
+            rr_min, min_oi, min_long_delta, min_net_debit, max_required_move_pct):
     """One candidate through the funnel -> ``(row, exclusion, failure, stages)``.
 
     Runs inside a worker, so it never raises: every failure that leaves it is a
     classified object, because one broken title must not cost the other 29.
     """
     symbol = str(candidate.get("symbol") or "").strip().upper()
-    stages = {"next_earnings": False, "chain": False, "expiry": False, "spread": False}
+    stages = {"next_earnings": False, "chain": False, "expiry": False, "spread": False,
+              "move": False}
     if not symbol:
         return None, Exclusion("", REASON_NO_NEXT_EARNINGS,
                                "Ein Kandidat ohne Symbol hat keinen Berichtstermin."), None, stages
@@ -692,6 +765,19 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
     row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage,
                      section=section)
     row["next_earnings_date"] = next_earnings.isoformat()
+
+    # 5) can the underlying even get there? The spread is a fact now, so the
+    # distance to its break-even can be measured - and a row that needs more
+    # than the agreed bound is named, not silently dropped.
+    move = row.get("required_move_pct")
+    if move is not None and abs(move) > max_required_move_pct:
+        return None, Exclusion(
+            symbol, REASON_MOVE_TOO_FAR,
+            move_too_far_message(move, max_required_move_pct),
+            required_move_pct=move,
+            max_required_move_pct=max_required_move_pct,
+        ), None, stages
+    stages["move"] = True
     return row, None, None, stages
 
 
@@ -727,16 +813,102 @@ def cap_note(rows, excluded=None):
             f"der Aufzählung wurde nicht geprüft.")
 
 
+def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORKERS,
+                         deadline_seconds=DEFAULT_HISTORY_DEADLINE_SECONDS,
+                         history_bars=reachability.HISTORY_BARS):
+    """Fill every row's history numbers - in parallel, bounded, never guessed.
+
+    Only rows that already have a spread are measured (they are the ones whose
+    distance to break-even is known), and one request per row is all this
+    costs: ``fetch_daily(symbol, fromdate, history_bars)`` answers the daily
+    bars newest first, exactly as ``gap_scan`` asks for them.
+
+    ``deadline_seconds`` bounds the whole phase. A title that has not answered
+    by then keeps its row with ``history_state=source_failed`` and no numbers -
+    the same honesty as ``too_short``: an unmeasured frequency is not 0 %.
+    ``fetch_daily=None`` means this run has no history source at all, and every
+    row says so instead of showing an invented number.
+
+    The function never raises: a broken source is a state on the row.
+    """
+    rows = list(rows or ())
+    if not rows:
+        return rows
+    fromdate = reachability.fromdate_for(day)
+    if fetch_daily is None or fromdate is None:
+        for row in rows:
+            row.update(reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED))
+        return rows
+
+    def _one(row):
+        bars = fetch_daily(row.get("symbol"), fromdate, history_bars)
+        return reachability.measure(bars, row.get("required_move_pct"), row.get("dte"))
+
+    budget = None if deadline_seconds is None else max(0.0, float(deadline_seconds))
+    pool = ThreadPoolExecutor(max_workers=max(1, int(max_workers)))
+    pairs = []
+    finished = set()
+    try:
+        pairs = [(row, pool.submit(_one, row)) for row in rows]
+        finished, open_futures = wait([future for _row, future in pairs], timeout=budget)
+        # Same deadline rule as the chain stage: what has not started is
+        # cancelled, what is in flight finishes in the background.
+        for future in open_futures:
+            future.cancel()
+    finally:
+        pool.shutdown(wait=budget is None)
+
+    for row, future in pairs:
+        if future not in finished:
+            row.update(reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED))
+            continue
+        try:
+            fields = future.result()
+        except Exception:                   # noqa: BLE001 - a source failure is a state
+            fields = reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED)
+        row.update(fields)
+    return rows
+
+
+def result_sort_key(entry):
+    """``hit_rate_pct`` descending, then the smallest move, then the biggest gap.
+
+    A row WITHOUT a hit rate (``null``: too short a history, a failing source)
+    stands behind every measured one - an unmeasured frequency is not a bad one
+    - and the unmeasured rows are ordered among themselves by the same rule.
+    ``|required_move_pct|`` ascending is the tie-break because a title that has
+    to travel less is the easier trade at the same frequency; the gap keeps the
+    old scan's order as the last word, and the symbol makes it total.
+    """
+    rate = entry.get("hit_rate_pct")
+    measured = isinstance(rate, (int, float)) and not isinstance(rate, bool)
+    move = entry.get("required_move_pct")
+    move_abs = abs(move) if isinstance(move, (int, float)) and not isinstance(move, bool) else 0.0
+    gap = entry.get("gap_pct")
+    gap_abs = abs(gap) if isinstance(gap, (int, float)) and not isinstance(gap, bool) else 0.0
+    return (0 if measured else 1,
+            -(float(rate) if measured else 0.0),
+            move_abs,
+            -gap_abs,
+            str(entry.get("symbol") or ""))
+
+
 def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None,
                max_workers=DEFAULT_MAX_WORKERS, deadline_seconds=DEFAULT_DEADLINE_SECONDS,
                rr_min=DEFAULT_RR_MIN, min_oi=DEFAULT_MIN_OI,
                min_long_delta=DEFAULT_MIN_LONG_DELTA,
-               min_net_debit=DEFAULT_MIN_NET_DEBIT):
+               min_net_debit=DEFAULT_MIN_NET_DEBIT,
+               max_required_move_pct=DEFAULT_MAX_REQUIRED_MOVE_PCT,
+               fetch_daily=None,
+               history_deadline_seconds=DEFAULT_HISTORY_DEADLINE_SECONDS):
     """Run every candidate through the funnel - in parallel, bounded, explained.
 
     ``fetch_next_earnings(symbol)`` answers a ``date`` or ``None`` and may raise
     ``NextEarningsError``; ``fetch_chain(symbol)`` answers the whole chain of one
-    underlying and may raise (the class is read from ``exc.reason``).
+    underlying and may raise (the class is read from ``exc.reason``);
+    ``fetch_daily(symbol, fromdate, limit)`` answers the daily bars of the
+    history source for the reachability numbers and may raise - ``None`` means
+    the run has no history source and every row says ``source_failed``.
 
     ``deadline_seconds`` bounds the WHOLE run. Every candidate is still asked -
     only the waiting ends - and a title that has not finished by then is named
@@ -746,10 +918,16 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
     raised for a single title: a symbol is either a row, an exclusion or a
     failure. ``notes`` adds what the counters cannot say - a capped pair search
     is named there, because its rows show the best pair FOUND, not the best.
+
+    ``max_required_move_pct`` is the upper bound on the DISTANCE to break-even
+    (``abs(required_move_pct)``, so it holds for calls and puts alike). It is
+    not a ratio ceiling: the R/R floor stays the only ratio rule. The history
+    phase (``measure_reachability``) runs after the funnel, on the rows that
+    have a spread - and before the sort, because the hit rate IS the order.
     """
     rows = list(candidates or ())
     counts = {"with_next_earnings": 0, "with_chain": 0, "with_expiry_after_earnings": 0,
-              "with_spread_ge_rr": 0, "shown": 0}
+              "with_spread_ge_rr": 0, "with_reachable_move": 0, "shown": 0}
     run = FunnelRun(counts=counts)
     if not rows:
         return run
@@ -763,7 +941,8 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
             _assess, row,
             fetch_next_earnings=fetch_next_earnings, fetch_chain=fetch_chain,
             day=day, now_fn=now_fn, rr_min=rr_min, min_oi=min_oi,
-            min_long_delta=min_long_delta, min_net_debit=min_net_debit))
+            min_long_delta=min_long_delta, min_net_debit=min_net_debit,
+            max_required_move_pct=max_required_move_pct))
             for row in rows]
         finished, open_futures = wait([future for _row, future in pairs], timeout=budget)
         # Cancelling BEFORE the shutdown is the deadline: a worker that never
@@ -803,6 +982,8 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
             counts["with_expiry_after_earnings"] += 1
         if stages.get("spread"):
             counts["with_spread_ge_rr"] += 1
+        if stages.get("move"):
+            counts["with_reachable_move"] += 1
         if row is not None:
             run.results.append(row)
         elif exclusion is not None:
@@ -810,10 +991,16 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
         elif failure is not None:
             run.failures.append(failure)
 
-    # Sorted by the SIZE of the move, biggest first - the order the gap scan
-    # already ranks by, kept here so two runs of the same day cannot disagree.
-    run.results.sort(key=lambda entry: (-abs(entry.get("gap_pct") or 0.0),
-                                        str(entry.get("symbol") or "")))
+    # The history phase: one request per SHOWN row (a title without a spread has
+    # no distance to measure), bounded like the chain stage. It runs before the
+    # sort because the measured frequency is what the answer is ordered by.
+    measure_reachability(
+        run.results, fetch_daily=fetch_daily, day=day, max_workers=max_workers,
+        deadline_seconds=history_deadline_seconds)
+    # Ordered by reachability: highest measured hit rate first, the rows without
+    # a measurement behind them, ties broken by the shorter distance and then by
+    # the bigger gap (``result_sort_key`` holds the whole rule).
+    run.results.sort(key=result_sort_key)
     counts["shown"] = len(run.results)
     # One sentence for the whole answer when a search hit the ceiling: every
     # R/R on such a row is the best pair FOUND, not the best that exists, and a
