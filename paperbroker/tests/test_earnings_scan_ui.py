@@ -116,8 +116,9 @@ class TestTheOldScreenIsGone(unittest.TestCase):
         seite = _page()
         self.assertEqual(1, seite.count("<table"))
         self.assertIn('id="funnel-table"', seite)
-        # die vierzehn Spalten des Trichters, nicht die zwoelf des Einzelscans
-        self.assertEqual(14, seite.count("<th>"))
+        # die siebzehn Spalten des Trichters (drei davon: nötige Bewegung,
+        # Schwankung, Treffer), nicht die zwoelf des Einzelscans
+        self.assertEqual(17, seite.count("<th>"))
 
     def test_the_page_carries_no_inline_javascript(self):
         seite = _page()
@@ -186,8 +187,10 @@ class TestThePageNeedsNoOtherContext(unittest.TestCase):
         if treffer is None:
             raise AssertionError("kein Untertitel neben dem Kopf")
         untertitel = treffer.group(1)
+        # Vier Bedingungen: Gap, Optionen, Verfall nach dem Bericht und die
+        # Regel des Trichters - R/R-Floor UND die Grenze der nötigen Bewegung.
         for teil in ("Earnings-Gap", "Optionen", "Verfall nach dem nächsten Bericht",
-                     "R/R mindestens 1 zu 2"):
+                     "R/R ≥ 1:2", "nötige Bewegung bis"):
             with self.subTest(teil=teil):
                 self.assertIn(teil, untertitel)
 

@@ -79,6 +79,7 @@ from .gap_scan import _counts as gap_run_counts
 from .next_earnings import NextEarningsAdapter
 from .PaperBroker import PaperBroker
 from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
+from .reachability import HISTORY_BARS
 from .screener import (
     DEFAULT_STRATEGY,
     FUTURE_TOLERANCE_S,
@@ -1159,6 +1160,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # ------------------------------------------------------------------ #
     _GAP_SCAN_PARAMETERS = ("gap_threshold_pct", "min_turnover_usd", "max_candidates",
                             "min_price")
+    # The spread route's own fifth number: an upper bound on the DISTANCE to
+    # break-even. It is NOT a gap-scan parameter (that route knows no spread),
+    # so it is allowed only where it means something.
+    _GAP_SPREADS_PARAMETERS = ("max_required_move_pct",)
     # The output cap is bounded like every other limit: 5000 titles in one
     # answer is not a bigger result, it is a response nobody reads. The
     # MEASUREMENT is never capped - every candidate is fetched and checked.
@@ -1357,20 +1362,23 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             gelesen[schluessel] = {"state": zustand, "rows": zeilen}
         return gelesen, previous, None
 
-    def _gap_scan_args():
+    def _gap_scan_args(extra=()):
         """``day`` and the four numbers of one gap scan, or a ready JSON error.
 
         The day itself is validated by ``_gap_day`` (400 for everything that is
         not a finished US session); this function adds the four limits of the
-        scan, each with its own error code.
+        scan, each with its own error code. ``extra`` names the parameters a
+        DERIVED route accepts on top (``/api/v1/gap-spreads`` adds the move cap)
+        - without it a parameter the route cannot honour would be accepted
+        silently, which is the same lie as ignoring it.
         """
-        erlaubt = {"day"} | set(_GAP_SCAN_PARAMETERS)
+        erlaubt = {"day"} | set(_GAP_SCAN_PARAMETERS) | set(extra)
         unbekannt = sorted(set(request.args) - erlaubt)
         if unbekannt:
             return None, _gap_scan_error(
                 400, "unknown_parameter",
                 f"unknown parameter(s): {', '.join(unbekannt)}. Allowed: day, "
-                f"{', '.join(_GAP_SCAN_PARAMETERS)}",
+                f"{', '.join(tuple(_GAP_SCAN_PARAMETERS) + tuple(extra))}",
             )
         doppelt = sorted(name for name in erlaubt if len(request.args.getlist(name)) > 1)
         if doppelt:
@@ -1400,6 +1408,27 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             limits[name] = wert
 
         return {"day": day, "reaction": reaction, **limits}, None
+
+    def _required_move_cap(raw):
+        """``max_required_move_pct`` of one spread request, or a readable reason.
+
+        The bound is a percentage of the close, so it has to be positive and no
+        larger than a whole move of the underlying (100 %). 0 is refused on
+        purpose: it would exclude every spread that needs any move at all, which
+        is not a filter but an emptied answer.
+        """
+        text = (raw or "").strip()
+        if not text:
+            return gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT, None
+        try:
+            wert = float(text)
+        except ValueError:
+            return None, f"max_required_move_pct: '{text}' is not a number"
+        if not math.isfinite(wert):
+            return None, f"max_required_move_pct: '{text}' is not a finite number"
+        if wert <= 0 or wert > 100:
+            return None, f"max_required_move_pct: must be > 0 and <= 100 (is: {text})"
+        return wert, None
 
     @app.get("/api/v1/gap-scan")
     def api_gap_scan():
@@ -1584,6 +1613,16 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         "Strike-Paar: alle Kombinationen des Verfalls, höchstes R/R - aber nur "
         "mit |Delta| des Long-Legs >= 20 und Netto-Debit >= 0.50 USD.",
         "Laufzeit (dte) in Kalendertagen ab dem gescannten Tag, nicht ab heute.",
+        "Nötige Bewegung = Abstand des Schlusskurses zum Break-even des Spreads "
+        "in Prozent (Vorzeichen = Richtung); zugelassen ist ein Betrag bis "
+        f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f} %. Das R/R hat weiterhin "
+        "nur eine Untergrenze, keine Obergrenze.",
+        "Trefferquote = Anteil der vergangenen Fenster von so vielen "
+        "Handelstagen, wie die Laufzeit bis Verfall umfasst (dte in "
+        "Kalendertagen, je Zeile in window_sessions umgerechnet), in denen der "
+        "Kurs die nötige Bewegung mindestens erreicht hat; gemessen an "
+        f"höchstens {HISTORY_BARS} Tagesbars. Eine Häufigkeit, "
+        "keine Wahrscheinlichkeit.",
     )
 
     @app.get("/api/v1/gap-spreads")
@@ -1612,10 +1651,24 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         rather than holding the request. The answer is always a 200 with counts
         that describe the whole day - only a calendar that cannot be read is a
         503, because then there is no candidate set at all.
+
+        ``max_required_move_pct`` (default 20, allowed > 0 and <= 100) bounds the
+        DISTANCE from the reaction day's close to the spread's break-even, for
+        calls and puts alike (``abs``). A row that needs more is excluded as
+        ``move_too_far`` with both numbers on the exclusion. The reward/risk
+        ratio keeps its floor and has NO ceiling - the distance is the filter,
+        because a ratio says nothing about whether the move was ever seen. That
+        frequency is measured per row from the daily history
+        (``volatility_pct``, ``daily_move_pct``, ``hit_rate_pct``,
+        ``windows_measured``, ``history_state``), after the funnel and only for
+        the rows that have a spread - one extra request each.
         """
-        args, fehler = _gap_scan_args()
+        args, fehler = _gap_scan_args(extra=_GAP_SPREADS_PARAMETERS)
         if fehler is not None:
             return fehler
+        max_move, fehler = _required_move_cap(request.args.get("max_required_move_pct"))
+        if fehler is not None:
+            return _gap_scan_error(400, "invalid_parameter", fehler)
         day = args["day"]
         reaction = args["reaction"]
         gelesen, previous, fehler = _gap_calendar(day, reaction)
@@ -1691,6 +1744,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 deadline_seconds=gap_funnel.DEFAULT_DEADLINE_SECONDS,
                 rr_min=gap_funnel.DEFAULT_RR_MIN,
                 min_oi=gap_funnel.DEFAULT_MIN_OI,
+                max_required_move_pct=max_move,
+                # The SAME adapter the gap stage used (one bounded cache): the
+                # reachability numbers need about two years of sessions, so the
+                # window is opened wide and closed by the count.
+                fetch_daily=gap_adapter.fetch_daily,
             )
         except Exception:                                    # noqa: BLE001 - classified here
             app.logger.exception("gap spreads funnel failed for %s", day)
@@ -1713,6 +1771,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             "with_expiry_after_earnings": lauf.counts["with_expiry_after_earnings"],
             "with_chain": lauf.counts["with_chain"],
             "with_spread_ge_rr": lauf.counts["with_spread_ge_rr"],
+            "with_reachable_move": lauf.counts["with_reachable_move"],
             "shown": lauf.counts["shown"],
         }
         notes = list(_GAP_SPREADS_NOTES)
@@ -1750,6 +1809,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             min_turnover_usd=args["min_turnover_usd"],
             rr_min=gap_funnel.DEFAULT_RR_MIN,
             min_oi=gap_funnel.DEFAULT_MIN_OI,
+            # The filter this answer actually applied - a run with a different
+            # bound must be readable as such, not as the default.
+            max_required_move_pct=max_move,
             counts=zaehler,
             results=lauf.results,
             excluded=[eintrag.as_dict() for eintrag in lauf.excluded],
@@ -1781,6 +1843,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         gap_funnel.REASON_NO_EXPIRY: "no_expiry_after_earnings",
         gap_funnel.REASON_NO_SPREAD: "no_spread_ge_rr",
         gap_funnel.REASON_NOT_OPTIONABLE: "chain_unavailable",
+        # The spread exists but is too far away; the list would not show it
+        # either, and the detail says the same thing with the same code.
+        gap_funnel.REASON_MOVE_TOO_FAR: "move_too_far",
     }
     #: A ticker as the calendar spells it - six characters, one dot for a class.
     _SPREAD_DETAIL_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}([.\-][A-Z0-9]{1,3})?$")

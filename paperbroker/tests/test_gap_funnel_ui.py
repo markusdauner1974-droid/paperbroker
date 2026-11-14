@@ -127,7 +127,8 @@ class El {
 
 const ids = ['gap-funnel', 'funnel-day', 'funnel-run', 'funnel-state', 'funnel-error',
   'funnel-counts', 'funnel-notes', 'funnel-stale', 'funnel-empty', 'funnel-table-wrap',
-  'funnel-tbody', 'funnel-detail', 'funnel-detail-summary', 'funnel-detail-body',
+  'funnel-tbody', 'funnel-foot', 'funnel-cap', 'funnel-detail',
+  'funnel-detail-summary', 'funnel-detail-body',
   'funnel-excluded-block', 'funnel-excluded-summary', 'funnel-excluded',
   'funnel-failures-block', 'funnel-failures-summary', 'funnel-failures'];
 const nodes = {};
@@ -143,7 +144,8 @@ ids.forEach((id) => {
 });
 
 ['funnel-error', 'funnel-counts', 'funnel-notes', 'funnel-stale', 'funnel-empty',
-  'funnel-table-wrap', 'funnel-detail', 'funnel-excluded-block', 'funnel-failures-block']
+  'funnel-table-wrap', 'funnel-foot', 'funnel-detail', 'funnel-excluded-block',
+  'funnel-failures-block']
   .forEach((id) => { nodes[id].hidden = true; });
 nodes['funnel-day'].type = 'date';
 
@@ -238,6 +240,11 @@ function rowInfo(tr) {
   };
 }
 
+function cells(tr) {
+  return (tr.childNodes || []).filter((c) => String(c.tagName).toLowerCase() === 'td')
+    .map((td) => td.textContent);
+}
+
 function report(prevented) {
   const body = nodes['funnel-detail-body'];
   const paths = findAll(body, (n) => String(n.tagName).toLowerCase() === 'path');
@@ -246,6 +253,11 @@ function report(prevented) {
   return {
     urls,
     rows: rows().map(rowInfo),
+    cells: rows().map(cells),
+    counts: nodes['funnel-counts'].textContent,
+    foot: nodes['funnel-foot'].textContent,
+    footHidden: nodes['funnel-foot'].hidden,
+    cap: nodes['funnel-cap'].textContent,
     detail: {
       hidden: nodes['funnel-detail'].hidden,
       open: nodes['funnel-detail'].open,
@@ -331,7 +343,16 @@ def _detail(symbol="CTVA", label="Bear Put"):
     }
 
 
-def _row(symbol="CTVA", direction="down", label="Bear Put"):
+def _row(symbol="CTVA", direction="down", label="Bear Put", move=-5.9,
+         volatility=54.2, daily=3.1, hit=31.0, windows=394, state="ok",
+         sessions=87):
+    """One row of the documented answer, with its reachability numbers.
+
+    ``move`` is the required move in percent (-5.9 % against a break-even of
+    8.65 and a close of 9.19), ``hit`` the measured frequency, ``windows`` its
+    denominator and ``sessions`` the window length in TRADING SESSIONS - 87 of
+    them inside the 126 CALENDAR days of ``dte``.
+    """
     return {
         "symbol": symbol, "name": "Corteva Inc.", "gap_pct": -24.3,
         "direction": direction, "strategy": "bear_put_debit",
@@ -342,6 +363,13 @@ def _row(symbol="CTVA", direction="down", label="Bear Put"):
         "net_debit": 1.35, "max_loss": 135.0, "max_profit": 115.0, "rr": 2.13,
         "net_return_pct": 85.2, "liquidity": "full", "open_interest": [820, 410],
         "bid_ask_pct": [6.1, 9.4], "position_debit": 135.0,
+        "required_move_pct": move,
+        "required_move_direction": (None if move is None
+                                    else ("up" if move > 0 else "down")),
+        "volatility_pct": volatility, "daily_move_pct": daily,
+        "hit_rate_pct": hit, "windows_measured": windows,
+        "window_sessions": sessions, "window_calendar_days": 126,
+        "history_state": state,
     }
 
 
@@ -349,11 +377,12 @@ def _list():
     return {
         "schema_version": "1.0", "day": DAY, "day_state": "live",
         "threshold_pct": 5.0, "min_turnover_usd": 5_000_000.0, "rr_min": 2.0,
-        "min_oi": 100,
+        "min_oi": 100, "max_required_move_pct": 20.0,
         "counts": {"calendar_rows": 128, "gaps_computed": 117, "over_threshold": 27,
                    "turnover_passed": 27, "price_passed": 24, "candidates": 19,
                    "with_next_earnings": 14, "with_expiry_after_earnings": 13,
-                   "with_chain": 9, "with_spread_ge_rr": 4, "shown": 2},
+                   "with_chain": 9, "with_spread_ge_rr": 4,
+                   "with_reachable_move": 2, "shown": 2},
         "results": [_row(), _row("UPCO", "up", "Bull Call")],
         "excluded": [], "failures": [], "notes": [],
     }
@@ -415,6 +444,113 @@ def _by_class(node, name):
 
 def _by_tag(node, name):
     return _nodes(node, lambda n: str(n.get("tag", "")).lower() == name)
+
+
+class TestTheThreeReachabilityColumns(unittest.TestCase):
+    """Nötige Bewegung, Schwankung, Treffer - direkt nach dem R/R."""
+
+    def _headers(self):
+        seite = _page()
+        kopf = seite.split("<thead>")[1].split("</thead>")[0]
+        return [t.strip() for t in re.findall(r"<th>(.*?)</th>", kopf, re.S)]
+
+    def test_the_three_columns_stand_directly_after_the_ratio(self):
+        spalten = self._headers()
+        stelle = spalten.index("R/R")
+        self.assertEqual(spalten[stelle + 1:stelle + 4], ["nötig %", "Schwankung", "Treffer"])
+        # EINE Spalte je Frage, keine vierte: was danach kommt, ist der Verfall.
+        self.assertEqual(spalten[stelle + 4], "Verfall")
+
+    def test_the_head_names_the_rule_of_the_run(self):
+        seite = _page()
+        self.assertIn("Zugelassen: R/R ≥ 1:2 und eine nötige Bewegung bis", seite)
+
+    def test_the_row_shows_all_three_numbers_in_order(self):
+        panel = _render(actions=[])
+        zellen = panel["cells"][0]
+        # Nach R/R (Index 9) folgen noetig %, Schwankung, Treffer.
+        self.assertIn("↓ -5,9 %", zellen[10])
+        self.assertIn("54,2 %", zellen[11])
+        self.assertIn("Tag 3,1 %", zellen[11])
+        self.assertIn("31 %", zellen[12])
+        self.assertIn("n=394", zellen[12])
+
+    def test_the_hit_cell_names_the_sessions_behind_the_rate(self):
+        # Die Zelle nennt BEIDE Einheiten: n = Zahl der Fenster, HT = ihre
+        # Laenge in Handelstagen. dte (126) steht in der Verfallspalte daneben -
+        # Kalendertage, nicht Handelstage.
+        panel = _render(actions=[])
+        treffer = panel["cells"][0][12]
+        self.assertIn("n=394", treffer)
+        self.assertIn("87 HT", treffer)
+        self.assertNotIn("126 HT", treffer)
+
+    def test_a_row_without_sessions_names_no_session_length(self):
+        # Kein Fenster, keine Fensterlaenge: die Unterzeile nennt den Zustand,
+        # nicht "0 HT" (eine Laenge von null gibt es nicht).
+        panel = _render(list_body={**_list(), "results": [
+            _row("SPIR", hit=None, windows=0, sessions=0, state="too_short")]})
+        treffer = panel["cells"][0][12]
+        self.assertNotIn("HT", treffer)
+        self.assertIn("zu wenig Historie", treffer)
+
+    def test_a_rising_move_carries_the_up_arrow_and_the_plus(self):
+        panel = _render(list_body={**_list(), "results": [
+            _row("LAND", "up", "Bull Call", move=10.1)]})
+        zelle = panel["cells"][0][10]
+        self.assertIn("↑", zelle)
+        self.assertIn("+10,1 %", zelle)
+        self.assertIn("steigen", zelle)
+
+    def test_a_missing_number_is_a_dash_and_never_a_zero(self):
+        # Kein Wert wird erfunden: die Route liefert null, die Zelle zeigt einen
+        # Strich - eine 0 waere eine Messung, die es nicht gibt.
+        panel = _render(list_body={**_list(), "results": [
+            _row("SPIR", move=None, volatility=None, daily=None, hit=None,
+                 windows=0, sessions=0, state="too_short")]})
+        zellen = panel["cells"][0]
+        self.assertIn("—", zellen[10])
+        self.assertNotIn("0 %", zellen[10])
+        self.assertIn("—", zellen[11])
+        self.assertIn("—", zellen[12])
+        self.assertNotIn("n=0", zellen[12])
+        self.assertIn("zu wenig Historie", zellen[12])
+
+    def test_the_foot_explains_the_frequency_with_window_length_and_count(self):
+        panel = _render(actions=[])
+        self.assertFalse(panel["footHidden"])
+        fuss = panel["foot"]
+        # Die exakte Formulierung: Fenster in HANDELSTAGEN, Restlaufzeit in
+        # KALENDERTAGEN - zwei Einheiten, zwei Worte.
+        self.assertIn(
+            "Treffer = Anteil der vergangenen Fenster von 87 Handelstagen "
+            "(≈ 126 Kalendertage bis Verfall), in denen der Kurs die nötige "
+            "Bewegung mindestens erreicht hat; gemessen an 394 Fenstern aus "
+            "höchstens 520 Tagesbars.", fuss)
+        self.assertIn("Handelstagen", fuss)
+        self.assertIn("Kalendertage", fuss)
+        self.assertNotIn("Handelstage-Fenster", fuss)
+        self.assertIn("Eine Häufigkeit, keine Wahrscheinlichkeit", fuss)
+
+    def test_the_counter_line_names_the_move_hurdle_and_its_bound(self):
+        panel = _render(actions=[])
+        self.assertIn("2 mit nötiger Bewegung bis 20 %", panel["counts"])
+        # Die Grenze im Kopf ist die der Antwort, nicht eine Seitenkonstante.
+        self.assertEqual("20", panel["cap"])
+
+    def test_the_detail_repeats_the_three_numbers_and_the_method(self):
+        panel = _render(actions=["click:0"])
+        text = panel["detail"]["text"]
+        self.assertIn("nötig -5,9 %", text)
+        self.assertIn("Schwankung 54,2 %", text)
+        self.assertIn("Treffer 31 %", text)
+        # Derselbe Satz wie im Fuss - Handelstage fuer das Fenster,
+        # Kalendertage fuer die Restlaufzeit.
+        self.assertIn(
+            "Methodik: Treffer = Anteil der vergangenen Fenster von 87 "
+            "Handelstagen (≈ 126 Kalendertage bis Verfall)", text)
+        self.assertIn("gemessen an 394 Fenstern", text)
+        self.assertNotIn("Fensterlänge 126 Handelstage", text)
 
 
 class TestTheBlockSitsBetweenTableAndExclusions(unittest.TestCase):

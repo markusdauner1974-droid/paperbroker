@@ -65,6 +65,11 @@
     .stats{font-size:12.5px;color:var(--muted);margin:16px 0 0;max-width:90ch}
     .stats b{color:var(--ink);font-family:var(--font-mono);font-size:12px;font-weight:600}
 
+    /* Der Fuss der Tabelle: die eine Zeile, die sagt, was "Treffer" misst.
+       Ruhiger als die Zaehlerzeile - eine Methodik, keine Bilanz. */
+    .funnel-foot{font-size:11.5px;color:var(--faint);margin:10px 0 0;max-width:90ch;
+      line-height:1.5}
+
     /* Die Tabelle ist so breit wie ihr Inhalt: bei schmalem Fenster scrollt sie
        IN ihrem Kasten seitwaerts, statt die letzte Spalte unter den Rand zu
        schieben. Die Nummer bleibt dabei stehen, damit die Zeile lesbar bleibt. */
@@ -161,8 +166,9 @@
    wird hier keine davon, damit nichts an fehlendem Kontext scheitert. #}
 <header>
   <h1>Gap-Spread-Trichter</h1>
-  <p class="lede">Earnings-Gap, Optionen, Verfall nach dem nächsten Bericht,
-    R/R mindestens 1 zu 2.</p>
+  <p class="lede">Earnings-Gap, Optionen, Verfall nach dem nächsten Bericht.
+    Zugelassen: R/R ≥ 1:2 und eine nötige Bewegung bis
+    <span id="funnel-cap">20</span> %.</p>
 </header>
 <main>
   <section id="gap-funnel" aria-labelledby="funnel-title">
@@ -192,6 +198,9 @@
             <th>maximaler Verlust</th>
             <th>maximaler Gewinn</th>
             <th>R/R</th>
+            <th>nötig %</th>
+            <th>Schwankung</th>
+            <th>Treffer</th>
             <th>Verfall</th>
             <th>DTE</th>
             <th>nächster Bericht</th>
@@ -201,6 +210,10 @@
         <tbody id="funnel-tbody"></tbody>
       </table>
     </div>
+    {# Der Fuss der Tabelle erklaert die Trefferquote: Fensterlaenge, Anzahl der
+       gemessenen Fenster und die Grenze der Aussage. Gefuellt vom Skript, weil
+       beides aus der Antwort kommt und nicht aus der Seite. #}
+    <p class="note funnel-foot" id="funnel-foot" hidden></p>
     <details class="dropped-summary" id="funnel-detail" hidden>
       <summary id="funnel-detail-summary">Detail zum Spread</summary>
       <div id="funnel-detail-body"></div>

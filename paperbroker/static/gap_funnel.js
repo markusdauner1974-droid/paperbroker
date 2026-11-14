@@ -31,6 +31,8 @@
     empty: document.getElementById('funnel-empty'),
     wrap: document.getElementById('funnel-table-wrap'),
     tbody: document.getElementById('funnel-tbody'),
+    foot: document.getElementById('funnel-foot'),
+    cap: document.getElementById('funnel-cap'),
     detail: document.getElementById('funnel-detail'),
     detailSummary: document.getElementById('funnel-detail-summary'),
     detailBody: document.getElementById('funnel-detail-body'),
@@ -67,6 +69,9 @@
     no_spread_ge_rr: 'kein Spread mit R/R mindestens 1 zu 2',
     not_optionable: 'keine gelisteten Optionen',
     chain_unavailable: 'Optionskette nicht lesbar'
+    // move_too_far fehlt hier ABSICHTLICH: der Satz der Route nennt die noetige
+    // Bewegung UND die Grenze ("Der Kurs müsste sich um 61,3 % steigen;
+    // zugelassen sind 20 %.") - ein Etikett waere weniger Auskunft, nicht mehr.
   };
   var DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
   var STALE = 'Kalenderstand veraltet — die Zeilen stammen aus einem alten '
@@ -122,6 +127,27 @@
     return (value > 0 ? '+' : '') + de(value, 0) + ' %';
   }
 
+  // Die drei Zahlen der Erreichbarkeit. Kein Wert wird erfunden: was die Route
+  // als null liefert, steht als Strich da - eine 0 waere eine Messung, die es
+  // nicht gibt.
+  function moveText(value) {
+    if (!num(value)) return '—';
+    return (value > 0 ? '+' : '') + de(value, 1) + ' %';
+  }
+
+  function moveArrow(value) {
+    if (!num(value)) return '';
+    return value > 0 ? '↑ ' : '↓ ';
+  }
+
+  // Ein Strich mit Grund: "keine Messung" ist eine Aussage ueber die Historie,
+  // nicht ueber den Titel - der Grund gehoert unter die Zahl.
+  function historyWord(state) {
+    if (state === 'too_short') return 'zu wenig Historie';
+    if (state === 'source_failed') return 'Quelle nicht lesbar';
+    return '';
+  }
+
   function two(value) { return (value < 10 ? '0' : '') + value; }
 
   function clock(date) {
@@ -172,9 +198,17 @@
     return count + ' ' + (count === 1 ? one : many);
   }
 
+  // Die Grenze der noetigen Bewegung, die dieser Lauf wirklich benutzt hat -
+  // nicht die Vorgabe der Seite: eine Antwort mit anderer Grenze muss als
+  // solche lesbar sein.
+  function moveCap(body) {
+    return num(body && body.max_required_move_pct) ? de(body.max_required_move_pct, 0) : '20';
+  }
+
   // Die Zaehlerzeile nennt jede Huerde des Trichters in der Reihenfolge, in der
-  // sie greift: gemessen, Umsatz, Kandidaten, Termin, Verfall, R/R, angezeigt.
-  function countsText(counts) {
+  // sie greift: gemessen, Umsatz, Kandidaten, Termin, Verfall, R/R, noetige
+  // Bewegung, angezeigt.
+  function countsText(counts, body) {
     return [
       plural(n(counts.gaps_computed), 'Gap gemessen', 'Gaps gemessen'),
       n(counts.turnover_passed) + ' über Umsatzhürde',
@@ -182,8 +216,46 @@
       n(counts.with_next_earnings) + ' mit nächstem Termin',
       n(counts.with_expiry_after_earnings) + ' mit passendem Verfall',
       n(counts.with_spread_ge_rr) + ' mit R/R mindestens 1 zu 2',
+      n(counts.with_reachable_move) + ' mit nötiger Bewegung bis ' + moveCap(body) + ' %',
       n(counts.shown) + ' angezeigt'
     ].join(', ');
+  }
+
+  // Eine Formulierung fuer Fuss UND Methodik-Absatz: welche Fenster gemessen
+  // wurden (HANDELSTAGE), welche Restlaufzeit sie abdecken (KALENDERTAGE) und
+  // an wie vielen Fenstern. Zwei Einheiten, zwei Namen - "dte-Handelstage"
+  // gibt es nicht, dte allein ist die Kalenderdistanz bis Verfall.
+  function hitSentence(sessions, calendarDays, windows) {
+    return 'Treffer = Anteil der vergangenen Fenster von ' + sessions
+      + ' Handelstagen (≈ ' + calendarDays + ' Kalendertage bis Verfall), in denen '
+      + 'der Kurs die nötige Bewegung mindestens erreicht hat; gemessen an '
+      + windows + ' Fenstern aus höchstens 520 Tagesbars.';
+  }
+
+  // Der Fuss erklaert, was "Treffer" misst - und nennt Fensterlaenge in
+  // Handelstagen, Restlaufzeit in Kalendertagen und Anzahl der Fenster, soweit
+  // sie fuer den Lauf eindeutig sind. Zwei verschiedene Laufzeiten an einem Tag
+  // sind kein Grund, eine Zahl zu erfinden: dann steht "dte" da.
+  function footText(rows, body) {
+    var dten = [];
+    var fenster = [];
+    var laengen = [];
+    (Array.isArray(rows) ? rows : []).forEach(function (entry) {
+      if (num(entry.dte) && dten.indexOf(entry.dte) < 0) dten.push(entry.dte);
+      if (num(entry.window_sessions) && entry.window_sessions > 0
+          && laengen.indexOf(entry.window_sessions) < 0) {
+        laengen.push(entry.window_sessions);
+      }
+      if (num(entry.windows_measured) && entry.windows_measured > 0
+          && fenster.indexOf(entry.windows_measured) < 0) {
+        fenster.push(entry.windows_measured);
+      }
+    });
+    var sessions = laengen.length === 1 ? String(laengen[0]) : 'dte';
+    var kalender = dten.length === 1 ? String(dten[0]) : 'dte';
+    var anzahl = fenster.length === 1 ? String(fenster[0]) : 'n';
+    return hitSentence(sessions, kalender, anzahl)
+      + ' Eine Häufigkeit, keine Wahrscheinlichkeit.';
   }
 
   // "Kein Kandidat" nennt IMMER die Zahl der Ausschluesse: ein Tag, an dem
@@ -206,6 +278,7 @@
     el.empty.textContent = '';
     el.notes.hidden = true;
     el.notes.textContent = '';
+    if (el.foot) { el.foot.hidden = true; el.foot.textContent = ''; }
     el.stale.hidden = true;
     el.stale.textContent = '';
     clearDetail();
@@ -345,6 +418,34 @@
     row.appendChild(cell(de(entry.max_loss, 2), '', 'maximaler Verlust je Einheit'));
     row.appendChild(cell(de(entry.max_profit, 2), '', 'maximaler Gewinn je Einheit'));
     row.appendChild(cell(rrText(entry.rr), '', 'Gewinn zu Verlust bei Verfall'));
+
+    // Noetige Bewegung: Vorzeichen UND Pfeil, damit die Richtung nicht an einer
+    // Zahl hängt, die man als Betrag lesen könnte.
+    row.appendChild(stacked(moveArrow(entry.required_move_pct) + moveText(entry.required_move_pct),
+      num(entry.required_move_pct) ? (entry.required_move_pct > 0 ? 'steigen' : 'fallen') : '',
+      'dir', 'Bewegung bis zum Break-even des Spreads, in Prozent des Schlusses am Reaktionstag'));
+
+    // Schwankung: annualisiert oben, der mittlere Tagesausschlag klein darunter.
+    row.appendChild(stacked(num(entry.volatility_pct) ? de(entry.volatility_pct, 1) + ' %' : '—',
+      num(entry.daily_move_pct) ? 'Tag ' + de(entry.daily_move_pct, 1) + ' %' : '',
+      '', 'Schwankung: annualisierte Streuung der Tagesrenditen; darunter der mittlere Tagesausschlag'));
+
+    // Treffer: die gemessene Häufigkeit, darunter die Zahl der Fenster und -
+    // klein - ihre Länge in HANDELSTAGEN. dte in der Spalte daneben ist die
+    // Kalenderdistanz; die beiden Zahlen sind absichtlich nicht dieselbe.
+    var fensterText = num(entry.windows_measured) && entry.windows_measured > 0
+      ? 'n=' + entry.windows_measured : historyWord(entry.history_state);
+    if (num(entry.windows_measured) && entry.windows_measured > 0
+        && num(entry.window_sessions) && entry.window_sessions > 0) {
+      fensterText += ' · ' + entry.window_sessions + ' HT';
+    }
+    row.appendChild(stacked(num(entry.hit_rate_pct) ? de(entry.hit_rate_pct, 0) + ' %' : '—',
+      fensterText, '',
+      'Anteil der vergangenen Fenster von '
+        + (num(entry.window_sessions) && entry.window_sessions > 0 ? entry.window_sessions : 'dte')
+        + ' Handelstagen, in denen der Kurs die nötige Bewegung mindestens erreicht hat'
+        + ' (Fensterlänge in Handelstagen; dte nebenan in Kalendertagen)'));
+
     row.appendChild(cell(entry.expiration || '–', '',
       'Verfall nach dem nächsten Bericht'));
     row.appendChild(cell(num(entry.dte) ? String(entry.dte) : '–', '',
@@ -853,8 +954,21 @@
     return legende;
   }
 
+  // Die Zeile, zu der ein Detail gehoert. Die drei Zahlen der Erreichbarkeit
+  // misst die LISTE fuer diesen Titel und Tag; das Detail wiederholt sie, statt
+  // eine zweite Historie zu holen und zwei Zahlen zur selben Frage zu zeigen.
+  function rowFor(symbol) {
+    var liste = current && current.body && Array.isArray(current.body.results)
+      ? current.body.results : [];
+    for (var i = 0; i < liste.length; i += 1) {
+      if (liste[i] && liste[i].symbol === symbol) return liste[i];
+    }
+    return null;
+  }
+
   function renderDetail(detail) {
     el.detailBody.textContent = '';
+    var zeile = rowFor(detail.symbol);
 
     var kopf = document.createElement('p');
     kopf.className = 'detail-head';
@@ -866,7 +980,10 @@
       + ' · max. Verlust ' + de(detail.max_loss, 2)
       + ' · Break-even ' + de(detail.breakeven, 2)
       + ' · max. Gewinn ' + de(detail.max_profit, 2)
-      + ' · R/R 1 zu ' + de(detail.rr, 2);
+      + ' · R/R 1 zu ' + de(detail.rr, 2)
+      + (zeile ? ' · nötig ' + moveText(zeile.required_move_pct)
+        + ' · Schwankung ' + (num(zeile.volatility_pct) ? de(zeile.volatility_pct, 1) + ' %' : '—')
+        + ' · Treffer ' + (num(zeile.hit_rate_pct) ? de(zeile.hit_rate_pct, 0) + ' %' : '—') : '');
     el.detailBody.appendChild(kopf);
 
     el.detailBody.appendChild(subtitle('Beide Legs'));
@@ -882,6 +999,22 @@
 
     el.detailBody.appendChild(subtitle('Szenarien'));
     el.detailBody.appendChild(scenarioTable(detail.scenarios));
+
+    // Der Methodik-Absatz steht bei den Notizen des Details, nicht im Kopf: er
+    // nennt Fensterlaenge IN HANDELSTAGEN, die Restlaufzeit in KALENDERTAGEN
+    // und die Anzahl der Fenster - die drei Zahlen, ohne die eine Trefferquote
+    // nicht lesbar ist. Dieselbe Formulierung wie im Fuss.
+    if (zeile && num(zeile.window_sessions) && zeile.window_sessions > 0
+        && num(zeile.windows_measured) && zeile.windows_measured > 0) {
+      var methodik = document.createElement('p');
+      methodik.className = 'detail-notes';
+      methodik.textContent = 'Methodik: ' + hitSentence(
+        zeile.window_sessions,
+        num(zeile.dte) ? zeile.dte : 'dte',
+        zeile.windows_measured)
+        + ' Eine Häufigkeit, keine Wahrscheinlichkeit.';
+      el.detailBody.appendChild(methodik);
+    }
 
     var notes = Array.isArray(detail.notes) ? detail.notes.filter(Boolean) : [];
     if (notes.length) {
@@ -902,6 +1035,7 @@
     var ausschluesse = Array.isArray(body.excluded) ? body.excluded : [];
     var fehlschlaege = Array.isArray(body.failures) ? body.failures : [];
     var counts = body.counts || {};
+    if (el.cap) el.cap.textContent = moveCap(body);
     var notes = Array.isArray(body.notes) ? body.notes.filter(Boolean) : [];
 
     // Ein neuer Lauf baut neue Zeilen: das Detail der alten Zeile ist damit
@@ -913,8 +1047,14 @@
       el.tbody.appendChild(buildRow(entry, index));
     });
 
-    el.counts.textContent = countsText(counts);
+    el.counts.textContent = countsText(counts, body);
     el.counts.hidden = false;
+
+    // Der Fuss gehoert zur Tabelle: ohne Zeilen gibt es nichts zu erklaeren.
+    if (el.foot) {
+      el.foot.textContent = ergebnisse.length ? footText(ergebnisse, body) : '';
+      el.foot.hidden = !ergebnisse.length;
+    }
     el.error.hidden = true;
 
     // Notizen sind eine ruhige Zeile, keine Warnung: sie beschreiben den Lauf,
