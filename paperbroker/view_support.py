@@ -16,10 +16,12 @@ from __future__ import annotations
 import math
 import re
 
+import arrow
 from flask import abort, request
 
 from . import exclusions, quote_age
 from .assets import calendar_days_between
+from .eva_quality import assess_source_quality
 from .exclusions import LEVEL_CONTRACT, LEVEL_EXPIRY, LEVEL_PAIR
 from .quote_age import AGE_MODES, MODE_FRESHNESS
 from .screener import (
@@ -364,3 +366,30 @@ def _parse_args(broker, screener, now_fn):
         # no silent correction (panel decision)
         abort(400, description=criteria_error)
     return ticker, expiration, dates, selectable, criteria, unknown
+
+
+def _eva_quality(quotes, criteria, now_fn=None, *, ticker=None, expiration=None, snapshot_id=None):
+    """EVA gate for the snapshot this request actually screened.
+
+    The CBOE payload names no timezone and no multiplier, so both stay unproven
+    and the answer is ``unknown`` with explicit reasons - never ``ok``. The
+    values are read from the same ``quotes`` list the spread engine was given;
+    ``snapshot_id`` is derived from that list as well, which is what makes
+    "quality and maths saw one snapshot" checkable instead of promised.
+    """
+    jetzt = now_fn() if now_fn is not None else arrow.get()
+    jetzt_dt = getattr(jetzt, "datetime", jetzt)
+    return assess_source_quality(
+        source_timestamp=_feed_stamp(quotes),
+        # CBOE delivers naive stamps; option_chain_api reports the same fact as
+        # SOURCE_TIMEZONE_UNKNOWN. Nothing here may upgrade that to UTC.
+        source_timezone=None,
+        fetched_at=None,
+        now=jetzt_dt,
+        max_age_seconds=None if criteria.max_quote_age_min is None
+        else criteria.max_quote_age_min * 60,
+        # No silent 100: the payload does not carry it.
+        multiplier=None,
+        multiplier_source="unavailable",
+        snapshot_id=snapshot_id,
+    )
