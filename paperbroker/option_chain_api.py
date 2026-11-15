@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import math
 import re
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from datetime import UTC, datetime, timezone
 from typing import Any
 
@@ -432,9 +432,3 @@ def serialise_snapshot(
         "invalid_records": invalid,
         "quality_flags": [SOURCE_TIMEZONE_UNKNOWN, CONTRACT_METADATA_UNKNOWN],
     }
-
-
-def count_source_records(snapshot: dict[str, Any]) -> int:
-    """Rows the source delivered, before any classification."""
-    rohzeilen: Iterable[Any] = snapshot.get("records") or []
-    return len(list(rohzeilen))
