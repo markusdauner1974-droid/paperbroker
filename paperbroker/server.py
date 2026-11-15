@@ -81,6 +81,7 @@ from .PaperBroker import PaperBroker
 from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
 from .reachability import HISTORY_BARS
 from .routes import chain as chain_routes
+from .routes import earnings as earnings_routes
 from .routes import health as health_routes
 from .routes.context import CONTEXT_KEY, FactoryContext
 from .screener import (
@@ -113,9 +114,11 @@ from .view_support import (
     _FRESH_YELLOW_MIN,
     _IGNORED_PARAMS,
     _REASON_NUM_RE,
+    _SCAN_LIMIT_PARAMS,
     _SPREAD_TYPES,
     _TICKER_RE,
     _age_within_limit,
+    _calendar_failure,
     _criteria_echo,
     _criteria_from_request,
     _data_state,
@@ -126,13 +129,16 @@ from .view_support import (
     _in_dte_window,
     _lamp_state,
     _newest_quote_age_min,
+    _option_symbols,
     _pair_search_block,
     _parse_args,
     _parse_criteria_value,
+    _scan_limit,
     _selectable_dates,
     _strategy_error_body,
     _strategy_label,
     _strategy_selection,
+    _us_today,
 )
 
 logger = logging.getLogger(__name__)
@@ -272,35 +278,6 @@ def _calendar_day_label(iso_text, today_iso):
     return f"{wort} · {kurz}" if wort else kurz
 
 
-def _option_symbols(adapter):
-    """``(symbols|None, state, fetched_at_utc)`` from the earnings adapter.
-
-    Every failure mode collapses into "no list": an adapter without the
-    method, an exception, a non-dict answer or a malformed symbol list all
-    mean the page must not filter. A callable that raises may not cost the
-    calendar - the list is a filter, not content.
-    """
-    getter = getattr(adapter, "get_optionable_symbols", None)
-    if not callable(getter):
-        return None, "unavailable", None
-    try:
-        antwort = getter()
-    except Exception:                                    # noqa: BLE001 - the page must render
-        logger.exception("optionable symbol list failed")
-        return None, "unavailable", None
-    if not isinstance(antwort, dict):
-        return None, "unavailable", None
-
-    stempel = antwort.get("fetched_at_utc")
-    wert = antwort.get("symbols")
-    if not isinstance(wert, list) or not wert:
-        return None, "unavailable", stempel
-    symbole = set()
-    for eintrag in wert:
-        if not isinstance(eintrag, str) or not eintrag.strip():
-            return None, "unavailable", stempel
-        symbole.add(eintrag.strip())
-    return frozenset(symbole), str(antwort.get("state") or ""), stempel
 
 
 def _option_note(applied, hidden, stale):
@@ -347,24 +324,6 @@ def _failure_reason(error):
     return text
 
 
-def _calendar_failure(error, day):
-    """``(source_code, http_status, message)`` for a day the calendar did not deliver.
-
-    The scan route answers 503 in both cases, but the sentence may not be the
-    same: "did not answer" is false once the source has answered 403 or 429.
-    The upstream code and status travel in the message and in the error object,
-    so a caller never has to guess which of the two happened.
-    """
-    error = error if isinstance(error, dict) else {}
-    source_code = str(error.get("code") or "").strip() or None
-    status = error.get("http_status")
-    if status:
-        message = f"the earnings calendar answered HTTP {status} for {day} ({source_code})"
-    elif source_code:
-        message = f"the earnings calendar did not answer for {day} ({source_code})"
-    else:
-        message = f"the earnings calendar did not answer for {day}"
-    return source_code, status, message
 
 
 def _earnings_source_from_env():
@@ -378,9 +337,6 @@ def _earnings_source_from_env():
     return (os.environ.get("PAPERBROKER_EARNINGS_SOURCE") or "").strip().lower()
 
 
-def _us_today(now_fn):
-    """The trading date in New York - a UTC date is a day ahead after 19:00 ET."""
-    return arrow.get(now_fn()).to("America/New_York").date()
 
 
 def _same_strike(one, other):
@@ -452,6 +408,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     app.extensions[CONTEXT_KEY] = FactoryContext(
         broker=broker,
         screener=screener,
+        earnings_adapter=earnings_adapter,
         now_fn=now_fn,
         trend_for_screener=_trend_for_screener,
     )
@@ -466,6 +423,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
 
     health_routes.register(app)
     chain_routes.register(app)
+    earnings_routes.register(app)
 
 
     # Unfiltered, read-only option-chain view for Hermes. Deliberately NOT a
@@ -481,111 +439,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # expirations this chain really lists and the deterministic decision. #
     # Neither route places an order, and neither invents a date.          #
     # ------------------------------------------------------------------ #
-    def _earnings_error(status, code, message, *, source_code=None, source_status=None):
-        from paperbroker.earnings_calendar import SCHEMA_VERSION as _EARNINGS_SCHEMA
 
-        fehler = {"code": code, "message": message}
-        # The upstream code and status stay separate fields: the route's own
-        # code says WHAT this endpoint could not do, these two say what the
-        # source did. Absent when there is nothing to report.
-        if source_code:
-            fehler["source_code"] = source_code
-        if source_status is not None:
-            fehler["http_status"] = source_status
-        return (
-            jsonify(schema_version=_EARNINGS_SCHEMA, error=fehler),
-            status,
-        )
 
-    def _earnings_args():
-        """ticker-only argument validation, same envelope as the chain route."""
-        erlaubt = ("ticker",)
-        unbekannt = sorted(set(request.args) - set(erlaubt))
-        if unbekannt:
-            return None, _earnings_error(
-                400, "unknown_parameter",
-                f"unknown parameter(s): {', '.join(unbekannt)}. Allowed: ticker",
-            )
-        doppelt = sorted(name for name in set(request.args) if len(request.args.getlist(name)) > 1)
-        if doppelt:
-            return None, _earnings_error(
-                400, "duplicate_parameter", f"duplicate parameter(s): {', '.join(doppelt)}"
-            )
-        ticker = (request.args.get("ticker") or "").strip().upper()
-        if not ticker:
-            return None, _earnings_error(400, "ticker_required", "ticker is required")
-        if not _TICKER_RE.match(ticker):
-            return None, _earnings_error(
-                400, "invalid_ticker", "invalid ticker (1-6 letters A-Z expected)"
-            )
-        return ticker, None
 
-    def _earnings_snapshot(ticker):
-        """Adapter call with one place that turns a crash into a JSON error."""
-        try:
-            return earnings_adapter.get_earnings(ticker), None
-        except Exception:                                    # noqa: BLE001 - classified below
-            app.logger.exception("earnings lookup failed for %s", ticker)
-            return None, _earnings_error(
-                503, "earnings_source_failed", "the earnings source could not be read"
-            )
 
-    @app.get("/api/v1/earnings")
-    def api_earnings():
-        ticker, fehler = _earnings_args()
-        if fehler is not None:
-            return fehler
-        koerper, fehler = _earnings_snapshot(ticker)
-        if fehler is not None:
-            return fehler
-        return jsonify(koerper)
-
-    @app.get("/api/v1/earnings-window")
-    def api_earnings_window():
-        from paperbroker.adapters.quotes.CBOEQuoteAdapter import (
-            CboeNotFoundError,
-            CboeRequestError,
-            CboeUnusableChainError,
-        )
-        from paperbroker.option_chain_api import listed_expirations
-
-        ticker, fehler = _earnings_args()
-        if fehler is not None:
-            return fehler
-        koerper, fehler = _earnings_snapshot(ticker)
-        if fehler is not None or koerper is None:
-            return fehler
-
-        # The expirations come from the SAME snapshot the option-chain route
-        # serves. A chain that cannot be read is reported as such: expirations
-        # stay unknown and the decision blocks - it never falls back to a
-        # guessed date.
-        verfaelle, ketten_status = None, "ok"
-        try:
-            snapshot = broker.get_option_chain_snapshot(ticker)
-            verfaelle = listed_expirations(snapshot)
-        except CboeNotFoundError:
-            ketten_status = "unknown_symbol"
-        # The source knew the ticker and answered - only the mapping failed.
-        # Caught before CboeRequestError, of which it is a subclass.
-        except CboeUnusableChainError:
-            ketten_status = "chain_unreadable"
-        except CboeRequestError:
-            ketten_status = "market_data_unavailable"
-        except Exception:                                    # noqa: BLE001 - classified here
-            app.logger.exception("earnings window: chain failed for %s", ticker)
-            ketten_status = "market_data_unavailable"
-
-        fenster = combine_earnings_and_expirations(
-            koerper["earnings"], verfaelle, today=_us_today(now_fn)
-        )
-        antwort = dict(fenster)
-        antwort["ticker"] = ticker
-        antwort["chain"] = {
-            "status": ketten_status,
-            "expirations_read": verfaelle is not None,
-        }
-        return jsonify(antwort)
 
     # ------------------------------------------------------------------ #
     # One scan across a whole earnings day (GET /api/v1/earnings-scan).   #
@@ -596,210 +453,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # explicit request only, behind a hard budget, and answers with its    #
     # own coverage report instead of pretending to be complete.           #
     # ------------------------------------------------------------------ #
-    _SCAN_LIMIT_PARAMS = ("max_symbols", "max_expirations", "max_seconds", "concurrency")
 
-    def _scan_limit(name, raw, default, ceiling, *, integer, minimum):
-        """One budget number, or a readable reason why it is unusable.
 
-        Bounds are enforced here, not in the client: a scan of 5000 titles is
-        not a slower answer, it is an outage waiting to happen.
-        """
-        text = (raw or "").strip()
-        if not text:
-            return default, None
-        try:
-            wert = int(text) if integer else float(text)
-        except ValueError:
-            return None, f"{name}: '{text}' is not a number"
-        if not integer and not math.isfinite(wert):
-            return None, f"{name}: '{text}' is not a finite number"
-        if wert < minimum:
-            return None, f"{name}: must be >= {minimum} (is: {wert})"
-        if wert > ceiling:
-            return None, f"{name}: must be <= {ceiling} (is: {wert})"
-        return wert, None
 
-    def _scan_args():
-        """Validated arguments of one scan, or a ready-made JSON error."""
-        erlaubt = (set(_SCAN_LIMIT_PARAMS) | {"day", "strategy", "option_type",
-                                             "ignore_quote_age"}
-                   | set(_CRITERIA_FIELDS))
-        unbekannt = sorted(set(request.args) - erlaubt)
-        if unbekannt:
-            return None, _earnings_error(
-                400, "unknown_parameter",
-                f"unknown parameter(s): {', '.join(unbekannt)}. Allowed: day, strategy, "
-                f"{', '.join(_SCAN_LIMIT_PARAMS)} and the screener criteria",
-            )
-        doppelt = sorted(name for name in ("day", "option_type") + _SCAN_LIMIT_PARAMS
-                         if len(request.args.getlist(name)) > 1)
-        if doppelt:
-            return None, _earnings_error(
-                400, "duplicate_parameter",
-                f"duplicate parameter(s): {', '.join(doppelt)} (only strategy may repeat)",
-            )
-
-        day = (request.args.get("day") or "").strip()
-        if not day:
-            return None, _earnings_error(400, "day_required", "day is required (YYYY-MM-DD)")
-        if not _DATE_RE.match(day):
-            return None, _earnings_error(400, "invalid_day", "invalid day (YYYY-MM-DD expected)")
-        try:
-            datetime.strptime(day, "%Y-%m-%d")
-        except ValueError:
-            return None, _earnings_error(
-                400, "invalid_day", "invalid day (not a real calendar date)"
-            )
-
-        # One or more strategies; `strategy` may repeat and may carry a comma
-        # list. An empty list means "all four" - the scan answers what the day
-        # offers, and the caller narrows it down.
-        gewaehlt = []
-        for wert in request.args.getlist("strategy"):
-            for teil in str(wert).split(","):
-                teil = teil.strip().lower()
-                if teil and teil not in gewaehlt:
-                    gewaehlt.append(teil)
-        for sid in gewaehlt:
-            if sid not in STRATEGIES:
-                return None, (jsonify(_strategy_error_body("unknown_strategy")), 400)
-
-        option_type = (request.args.get("option_type") or "").strip().lower()
-        if option_type:
-            # The legacy alias names ONE strategy. With several strategies it
-            # cannot say which one is meant, so the request is refused instead
-            # of resolved in silence - the same rule the single view follows.
-            if len(gewaehlt) > 1:
-                return None, (jsonify(_strategy_error_body("conflict")), 400)
-            aufgeloest, code, _text = resolve_strategy(
-                gewaehlt[0] if gewaehlt else None, option_type
-            )
-            if code:
-                return None, (jsonify(_strategy_error_body(code)), 400)
-            gewaehlt = [aufgeloest]
-
-        limits = {}
-        for name, default, ceiling, integer, minimum in (
-            ("max_symbols", DEFAULT_MAX_SYMBOLS, MAX_SYMBOLS_CEILING, True, 1),
-            ("max_expirations", DEFAULT_MAX_EXPIRATIONS, MAX_EXPIRATIONS_CEILING, True, 1),
-            ("max_seconds", DEFAULT_MAX_SECONDS, MAX_SECONDS_CEILING, False, 0.1),
-            ("concurrency", DEFAULT_CONCURRENCY, CONCURRENCY_CEILING, True, 1),
-        ):
-            wert, fehler = _scan_limit(name, request.args.get(name), default, ceiling,
-                                       integer=integer, minimum=minimum)
-            if fehler is not None:
-                return None, _earnings_error(400, "invalid_limit", fehler)
-            limits[name] = wert
-
-        criteria, criteria_error, _unused = _criteria_from_request(
-            screener.criteria, request.args
-        )
-        if criteria_error:
-            return None, _earnings_error(400, "invalid_criteria", criteria_error)
-
-        return {
-            "day": day,
-            "strategies": tuple(gewaehlt) or None,
-            "criteria": criteria,
-            "limits": ScanLimits(
-                max_symbols=int(limits["max_symbols"]),
-                max_expirations_per_symbol=int(limits["max_expirations"]),
-                max_seconds=float(limits["max_seconds"]),
-                concurrency=int(limits["concurrency"]),
-            ),
-        }, None
-
-    @app.get("/api/v1/earnings-scan")
-    def api_earnings_scan():
-        """Scan one earnings day: every optionable title, every listed expiry.
-
-        Every external call is counted and bounded (``coverage.limits``); the
-        answer says how many titles the day listed, how many carried options,
-        how many the scan took on and how many it never reached. A cut scan is
-        ``complete: false`` with a named reason - never a silently short list.
-        """
-        args, fehler = _scan_args()
-        if fehler is not None:
-            return fehler
-        day = args["day"]
-
-        symbole, option_state, option_fetched = _option_symbols(earnings_adapter)
-        try:
-            antwort = earnings_adapter.get_calendar_days({DAY_TODAY: day}) or {}
-        except Exception:                                    # noqa: BLE001 - classified here
-            app.logger.exception("earnings scan: calendar failed for %s", day)
-            return _earnings_error(
-                503, "calendar_source_failed", "the earnings calendar could not be read"
-            )
-        tage = antwort.get("days") if isinstance(antwort, dict) else None
-        tag = (tage or {}).get(day) if isinstance(tage, dict) else None
-        gesamt = str((antwort.get("state") if isinstance(antwort, dict) else None) or "")
-        if gesamt == "not_configured":
-            # Setup fact, not an outage: the null adapter answers no days at
-            # all, and "not configured" is the honest wording for that.
-            return _earnings_error(
-                503, "earnings_source_not_configured",
-                "no earnings source is configured - there is nothing to scan",
-            )
-        if not isinstance(tag, dict):
-            # No entry for the requested day is no answer - not an empty day.
-            quell_code, quell_status, message = _calendar_failure(
-                antwort.get("error") if isinstance(antwort, dict) else None, day
-            )
-            return _earnings_error(
-                503, "calendar_unavailable", message,
-                source_code=quell_code, source_status=quell_status,
-            )
-        zustand = str(tag.get("state") or gesamt or "unavailable")
-        zeilen = tag.get("rows") or []
-        if zustand == "not_configured":
-            return _earnings_error(
-                503, "earnings_source_not_configured",
-                "no earnings source is configured - there is nothing to scan",
-            )
-        if zustand == "unavailable" or not isinstance(zeilen, list):
-            # The day failed. The message must name what the source DID: a 403
-            # or 429 is an answer, and "did not answer" would hide the reason.
-            quell_code, quell_status, message = _calendar_failure(tag.get("error"), day)
-            return _earnings_error(
-                503, "calendar_unavailable", message,
-                source_code=quell_code, source_status=quell_status,
-            )
-
-        try:
-            koerper = scan_day(
-                zeilen,
-                fetch_earnings=earnings_adapter.get_earnings,
-                # ONE request per ticker: the adapter caches the whole chain per
-                # underlying, and every expiry of it is sliced locally.
-                fetch_chain=lambda symbol: broker.get_options(symbol, None),
-                criteria=args["criteria"],
-                strategies=args["strategies"],
-                day=day,
-                # The state the cache reported for THIS day travels with the
-                # rows: only a live day may turn a row into a fresh proof.
-                day_state=zustand,
-                today=_us_today(now_fn),
-                now_fn=now_fn,
-                limits=args["limits"],
-                optionable=symbole,
-                # Diagnostics stay in the log: the answer itself carries a
-                # stable code and says nothing about adapter internals.
-                on_ticker_error=lambda symbol, exc: app.logger.warning(
-                    "earnings scan: %s not scanned (%s: %s)",
-                    symbol, type(exc).__name__, exc,
-                ),
-            )
-        except Exception:                                    # noqa: BLE001 - classified here
-            app.logger.exception("earnings scan failed for %s", day)
-            return _earnings_error(503, "scan_failed", "the scan could not be completed")
-
-        koerper["day_state"] = zustand
-        koerper["day_fetched_at_utc"] = tag.get("fetched_at_utc")
-        koerper["day_rows_skipped"] = int(tag.get("skipped") or 0)
-        koerper["option_filter"]["state"] = option_state
-        koerper["option_filter"]["fetched_at_utc"] = option_fetched
-        return jsonify(koerper)
 
     # ------------------------------------------------------------------ #
     # The closing gap of one reaction day (GET /api/v1/gap-scan).         #
