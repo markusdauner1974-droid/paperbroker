@@ -1079,6 +1079,14 @@ class TestTheChanceColumn(unittest.TestCase):
         self.assertEqual(["AAA", "BBB"], [row["symbol"] for row in panel["rows"]])
         self.assertEqual(["1,80", "4,00"], [panel["cells"][i][9] for i in (0, 1)])
 
+    def test_the_foot_explains_the_chance_column_too(self):
+        # Die Spalte steht in der Liste, also muss der Fuss sie erklaeren -
+        # inklusive der einen Aussage, die sie NICHT macht: sortieren tut sie nichts.
+        panel = _render(actions=[])
+        self.assertIn("Chance = Trefferquote × R/R", panel["foot"])
+        self.assertIn("Obergrenze des Erwartungswerts", panel["foot"])
+        self.assertIn("Sortiert wird nach Trefferquote", panel["foot"])
+
     def test_the_methodology_sentence_names_the_bound_and_the_order(self):
         panel = _render(actions=["click:0"])
         text = panel["detail"]["text"]

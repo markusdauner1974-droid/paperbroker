@@ -309,7 +309,12 @@
     var kalender = dten.length === 1 ? String(dten[0]) : 'dte';
     var anzahl = fenster.length === 1 ? String(fenster[0]) : 'n';
     return hitSentence(sessions, kalender, anzahl)
-      + ' Eine Häufigkeit, keine Wahrscheinlichkeit.';
+      + ' Eine Häufigkeit, keine Wahrscheinlichkeit.'
+      // Die Spalte Chance steht in der Liste, also wird sie hier erklaert und
+      // nicht nur im Detail: sie ist eine Lesehilfe, und sie sortiert nichts.
+      + ' Chance = Trefferquote × R/R; weil die Trefferquote das Erreichen des'
+      + ' Break-even misst, ist das eine Obergrenze des Erwartungswerts, keine'
+      + ' Zusage. Sortiert wird nach Trefferquote.';
   }
 
   // "Kein Kandidat" nennt IMMER die Zahl der Ausschluesse: ein Tag, an dem
