@@ -556,6 +556,38 @@ def _by_tag(node, name):
     return _nodes(node, lambda n: str(n.get("tag", "")).lower() == name)
 
 
+def _head(panel):
+    """The detail head: the ONE block of class ``detail-head``."""
+    koepfe = _by_class(panel["detail"]["tree"], "detail-head")
+    if len(koepfe) != 1:
+        raise AssertionError(f"expected exactly one detail-head, got {len(koepfe)}")
+    return koepfe[0]
+
+
+def _levels(node):
+    """The element children of a node, in reading order."""
+    return list(node.get("children") or [])
+
+
+def _figures(kopf):
+    """The raster's cells as ``(label, value)`` pairs, in reading order.
+
+    A cell is label ABOVE value - the text of the cell alone would read
+    "Debit1,90", so the pair is taken from the two spans, not from the string.
+    """
+    raster = _by_class(kopf, "detail-figures")
+    if len(raster) != 1:
+        raise AssertionError(f"expected exactly one detail-figures, got {len(raster)}")
+    paare = []
+    for zelle in _by_class(raster[0], "fig"):
+        beschriftung = _by_class(zelle, "fig-label")
+        wert = _by_class(zelle, "fig-value")
+        if len(beschriftung) != 1 or len(wert) != 1:
+            raise AssertionError("a cell needs one label and one value: " + zelle["text"])
+        paare.append((beschriftung[0]["text"], wert[0]["text"]))
+    return paare
+
+
 class TestTheThreeReachabilityColumns(unittest.TestCase):
     """Nötige Bewegung, Schwankung, Treffer - direkt nach dem R/R."""
 
@@ -581,7 +613,7 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
         panel = _render(list_body={**_list(), "results": [entry]},
                         details=[{"status": 200, "body": detail}], actions=["click:0"])
         self.assertEqual(panel["cells"][0][8], "1 : 8,1")
-        self.assertIn("R/R 1 : 8,1", panel["detail"]["text"])
+        self.assertEqual("1 : 8,1", dict(_figures(_head(panel)))["R/R"])
         self.assertNotIn("1 zu", panel["detail"]["text"])
         self.assertIn("R/R mindestens 1 : 2", panel["counts"])
 
@@ -713,10 +745,13 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
 
     def test_the_detail_repeats_the_three_numbers_and_the_method(self):
         panel = _render(actions=["click:0"])
+        figuren = dict(_figures(_head(panel)))
+        # Die drei Zahlen der Erreichbarkeit stehen im Raster des Kopfes, unter
+        # ihrer Beschriftung - nicht mehr als Satz hinter Trennpunkt.
+        self.assertEqual("-5,9 %", figuren["nötig"])
+        self.assertEqual("54,2 %", figuren["Schwankung"])
+        self.assertEqual("31 %", figuren["Treffer"])
         text = panel["detail"]["text"]
-        self.assertIn("nötig -5,9 %", text)
-        self.assertIn("Schwankung 54,2 %", text)
-        self.assertIn("Treffer 31 %", text)
         # Derselbe Satz wie im Fuss - Handelstage fuer das Fenster,
         # Kalendertage fuer die Restlaufzeit.
         self.assertIn(
@@ -770,7 +805,7 @@ class TestTheRowItselfLoadsTheDetail(unittest.TestCase):
         self.assertTrue(panel["detail"]["open"])
         self.assertIn("CTVA", panel["detail"]["summary"])
         self.assertIn("Bear Put", panel["detail"]["text"])
-        self.assertIn("2027-03-19", panel["detail"]["text"])
+        self.assertIn("19.03.2027", panel["detail"]["text"])
         self.assertIn("1 : 0,8", panel["detail"]["text"])
         self.assertEqual("true", panel["rows"][0]["expanded"])
 
@@ -825,16 +860,19 @@ class TestTheRowItselfLoadsTheDetail(unittest.TestCase):
 class TestWhatTheBlockShows(unittest.TestCase):
     def test_the_head_names_strategy_expiry_and_the_four_numbers(self):
         panel = _render(actions=["click:0"])
-        text = panel["detail"]["text"]
-        self.assertIn("CTVA", text)
-        self.assertIn("Corteva Inc.", text)
-        self.assertIn("Bear Put", text)
-        self.assertIn("Verfall 2027-03-19", text)
-        self.assertIn("Debit 1,35", text)
-        self.assertIn("max. Verlust 135,00", text)
-        self.assertIn("Break-even 8,65", text)
-        self.assertIn("max. Gewinn 115,00", text)
-        self.assertIn("R/R 1 : 0,8", text)
+        kopf = _head(panel)
+        titel, unter = _levels(kopf)[:2]
+        self.assertEqual("detail-title", titel["cls"])
+        self.assertIn("CTVA", titel["text"])
+        self.assertIn("Corteva Inc.", titel["text"])
+        # Der Verfall steht deutsch im Untertitel, die Strategie daneben.
+        self.assertEqual("Bear Put · Verfall 19.03.2027", unter["text"])
+        figuren = dict(_figures(kopf))
+        self.assertEqual("1,35", figuren["Debit"])
+        self.assertEqual("135,00", figuren["max. Verlust"])
+        self.assertEqual("8,65", figuren["Break-even"])
+        self.assertEqual("115,00", figuren["max. Gewinn"])
+        self.assertEqual("1 : 0,8", figuren["R/R"])
 
     def test_both_legs_are_a_row_with_quote_iv_oi_and_delta(self):
         panel = _render(actions=["click:0"])
@@ -1070,7 +1108,9 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
         self.assertEqual("13", params["long"])
         self.assertEqual("17", params["short"])
         self.assertTrue(panel["detail"]["open"])
-        self.assertIn("13/17 · nah am Geld", panel["detail"]["text"])
+        titel = _levels(_head(panel))[0]
+        self.assertIn("13/17", titel["text"])
+        self.assertEqual("nah am Geld", _by_class(titel, "detail-tag")[0]["text"])
         # Die Unterzeile ist markiert, nicht die Hauptzeile.
         self.assertEqual("true", panel["rows"][1]["expanded"])
         self.assertEqual("false", panel["rows"][0]["expanded"])
@@ -1079,20 +1119,24 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
         panel = _render(list_body=self._list(), actions=["click:0"])
         params = self._params(panel["urls"][1])
         self.assertEqual({"symbol", "day"}, set(params))
-        self.assertIn("10/7,5 · Hebel (Zeile)", panel["detail"]["text"])
+        self.assertIn("10/7,5", _levels(_head(panel))[0]["text"])
+        self.assertEqual("Hebel (Zeile)",
+                         _by_class(_levels(_head(panel))[0], "detail-tag")[0]["text"])
 
     def test_the_detail_of_an_alternative_shows_the_alternatives_numbers(self):
         panel = _render(list_body=self._list(),
                         details=[{"status": 200, "body": _detail_structure(
                             15.0, 22.0, "am Widerstand")}],
                         actions=["btn:0", "sub:0:1"])
-        text = panel["detail"]["text"]
         # 1.2 braucht -8,1 % und traf in 12 % der Fenster - nicht die Zahlen
         # der Hauptzeile (-5,9 %, 31 %).
-        self.assertIn("nötig -8,1 %", text)
-        self.assertIn("Treffer 12 %", text)
-        self.assertNotIn("nötig -5,9 %", text)
-        self.assertIn("15/22 · am Widerstand", text)
+        figuren = dict(_figures(_head(panel)))
+        self.assertEqual("-8,1 %", figuren["nötig"])
+        self.assertEqual("12 %", figuren["Treffer"])
+        self.assertNotEqual("-5,9 %", figuren["nötig"])
+        titel = _levels(_head(panel))[0]
+        self.assertIn("15/22", titel["text"])
+        self.assertEqual("am Widerstand", _by_class(titel, "detail-tag")[0]["text"])
 
     def test_an_adjusted_strike_matches_the_rounded_number_of_the_row(self):
         # Ein adjustierter Kontrakt: die Kette listet 15,335, die Zeile traegt
@@ -1104,10 +1148,10 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
                         details=[{"status": 200, "body": _detail_structure(
                             15.34, 17.0, "nah am Geld")}],
                         actions=["btn:0", "sub:0:0"])
-        text = panel["detail"]["text"]
-        self.assertIn("nötig -4,8 %", text)
-        self.assertIn("Treffer 22 %", text)
-        self.assertNotIn("nötig —", text)
+        figuren = dict(_figures(_head(panel)))
+        self.assertEqual("-4,8 %", figuren["nötig"])
+        self.assertEqual("22 %", figuren["Treffer"])
+        self.assertNotEqual("—", figuren["nötig"])
 
     def test_a_strike_a_cent_away_is_not_the_alternative(self):
         # Die Toleranz ist ein halber Cent: 15,44 ist NICHT 15,335, und die
@@ -1118,10 +1162,10 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
                         details=[{"status": 200, "body": _detail_structure(
                             15.44, 17.0, "nah am Geld")}],
                         actions=["btn:0", "sub:0:0"])
-        text = panel["detail"]["text"]
-        self.assertIn("nötig —", text)
-        self.assertNotIn("nötig -4,8 %", text)
-        self.assertNotIn("Treffer 22 %", text)
+        figuren = dict(_figures(_head(panel)))
+        self.assertEqual("—", figuren["nötig"])
+        self.assertNotEqual("-4,8 %", figuren["nötig"])
+        self.assertNotEqual("22 %", figuren["Treffer"])
 
     def test_alle_aufklappen_opens_every_group(self):
         panel = _render(list_body=self._two_groups(), actions=["all"])
@@ -1177,6 +1221,176 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
         self.assertTrue(panel["expandAll"]["hidden"])
         gemischt = _render(list_body=self._list())
         self.assertFalse(gemischt["expandAll"]["hidden"])
+
+
+class TestTheHeadHasThreeLevels(unittest.TestCase):
+    """Der Kopf ist Titel, Untertitel, Raster - nicht ein Absatz mit 13 Angaben.
+
+    In EINER Zeile mit ' · ' zwischen allen Zahlen ging die Zuordnung Zahl ->
+    Bedeutung verloren: "· Break-even 25,90 · Debit 1,90 · max. Verlust 190,00"
+    liest niemand als Tabelle. Titel, Untertitel und ein Raster mit der
+    Beschriftung UEBER dem Wert sagen dasselbe, ohne dass der Leser zaehlt.
+    """
+
+    FIGUREN = ["Debit", "Break-even", "max. Verlust", "max. Gewinn",
+               "R/R", "nötig", "Schwankung", "Treffer"]
+
+    def test_the_head_is_three_nodes_and_not_one_run_on_paragraph(self):
+        panel = _render(actions=["click:0"])
+        kopf = _head(panel)
+        # Ein Knoten traegt den Kopf, drei Ebenen stehen darin.
+        self.assertEqual("div", kopf["tag"])
+        self.assertEqual(["detail-title", "detail-sub detail-head-sub",
+                          "detail-figures"],
+                         [ebene["cls"] for ebene in _levels(kopf)])
+        # Der eine Absatz von frueher ist weg: keine Ebene traegt den ganzen Kopf.
+        self.assertEqual(3, len(_levels(kopf)))
+        for ebene in _levels(kopf):
+            self.assertLess(len(ebene["text"]), len(kopf["text"]))
+
+    def test_the_title_carries_symbol_pair_and_name_with_the_character_as_tag(self):
+        panel = _render(actions=["click:0"])
+        titel = _levels(_head(panel))[0]
+        self.assertIn("CTVA", titel["text"])
+        self.assertIn("10/7,5", titel["text"])          # das Strike-Paar
+        self.assertIn("Corteva Inc.", titel["text"])    # der Name
+        # Der Charakter ist ein eigenes Etikett IN der Titelzeile - kein
+        # Satzglied hinter einem Trennungspunkt.
+        etiketten = _by_class(titel, "detail-tag")
+        self.assertEqual(1, len(etiketten))
+        self.assertEqual("Hebel (Zeile)", etiketten[0]["text"])
+        # ... und es sitzt direkt hinter dem Paar, vor dem Namen.
+        text = titel["text"]
+        self.assertLess(text.index("10/7,5"), text.index("Hebel (Zeile)"))
+        self.assertLess(text.index("Hebel (Zeile)"), text.index("Corteva Inc."))
+        self.assertNotIn(" · Hebel (Zeile)", text)
+
+    def test_the_subtitle_writes_the_expiry_the_german_way(self):
+        panel = _render(actions=["click:0"])
+        unter = _levels(_head(panel))[1]
+        self.assertEqual("Bear Put · Verfall 19.03.2027", unter["text"])
+        self.assertNotIn("2027-03-19", unter["text"])
+        # Ohne Datum bleibt ein Strich - kein erfundenes Datum.
+        ohne = _detail()
+        ohne.pop("expiration")
+        ohne_datum = _render(details=[{"status": 200, "body": ohne}], actions=["click:0"])
+        self.assertEqual("Bear Put · Verfall —",
+                         _levels(_head(ohne_datum))[1]["text"])
+
+    def test_the_raster_has_eight_cells_in_order_with_label_over_value(self):
+        panel = _render(actions=["click:0"])
+        kopf = _head(panel)
+        raster = _levels(kopf)[2]
+        zellen = _by_class(raster, "fig")
+        self.assertEqual(8, len(zellen))
+        self.assertEqual(self.FIGUREN, [label for label, _ in _figures(kopf)])
+        # Jede Zelle: erst die Beschriftung, dann der Wert - uebereinander.
+        for zelle in zellen:
+            teile = _levels(zelle)
+            self.assertEqual(["fig-label", "fig-value"], [teil["cls"] for teil in teile])
+            self.assertTrue(teile[0]["text"])
+            self.assertTrue(teile[1]["text"])
+        # Die Zahlen sind die der Antwort - unveraendert, nur beschriftet.
+        self.assertEqual(
+            {"Debit": "1,35", "Break-even": "8,65", "max. Verlust": "135,00",
+             "max. Gewinn": "115,00", "R/R": "1 : 0,8", "nötig": "-5,9 %",
+             "Schwankung": "54,2 %", "Treffer": "31 %"},
+            dict(_figures(kopf)))
+
+    def test_without_the_row_the_three_reachability_cells_stay_dashes(self):
+        # Der Titel steht nicht in der Liste des Tages: die drei Zahlen der
+        # Erreichbarkeit gehoeren zur Zeile und werden nicht geliehen. Das
+        # Raster bleibt achtzellig - die Zellen fallen nicht weg.
+        panel = _render(details=[{"status": 200, "body": _detail("ZZZZ")}],
+                        actions=["click:0"])
+        figuren = _figures(_head(panel))
+        self.assertEqual(8, len(figuren))
+        self.assertEqual(self.FIGUREN, [label for label, _ in figuren])
+        werte = dict(figuren)
+        self.assertEqual("—", werte["nötig"])
+        self.assertEqual("—", werte["Schwankung"])
+        self.assertEqual("—", werte["Treffer"])
+        # Die vier Zahlen des Spreads selbst stehen weiterhin da.
+        self.assertEqual("1,35", werte["Debit"])
+
+    def test_no_dot_separator_between_the_figures_of_the_head(self):
+        panel = _render(actions=["click:0"])
+        kopf = _head(panel)
+        text = kopf["text"]
+        # Kein ' · ' mehr vor einer Zahl ...
+        for label in self.FIGUREN:
+            self.assertNotIn(" · " + label, text)
+        # ... und im Raster gar keiner: die Spalten trennen, nicht Zeichen.
+        self.assertNotIn("·", _levels(kopf)[2]["text"])
+        # Der Titel behaelt genau zwei Trennpunkte: Symbol|Paar und Paar|Name.
+        self.assertEqual(2, _levels(kopf)[0]["text"].count(" · "))
+
+
+class TestTheHeadIsStyledAsThreeLevels(unittest.TestCase):
+    """Das Raster ist ein Raster: vier Spalten, unter 700 px zwei."""
+
+    def _css(self):
+        seite = _page()
+        return seite[seite.index("<style>"):seite.index("</style>")]
+
+    @staticmethod
+    def _rule(css, muster):
+        treffer = re.search(muster + r"\{([^}]*)\}", css)
+        if treffer is None:
+            raise AssertionError("no rule for " + muster)
+        return treffer.group(1)
+
+    @staticmethod
+    def _font_size(block):
+        treffer = re.search(r"font-size:([\d.]+)px", block)
+        if treffer is None:
+            raise AssertionError("no font-size in " + block)
+        return float(treffer.group(1))
+
+    def test_the_raster_is_four_columns_and_two_below_seven_hundred(self):
+        css = self._css()
+        self.assertIn("repeat(4", self._rule(css, r"\.detail-figures"))
+        schmal = re.search(r"@media\s*\(max-width:700px\)\{.*?\.detail-figures"
+                           r"\{([^}]*)\}", css, re.S)
+        if schmal is None:
+            self.fail("no raster rule under 700px")
+        self.assertIn("repeat(2", schmal.group(1))
+
+    def test_the_label_sits_above_its_value_in_small_caps(self):
+        css = self._css()
+        label = self._rule(css, r"\.fig-label")
+        wert = self._rule(css, r"\.fig-value")
+        self.assertIn("text-transform:uppercase", label)
+        self.assertIn("var(--faint)", label)
+        self.assertIn("var(--font-mono)", wert)
+        # Der Wert ist groesser als seine Beschriftung.
+        self.assertGreater(self._font_size(wert), self._font_size(label))
+        # Eine Zelle ist eine Spalte: Beschriftung ueber dem Wert.
+        self.assertIn("flex-direction:column", self._rule(css, r"\.fig"))
+
+    def test_the_title_is_larger_and_the_subtitle_muted(self):
+        css = self._css()
+        titel = self._rule(css, r"\.detail-title")
+        unter = self._rule(css, r"\.detail-head \.detail-sub")
+        self.assertIn("var(--font-mono)", titel)
+        self.assertIn("var(--muted)", unter)
+        # Titel groesser als der alte Kopf (11 px), Untertitel darunter und
+        # leiser als der Titel.
+        self.assertGreater(self._font_size(titel), 11)
+        self.assertLess(self._font_size(unter), self._font_size(titel))
+        # Das Etikett ist eine Beschriftung, kein zweiter Titel.
+        self.assertLess(self._font_size(self._rule(css, r"\.detail-tag")), 11)
+
+    def test_the_new_rules_introduce_no_hex_colour_and_no_inline_style(self):
+        css = self._css()
+        block = css[css.index(".detail-head{"):css.index(".detail-table{")]
+        self.assertNotIn("#", block)          # nur Variablen der Seite
+        for farbe in ("var(--ink)", "var(--muted)", "var(--faint)", "var(--primary)"):
+            self.assertIn(farbe, block)
+        # Kein Inline-Style im Skript: die Form steht in der Stildatei.
+        quelle = PANEL_JS.read_text(encoding="utf-8")
+        self.assertNotIn("style=", quelle)
+        self.assertNotIn(".style.", quelle)
 
 
 class TestThePanelStaysFreeOfForeignCode(unittest.TestCase):

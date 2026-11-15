@@ -149,8 +149,40 @@
 
     /* Das Detail eines Spreads: Kopfzeile, Leg-Tabelle, eine gezeichnete
        G&V-Kurve (SVG aus dem Skript, keine Fremdbibliothek), Szenarien. */
-    .detail-head{font-family:var(--font-mono);font-size:11px;color:var(--ink);
-      margin:4px 0 10px;line-height:1.8}
+    /* Der Kopf hat drei Ebenen statt einer Zeile: Titel, Untertitel, Raster.
+       Dreizehn Angaben hintereinander liessen sich nicht mehr zuordnen. */
+    .detail-head{margin:4px 0 12px}
+    /* Die Titelzeile ist eine Reihe: Symbol und Paar als Text, der Charakter als
+       Etikett daneben, der Name dahinter. Der Abstand kommt aus dem Raster, nicht
+       aus Trennzeichen im Text. */
+    .detail-title{font-family:var(--font-mono);font-size:13px;color:var(--ink);
+      margin:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 9px;
+      line-height:1.5}
+    /* Der Charakter ist ein Etikett am Paar: Versalien, Akzentkante, klein -
+       eine Beschriftung, keine zweite Aussage. */
+    .detail-tag{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.08em;
+      text-transform:uppercase;color:var(--primary);border:1px solid var(--edge);
+      padding:0 5px;line-height:1.7}
+    /* Der Untertitel des Kopfes ist Fliesstext, kein Zwischentitel: deshalb
+       `detail-head-sub` ueber `detail-sub` - dessen Versalien und Grossabstand
+       gehoeren den Abschnitten (Legs, Bild, Szenarien). */
+    .detail-head .detail-sub{font-family:var(--font-mono);font-size:10.5px;
+      letter-spacing:0;text-transform:none;color:var(--muted);margin:3px 0 0}
+    /* Acht Zahlen, vier Spalten: Beschriftung ueber Wert. Unter 700 px bleiben
+       zwei Spalten - vier Zellen auf Handybreite braechen die Zahlen. */
+    .detail-figures{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));
+      gap:12px 16px;margin:12px 0 14px;padding:10px 0;
+      border-top:1px dotted var(--hair-soft);
+      border-bottom:1px dotted var(--hair-soft)}
+    .fig{display:flex;flex-direction:column;gap:1px;min-width:0}
+    .fig-label{font-family:var(--font-mono);font-size:9px;letter-spacing:.1em;
+      text-transform:uppercase;color:var(--faint);white-space:nowrap;
+      overflow:hidden;text-overflow:ellipsis}
+    .fig-value{font-family:var(--font-mono);font-size:13px;color:var(--ink);
+      font-variant-numeric:tabular-nums}
+    @media (max-width:700px){
+      .detail-figures{grid-template-columns:repeat(2,minmax(0,1fr))}
+    }
     .detail-sub{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
       text-transform:uppercase;color:var(--faint);margin:16px 0 4px}
     .detail-table{font-size:10.5px;margin:0}
