@@ -477,3 +477,18 @@ def _scan_limit(name, raw, default, ceiling, *, integer, minimum):
 
 
 _SCAN_LIMIT_PARAMS = ("max_symbols", "max_expirations", "max_seconds", "concurrency")
+
+
+def _same_strike(one, other):
+    """Two strikes are the same when they agree at the precision the row KEEPS.
+
+    Every strike the funnel publishes is rounded to two decimals
+    (``gap_funnel._round2``), so a listed contract of 15.335 reaches the page as
+    15.34 and comes back as ``long=15.34``. Comparing the raw numbers (a
+    ``1e-6`` window) would call those two different and answer ``leg_not_listed``
+    for a contract that IS listed; comparing them at two decimals is exactly the
+    precision the round trip carries.
+    """
+    if not isinstance(one, (int, float)) or not isinstance(other, (int, float)):
+        return False
+    return round(float(one), 2) == round(float(other), 2)

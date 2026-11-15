@@ -11,6 +11,7 @@ earnings adapter). ``app.logger`` became ``current_app.logger``.
 from __future__ import annotations
 
 import math
+import re
 from datetime import datetime, timedelta
 
 import arrow
@@ -29,6 +30,7 @@ from .gap_scan import (
     reaction_day_rows,
     select_candidates,
 )
+from .reachability import HISTORY_BARS
 from .view_support import _DATE_RE, _calendar_failure, _scan_limit, _us_today
 
 GAP_SCAN_MODE = "post_earnings_gap"
@@ -40,6 +42,43 @@ _GAP_DEADLINE_SECONDS = 120
 _GAP_PREVIOUS_LOOKBACK_DAYS = 10
 _GAP_PUBLICATION_GRACE_DAYS = 7
 _US_CLOSE_HOUR_ET = 16
+
+
+_GAP_SPREADS_PARAMETERS = ("max_required_move_pct",)
+_GAP_SPREADS_NOTES = (
+    "Gerechnet wird auf dem letzten verfügbaren Marktstand "
+    "(data_mode=last_available) - es gibt keinen Altersfilter.",
+    "R/R = net_return_pct / 100, Gebühren eingeschlossen "
+    "(fees=0.0 USD je Position, weil dieses Repo keine Gebührenordnung kennt).",
+    "Verfall: die erste gelistete Reihe STRIKT nach dem nächsten "
+    "Berichtstermin; ohne Berichtstermin oder ohne spätere Reihe entfällt "
+    "der Kandidat.",
+    "Strike-Paar: alle Kombinationen des Verfalls, höchstes R/R - aber nur "
+    "mit |Delta| des Long-Legs >= 20 und Netto-Debit >= 0.50 USD.",
+    "Laufzeit (dte) in Kalendertagen ab dem gescannten Tag, nicht ab heute.",
+    "Nötige Bewegung = Abstand des Schlusskurses zum Break-even des Spreads "
+    "in Prozent (Vorzeichen = Richtung); zugelassen ist ein Betrag bis "
+    f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f} %. Das R/R hat weiterhin "
+    "nur eine Untergrenze, keine Obergrenze.",
+    "Trefferquote = Anteil der vergangenen Fenster von so vielen "
+    "Handelstagen, wie die Laufzeit bis Verfall umfasst (dte in "
+    "Kalendertagen, je Zeile in window_sessions umgerechnet), in denen der "
+    "Kurs die nötige Bewegung mindestens erreicht hat; gemessen an "
+    f"höchstens {HISTORY_BARS} Tagesbars. Eine Häufigkeit, "
+    "keine Wahrscheinlichkeit.",
+)
+_GAP_SPREADS_SCHEMA_VERSION = "1.0"
+_SPREAD_DETAIL_CODES = {
+    gap_funnel.REASON_NO_NEXT_EARNINGS: "no_next_earnings",
+    gap_funnel.REASON_NO_EXPIRY: "no_expiry_after_earnings",
+    gap_funnel.REASON_NO_SPREAD: "no_spread_ge_rr",
+    gap_funnel.REASON_NOT_OPTIONABLE: "chain_unavailable",
+    # The spread exists but is too far away; the list would not show it
+    # either, and the detail says the same thing with the same code.
+    gap_funnel.REASON_MOVE_TOO_FAR: "move_too_far",
+}
+_STRUCTURE_PARAMS = ("expiration", "long", "short")
+_SPREAD_DETAIL_SYMBOL_RE = re.compile(r"^[A-Z][A-Z0-9]{0,5}([.\-][A-Z0-9]{1,3})?$")
 
 
 def _gap_scan_error(status, code, message=None, *, source_code=None, source_status=None):
