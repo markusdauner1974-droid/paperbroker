@@ -1240,37 +1240,101 @@
       dte: zeile.dte, history_state: null };
   }
 
-  // Der Kopf nennt die STRUKTUR: welches Paar, und welcher Charakter es hat.
-  // "NU · 13/17 · nah am Geld" sagt in einer Zeile, was der Block zeigt.
-  function structureHead(detail) {
+  // Ein Datum der Route ist ISO ("2027-02-19"), gelesen wird es deutsch
+  // ("19.02.2027"): der Leser sucht den Tag, nicht die Sortierform. Ein Feld
+  // ohne Datum bleibt ein Strich - kein erfundenes Datum.
+  function dayText(iso) {
+    var treffer = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(iso === undefined || iso === null ? '' : iso));
+    if (!treffer) return '—';
+    return treffer[3] + '.' + treffer[2] + '.' + treffer[1];
+  }
+
+  // Eine Zelle des Kennzahlen-Rasters: Beschriftung UEBER dem Wert. Die
+  // Beschriftung traegt die Bedeutung, damit die Zahl daneben keine Zuordnung
+  // aus dem Zusammenhang braucht.
+  function figure(label, value) {
+    var zelle = document.createElement('span');
+    zelle.className = 'fig';
+    var beschriftung = document.createElement('span');
+    beschriftung.className = 'fig-label';
+    beschriftung.textContent = label;
+    var wert = document.createElement('span');
+    wert.className = 'fig-value';
+    wert.textContent = value;
+    zelle.appendChild(beschriftung);
+    zelle.appendChild(wert);
+    return zelle;
+  }
+
+  // Die acht Zahlen des Spreads, in dieser Reihenfolge. Das Raster ist IMMER
+  // achtzellig: fehlt eine Zahl, steht dort ein Strich - eine fehlende Zelle
+  // wuerde die Spalten untereinander verschieben und die Reihenfolge luegen.
+  // Die drei Zahlen der Erreichbarkeit kommen aus der Zeile (structureFor);
+  // kennt die Liste die Struktur nicht, bleiben genau diese drei leer.
+  function figures(detail, zeile) {
+    var raster = document.createElement('div');
+    raster.className = 'detail-figures';
+    raster.appendChild(figure('Debit', de(detail.net_debit, 2)));
+    raster.appendChild(figure('Break-even', de(detail.breakeven, 2)));
+    raster.appendChild(figure('max. Verlust', de(detail.max_loss, 2)));
+    raster.appendChild(figure('max. Gewinn', de(detail.max_profit, 2)));
+    raster.appendChild(figure('R/R', rrText(detail.rr)));
+    raster.appendChild(figure('nötig', zeile ? moveText(zeile.required_move_pct) : '—'));
+    raster.appendChild(figure('Schwankung',
+      zeile && num(zeile.volatility_pct) ? de(zeile.volatility_pct, 1) + ' %' : '—'));
+    raster.appendChild(figure('Treffer',
+      zeile && num(zeile.hit_rate_pct) ? de(zeile.hit_rate_pct, 0) + ' %' : '—'));
+    return raster;
+  }
+
+  // Der Kopf des Details hat DREI Ebenen statt einer Zeile mit dreizehn
+  // Angaben: Titel (Symbol, Paar, Charakter als Etikett, Name), Untertitel
+  // (Strategie und Verfall) und das Raster der acht Zahlen. In einem Absatz
+  // gingen die Zuordnungen in den Trennpunkten verloren - "1 : 2,2 · Break-even
+  // 25,90 · Debit 1,90" liest niemand als Tabelle.
+  function detailHead(detail, zeile) {
     var strikes = detail.strikes || {};
-    var text = detail.symbol || '–';
-    if (num(strikes.long) && num(strikes.short)) {
-      text += ' · ' + strikeText(strikes.long) + '/' + strikeText(strikes.short);
+    var kopf = document.createElement('div');
+    kopf.className = 'detail-head';
+
+    var titel = document.createElement('p');
+    titel.className = 'detail-title';
+    var paar = num(strikes.long) && num(strikes.short)
+      ? strikeText(strikes.long) + '/' + strikeText(strikes.short) : null;
+    titel.textContent = String(detail.symbol || '–') + (paar ? ' · ' + paar : '');
+    // Der Charakter ist ein Etikett NEBEN dem Paar, kein Satzglied: er
+    // beschreibt das Paar, nicht den Titel.
+    if (detail.structure_label) {
+      var etikett = document.createElement('span');
+      etikett.className = 'detail-tag';
+      etikett.textContent = detail.structure_label;
+      titel.appendChild(etikett);
     }
-    if (detail.structure_label) text += ' · ' + detail.structure_label;
-    return text;
+    if (detail.name) {
+      var namenszug = document.createElement('span');
+      namenszug.className = 'detail-name';
+      namenszug.textContent = ' · ' + detail.name;
+      titel.appendChild(namenszug);
+    }
+    kopf.appendChild(titel);
+
+    var unter = document.createElement('p');
+    // Zwei Klassen: `detail-sub` benennt die Ebene, `detail-head-sub` haelt sie
+    // von den Zwischentiteln des Blocks (Legs, Bild, Szenarien) getrennt - die
+    // sind Versalien, der Untertitel des Kopfes ist Fliesstext.
+    unter.className = 'detail-sub detail-head-sub';
+    unter.textContent = (detail.strategy_label || STRATEGY[detail.strategy] || '–')
+      + ' · Verfall ' + dayText(detail.expiration);
+    kopf.appendChild(unter);
+
+    kopf.appendChild(figures(detail, zeile));
+    return kopf;
   }
 
   function renderDetail(detail) {
     el.detailBody.textContent = '';
     var zeile = structureFor(detail);
-
-    var kopf = document.createElement('p');
-    kopf.className = 'detail-head';
-    kopf.textContent = structureHead(detail)
-      + (detail.name ? ' · ' + detail.name : '')
-      + ' · ' + (detail.strategy_label || STRATEGY[detail.strategy] || '–')
-      + ' · Verfall ' + (detail.expiration || '–')
-      + ' · Debit ' + de(detail.net_debit, 2)
-      + ' · max. Verlust ' + de(detail.max_loss, 2)
-      + ' · Break-even ' + de(detail.breakeven, 2)
-      + ' · max. Gewinn ' + de(detail.max_profit, 2)
-      + ' · R/R ' + rrText(detail.rr)
-      + (zeile ? ' · nötig ' + moveText(zeile.required_move_pct)
-        + ' · Schwankung ' + (num(zeile.volatility_pct) ? de(zeile.volatility_pct, 1) + ' %' : '—')
-        + ' · Treffer ' + (num(zeile.hit_rate_pct) ? de(zeile.hit_rate_pct, 0) + ' %' : '—') : '');
-    el.detailBody.appendChild(kopf);
+    el.detailBody.appendChild(detailHead(detail, zeile));
 
     el.detailBody.appendChild(subtitle('Beide Legs'));
     el.detailBody.appendChild(legTable(detail.legs));
