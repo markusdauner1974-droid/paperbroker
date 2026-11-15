@@ -80,6 +80,7 @@ from .next_earnings import NextEarningsAdapter
 from .PaperBroker import PaperBroker
 from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
 from .reachability import HISTORY_BARS
+from .routes import health as health_routes
 from .screener import (
     DEFAULT_STRATEGY,
     FUTURE_TOLERANCE_S,
@@ -511,11 +512,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
             return jsonify(error=getattr(err, "description", "bad request")), 400
         return err
 
-    @app.get("/healthz")
-    def healthz():
-        # liveness only: no CBOE, no xang - must stay green in LAN tests
-        # even when the internet is down
-        return jsonify(status="ok")
+    health_routes.register(app)
 
     def _in_dte_window(dte, criteria):
         # Same semantics as the screener's per-quote DTE filter
