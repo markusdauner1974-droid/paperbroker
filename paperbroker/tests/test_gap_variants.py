@@ -50,8 +50,8 @@ REACTION = date(2026, 11, 12)
 
 #: The fields of one variant, in the order of the agreed contract.
 VARIANT_KEYS = {"label", "long_strike", "short_strike", "net_debit", "max_loss",
-                "max_profit", "rr", "required_move_pct", "bid_ask_pct", "hit_rate_pct",
-                "windows_measured", "liquidity", "open_interest"}
+                "max_profit", "rr", "chance", "required_move_pct", "bid_ask_pct",
+                "hit_rate_pct", "windows_measured", "liquidity", "open_interest"}
 
 
 def character_chain():
@@ -423,6 +423,9 @@ class TheRunCarriesTheCharacters(unittest.TestCase):
             # The bars are the row's: a measured rate, not a null.
             self.assertIsNotNone(variant["hit_rate_pct"])
             self.assertGreater(variant["windows_measured"], 0)
+            # ... and its chance is that rate times its own R/R.
+            self.assertEqual(variant["chance"],
+                             round(variant["hit_rate_pct"] / 100.0 * variant["rr"], 2))
 
     def test_the_row_keeps_its_documented_shape(self):
         row = self._row()

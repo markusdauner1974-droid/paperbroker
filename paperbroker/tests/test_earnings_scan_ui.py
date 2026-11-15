@@ -116,9 +116,9 @@ class TestTheOldScreenIsGone(unittest.TestCase):
         seite = _page()
         self.assertEqual(1, seite.count("<table"))
         self.assertIn('id="funnel-table"', seite)
-        # die siebzehn Spalten des Trichters (drei davon: nötige Bewegung,
+        # die siebzehn Spalten des Trichters (vier davon: Chance, nötige Bewegung,
         # Schwankung, Treffer), nicht die zwoelf des Einzelscans
-        self.assertEqual(16, seite.count("<th>"))
+        self.assertEqual(17, seite.count("<th>"))
 
     def test_the_page_carries_no_inline_javascript(self):
         seite = _page()

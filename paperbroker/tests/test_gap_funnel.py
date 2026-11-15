@@ -922,6 +922,55 @@ class ResultSortTests(unittest.TestCase):
         self.assertEqual([row["symbol"] for row in rows], ["AAA", "BBB"])
 
 
+class ChanceTests(unittest.TestCase):
+    """``chance`` = Trefferquote x R/R - shown on the row, never sorted by."""
+
+    def test_the_chance_is_the_hit_rate_times_the_ratio(self):
+        # 27.02 % of the windows reached break-even, the pair pays 1 : 8.09.
+        self.assertEqual(gap_funnel_mod.chance_of(27.02, 8.09), 2.19)
+
+    def test_a_missing_hit_rate_or_ratio_is_null_and_never_a_zero(self):
+        for rate, rr in ((None, 8.09), (27.02, None), (None, None)):
+            self.assertIsNone(gap_funnel_mod.chance_of(rate, rr),
+                              f"rate={rate} rr={rr}")
+
+    def test_a_measured_zero_rate_stays_a_zero(self):
+        # 0 % is a measurement ("this window never reached break-even") and is
+        # NOT the same fact as "not measured".
+        self.assertEqual(gap_funnel_mod.chance_of(0.0, 8.09), 0.0)
+
+    def test_the_field_is_always_there(self):
+        row = {"hit_rate_pct": None, "rr": 8.09, "variants": []}
+        self.assertIsNone(gap_funnel_mod.fill_chance(row)["chance"])
+        self.assertIn("chance", row)
+
+    def test_the_row_and_each_variant_carry_their_own_chance(self):
+        row = {"hit_rate_pct": 27.02, "rr": 8.09,
+               "variants": [{"hit_rate_pct": 40.0, "rr": 5.0},
+                            {"hit_rate_pct": None, "rr": 5.0}]}
+        gap_funnel_mod.fill_chance(row)
+        self.assertEqual(row["chance"], 2.19)
+        self.assertEqual([variant["chance"] for variant in row["variants"]],
+                         [2.0, None])
+
+    def test_the_sort_still_follows_the_hit_rate_not_the_chance(self):
+        # Opposed on purpose: AAA is reached more often, BBB pays far more per
+        # unit of risk. Measured by CHANCE, BBB would lead; the list is ordered
+        # by the hit rate, so AAA stays first.
+        aaa = {"symbol": "AAA", "hit_rate_pct": 60.0, "rr": 3.0,
+               "required_move_pct": 5.0, "gap_pct": 20.0}
+        bbb = {"symbol": "BBB", "hit_rate_pct": 40.0, "rr": 10.0,
+               "required_move_pct": 5.0, "gap_pct": 3.0}
+        gap_funnel_mod.fill_chance(aaa)
+        gap_funnel_mod.fill_chance(bbb)
+        self.assertEqual((aaa["chance"], bbb["chance"]), (1.8, 4.0))
+        self.assertLess(aaa["chance"], bbb["chance"])
+        self.assertGreater(aaa["hit_rate_pct"], bbb["hit_rate_pct"])
+        rows = [bbb, aaa]
+        rows.sort(key=gap_funnel_mod.result_sort_key)
+        self.assertEqual([row["symbol"] for row in rows], ["AAA", "BBB"])
+
+
 # --- the endpoint ---------------------------------------------------------- #
 def calendar_row(symbol, session=None, name=None):
     return {"symbol": symbol, "name": name or f"{symbol} Inc.", "session": session,
@@ -1056,7 +1105,7 @@ COUNT_KEYS = ("calendar_rows", "gaps_computed", "over_threshold", "turnover_pass
 ROW_KEYS = {"symbol", "name", "gap_pct", "direction", "strategy", "strategy_label", "close",
             "turnover_usd", "earnings_date", "next_earnings_date", "expiration", "dte",
             "long_strike", "short_strike", "long_delta", "short_delta", "net_debit",
-            "max_loss", "max_profit", "rr", "net_return_pct", "liquidity", "open_interest",
+            "max_loss", "max_profit", "rr", "chance", "net_return_pct", "liquidity", "open_interest",
             "bid_ask_pct", "position_debit", "pairs_possible", "pairs_possible_measured",
             "pairs_possible_exact", "pairs_enumerated", "pairs_limit", "pairs_capped",
             "required_move_pct", "required_move_direction", "volatility_pct",
@@ -1227,6 +1276,19 @@ class EndpointTests(unittest.TestCase):
             self.assertGreater(row["windows_measured"], 0)
             self.assertIn(row["required_move_direction"], ("up", "down"))
 
+    def test_the_row_carries_the_chance_of_its_own_numbers(self):
+        # Chance = Trefferquote x R/R, from the same two numbers the row shows -
+        # and the order stays the hit rate's (see ResultSortTests / ChanceTests).
+        _antwort, body, _chains, _dates = self._get()
+        for row in body["results"]:
+            self.assertEqual(row["chance"],
+                             round(row["hit_rate_pct"] / 100.0 * row["rr"], 2),
+                             row["symbol"])
+            for variant in row["variants"] or ():
+                self.assertEqual(variant["chance"],
+                                 round(variant["hit_rate_pct"] / 100.0
+                                       * variant["rr"], 2))
+
     def test_a_short_history_is_null_and_not_zero(self):
         # 40 sessions cannot answer a question about a 155-session window: the
         # row keeps nulls and a named state - a 0 % would read as "measured,
@@ -1241,6 +1303,7 @@ class EndpointTests(unittest.TestCase):
         self.assertIsNone(bbb["hit_rate_pct"])
         self.assertIsNone(bbb["volatility_pct"])
         self.assertIsNone(bbb["daily_move_pct"])
+        self.assertIsNone(bbb["chance"])
         self.assertEqual(bbb["windows_measured"], 0)
         # A row without a measurement stands behind a measured one.
         self.assertEqual(body["results"][0]["symbol"], "AAA")

@@ -57,7 +57,7 @@ PANEL_JS = Path(paperbroker.__file__).parent / "static" / "gap_funnel.js"
 HEADERS = [
     "Nummer", "Symbol", "Gap Prozent", "Strategie", "Kurs",
     "Strikes (Long / Short)", "maximaler Verlust", "maximaler Gewinn",
-    "R/R", "nötig %", "Schwankung", "Treffer", "Verfall", "DTE",
+    "R/R", "Chance", "nötig %", "Schwankung", "Treffer", "Verfall", "DTE",
     "nächster Bericht", "Optionen",
 ]
 
@@ -418,7 +418,7 @@ class TestThePageIsOneFunnel(unittest.TestCase):
         self.assertNotIn('id="funnel-day" value=', seite)
         self.assertEqual(1, seite.count('type="date"'))
 
-    def test_the_table_has_the_sixteen_agreed_columns(self):
+    def test_the_table_has_the_seventeen_agreed_columns(self):
         seite = _page()
         kopf = seite.split("<thead>")[1].split("</thead>")[0]
         spalten = [t.strip() for t in re.findall(r"<th>(.*?)</th>", kopf, re.S)]
@@ -475,11 +475,11 @@ class TestTheRowsSpeakTheAnswer(unittest.TestCase):
         panel = _render(_answer(200, _body(results=_three())), click=True)
         self.assertEqual("/api/v1/gap-spreads?day=" + DAY, panel["url"])
 
-    def test_one_candidate_becomes_one_row_of_sixteen_cells(self):
+    def test_one_candidate_becomes_one_row_of_seventeen_cells(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
         self.assertEqual(3, len(panel["rows"]))
         self.assertFalse(panel["tableHidden"])
-        self.assertEqual([16] * 3, [len(r["cells"]) for r in panel["rows"]])
+        self.assertEqual([17] * 3, [len(r["cells"]) for r in panel["rows"]])
         self.assertEqual(["CTVA", "UPCO", "MIDW"], [r["symbol"] for r in panel["rows"]])
 
     def test_the_cells_carry_the_numbers_of_the_answer(self):
@@ -500,17 +500,18 @@ class TestTheRowsSpeakTheAnswer(unittest.TestCase):
         self.assertEqual("115,00", erste[7])
         # Risiko : Gewinn, mit Dezimalkomma.
         self.assertEqual("1 : 2,1", erste[8])
-        self.assertEqual("2027-03-19", erste[12])
-        self.assertEqual("126", erste[13])
-        self.assertEqual("2027-02-01", erste[14])
+        # Die Chance (Index 9) schiebt alles danach um eine Spalte nach hinten.
+        self.assertEqual("2027-03-19", erste[13])
+        self.assertEqual("126", erste[14])
+        self.assertEqual("2027-02-01", erste[15])
 
     def test_the_options_cell_names_both_legs_and_the_liquidity(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
-        erste = panel["rows"][0]["cells"][15]
+        erste = panel["rows"][0]["cells"][16]
         self.assertIn("OI 820 / 410", erste)
         self.assertIn("Bid-Ask 6,1 % / 9,4 %", erste)
         self.assertIn("voll liquide", erste)
-        zweite = panel["rows"][1]["cells"][15]
+        zweite = panel["rows"][1]["cells"][16]
         self.assertIn("OI 140 / 120", zweite)
         self.assertIn("dünn", zweite)
         self.assertNotIn("voll liquide", zweite)

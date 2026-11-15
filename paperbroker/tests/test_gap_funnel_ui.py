@@ -430,7 +430,10 @@ def _variant(label="nah am Geld", long_strike=13.0, short_strike=17.0, debit=0.9
     """One character of the row, in the fields the list delivers."""
     return {"label": label, "long_strike": long_strike, "short_strike": short_strike,
             "net_debit": debit, "max_loss": round(debit * 100, 2),
-            "max_profit": max_profit, "rr": rr, "required_move_pct": move,
+            "max_profit": max_profit, "rr": rr,
+            # Chance = Trefferquote x R/R, wie die Route sie liefert.
+            "chance": None if hit is None else round(hit / 100.0 * rr, 2),
+            "required_move_pct": move,
             "bid_ask_pct": bid_ask, "hit_rate_pct": hit,
             "windows_measured": windows, "liquidity": liquidity,
             "open_interest": list(oi)}
@@ -466,6 +469,7 @@ def _row(symbol="CTVA", direction="down", label="Bear Put", move=-5.9,
         "expiration": "2027-03-19", "dte": 126, "long_strike": 10.0,
         "short_strike": 7.5, "long_delta": -62.0, "short_delta": -31.0,
         "net_debit": 1.35, "max_loss": 135.0, "max_profit": 115.0, "rr": 2.13,
+        "chance": None if hit is None else round(hit / 100.0 * 2.13, 2),
         "net_return_pct": 85.2, "liquidity": "full", "open_interest": [820, 410],
         "bid_ask_pct": [6.1, 9.4], "position_debit": 135.0,
         "required_move_pct": move,
@@ -648,9 +652,12 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
     def test_the_three_columns_stand_directly_after_the_ratio(self):
         spalten = self._headers()
         stelle = spalten.index("R/R")
-        self.assertEqual(spalten[stelle + 1:stelle + 4], ["nötig %", "Schwankung", "Treffer"])
+        # Direkt am R/R steht die Chance (eine Lesehilfe, keine Sortierung);
+        # die drei Messgroessen folgen unmittelbar darauf.
+        self.assertEqual(spalten[stelle + 1], "Chance")
+        self.assertEqual(spalten[stelle + 2:stelle + 5], ["nötig %", "Schwankung", "Treffer"])
         # EINE Spalte je Frage, keine vierte: was danach kommt, ist der Verfall.
-        self.assertEqual(spalten[stelle + 4], "Verfall")
+        self.assertEqual(spalten[stelle + 5], "Verfall")
 
     def test_the_head_names_the_rule_of_the_run(self):
         # Die Kopfzeile traegt die Huerde als eigenen Knoten: sie wird aus
@@ -673,19 +680,19 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
     def test_the_row_shows_all_three_numbers_in_order(self):
         panel = _render(actions=[])
         zellen = panel["cells"][0]
-        # Nach R/R (Index 8) folgen noetig %, Schwankung, Treffer.
-        self.assertIn("↓ -5,9 %", zellen[9])
-        self.assertIn("54,2 %", zellen[10])
-        self.assertIn("Tag 3,1 %", zellen[10])
-        self.assertIn("31 %", zellen[11])
-        self.assertIn("n=394", zellen[11])
+        # Nach R/R (Index 8) folgt die Chance, dann noetig %, Schwankung, Treffer.
+        self.assertIn("↓ -5,9 %", zellen[10])
+        self.assertIn("54,2 %", zellen[11])
+        self.assertIn("Tag 3,1 %", zellen[11])
+        self.assertIn("31 %", zellen[12])
+        self.assertIn("n=394", zellen[12])
 
     def test_the_hit_cell_names_the_sessions_behind_the_rate(self):
         # Die Zelle nennt BEIDE Einheiten: n = Zahl der Fenster, HT = ihre
         # Laenge in Handelstagen. dte (126) steht in der Verfallspalte daneben -
         # Kalendertage, nicht Handelstage.
         panel = _render(actions=[])
-        treffer = panel["cells"][0][11]
+        treffer = panel["cells"][0][12]
         self.assertIn("n=394", treffer)
         self.assertIn("87 HT", treffer)
         self.assertNotIn("126 HT", treffer)
@@ -695,14 +702,14 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
         # nicht "0 HT" (eine Laenge von null gibt es nicht).
         panel = _render(list_body={**_list(), "results": [
             _row("SPIR", hit=None, windows=0, sessions=0, state="too_short")]})
-        treffer = panel["cells"][0][11]
+        treffer = panel["cells"][0][12]
         self.assertNotIn("HT", treffer)
         self.assertIn("zu wenig Historie", treffer)
 
     def test_a_rising_move_carries_the_up_arrow_and_the_plus(self):
         panel = _render(list_body={**_list(), "results": [
             _row("LAND", "up", "Bull Call", move=10.1)]})
-        zelle = panel["cells"][0][9]
+        zelle = panel["cells"][0][10]
         self.assertIn("↑", zelle)
         self.assertIn("+10,1 %", zelle)
         self.assertIn("steigen", zelle)
@@ -714,12 +721,13 @@ class TestTheThreeReachabilityColumns(unittest.TestCase):
             _row("SPIR", move=None, volatility=None, daily=None, hit=None,
                  windows=0, sessions=0, state="too_short")]})
         zellen = panel["cells"][0]
-        self.assertIn("—", zellen[9])
-        self.assertNotIn("0 %", zellen[9])
+        self.assertIn("—", zellen[9])          # Chance: keine Trefferquote, keine Zahl
         self.assertIn("—", zellen[10])
+        self.assertNotIn("0 %", zellen[10])
         self.assertIn("—", zellen[11])
-        self.assertNotIn("n=0", zellen[11])
-        self.assertIn("zu wenig Historie", zellen[11])
+        self.assertIn("—", zellen[12])
+        self.assertNotIn("n=0", zellen[12])
+        self.assertIn("zu wenig Historie", zellen[12])
 
     def test_the_foot_explains_the_frequency_with_window_length_and_count(self):
         panel = _render(actions=[])
@@ -1022,6 +1030,70 @@ def _three_variants():
         _variant("am Widerstand", 15.0, 22.0, 1.10, 590.0, 5.36, -8.1, 12.4, 12.0),
         _variant("engster Spread", 10.0, 13.0, 1.40, 160.0, 1.14, -2.2, 4.1, 41.0),
     ]
+
+
+class TestTheChanceColumn(unittest.TestCase):
+    """Die Spalte ``Chance``: eine Zahl zum Lesen, keine zweite Sortierung."""
+
+    def _headers(self):
+        seite = _page()
+        kopf = seite.split("<thead>")[1].split("</thead>")[0]
+        return [t.strip() for t in re.findall(r"<th>(.*?)</th>", kopf, re.S)]
+
+    def test_the_column_stands_directly_after_the_ratio(self):
+        spalten = self._headers()
+        self.assertEqual(spalten[spalten.index("R/R") + 1], "Chance")
+        self.assertEqual(spalten.count("Chance"), 1)
+
+    def test_the_row_shows_the_formatted_number(self):
+        # 31 % x 2,13 = 0,66 - deutsches Komma, zwei Stellen.
+        panel = _render()
+        self.assertEqual("0,66", panel["cells"][0][9])
+        self.assertEqual(len(panel["cells"][0]), len(self._headers()))
+
+    def test_a_missing_chance_is_a_dash_and_never_a_zero(self):
+        # Kein R/R, keine Chance: der Strich sagt "nicht gerechnet".
+        panel = _render(list_body={**_list(), "results": [
+            {**_row("SPIR"), "chance": None}]})
+        self.assertEqual("—", panel["cells"][0][9])
+        self.assertNotIn("0", panel["cells"][0][9])
+
+    def test_the_sub_row_carries_its_own_chance_at_the_same_position(self):
+        # Die Unterzeile hat ihre eigene Trefferquote und ihr eigenes R/R -
+        # 22 % x 3,44 = 0,76 - und sie steht in DERSELBEN Spalte wie oben.
+        panel = _render(list_body={**_list(), "results": [
+            _row(variants=_three_variants())]}, actions=["btn:0"])
+        self.assertEqual("0,66", panel["cells"][0][9])
+        self.assertEqual(["0,76", "0,64", "0,47"],
+                         [panel["cells"][i][9] for i in (1, 2, 3)])
+        for zellen in panel["cells"]:
+            self.assertEqual(len(zellen), len(self._headers()))
+
+    def test_the_list_keeps_the_order_of_the_answer(self):
+        # Zwei Zeilen, gegenlaeufig: die erste hat die HOEhere Trefferquote
+        # und die NIEDRIGERE Chance. Die Seite sortiert nicht - sie zeigt die
+        # Reihenfolge der Antwort.
+        hoch = {**_row("AAA", hit=60.0), "rr": 3.0, "chance": 1.8}
+        tief = {**_row("BBB", hit=40.0), "rr": 10.0, "chance": 4.0}
+        panel = _render(list_body={**_list(), "results": [hoch, tief]})
+        self.assertEqual(["AAA", "BBB"], [row["symbol"] for row in panel["rows"]])
+        self.assertEqual(["1,80", "4,00"], [panel["cells"][i][9] for i in (0, 1)])
+
+    def test_the_foot_explains_the_chance_column_too(self):
+        # Die Spalte steht in der Liste, also muss der Fuss sie erklaeren -
+        # inklusive der einen Aussage, die sie NICHT macht: sortieren tut sie nichts.
+        panel = _render(actions=[])
+        self.assertIn("Chance = Trefferquote × R/R", panel["foot"])
+        self.assertIn("Obergrenze des Erwartungswerts", panel["foot"])
+        self.assertIn("Sortiert wird nach Trefferquote", panel["foot"])
+
+    def test_the_methodology_sentence_names_the_bound_and_the_order(self):
+        panel = _render(actions=["click:0"])
+        text = panel["detail"]["text"]
+        self.assertIn("Chance = Trefferquote × R/R", text)
+        self.assertIn("Obergrenze des Erwartungswerts", text)
+        self.assertIn("keine Zusage", text)
+        self.assertIn("Sortiert wird weiter nach Trefferquote", text)
 
 
 class TestTheAlternativesAreSubRows(unittest.TestCase):
