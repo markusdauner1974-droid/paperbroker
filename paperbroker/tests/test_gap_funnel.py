@@ -762,10 +762,10 @@ class ReachabilityFunnelTests(unittest.TestCase):
         self.assertEqual(grund.reason, gap_funnel_mod.REASON_MOVE_TOO_FAR)
         # (91.00 / 60.00 - 1) * 100 = 51.67 % - the number, not a label.
         self.assertEqual(grund.required_move_pct, 51.67)
-        self.assertEqual(grund.max_required_move_pct, 20.0)
+        self.assertEqual(grund.max_required_move_pct, 30.0)
         self.assertEqual(grund.as_dict()["required_move_pct"], 51.67)
         self.assertIn("51,67 % steigen", grund.message)
-        self.assertIn("zugelassen sind 20 %", grund.message)
+        self.assertIn("zugelassen sind 30 %", grund.message)
 
     def test_the_bound_holds_at_equality_and_only_break_above_it(self):
         # break-even 101 on a close of 100 is exactly 1.00 %.
@@ -779,17 +779,24 @@ class ReachabilityFunnelTests(unittest.TestCase):
         self.assertEqual(knapp.results, [])
         self.assertEqual(knapp.excluded[0].reason, gap_funnel_mod.REASON_MOVE_TOO_FAR)
 
-    def test_the_default_bound_is_twenty_percent(self):
-        self.assertEqual(gap_funnel_mod.DEFAULT_MAX_REQUIRED_MOVE_PCT, 20.0)
+    def test_the_default_bound_is_thirty_percent(self):
+        self.assertEqual(gap_funnel_mod.DEFAULT_MAX_REQUIRED_MOVE_PCT, 30.0)
         run = self._run([candidate("AAA", close=60.0)], {"AAA": far_call_chain()})
-        self.assertEqual(run.excluded[0].max_required_move_pct, 20.0)
+        self.assertEqual(run.excluded[0].max_required_move_pct, 30.0)
 
     def test_the_bound_reads_the_absolute_move_of_a_put_too(self):
-        # A put spread breaks even BELOW the close: 79 on 100 is -21 %.
-        run = self._run([candidate("AAA", gap_pct=-9.0, direction="down", close=100.0)],
-                        {"AAA": far_put_chain()})
-        self.assertEqual(run.results, [])
-        grund = run.excluded[0]
+        # A put spread breaks even BELOW the close, and the bound is on the
+        # DISTANCE: the 21 % put is inside a 30 % bound, the same position
+        # against a 15 % bound is outside it - a sign is not a direction.
+        innen = self._run([candidate("AAA", gap_pct=-9.0, direction="down", close=100.0)],
+                          {"AAA": far_put_chain()})
+        self.assertEqual(len(innen.results), 1)
+        self.assertEqual(innen.results[0]["required_move_pct"], -21.0)
+
+        aussen = self._run([candidate("AAA", gap_pct=-9.0, direction="down", close=100.0)],
+                           {"AAA": far_put_chain()}, max_required_move_pct=15.0)
+        self.assertEqual(aussen.results, [])
+        grund = aussen.excluded[0]
         self.assertEqual(grund.reason, gap_funnel_mod.REASON_MOVE_TOO_FAR)
         self.assertEqual(grund.required_move_pct, -21.0)
         self.assertIn("21 % fallen", grund.message)
@@ -1154,7 +1161,7 @@ class EndpointTests(unittest.TestCase):
 
     def test_the_answer_names_the_move_bound_it_applied(self):
         _antwort, body, _chains, _dates = self._get()
-        self.assertEqual(body["max_required_move_pct"], 20.0)
+        self.assertEqual(body["max_required_move_pct"], 30.0)
 
     def test_the_answer_names_all_four_hurdles_in_one_object(self):
         # Additive to ``schema_version`` 1.0: the page writes its sentences from
@@ -1167,7 +1174,7 @@ class EndpointTests(unittest.TestCase):
                          gap_funnel_mod.DEFAULT_MIN_LONG_DELTA)
         self.assertEqual(body["limits"]["min_net_debit"],
                          gap_funnel_mod.DEFAULT_MIN_NET_DEBIT)
-        self.assertEqual(body["limits"]["max_required_move_pct"], 20.0)
+        self.assertEqual(body["limits"]["max_required_move_pct"], 30.0)
 
     def test_the_limits_follow_the_move_bound_of_the_request(self):
         # The one hurdle that is per request: a bound of 30 must read 30 there

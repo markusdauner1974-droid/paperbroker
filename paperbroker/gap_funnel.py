@@ -58,7 +58,7 @@ A reward/risk ratio says what a move would PAY, not whether the title ever
 moves that far: measured on 2026-11-11, CRWV carried R/R 1:34 for a move of
 61 %, LAND 1:7.3 for a move of 10 %. A ratio ceiling would delete the better
 trade. So the funnel keeps the ratio floor (no ceiling) and adds an upper bound
-on the DISTANCE to break-even (``max_required_move_pct``, default 20 %), plus a
+on the DISTANCE to break-even (``max_required_move_pct``, default 30 %), plus a
 measured frequency per row: how often this title covered that distance within
 the spread's remaining life before - ``dte`` calendar days, converted to trading
 sessions in ``reachability.measure`` (``reachability.py``). A row that has to
@@ -117,7 +117,7 @@ DEFAULT_MIN_NET_DEBIT = 0.50
 #: How far the underlying may have to travel to the spread's break-even, in
 #: percent of the reaction day's close. An UPPER bound on the distance - the
 #: reward/risk ratio has none (see the module docstring).
-DEFAULT_MAX_REQUIRED_MOVE_PCT = 20.0
+DEFAULT_MAX_REQUIRED_MOVE_PCT = 30.0
 #: The whole history phase's budget, in seconds. Only rows that already have a
 #: spread cost a request, and a title that has not answered by then keeps its
 #: row with ``history_state=source_failed`` - it never holds the answer.
