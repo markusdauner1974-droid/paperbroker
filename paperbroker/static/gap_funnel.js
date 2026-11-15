@@ -256,7 +256,7 @@
     if (limits && num(limits.max_required_move_pct)) {
       return de(limits.max_required_move_pct, 0);
     }
-    return num(body && body.max_required_move_pct) ? de(body.max_required_move_pct, 0) : '20';
+    return num(body && body.max_required_move_pct) ? de(body.max_required_move_pct, 0) : '30';
   }
 
   // Die Zaehlerzeile nennt jede Huerde des Trichters in der Reihenfolge, in der

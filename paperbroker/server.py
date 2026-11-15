@@ -1667,7 +1667,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         that describe the whole day - only a calendar that cannot be read is a
         503, because then there is no candidate set at all.
 
-        ``max_required_move_pct`` (default 20, allowed > 0 and <= 100) bounds the
+        ``max_required_move_pct`` (default 30, allowed > 0 and <= 100) bounds the
         DISTANCE from the reaction day's close to the spread's break-even, for
         calls and puts alike (``abs``). A row that needs more is excluded as
         ``move_too_far`` with both numbers on the exclusion. The reward/risk
