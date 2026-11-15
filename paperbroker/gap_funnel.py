@@ -212,6 +212,29 @@ def _round2(value):
     return round(number, 2)
 
 
+def chance_of(hit_rate_pct, rr):
+    """``chance`` = Trefferquote (as a fraction) times R/R, two decimals.
+
+    A reading aid, not a second measurement: it multiplies the row's own hit
+    rate by the row's own reward/risk and rounds the product once. Because the
+    hit rate counts the windows that REACHED break-even - the point where the
+    trade merely breaks even - the product is an upper bound of the expected
+    value per unit of risk, never a probability of profit.
+
+    Either input missing (``None``: no history, a failed source, an unusable
+    ratio) makes the chance ``None``. A 0 would be a measurement ("this never
+    happens") and is not what a missing number means, so it is never used as a
+    stand-in.
+    """
+    rate = hit_rate_pct
+    ratio = rr
+    if not isinstance(rate, (int, float)) or isinstance(rate, bool):
+        return None
+    if not isinstance(ratio, (int, float)) or isinstance(ratio, bool):
+        return None
+    return _round2((float(rate) / 100.0) * float(ratio))
+
+
 def _zahl(value):
     """``20.0`` -> ``"20"``, ``61.25`` -> ``"61,25"`` - German comma, no dead zeros.
 
@@ -719,6 +742,8 @@ def variant_row(entry, label, *, bars, dte):
     pair = entry["pair"]
     ratio = entry["ratio"]
     move = entry.get("move")
+    history = _variant_history(bars, move, dte)
+    rr = None if ratio is None else _round2(ratio / 100.0)
     return {
         "label": label,
         "long_strike": _round2(getattr(pair.long.asset, "strike", None)),
@@ -726,12 +751,15 @@ def variant_row(entry, label, *, bars, dte):
         "net_debit": _round2(pair.net_debit),
         "max_loss": _round2(pair.max_loss),
         "max_profit": _round2(pair.max_profit),
-        "rr": None if ratio is None else _round2(ratio / 100.0),
+        "rr": rr,
+        # The same reading aid the row carries, from the variant's OWN numbers:
+        # its hit rate at its own distance times its own R/R.
+        "chance": chance_of(history["hit_rate_pct"], rr),
         "required_move_pct": _round2(move),
         # The wider leg, not the pair's average: the spread one PAYS is the one
         # that has to be crossed.
         "bid_ask_pct": _round2(worse_leg_spread(pair)),
-        **_variant_history(bars, move, dte),
+        **history,
         "liquidity": liquidity_of(pair),
         "open_interest": [getattr(pair.long, "open_interest", None),
                           getattr(pair.short, "open_interest", None)],
@@ -889,6 +917,11 @@ def spread_row(candidate, pair, criteria, expiration, day, coverage=None, sectio
         # R/R as the decimal the contract asks for, from the SAME percentage the
         # screener computed - one ratio, one rounding.
         "rr": None if ratio is None else _round2(ratio / 100.0),
+        # Chance = hit rate x R/R, the reading aid of the row (see
+        # ``chance_of``). It is filled by the run once the row's OWN hit rate is
+        # measured (``measure_reachability``) - a row built alone has no rate,
+        # so it has no chance either, and never a 0 standing in for one.
+        "chance": None,
         "net_return_pct": _round2(ratio),
         # How far the underlying has to travel to reach this spread's
         # break-even, in percent of the reaction day's close. The SIGN is the
@@ -1178,6 +1211,21 @@ def _row_variants(context, bars):
     return variant_characters(bars=bars, **context)
 
 
+def fill_chance(row):
+    """Set ``chance`` on a row and on each of its variants, from their own numbers.
+
+    Called once the row's hit rate is known - a row's ``chance`` cannot exist
+    before its measurement, and it is deliberately NOT part of the sort: the
+    order of the list stays the hit rate's (``result_sort_key``). A row whose
+    hit rate is ``None`` gets ``None``, and so does a variant without one; the
+    field is never left out and never filled with a 0.
+    """
+    row["chance"] = chance_of(row.get("hit_rate_pct"), row.get("rr"))
+    for variant in row.get("variants") or ():
+        variant["chance"] = chance_of(variant.get("hit_rate_pct"), variant.get("rr"))
+    return row
+
+
 def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORKERS,
                          deadline_seconds=DEFAULT_HISTORY_DEADLINE_SECONDS,
                          history_bars=reachability.HISTORY_BARS,
@@ -1221,6 +1269,7 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
             row.update(reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED))
             # No bars, no ladder: nothing was named, so nothing may look named.
             row["variants"] = None
+            fill_chance(row)
         return rows
 
     def _one(row):
@@ -1249,6 +1298,7 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
         if future not in finished:
             row.update(reachability.unmeasured(reachability.HISTORY_SOURCE_FAILED))
             row["variants"] = None
+            fill_chance(row)
             continue
         try:
             fields, variants = future.result()
@@ -1257,6 +1307,7 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
             variants = None
         row.update(fields)
         row["variants"] = variants
+        fill_chance(row)
     return rows
 
 

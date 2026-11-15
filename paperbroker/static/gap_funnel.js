@@ -1,7 +1,7 @@
 /* Gap-Spread-Trichter - EINE Tabelle auf GET /.
 
    Warum eine eigene Datei: der Block laedt eine Route, haelt vier
-   Fehlerzustaende auseinander und baut vierzehn Spalten - das ist Verhalten,
+   Fehlerzustaende auseinander und baut fünfzehn Spalten - das ist Verhalten,
    kein Text. Kein Framework, kein Build-Schritt, kein CDN: eine Datei, die der
    Browser so nimmt.
 
@@ -457,7 +457,7 @@
     return td;
   }
 
-  // Die vierzehn Zellen NACH Nummer und Symbol - fuer die Hauptzeile und fuer
+  // Die fünfzehn Zellen NACH Nummer und Symbol - fuer die Hauptzeile und fuer
   // ihre Unterzeilen dieselben. Deshalb nimmt die Funktion eine SICHT und keine
   // Zeile: eine Unterzeile ist eine Struktur mit denselben Fragen.
   function bodyCells(entry) {
@@ -479,6 +479,12 @@
     zellen.push(cell(de(entry.max_loss, 2), '', 'maximaler Verlust je Einheit'));
     zellen.push(cell(de(entry.max_profit, 2), '', 'maximaler Gewinn je Einheit'));
     zellen.push(cell(rrText(entry.rr), '', 'Gewinn zu Verlust bei Verfall'));
+
+    // Chance: Trefferquote x R/R - eine Lesehilfe, keine zweite Messung. Sie
+    // steht direkt neben dem R/R, weil sie aus ihm und der Trefferquote
+    // daneben gerechnet ist; sortiert wird trotzdem nach Trefferquote.
+    zellen.push(cell(num(entry.chance) ? de(entry.chance, 2) : '—', '',
+      'Chance = Trefferquote × R/R; Obergrenze des Erwartungswerts, keine Zusage - sortiert wird nach Trefferquote'));
 
     // Noetige Bewegung: Vorzeichen UND Pfeil, damit die Richtung nicht an einer
     // Zahl haengt, die man als Betrag lesen könnte.
@@ -517,8 +523,8 @@
     return zellen;
   }
 
-  // Eine Variante als SICHT auf dieselben vierzehn Spalten: Strikes, Debit,
-  // Gewinn, R/R, noetige Bewegung, Treffer und Optionen sind ihre eigenen;
+  // Eine Variante als SICHT auf dieselben fünfzehn Spalten: Strikes, Debit,
+  // Gewinn, R/R, Chance, noetige Bewegung, Treffer und Optionen sind ihre eigenen;
   // Gap, Kurs, Strategie, Verfall, Laufzeit und Bericht gehoeren zum Titel und
   // bleiben die der Zeile. Die Schwankung kommt aus demselben Bars wie die der
   // Zeile, deshalb steht sie hier unveraendert.
@@ -536,6 +542,7 @@
       max_loss: variant.max_loss,
       max_profit: variant.max_profit,
       rr: variant.rr,
+      chance: variant.chance,
       required_move_pct: variant.required_move_pct,
       volatility_pct: entry.volatility_pct,
       daily_move_pct: entry.daily_move_pct,
@@ -1362,7 +1369,12 @@
         zeile.window_sessions,
         num(zeile.dte) ? zeile.dte : 'dte',
         zeile.windows_measured)
-        + ' Eine Häufigkeit, keine Wahrscheinlichkeit.';
+        + ' Eine Häufigkeit, keine Wahrscheinlichkeit.'
+        // Die Chance ist eine Lesehilfe aus zwei Zahlen, keine zweite Messung -
+        // und sie sagt NICHT, wie die Liste sortiert ist.
+        + ' Chance = Trefferquote × R/R; weil die Trefferquote das Erreichen des'
+        + ' Break-even misst, ist das eine Obergrenze des Erwartungswerts, keine'
+        + ' Zusage. Sortiert wird weiter nach Trefferquote.';
       el.detailBody.appendChild(methodik);
     }
 
