@@ -492,3 +492,98 @@ def _same_strike(one, other):
     if not isinstance(one, (int, float)) or not isinstance(other, (int, float)):
         return False
     return round(float(one), 2) == round(float(other), 2)
+
+
+def _spread_return_pct(v):
+    """Rendite eines Spreads in Prozent - None, wenn der Nenner fehlt.
+
+    Der Nenner ist der maximale Verlust. Er kann 0 sein (Debit 0); dann wird
+    nicht gerechnet: eine Division durch Null waere kein Ergebnis, die Seite
+    zeigt an dieser Stelle einen Strich.
+    """
+    return v.max_profit / v.max_loss * 100.0 if v.max_loss else None
+
+
+def _spread_be_gap_pct(v):
+    """Abstand des Kurses zum Break-even in Prozent - None, wenn kein Kurs.
+
+    D20: this is a DISTANCE, always positive, and the direction is shown next to it. It used
+    to be signed like a call - "positive means the underlying has to rise" - but a put spread
+    breaks even BELOW the spot, so its value came out negative, and the ascending sort
+    ("BE-Abstand", nearest first) put the LARGEST required move upward on top, which for a
+    put is the least favourable position in the list.
+
+    `underlying_price` is optional; without a price nothing is computed.
+    """
+    spot = v.long.underlying_price
+    if not spot:
+        return None
+    return abs(v.breakeven - spot) / spot * 100.0
+
+
+def _sort_asc(value):
+    """``(0, value)`` for a real number, ``(1, 0.0)`` for a missing one.
+
+    The leading flag puts "kein Wert" after every real number in BOTH
+    directions - a row without a denominator must not look like the best or the
+    worst trade. The second slot is the value itself (ascending).
+    """
+    return (0, float(value)) if value is not None else (1, 0.0)
+
+
+def _sort_desc(value):
+    """Like :func:`_sort_asc`, but the second slot is negated (descending)."""
+    return (0, -float(value)) if value is not None else (1, 0.0)
+
+
+def _vertical_sort_key(mode, criteria=None):
+    """Sortierschluessel der Spread-ANZEIGE (nicht der Schnittstelle).
+
+    Unbekannte Werte (None) sortieren ans Ende, damit sie nichts verdraengen.
+    Der dritte Schluessel ist das Symbol - ohne ihn waere die Reihenfolge bei
+    Gleichstand von der Kettenreihenfolge abhaengig statt reproduzierbar.
+
+    The three net orders (net_ratio_desc, net_profit_desc, max_loss_asc) read
+    the pair's own after-cost numbers. None of them is a probability or an
+    expected return: they rank a payoff, and the page says so.
+
+    ``criteria`` is REQUIRED for those three: ``net_max_profit()`` without a
+    criteria set returns None (no size, no costs), and a key that silently
+    compared None for every row would quietly fall back to the symbol tie-break
+    - measured 2026-11-11 on a live chain: three different orders produced the
+    same three rows.
+    """
+    def key(v):
+        if mode == "none":
+            return (0,)
+        rendite = _spread_return_pct(v)
+        abstand = _spread_be_gap_pct(v)
+        kette = (v.symbol, float(getattr(v.long.asset, "strike", 0.0)))
+        if mode == "be_asc":
+            return (abstand if abstand is not None else 9e9,
+                    -(rendite or 0.0), *kette)
+        if mode == "max_loss_asc":
+            # smallest risk first; at equal risk the larger profit first
+            return (*_sort_asc(v.net_max_loss(criteria)),
+                    *_sort_desc(v.net_max_profit(criteria)), *kette)
+        if mode == "net_profit_desc":
+            return (*_sort_desc(v.net_max_profit(criteria)), *kette)
+        if mode == "net_ratio_desc":
+            return (*_sort_desc(v.net_return_pct(criteria)), *kette)
+        return (-(rendite if rendite is not None else -1.0),
+                abstand if abstand is not None else 9e9, *kette)
+    return key
+
+
+SORT_MODES = ("rendite_desc", "be_asc", "net_ratio_desc", "net_profit_desc",
+              "max_loss_asc", "none")
+
+
+SORT_LABELS = {
+    "rendite_desc": "Rendite brutto (max. Gewinn / max. Verlust)",
+    "be_asc": "BE-Abstand (nächster zuerst)",
+    "net_ratio_desc": "Netto-Auszahlungsverhältnis (nach Kosten)",
+    "net_profit_desc": "Netto-Gewinnpotenzial (nach Kosten)",
+    "max_loss_asc": "maximaler Verlust (kleinster zuerst)",
+    "none": "Kettenreihenfolge",
+}

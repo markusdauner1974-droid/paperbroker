@@ -23,6 +23,7 @@ class FactoryContext:
     earnings_adapter: Any
     gap_adapter: Any
     next_earnings_adapter: Any
+    trend_display: Any
     now_fn: Callable[[], Any]
     trend_for_screener: Callable[[str], Any]
 
