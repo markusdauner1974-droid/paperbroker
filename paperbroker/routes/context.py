@@ -20,6 +20,7 @@ CONTEXT_KEY = "paperbroker"
 class FactoryContext:
     broker: Any
     screener: Any
+    earnings_adapter: Any
     now_fn: Callable[[], Any]
     trend_for_screener: Callable[[str], Any]
 

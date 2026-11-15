@@ -13,6 +13,7 @@ now receive it as parameters instead:
 
 from __future__ import annotations
 
+import logging
 import math
 import re
 
@@ -291,6 +292,8 @@ def _strategy_label(strategy):
     """The human label of a resolved strategy id; None when no strategy is known."""
     return None if strategy is None else STRATEGIES[strategy]["label"]
 
+logger = logging.getLogger(__name__)
+
 
 def _in_dte_window(dte, criteria):
     # Same semantics as the screener's per-quote DTE filter
@@ -393,3 +396,84 @@ def _eva_quality(quotes, criteria, now_fn=None, *, ticker=None, expiration=None,
         multiplier_source="unavailable",
         snapshot_id=snapshot_id,
     )
+
+
+def _calendar_failure(error, day):
+    """``(source_code, http_status, message)`` for a day the calendar did not deliver.
+
+    The scan route answers 503 in both cases, but the sentence may not be the
+    same: "did not answer" is false once the source has answered 403 or 429.
+    The upstream code and status travel in the message and in the error object,
+    so a caller never has to guess which of the two happened.
+    """
+    error = error if isinstance(error, dict) else {}
+    source_code = str(error.get("code") or "").strip() or None
+    status = error.get("http_status")
+    if status:
+        message = f"the earnings calendar answered HTTP {status} for {day} ({source_code})"
+    elif source_code:
+        message = f"the earnings calendar did not answer for {day} ({source_code})"
+    else:
+        message = f"the earnings calendar did not answer for {day}"
+    return source_code, status, message
+
+
+def _option_symbols(adapter):
+    """``(symbols|None, state, fetched_at_utc)`` from the earnings adapter.
+
+    Every failure mode collapses into "no list": an adapter without the
+    method, an exception, a non-dict answer or a malformed symbol list all
+    mean the page must not filter. A callable that raises may not cost the
+    calendar - the list is a filter, not content.
+    """
+    getter = getattr(adapter, "get_optionable_symbols", None)
+    if not callable(getter):
+        return None, "unavailable", None
+    try:
+        antwort = getter()
+    except Exception:                                    # noqa: BLE001 - the page must render
+        logger.exception("optionable symbol list failed")
+        return None, "unavailable", None
+    if not isinstance(antwort, dict):
+        return None, "unavailable", None
+
+    stempel = antwort.get("fetched_at_utc")
+    wert = antwort.get("symbols")
+    if not isinstance(wert, list) or not wert:
+        return None, "unavailable", stempel
+    symbole = set()
+    for eintrag in wert:
+        if not isinstance(eintrag, str) or not eintrag.strip():
+            return None, "unavailable", stempel
+        symbole.add(eintrag.strip())
+    return frozenset(symbole), str(antwort.get("state") or ""), stempel
+
+
+def _us_today(now_fn):
+    """The trading date in New York - a UTC date is a day ahead after 19:00 ET."""
+    return arrow.get(now_fn()).to("America/New_York").date()
+
+
+def _scan_limit(name, raw, default, ceiling, *, integer, minimum):
+    """One budget number, or a readable reason why it is unusable.
+
+    Bounds are enforced here, not in the client: a scan of 5000 titles is
+    not a slower answer, it is an outage waiting to happen.
+    """
+    text = (raw or "").strip()
+    if not text:
+        return default, None
+    try:
+        wert = int(text) if integer else float(text)
+    except ValueError:
+        return None, f"{name}: '{text}' is not a number"
+    if not integer and not math.isfinite(wert):
+        return None, f"{name}: '{text}' is not a finite number"
+    if wert < minimum:
+        return None, f"{name}: must be >= {minimum} (is: {wert})"
+    if wert > ceiling:
+        return None, f"{name}: must be <= {ceiling} (is: {wert})"
+    return wert, None
+
+
+_SCAN_LIMIT_PARAMS = ("max_symbols", "max_expirations", "max_seconds", "concurrency")
