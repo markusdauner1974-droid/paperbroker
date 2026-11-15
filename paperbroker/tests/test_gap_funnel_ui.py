@@ -23,7 +23,7 @@ Pinned here, in the order of the requirement:
 * Enter and Space on the focused row do the same, and Space does not scroll,
 * a second row replaces the content and the mark - one block, one active row,
 * the block shows strategy, expiry, the four numbers and a leg row per leg, two
-  curves in one SVG, and six scenarios with seven columns,
+  curves in one SVG, and seven scenarios with seven columns,
 * an error answer is written INTO the block (not as an alert) and the row stays
   usable for a second attempt,
 * no inline handler in the HTML and no foreign URL in the script.
@@ -418,7 +418,7 @@ def _detail(symbol="CTVA", label="Bear Put"):
             {"change_pct": pct, "underlying": round(9.19 * (1 + pct / 100.0), 2),
              "pl_expiry": -135.0 if pct < -6 else 115.0,
              "delta": -40.0 + pct, "gamma": 4.0, "vega": 1.2, "theta": -0.3}
-            for pct in (-30, -20, -10, 0, 10, 20)
+            for pct in (-30, -20, -10, 0, 10, 20, 30)
         ],
         "notes": ["G&V je 1 Spread (100 Aktien), ohne Gebühren."],
     }
@@ -970,16 +970,17 @@ class TestWhatTheBlockShows(unittest.TestCase):
         self.assertIn("position:sticky", sticky.group(1).replace(" ", ""))
         self.assertIn("left:0", sticky.group(1).replace(" ", ""))
 
-    def test_the_scenarios_are_six_rows_with_seven_columns(self):
+    def test_the_scenarios_are_seven_rows_with_seven_columns(self):
         panel = _render(actions=["click:0"])
         szenarien = panel["detail"]["tables"][1]
         self.assertEqual(["Prozent", "Basiswert", "G&V", "Delta", "Gamma", "Vega",
                           "Theta"], szenarien["headers"])
-        self.assertEqual(6, szenarien["rows"])
-        self.assertEqual(42, szenarien["cells"])
+        self.assertEqual(7, szenarien["rows"])
+        self.assertEqual(49, szenarien["cells"])
         text = panel["detail"]["text"]
         self.assertIn("-30 %", text)
         self.assertIn("+20 %", text)
+        self.assertIn("+30 %", text)
         self.assertIn("-135,00", text)
         self.assertIn("+115,00", text)
 

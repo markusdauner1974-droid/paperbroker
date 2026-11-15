@@ -10,7 +10,7 @@ answer is what this file pins:
   text on a 200,
 * ``net_debit``/``max_loss``/``max_profit``/``breakeven``/``rr`` of the agreed
   row, read back from the answer,
-* 120..200 series points that include the spot, six scenarios whose underlying
+* 120..200 series points that include the spot, seven scenarios whose underlying
   is the spot times the factor,
 * the position greeks as long leg minus short leg,
 * the error side: 404 ``chain_unavailable`` when the chain cannot be read, 404
@@ -186,10 +186,10 @@ class DetailEndpointTest(unittest.TestCase):
         for point in serie:
             self.assertEqual(set(point), {"price", "pl_expiry", "pl_today"})
 
-    def test_the_scenarios_are_six_steps_around_the_spot(self):
+    def test_the_scenarios_are_seven_steps_around_the_spot(self):
         _antwort, body = _get()
         szenarien = body["scenarios"]
-        self.assertEqual([s["change_pct"] for s in szenarien], [-30, -20, -10, 0, 10, 20])
+        self.assertEqual([s["change_pct"] for s in szenarien], [-30, -20, -10, 0, 10, 20, 30])
         for szenario in szenarien:
             self.assertAlmostEqual(szenario["underlying"],
                                    body["spot"] * (1 + szenario["change_pct"] / 100.0),
