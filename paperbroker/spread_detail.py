@@ -6,7 +6,7 @@ The funnel answers WHICH spread a gap candidate would trade and what it costs.
 That is enough to choose it and not enough to look at it: a reader wants the two
 legs with their quotes, the four break-even numbers of the position, the profit
 and loss for every price between half and 1.7 times the spot, and what happens
-to the position when the underlying moves in ten-percent steps.
+to the position when the underlying moves in ten-percent steps from -30 % to +30 %.
 
 Everything here is arithmetic over data a caller supplies. A quote is read with
 ``getattr`` and a missing value stays ``None`` - never a zero, never a guess.
@@ -47,7 +47,7 @@ DIVIDEND = 0.0
 MULTIPLIER = 100
 
 #: The scenario ladder of the agreed contract, in percent of the spot.
-SCENARIO_CHANGES = (-30, -20, -10, 0, 10, 20)
+SCENARIO_CHANGES = (-30, -20, -10, 0, 10, 20, 30)
 #: The price axis: 50 % .. 170 % of the spot.
 SERIES_FROM = 0.5
 SERIES_TO = 1.7

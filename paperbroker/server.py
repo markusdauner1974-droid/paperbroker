@@ -1862,7 +1862,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # The list answers WHICH spread a candidate trades and what it costs. #
     # This route answers what that ONE spread looks like: both legs with  #
     # their quotes, the four numbers of the position, the model value     #
-    # today beside the exact payout at expiration, and the six scenarios. #
+    # today beside the exact payout at expiration, and the seven scenarios. #
     #                                                                     #
     # The spread is re-derived through the SAME stages as the list        #
     # (calendar -> gap -> direction -> report date -> chain -> expiry ->  #

@@ -12,7 +12,7 @@ same formula:
   ask/bid, the model prices the mid) and never below the maximum loss,
 * the series: 120..200 points from 50 % to 170 % of the spot, the spot itself
   among them, and a call curve that rises up to the upper strike,
-* six scenarios whose underlying is the spot times the factor and whose
+* seven scenarios whose underlying is the spot times the factor and whose
   ``pl_expiry`` is the exact payout,
 * the two refusals: a leg without a readable quote is ``leg_not_listed``, a
   pair that costs nothing is ``invalid_spread`` - never a 200 with half a
@@ -198,9 +198,9 @@ class TestTheSeries(unittest.TestCase):
 
 
 class TestTheScenarios(unittest.TestCase):
-    def test_six_steps_around_the_spot(self):
+    def test_seven_steps_around_the_spot(self):
         szenarien = detail(*call_spread())["scenarios"]
-        self.assertEqual([s["change_pct"] for s in szenarien], [-30, -20, -10, 0, 10, 20])
+        self.assertEqual([s["change_pct"] for s in szenarien], [-30, -20, -10, 0, 10, 20, 30])
         for szenario in szenarien:
             self.assertEqual(szenario["underlying"],
                              round(SPOT * (1 + szenario["change_pct"] / 100.0), 2))
@@ -214,6 +214,7 @@ class TestTheScenarios(unittest.TestCase):
             0: -145.0,     # 100.00 - at the long strike, still the debit
             10: 185.0,     # 110.00 - above the short strike
             20: 185.0,     # 120.00
+            30: 185.0,     # 130.00 - above the short strike, capped
         }
         for szenario in szenarien:
             self.assertEqual(szenario["pl_expiry"], erwartet[szenario["change_pct"]])
