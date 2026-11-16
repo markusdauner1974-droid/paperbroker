@@ -30,7 +30,18 @@ class TheShippedBookHasNoHoleTest(unittest.TestCase):
     def test_no_shipped_value_is_blank(self):
         for code in texts.languages():
             for schluessel, wert in _werte(code).items():
-                roh = list(wert.values()) if isinstance(wert, dict) else [wert]
+                if isinstance(wert, dict):
+                    with self.subTest(sprache=code, schluessel=schluessel):
+                        # "other" ist der Rueckfallzweig von render(): fehlt er,
+                        # wirft t(key, n=...) zur Anfragezeit KeyError - und ein
+                        # leeres dict kaeme hier sonst mit NULL Pruefungen durch.
+                        self.assertIn("other", wert,
+                                      f"{code}/{schluessel} hat keinen other-Zweig")
+                        self.assertTrue(str(wert["other"]).strip(),
+                                        f"{code}/{schluessel}: other ist leer")
+                    roh = list(wert.values())
+                else:
+                    roh = [wert]
                 for satz in roh:
                     with self.subTest(sprache=code, schluessel=schluessel):
                         self.assertIsInstance(satz, str)
