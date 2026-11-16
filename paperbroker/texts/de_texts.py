@@ -335,9 +335,21 @@ TEXTS: dict[str, object] = {
     # routes/gap_spreads.py: the answers of the two page-facing endpoints
     #
     # --- support.* ------------------------------------------------------
+    "support.parse.comma": (
+        "{field}: bitte den Punkt als Dezimaltrenner verwenden (z. B. 7.5 statt '{text}')."
+    ),
+    "support.parse.integer": "{field}: '{text}' ist keine ganze Zahl.",
+    "support.parse.flag": "{field}: '0' oder '1' erwartet (ist: '{text}').",
+    "support.parse.choice": "{field}: einer von {allowed} erwartet (ist: '{text}').",
+    "support.parse.number": "{field}: '{text}' ist keine Zahl.",
+    "support.parse.finite": "{field}: '{text}' ist keine endliche Zahl.",
     # gap_support.py, view_support.py: notes, sort labels, parse errors
     #
     # --- server.* -------------------------------------------------------
+    "trend.unavailable.label": "Trend nicht verfügbar",
+    "trend.unavailable.note": (
+        "Trend-Quelle nicht erreichbar - die Liste steht ohne Trend-Prüfung da."
+    ),
     # server.py: the trend note
     #
     # --- age.* ----------------------------------------------------------
