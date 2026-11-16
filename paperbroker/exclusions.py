@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import re
 
+from .texts import t
+
 # ---------------------------------------------------------------------- #
 # levels (what one line of the summary counts)
 # ---------------------------------------------------------------------- #
@@ -29,18 +31,24 @@ LEVEL_PAIR = "pair"
 LEVEL_EXPIRY = "expiry"
 LEVEL_SYMBOL = "symbol"
 LEVELS = (LEVEL_CONTRACT, LEVEL_PAIR, LEVEL_EXPIRY, LEVEL_SYMBOL)
-UNIT_LABELS = {
-    LEVEL_CONTRACT: "Kontrakte",
-    LEVEL_PAIR: "Spread-Kombinationen",
-    LEVEL_EXPIRY: "Verfälle",
-    LEVEL_SYMBOL: "Aktien",
+#: Level -> (plural key, singular key). The words live in the catalogue; this
+#: table only knows WHERE they are, so a language switch touches no code here.
+_UNIT_KEYS = {
+    LEVEL_CONTRACT: ("exclusion.unit.contracts", "exclusion.unit.contract"),
+    LEVEL_PAIR: ("exclusion.unit.pairs", "exclusion.unit.pair"),
+    LEVEL_EXPIRY: ("exclusion.unit.expiries", "exclusion.unit.expiry"),
+    LEVEL_SYMBOL: ("exclusion.unit.symbols", "exclusion.unit.symbol"),
 }
-UNIT_SINGULAR = {
-    LEVEL_CONTRACT: "Kontrakt",
-    LEVEL_PAIR: "Spread-Kombination",
-    LEVEL_EXPIRY: "Verfall",
-    LEVEL_SYMBOL: "Aktie",
-}
+
+
+def unit_label(level):
+    """``LEVEL_CONTRACT`` -> ``"Kontrakte"`` in the active language."""
+    return t(_UNIT_KEYS[level][0])
+
+
+def unit_singular(level):
+    """``LEVEL_CONTRACT`` -> ``"Kontrakt"`` - the unit ONE reason is counted in."""
+    return t(_UNIT_KEYS[level][1])
 
 # ---------------------------------------------------------------------- #
 # categories
@@ -57,18 +65,26 @@ CAT_DATA = "data"
 CAT_SCAN_LIMIT = "scan_limit"
 CAT_OTHER = "other"
 
-CATEGORY_LABELS = {
-    CAT_SCAN_LIMIT: "Scan-Grenze (Budget/Zeit)",
-    CAT_LIQUIDITY: "Liquidität",
-    CAT_AGE: "Datenalter",
-    CAT_DTE: "Laufzeit",
-    CAT_VOLATILITY: "Volatilität",
-    CAT_PRICE: "ungültiger Debit/Credit",
-    CAT_BUDGET: "Budget",
-    CAT_COSTS: "Kosten",
-    CAT_DATA: "fehlende Daten",
-    CAT_OTHER: "sonstiges",
+#: Category -> catalogue key. NOTE: ``categorise`` below matches the German
+#: reason TEXT, so the reasons have to stay German for the rules to keep
+#: working - see the note above ``_RULES``.
+_CATEGORY_KEYS = {
+    CAT_SCAN_LIMIT: "exclusion.category.scan_limit",
+    CAT_LIQUIDITY: "exclusion.category.liquidity",
+    CAT_AGE: "exclusion.category.age",
+    CAT_DTE: "exclusion.category.dte",
+    CAT_VOLATILITY: "exclusion.category.volatility",
+    CAT_PRICE: "exclusion.category.price",
+    CAT_BUDGET: "exclusion.category.budget",
+    CAT_COSTS: "exclusion.category.costs",
+    CAT_DATA: "exclusion.category.data",
+    CAT_OTHER: "exclusion.category.other",
 }
+
+
+def category_label(category):
+    """``CAT_LIQUIDITY`` -> ``"Liquidität"`` in the active language."""
+    return t(_CATEGORY_KEYS[category])
 
 #: The order the summary lists categories in when two counts are equal.
 CATEGORY_ORDER = (CAT_LIQUIDITY, CAT_AGE, CAT_DTE, CAT_BUDGET, CAT_PRICE,
@@ -149,15 +165,15 @@ def _not_checked(criteria):
         return []
     aus = []
     if getattr(criteria, "max_quote_age_min", None) is None:
-        aus.append(CATEGORY_LABELS[CAT_AGE])
+        aus.append(category_label(CAT_AGE))
     if getattr(criteria, "min_oi", None) is None and not getattr(criteria, "require_oi", False):
-        aus.append(f"{CATEGORY_LABELS[CAT_LIQUIDITY]} (OI-Grenze aus)")
+        aus.append(t("exclusion.not_checked.oi_off", label=category_label(CAT_LIQUIDITY)))
     if getattr(criteria, "max_spread_pct", None) is None and getattr(criteria, "max_spread_abs", None) is None:
-        aus.append(f"{CATEGORY_LABELS[CAT_LIQUIDITY]} (Spread-Grenze aus)")
+        aus.append(t("exclusion.not_checked.spread_off", label=category_label(CAT_LIQUIDITY)))
     if getattr(criteria, "iv_min", None) is None and getattr(criteria, "iv_max", None) is None:
-        aus.append(CATEGORY_LABELS[CAT_VOLATILITY])
+        aus.append(category_label(CAT_VOLATILITY))
     if getattr(criteria, "budget", None) is None:
-        aus.append(CATEGORY_LABELS[CAT_BUDGET])
+        aus.append(category_label(CAT_BUDGET))
     return aus
 
 
@@ -193,22 +209,18 @@ def summarise(dropped, level, criteria=None):
         if key == CAT_OTHER and reason.strip() and reason not in unbekannt:
             unbekannt.append(reason)
     kategorien = [
-        {"key": key, "label": CATEGORY_LABELS[key], "count": zaehler[key]}
+        {"key": key, "label": category_label(key), "count": zaehler[key]}
         for key in sorted(zaehler, key=lambda k: (-zaehler[k], CATEGORY_ORDER.index(k)))
     ]
     return {
         "level": level,
-        "unit": UNIT_LABELS[level],
-        "unit_singular": UNIT_SINGULAR[level],
+        "unit": unit_label(level),
+        "unit_singular": unit_singular(level),
         "counted": len(gruende),
         # The one sentence a reader must not have to infer: this is a count of
         # FIRST reasons, not a cause analysis.
         "first_reason_only": True,
-        "first_reason_note": (
-            f"Je {UNIT_SINGULAR[level]} zählt genau ein Grund: der erste Filter, "
-            f"der ihn abgelehnt hat. Weitere zutreffende Gründe werden nicht "
-            f"gezählt und deshalb auch nicht behauptet."
-        ),
+        "first_reason_note": t("exclusion.note.first_reason", unit=unit_singular(level)),
         "categories": kategorien,
         "unmapped": unbekannt,
         "not_checked": _not_checked(criteria),
@@ -220,9 +232,13 @@ def headline(summary):
     if not summary or not summary["counted"]:
         return None
     teile = [f"{k['label']} {k['count']}" for k in summary["categories"]]
-    return (f"{summary['unit']}: {summary['counted']} ausgeschlossen - "
-            + " · ".join(teile)
-            + " (je " + summary["unit_singular"] + " zählt der erste Grund)")
+    return t(
+        "exclusion.headline",
+        unit=summary["unit"],
+        counted=summary["counted"],
+        parts=" · ".join(teile),
+        unit_one=summary["unit_singular"],
+    )
 
 
 def combine(summaries):
@@ -270,20 +286,17 @@ def summarise_scan(counts, entries=None, criteria=None):
 def _summary_from_counts(level, zaehler, criteria):
     """One summary from an already-counted dict of category totals."""
     kategorien = [
-        {"key": key, "label": CATEGORY_LABELS[key], "count": zaehler[key]}
+        {"key": key, "label": category_label(key), "count": zaehler[key]}
         for key in sorted(zaehler, key=lambda k: (-zaehler[k], CATEGORY_ORDER.index(k)))
         if zaehler[key]
     ]
     return {
         "level": level,
-        "unit": UNIT_LABELS[level],
-        "unit_singular": UNIT_SINGULAR[level],
+        "unit": unit_label(level),
+        "unit_singular": unit_singular(level),
         "counted": sum(k["count"] for k in kategorien),
         "first_reason_only": True,
-        "first_reason_note": (
-            f"Je {UNIT_SINGULAR[level]} zählt genau ein Zustand - der schwerste, "
-            f"der auf ihn zutrifft. Weitere Gründe werden nicht gezählt."
-        ),
+        "first_reason_note": t("exclusion.note.worst_state", unit=unit_singular(level)),
         "categories": kategorien,
         "unmapped": [],
         "not_checked": _not_checked(criteria),

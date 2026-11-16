@@ -297,6 +297,39 @@ TEXTS: dict[str, object] = {
     #
     # --- exclusion.* ----------------------------------------------------
     # exclusions.py: the exclusion overview per unit
+    # ---------------------------------------------------------------------
+    "exclusion.unit.contracts": "Kontrakte",
+    "exclusion.unit.pairs": "Spread-Kombinationen",
+    "exclusion.unit.expiries": "Verfälle",
+    "exclusion.unit.symbols": "Aktien",
+    "exclusion.unit.contract": "Kontrakt",
+    "exclusion.unit.pair": "Spread-Kombination",
+    "exclusion.unit.expiry": "Verfall",
+    "exclusion.unit.symbol": "Aktie",
+    "exclusion.category.scan_limit": "Scan-Grenze (Budget/Zeit)",
+    "exclusion.category.liquidity": "Liquidität",
+    "exclusion.category.age": "Datenalter",
+    "exclusion.category.dte": "Laufzeit",
+    "exclusion.category.volatility": "Volatilität",
+    "exclusion.category.price": "ungültiger Debit/Credit",
+    "exclusion.category.budget": "Budget",
+    "exclusion.category.costs": "Kosten",
+    "exclusion.category.data": "fehlende Daten",
+    "exclusion.category.other": "sonstiges",
+    "exclusion.not_checked.oi_off": "{label} (OI-Grenze aus)",
+    "exclusion.not_checked.spread_off": "{label} (Spread-Grenze aus)",
+    "exclusion.note.first_reason": (
+        "Je {unit} zählt genau ein Grund: der erste Filter, der ihn abgelehnt hat. "
+        "Weitere zutreffende Gründe werden nicht gezählt und deshalb auch nicht "
+        "behauptet."
+    ),
+    "exclusion.note.worst_state": (
+        "Je {unit} zählt genau ein Zustand - der schwerste, der auf ihn zutrifft. "
+        "Weitere Gründe werden nicht gezählt."
+    ),
+    "exclusion.headline": (
+        "{unit}: {counted} ausgeschlossen - {parts} (je {unit_one} zählt der erste Grund)"
+    ),
     #
     # --- spreads.* ------------------------------------------------------
     # routes/gap_spreads.py: the answers of the two page-facing endpoints
