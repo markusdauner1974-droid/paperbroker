@@ -140,5 +140,23 @@ class TheUnknownParameterHintIsBuiltTest(unittest.TestCase):
         )
 
 
+class TheSortLabelsComeFromTheBookTest(unittest.TestCase):
+    """Sechs Beschriftungen, die das Template heute nicht liest - aber kein Literal.
+
+    Dieselbe Lehre wie beim Hinweis in #115: ein Katalogschluessel, den niemand
+    aufruft, ist toter Ballast. Hier wird geprueft, dass die Mappe wirklich aus dem
+    Buch kommt - und dass jeder Code seinen Schluessel hat.
+    """
+
+    def test_every_code_reads_its_sentence_from_the_book(self):
+        from ..view_support import _SORT_LABEL_KEYS, SORT_LABELS
+
+        self.assertEqual(set(SORT_LABELS), set(_SORT_LABEL_KEYS))
+        for code, schluessel in _SORT_LABEL_KEYS.items():
+            with self.subTest(code=code):
+                self.assertEqual(SORT_LABELS[code], t(schluessel))
+                self.assertTrue(SORT_LABELS[code].strip())
+
+
 if __name__ == "__main__":
     unittest.main()

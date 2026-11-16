@@ -579,11 +579,16 @@ SORT_MODES = ("rendite_desc", "be_asc", "net_ratio_desc", "net_profit_desc",
               "max_loss_asc", "none")
 
 
-SORT_LABELS = {
-    "rendite_desc": "Rendite brutto (max. Gewinn / max. Verlust)",
-    "be_asc": "BE-Abstand (nächster zuerst)",
-    "net_ratio_desc": "Netto-Auszahlungsverhältnis (nach Kosten)",
-    "net_profit_desc": "Netto-Gewinnpotenzial (nach Kosten)",
-    "max_loss_asc": "maximaler Verlust (kleinster zuerst)",
-    "none": "Kettenreihenfolge",
+#: Code -> Katalogschluessel; der Schluessel wiederholt den Code, damit Code und
+#: Beschriftung nicht auseinanderlaufen koennen. Wie die Badge-Mappen in
+#: ``routes/page.py`` ist das eine Modulkonstante: die Alt-Seite bleibt deutsch.
+_SORT_LABEL_KEYS = {
+    "rendite_desc": "sort.rendite_desc",
+    "be_asc": "sort.be_asc",
+    "net_ratio_desc": "sort.net_ratio_desc",
+    "net_profit_desc": "sort.net_profit_desc",
+    "max_loss_asc": "sort.max_loss_asc",
+    "none": "sort.none",
 }
+
+SORT_LABELS = {code: t(key) for code, key in _SORT_LABEL_KEYS.items()}

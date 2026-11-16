@@ -244,7 +244,7 @@ class NamedStructureTest(unittest.TestCase):
         antwort, body = self._get(f"?symbol=AAA&day={DAY}")
         self.assertEqual(antwort.status_code, 200)
         self.assertTrue(body["is_row_pick"])
-        self.assertEqual(body["structure_label"], gap_funnel.ROW_PICK_LABEL)
+        self.assertEqual(body["structure_label"], gap_funnel.variant_label(gap_funnel.ROW_PICK_ID))
         self.assertEqual(body["strikes"], {"long": 103.0, "short": 112.0})
 
     def test_a_named_structure_is_computed_instead_of_the_pick(self):
@@ -258,7 +258,8 @@ class NamedStructureTest(unittest.TestCase):
         self.assertEqual(body["max_loss"], 165.0)
         self.assertEqual(body["max_profit"], 435.0)
         self.assertEqual(body["breakeven"], 101.65)
-        self.assertEqual(body["structure_label"], gap_funnel.VARIANT_NEAR_MONEY)
+        self.assertEqual(body["structure_label"],
+                         gap_funnel.variant_label(gap_funnel.VARIANT_NEAR_MONEY))
         # The legs of THAT structure, not of the row.
         self.assertEqual([leg["strike"] for leg in body["legs"]], [100.0, 106.0])
         self.assertEqual(body["expiration"], "2027-03-19")
@@ -267,14 +268,15 @@ class NamedStructureTest(unittest.TestCase):
         query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=106&short=109"
         antwort, body = self._get(query)
         self.assertEqual(antwort.status_code, 200)
-        self.assertEqual(body["structure_label"], gap_funnel.VARIANT_AT_RESISTANCE)
+        self.assertEqual(body["structure_label"],
+                         gap_funnel.variant_label(gap_funnel.VARIANT_AT_RESISTANCE))
         self.assertFalse(body["is_row_pick"])
 
     def test_the_row_asked_for_by_its_strikes_is_the_row_pick(self):
         query = f"?symbol=AAA&day={DAY}&expiration=2027-03-19&long=103&short=112"
         _antwort, body = self._get(query)
         self.assertTrue(body["is_row_pick"])
-        self.assertEqual(body["structure_label"], gap_funnel.ROW_PICK_LABEL)
+        self.assertEqual(body["structure_label"], gap_funnel.variant_label(gap_funnel.ROW_PICK_ID))
         self.assertEqual(body["net_debit"], 0.61)
 
     def test_a_listed_pair_without_a_character_says_null(self):
@@ -435,7 +437,7 @@ class StrikePrecisionTest(unittest.TestCase):
         self.assertEqual(body["net_debit"], 0.51)
         # The pair IS the row's pick, so the answer names its character.
         self.assertTrue(body["is_row_pick"])
-        self.assertEqual(body["structure_label"], gap_funnel.ROW_PICK_LABEL)
+        self.assertEqual(body["structure_label"], gap_funnel.variant_label(gap_funnel.ROW_PICK_ID))
 
     def test_the_pick_itself_prices_without_a_named_structure(self):
         # No ``expiration``/``long``/``short``: the route takes the row's own

@@ -295,6 +295,18 @@ TEXTS: dict[str, object] = {
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
     #
+    # --- Sortier-Labels (view_support.SORT_LABELS) -------------------------- #
+    # Sechs Beschriftungen der Sortier-Auswahl. Gelesen wird heute KEINE davon
+    # (das Template kennt weder sort_labels noch trend_display) - sie stehen hier,
+    # damit kein deutscher Satz mehr im Code liegt; der Abschnitt "sort" wird in
+    # en_texts.py nicht deklariert, also bleibt er deutsch.
+    "sort.rendite_desc": "Rendite brutto (max. Gewinn / max. Verlust)",
+    "sort.be_asc": "BE-Abstand (nächster zuerst)",
+    "sort.net_ratio_desc": "Netto-Auszahlungsverhältnis (nach Kosten)",
+    "sort.net_profit_desc": "Netto-Gewinnpotenzial (nach Kosten)",
+    "sort.max_loss_asc": "maximaler Verlust (kleinster zuerst)",
+    "sort.none": "Kettenreihenfolge",
+
     # --- routes/page.py ---------------------------------------------------- #
     # Die Texte der Alt-Antwort /api/screen. Dieser Endpunkt bleibt deutsch
     # (Vertrag), auch nach der Umschaltung - der Abschnitt wird in en_texts.py

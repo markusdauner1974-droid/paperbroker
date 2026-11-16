@@ -140,14 +140,30 @@ DEFAULT_QUANTITY = 1
 #: The characters an alternative structure can have, in the order the page
 #: shows them. The row itself is the HEBEL and is NOT one of them: a list that
 #: offers the pick as its own first alternative compares nothing.
-VARIANT_NEAR_MONEY = "nah am Geld"
-VARIANT_AT_RESISTANCE = "am Widerstand"
-VARIANT_TIGHTEST_SPREAD = "engster Spread"
-VARIANT_LABELS = (VARIANT_NEAR_MONEY, VARIANT_AT_RESISTANCE, VARIANT_TIGHTEST_SPREAD)
+#: Die drei Charaktere einer Zeile tragen eine ID und einen Satz. Die ID ist die
+#: Identitaet: sie bleibt in jeder Sprache gleich, waehrend der Satz aus dem Katalog
+#: kommt. Vorher WAR der deutsche Satz die Identitaet - mit einem englischen Buch
+#: waere damit jede Zuordnung auseinandergefallen.
+VARIANT_NEAR_MONEY = "near_money"
+VARIANT_AT_RESISTANCE = "at_resistance"
+VARIANT_TIGHTEST_SPREAD = "tightest_spread"
+VARIANT_IDS = (VARIANT_NEAR_MONEY, VARIANT_AT_RESISTANCE, VARIANT_TIGHTEST_SPREAD)
+
+#: Der Charakter, der die ZEILE selbst ist - kein eigener Satz im Umlauf.
+ROW_PICK_ID = "row_pick"
+
+
+def variant_label(variant_id: str) -> str:
+    """Der Anzeigetext eines Charakters - aus dem Katalog, zur Anfragezeit.
+
+    Die ID wiederholt den Katalogschluessel, damit ID und Satz nicht auseinander
+    laufen koennen.
+    """
+    return t(f"funnel.variant.{variant_id}")
 #: How the detail names the row's own structure - the character of the pick.
-ROW_PICK_LABEL = "Hebel (Zeile)"
+
 #: How many alternatives a row may carry: three characters, not a menu.
-DEFAULT_VARIANT_COUNT = len(VARIANT_LABELS)
+DEFAULT_VARIANT_COUNT = len(VARIANT_IDS)
 #: The 52 weeks the resistance level is called after, in SESSIONS: a year of
 #: trading is ~252 sessions, and counting calendar days would let a holiday
 #: week move the high.
@@ -744,7 +760,7 @@ def _variant_history(bars, move, dte):
             "windows_measured": fields["windows_measured"]}
 
 
-def variant_row(entry, label, *, bars, dte):
+def variant_row(entry, variant_id, *, bars, dte):
     """One alternative in the numbers of the row - rounded, nothing invented."""
     pair = entry["pair"]
     ratio = entry["ratio"]
@@ -752,7 +768,8 @@ def variant_row(entry, label, *, bars, dte):
     history = _variant_history(bars, move, dte)
     rr = None if ratio is None else _round2(ratio / 100.0)
     return {
-        "label": label,
+        "id": variant_id,
+        "label": variant_label(variant_id),
         "long_strike": _round2(getattr(pair.long.asset, "strike", None)),
         "short_strike": _round2(getattr(pair.short.asset, "strike", None)),
         "net_debit": _round2(pair.net_debit),
@@ -860,7 +877,7 @@ def variant_characters(section, strategy, *, primary, close, bars=None, dte=None
 
     chosen = []
     claimed = set()
-    for label, entry in candidates:
+    for variant_id, entry in candidates:
         if entry is None or len(chosen) >= count:
             continue
         key = _strike_pair(entry["pair"])
@@ -869,9 +886,10 @@ def variant_characters(section, strategy, *, primary, close, bars=None, dte=None
             # dropped - never re-pointed at a different pair.
             continue
         claimed.add(key)
-        chosen.append((label, entry))
+        chosen.append((variant_id, entry))
 
-    return [variant_row(entry, label, bars=bars, dte=dte) for label, entry in chosen]
+    return [variant_row(entry, variant_id, bars=bars, dte=dte)
+            for variant_id, entry in chosen]
 
 
 def spread_row(candidate, pair, criteria, expiration, day, coverage=None, section=None,

@@ -430,7 +430,7 @@ def api_gap_spreads_detail():
     is_row_pick = (expiration == row_expiration
                    and _same_strike(long_strike, row["long_strike"])
                    and _same_strike(short_strike, row["short_strike"]))
-    structure_label = (gap_funnel.ROW_PICK_LABEL if is_row_pick
+    structure_label = (gap_funnel.variant_label(gap_funnel.ROW_PICK_ID) if is_row_pick
                        else _structure_label(row, expiration, row_expiration,
                                              long_strike, short_strike))
 
