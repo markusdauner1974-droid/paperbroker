@@ -37,6 +37,8 @@ from __future__ import annotations
 
 import math
 
+from .texts import t
+
 #: Risk-free rate used by the model curve. The chain's own price is not
 #: re-derived from it; it only prices the UNSEEN points of today's curve.
 RATE = 0.04
@@ -223,7 +225,7 @@ def _leg_quote_number(quote, name, side):
     if value is None:
         raise SpreadDetailError(
             "leg_not_listed",
-            f"Der {side}-Leg hat keinen lesbaren Wert für {name}.",
+            t("detail.error.leg_value", side=side, name=name),
         )
     return value
 
@@ -239,19 +241,15 @@ def spread_numbers(long_quote, short_quote, option_type):
     long_strike = _strike(long_quote)
     short_strike = _strike(short_quote)
     if long_strike is None or short_strike is None:
-        raise SpreadDetailError("leg_not_listed", "Ein Leg hat keinen Strike.")
+        raise SpreadDetailError("leg_not_listed", t("detail.error.no_strike"))
     ask_long = _leg_quote_number(long_quote, "ask", "long")
     bid_short = _leg_quote_number(short_quote, "bid", "short")
     net_debit = ask_long - bid_short
     if net_debit <= 0:
-        raise SpreadDetailError(
-            "invalid_spread",
-            "Der Spread kostet nichts - Ask des Long-Legs liegt nicht über dem "
-            "Bid des Short-Legs.",
-        )
+        raise SpreadDetailError("invalid_spread", t("detail.error.free_spread"))
     width = abs(long_strike - short_strike)
     if width <= 0:
-        raise SpreadDetailError("invalid_spread", "Beide Legs haben denselben Strike.")
+        raise SpreadDetailError("invalid_spread", t("detail.error.same_strike"))
     max_loss = net_debit * MULTIPLIER
     max_profit = (width - net_debit) * MULTIPLIER
     if option_type == PUT:
@@ -375,11 +373,12 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
     long_strike = _strike(long_quote)
     short_strike = _strike(short_quote)
     if long_strike is None or short_strike is None:
-        raise SpreadDetailError("leg_not_listed", "Ein Leg hat keinen Strike.")
+        raise SpreadDetailError("leg_not_listed", t("detail.error.no_strike"))
     if spot is None or spot <= 0:
-        raise SpreadDetailError("chain_unavailable", "Kein Kurs für die Preisachse.")
+        raise SpreadDetailError("chain_unavailable", t("detail.error.no_price_axis"))
     if expiration is None or day is None:
-        raise SpreadDetailError("invalid_spread", "Tag oder Verfall fehlt.")
+        raise SpreadDetailError("invalid_spread",
+                                t("detail.error.missing_day_or_expiry"))
 
     zahlen = spread_numbers(long_quote, short_quote, option_type)
     net_debit = zahlen["net_debit"]
@@ -418,14 +417,13 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
         })
 
     notes = [
-        "G&V je 1 Spread (100 Aktien), ohne Gebühren.",
-        "Heute-Kurve: Black-Scholes mit der IV des jeweiligen Legs "
-        f"(r = {RATE * 100:.0f} %, q = 0 %); Verfall exakt.",
-        f"Preisachse {SERIES_FROM * 100:.0f} % bis {SERIES_TO * 100:.0f} % des Spot "
-        f"({spot_source}).",
+        t("detail.notes.pl"),
+        t("detail.notes.today_curve", rate=f"{RATE * 100:.0f}"),
+        t("detail.notes.price_axis", from_pct=f"{SERIES_FROM * 100:.0f}",
+          to_pct=f"{SERIES_TO * 100:.0f}", source=spot_source),
     ]
     if iv_long is None or iv_short is None:
-        notes.append("Ohne IV eines Legs bleibt die Heute-Kurve leer.")
+        notes.append(t("detail.notes.no_iv"))
 
     return {
         "schema_version": "1.0",
