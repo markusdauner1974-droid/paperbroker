@@ -295,6 +295,41 @@ TEXTS: dict[str, object] = {
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
     #
+    # --- gap_support.py --------------------------------------------------- #
+    # Die Methodik-Notizen der Gap-Spread-Liste. Zwei von ihnen tragen Zahlen;
+    # die Zahlen kommen als Textvariable herein (f"{x:.0f}"), damit die deutsche
+    # Schreibweise dort bleibt, wo sie war.
+    "gap.notes.data_mode": (
+        "Gerechnet wird auf dem letzten verfügbaren Marktstand "
+        "(data_mode=last_available) - es gibt keinen Altersfilter."
+    ),
+    "gap.notes.rr": (
+        "R/R = net_return_pct / 100, Gebühren eingeschlossen "
+        "(fees=0.0 USD je Position, weil dieses Repo keine Gebührenordnung kennt)."
+    ),
+    "gap.notes.expiry": (
+        "Verfall: die erste gelistete Reihe STRIKT nach dem nächsten "
+        "Berichtstermin; ohne Berichtstermin oder ohne spätere Reihe entfällt "
+        "der Kandidat."
+    ),
+    "gap.notes.strike_pair": (
+        "Strike-Paar: alle Kombinationen des Verfalls, höchstes R/R - aber nur "
+        "mit |Delta| des Long-Legs >= 20 und Netto-Debit >= 0.50 USD."
+    ),
+    "gap.notes.dte": "Laufzeit (dte) in Kalendertagen ab dem gescannten Tag, nicht ab heute.",
+    "gap.notes.required_move": (
+        "Nötige Bewegung = Abstand des Schlusskurses zum Break-even des Spreads "
+        "in Prozent (Vorzeichen = Richtung); zugelassen ist ein Betrag bis "
+        "{max_move} %. Das R/R hat weiterhin nur eine Untergrenze, keine Obergrenze."
+    ),
+    "gap.notes.hit_rate": (
+        "Trefferquote = Anteil der vergangenen Fenster von so vielen "
+        "Handelstagen, wie die Laufzeit bis Verfall umfasst (dte in "
+        "Kalendertagen, je Zeile in window_sessions umgerechnet), in denen der "
+        "Kurs die nötige Bewegung mindestens erreicht hat; gemessen an "
+        "höchstens {bars} Tagesbars. Eine Häufigkeit, keine Wahrscheinlichkeit."
+    ),
+
     # --- earnings_scan.py ------------------------------------------------- #
     # Der Scan ist ein Alt-Endpunkt: seine Antwort bleibt deutsch, auch nach
     # der Sprachumschaltung. Der Abschnitt wird in en_texts.py deshalb NICHT

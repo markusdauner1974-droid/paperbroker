@@ -31,6 +31,7 @@ from .gap_scan import (
     select_candidates,
 )
 from .reachability import HISTORY_BARS
+from .texts import t
 from .view_support import _DATE_RE, _calendar_failure, _scan_limit, _us_today
 
 GAP_SCAN_MODE = "post_earnings_gap"
@@ -45,28 +46,24 @@ _US_CLOSE_HOUR_ET = 16
 
 
 _GAP_SPREADS_PARAMETERS = ("max_required_move_pct",)
-_GAP_SPREADS_NOTES = (
-    "Gerechnet wird auf dem letzten verfügbaren Marktstand "
-    "(data_mode=last_available) - es gibt keinen Altersfilter.",
-    "R/R = net_return_pct / 100, Gebühren eingeschlossen "
-    "(fees=0.0 USD je Position, weil dieses Repo keine Gebührenordnung kennt).",
-    "Verfall: die erste gelistete Reihe STRIKT nach dem nächsten "
-    "Berichtstermin; ohne Berichtstermin oder ohne spätere Reihe entfällt "
-    "der Kandidat.",
-    "Strike-Paar: alle Kombinationen des Verfalls, höchstes R/R - aber nur "
-    "mit |Delta| des Long-Legs >= 20 und Netto-Debit >= 0.50 USD.",
-    "Laufzeit (dte) in Kalendertagen ab dem gescannten Tag, nicht ab heute.",
-    "Nötige Bewegung = Abstand des Schlusskurses zum Break-even des Spreads "
-    "in Prozent (Vorzeichen = Richtung); zugelassen ist ein Betrag bis "
-    f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f} %. Das R/R hat weiterhin "
-    "nur eine Untergrenze, keine Obergrenze.",
-    "Trefferquote = Anteil der vergangenen Fenster von so vielen "
-    "Handelstagen, wie die Laufzeit bis Verfall umfasst (dte in "
-    "Kalendertagen, je Zeile in window_sessions umgerechnet), in denen der "
-    "Kurs die nötige Bewegung mindestens erreicht hat; gemessen an "
-    f"höchstens {HISTORY_BARS} Tagesbars. Eine Häufigkeit, "
-    "keine Wahrscheinlichkeit.",
-)
+def gap_spreads_notes():
+    """The methodology notes of the gap-spread list, in the CURRENT request's language.
+
+    A function and not a module constant: the list follows the language, so the
+    sentences may not be frozen at import time. The two numbers travel as text
+    variables - the German formatting stays where it was (``f"{x:.0f}"``), and a
+    language switch cannot silently turn ``0.5`` into ``0,5``.
+    """
+    return [
+        t("gap.notes.data_mode"),
+        t("gap.notes.rr"),
+        t("gap.notes.expiry"),
+        t("gap.notes.strike_pair"),
+        t("gap.notes.dte"),
+        t("gap.notes.required_move",
+          max_move=f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f}"),
+        t("gap.notes.hit_rate", bars=str(HISTORY_BARS)),
+    ]
 _GAP_SPREADS_SCHEMA_VERSION = "1.0"
 _SPREAD_DETAIL_CODES = {
     gap_funnel.REASON_NO_NEXT_EARNINGS: "no_next_earnings",
