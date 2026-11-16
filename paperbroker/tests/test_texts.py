@@ -266,12 +266,16 @@ class PluralMatrixTest(CatalogueTestCase):
                     self.assertEqual(erwartet, set(value), f"{code}/{key}")
 
     def test_the_german_plural_matrix_is_pinned(self):
+        # Die Zifferngruppierung kommt aus der Produktion, nicht aus dem Test:
+        # sonst pinnt der Test eine Zeichenkette, die die Seite nie zeigt.
+        from paperbroker.gap_funnel import _tausender
+
         faelle = {
             "funnel.pairs.valid": {
                 0: "0 gültige Paare",
                 1: "1 gültiges Paar",
                 2: "2 gültige Paare",
-                1000: "1.000 gültige Paare",
+                1000: "1 000 gültige Paare",
             },
             "funnel.pairs.enumerated": {
                 1: "1 aufgezählten Paar",
@@ -289,7 +293,9 @@ class PluralMatrixTest(CatalogueTestCase):
         for key, faelle_je_zahl in faelle.items():
             for zahl, erwartet in faelle_je_zahl.items():
                 with self.subTest(key=key, n=zahl):
-                    self.assertEqual(erwartet, texts.t(key, n=zahl, count=_tausender(zahl)))
+                    self.assertEqual(
+                        erwartet, texts.t(key, n=zahl, count=_tausender(zahl))
+                    )
 
     def test_the_three_funnel_counters_read_as_the_page_says(self):
         from paperbroker.gap_funnel import (
@@ -300,16 +306,14 @@ class PluralMatrixTest(CatalogueTestCase):
 
         self.assertEqual("1 gültiges Paar", _valid_pairs(1))
         self.assertEqual("45 gültige Paare", _valid_pairs(45))
+        # Vierstellig: die Produktion gruppiert mit einem Leerzeichen ("1 000"),
+        # nicht mit einem Punkt - der Test haelt genau das fest.
+        self.assertEqual("1 000 gültige Paare", _valid_pairs(1000))
         self.assertEqual("1 aufgezählten Paar", _enumerated_pairs(1))
         self.assertEqual("45 aufgezählten Paaren", _enumerated_pairs(45))
         self.assertEqual("1 mögliches Paar", _possible_pairs_word(1))
         self.assertEqual("45 möglich", _possible_pairs_word(45))
         self.assertEqual("? möglich", _possible_pairs_word(None))
-
-
-def _tausender(number):
-    """Dieselbe Zifferngruppierung, die das Modul fuer Anzeigen benutzt."""
-    return f"{number:,}".replace(",", ".")
 
 
 if __name__ == "__main__":
