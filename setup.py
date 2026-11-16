@@ -11,6 +11,7 @@ setup(name='paperbroker',
                'paperbroker.adapters.earnings',
                'paperbroker.adapters.quotes',
                'paperbroker.logic',
+               'paperbroker.texts',
                ],
         install_requires=[
             'arrow',
