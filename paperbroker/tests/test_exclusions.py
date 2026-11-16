@@ -9,6 +9,7 @@ promises the page makes:
   missing - and no category appears that the pipeline did not really produce.
 """
 
+import json
 import unittest
 
 import arrow
@@ -214,6 +215,80 @@ class TestTheScanOverview(unittest.TestCase):
         self.assertIn("erste Grund", satz)
         self.assertIsNone(exclusions.headline(
             exclusions.summarise([], exclusions.LEVEL_CONTRACT)))
+
+
+class ReasonCodeTest(unittest.TestCase):
+    """Ein Grund mit Code: die Kategorie haengt am CODE, nicht am Satz.
+
+    Das ist die Voraussetzung dafuer, dass die Saetze spaeter uebersetzt werden
+    duerfen. Der Test beweist die Trennung, indem er einen Grund mit ENGLISCHEM
+    Text und deutschem Code nimmt - die Textregeln wuerden ihn in "sonstiges"
+    werfen, der Code nicht.
+    """
+
+    def test_a_reason_is_still_its_text(self):
+        from paperbroker.exclusions import Reason
+
+        grund = Reason("OI 120 < 500", "no_spread")
+        self.assertIsInstance(grund, str)
+        self.assertEqual("OI 120 < 500", grund)
+        self.assertEqual(json.dumps("OI 120 < 500"), json.dumps(grund))
+        self.assertEqual(("c1", "OI 120 < 500"), ("c1", grund))
+
+    def test_the_code_decides_the_category_not_the_text(self):
+        from paperbroker.exclusions import CAT_AGE, CAT_LIQUIDITY, Reason, categorise
+
+        self.assertEqual(CAT_LIQUIDITY, categorise(Reason("nothing qualified here", "no_spread_ge_rr")))
+        self.assertEqual(CAT_AGE, categorise(Reason("whatever words", "stale_data")))
+
+    def test_a_tagged_reason_survives_summarise(self):
+        """Der Weg, den die Pipeline geht: (item, reason) durch summarise.
+
+        Ohne diesen Test war der Code-Zweig fuer die wichtigste Eingabeform tot:
+        summarise hat den Grund mit str() geglaettet und damit .code verworfen.
+        """
+        from paperbroker.exclusions import CAT_LIQUIDITY, LEVEL_CONTRACT, Reason, summarise
+
+        zusammenfassung = summarise(
+            [("c1", Reason("open interest missing", "no_spread_ge_rr"))], LEVEL_CONTRACT
+        )
+        zaehler = {k["key"]: k["count"] for k in zusammenfassung["categories"]}
+        self.assertEqual({CAT_LIQUIDITY: 1}, zaehler)
+        self.assertEqual(1, zusammenfassung["counted"])
+
+    def test_every_funnel_reason_has_a_category(self):
+        """Drift-Waechter: die Tabelle muss die ECHTEN Codes des Trichters kennen.
+
+        Ein Schluessel, der nur so aehnlich klingt ("no_spread" statt
+        "no_spread_ge_rr"), faellt sonst nirgends auf: der getaggte Grund landet
+        still in "sonstiges", und in der Quellsprache sieht man es nicht.
+        """
+        from paperbroker import gap_funnel
+        from paperbroker.exclusions import code_category
+
+        codes = [
+            gap_funnel.REASON_NO_NEXT_EARNINGS,
+            gap_funnel.REASON_NO_EXPIRY,
+            gap_funnel.REASON_NO_SPREAD,
+            gap_funnel.REASON_NOT_OPTIONABLE,
+            gap_funnel.REASON_MOVE_TOO_FAR,
+            gap_funnel._CODE_CHAIN_FAILED,
+            gap_funnel.CODE_DEADLINE,
+        ]
+        for code in codes:
+            with self.subTest(code=code):
+                self.assertIsNotNone(code_category(code), f"{code} fehlt in _CODE_CATEGORIES")
+
+    def test_an_untagged_reason_still_uses_the_text_rules(self):
+        from paperbroker.exclusions import CAT_AGE, CAT_LIQUIDITY, categorise
+
+        self.assertEqual(CAT_AGE, categorise("veraltet: 41 Min."))
+        self.assertEqual(CAT_LIQUIDITY, categorise("OI 120 < 500"))
+
+    def test_an_unknown_code_falls_back_to_the_text_rules(self):
+        from paperbroker.exclusions import CAT_LIQUIDITY, Reason, categorise
+
+        self.assertEqual(CAT_LIQUIDITY, categorise(Reason("OI 120 < 500", "code_that_does_not_exist")))
 
 
 if __name__ == "__main__":
