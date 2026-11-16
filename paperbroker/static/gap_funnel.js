@@ -271,7 +271,7 @@
   function messageFor(status, body) {
     var code = body && body.error;
     if (code === 'invalid_day') {
-      return 'Kein gültiges Datum — bitte einen Reaktionstag im Format JJJJ-MM-TT angeben.';
+      return T('js.error.invalid_day');
     }
     if (body && body.message) return body.message;
     return 'HTTP ' + status;
@@ -476,16 +476,14 @@
     var ba = paare ? entry.bid_ask_pct : [];
     var td = document.createElement('td');
     td.title = paare
-      ? 'Open Interest beider Legs (Long / Short) · Bid-Ask-Aufschlag in '
-        + 'Prozent des Mittelkurses, je Leg'
-      : 'Open Interest beider Legs (Long / Short) · Bid-Ask-Aufschlag der '
-        + 'schlechteren Leg in Prozent ihres Mittelkurses';
-    td.textContent = 'OI ' + de(oi[0], 0) + ' / ' + de(oi[1], 0);
+      ? T('js.cell.options.title_per_leg')
+      : T('js.cell.options.title_one_leg');
+    td.textContent = T('js.cell.options.oi', { long: de(oi[0], 0), short: de(oi[1], 0) });
     var spreads = document.createElement('span');
     spreads.className = 'sub';
     spreads.textContent = paare
-      ? 'Bid-Ask ' + de(ba[0], 1) + ' % / ' + de(ba[1], 1) + ' %'
-      : 'Bid-Ask max ' + de(entry.bid_ask_pct, 1) + ' %';
+      ? T('js.cell.options.bid_ask_pair', { long: de(ba[0], 1), short: de(ba[1], 1) })
+      : T('js.cell.options.bid_ask_max', { spread: de(entry.bid_ask_pct, 1) });
     td.appendChild(spreads);
     var liquid = document.createElement('span');
     liquid.className = 'sub';
@@ -502,60 +500,65 @@
     var richtung = directionWord(entry.direction);
 
     zellen.push(stacked(richtung.arrow + ' ' + gapText(entry.gap_pct), richtung.word,
-      'dir', 'Gap: Schluss des Reaktionstags gegen den Schluss davor'));
+      'dir', T('js.cell.gap.title')));
 
     zellen.push(cell(entry.strategy_label || STRATEGY[entry.strategy] || '–', '',
       entry.strategy || ''));
 
-    zellen.push(cell(de(entry.close, 2), '', 'Schlusskurs des Reaktionstags'));
+    zellen.push(cell(de(entry.close, 2), '', T('js.cell.close.title')));
 
     zellen.push(stacked(de(entry.long_strike, 1) + ' / ' + de(entry.short_strike, 1),
-      'Long / Short', '',
-      'Long ' + de(entry.long_strike, 1) + ' · Short ' + de(entry.short_strike, 1)));
+      T('js.cell.strikes.sub'), '',
+      T('js.cell.strikes.title', {
+        long: de(entry.long_strike, 1), short: de(entry.short_strike, 1)
+      })));
 
-    zellen.push(cell(de(entry.max_loss, 2), '', 'maximaler Verlust je Einheit'));
-    zellen.push(cell(de(entry.max_profit, 2), '', 'maximaler Gewinn je Einheit'));
-    zellen.push(cell(rrText(entry.rr), '', 'Gewinn zu Verlust bei Verfall'));
+    zellen.push(cell(de(entry.max_loss, 2), '', T('js.cell.max_loss.title')));
+    zellen.push(cell(de(entry.max_profit, 2), '', T('js.cell.max_profit.title')));
+    zellen.push(cell(rrText(entry.rr), '', T('js.cell.rr.title')));
 
     // Chance: Trefferquote x R/R - eine Lesehilfe, keine zweite Messung. Sie
     // steht direkt neben dem R/R, weil sie aus ihm und der Trefferquote
     // daneben gerechnet ist; sortiert wird trotzdem nach Trefferquote.
     zellen.push(cell(num(entry.chance) ? de(entry.chance, 2) : '—', '',
-      'Chance = Trefferquote × R/R; Obergrenze des Erwartungswerts, keine Zusage - sortiert wird nach Trefferquote'));
+      T('js.cell.chance.title')));
 
     // Noetige Bewegung: Vorzeichen UND Pfeil, damit die Richtung nicht an einer
     // Zahl haengt, die man als Betrag lesen könnte.
     zellen.push(stacked(moveArrow(entry.required_move_pct) + moveText(entry.required_move_pct),
-      num(entry.required_move_pct) ? (entry.required_move_pct > 0 ? 'steigen' : 'fallen') : '',
-      'dir', 'Bewegung bis zum Break-even des Spreads, in Prozent des Schlusses am Reaktionstag'));
+      num(entry.required_move_pct)
+        ? (entry.required_move_pct > 0 ? T('js.move.rise') : T('js.move.fall')) : '',
+      'dir', T('js.cell.move.title')));
 
     // Schwankung: annualisiert oben, der mittlere Tagesausschlag klein darunter.
     zellen.push(stacked(num(entry.volatility_pct) ? de(entry.volatility_pct, 1) + ' %' : '—',
-      num(entry.daily_move_pct) ? 'Tag ' + de(entry.daily_move_pct, 1) + ' %' : '',
-      '', 'Schwankung: annualisierte Streuung der Tagesrenditen; darunter der mittlere Tagesausschlag'));
+      num(entry.daily_move_pct)
+        ? T('js.cell.volatility.day', { value: de(entry.daily_move_pct, 1) }) : '',
+      '', T('js.cell.volatility.title')));
 
     // Treffer: die gemessene Häufigkeit, darunter die Zahl der Fenster und -
     // klein - ihre Länge in HANDELSTAGEN. dte in der Spalte daneben ist die
     // Kalenderdistanz; die beiden Zahlen sind absichtlich nicht dieselbe.
     var fensterText = num(entry.windows_measured) && entry.windows_measured > 0
-      ? 'n=' + entry.windows_measured : historyWord(entry.history_state);
+      ? T('js.cell.windows', { count: entry.windows_measured }) : historyWord(entry.history_state);
     if (num(entry.windows_measured) && entry.windows_measured > 0
         && num(entry.window_sessions) && entry.window_sessions > 0) {
-      fensterText += ' · ' + entry.window_sessions + ' HT';
+      fensterText += ' · ' + T('js.cell.windows_sessions', { count: entry.window_sessions });
     }
     zellen.push(stacked(num(entry.hit_rate_pct) ? de(entry.hit_rate_pct, 0) + ' %' : '—',
       fensterText, '',
-      'Anteil der vergangenen Fenster von '
-        + (num(entry.window_sessions) && entry.window_sessions > 0 ? entry.window_sessions : 'dte')
-        + ' Handelstagen, in denen der Kurs die nötige Bewegung mindestens erreicht hat'
-        + ' (Fensterlänge in Handelstagen; dte nebenan in Kalendertagen)'));
+      T('js.cell.hit.title', {
+        sessions: num(entry.window_sessions) && entry.window_sessions > 0
+          ? entry.window_sessions : 'dte'
+      })));
 
-    zellen.push(cell(entry.expiration || '–', '', 'Verfall nach dem nächsten Bericht'));
+    zellen.push(cell(entry.expiration || '–', '', T('js.cell.expiration.title')));
     zellen.push(cell(num(entry.dte) ? String(entry.dte) : '–', '',
-      'Kalendertage bis Verfall'));
+      T('js.cell.dte.title')));
     zellen.push(cell(entry.next_earnings_date || '–',
-      entry.earnings_date ? 'Bericht des Reaktionstags: ' + entry.earnings_date
-        : 'nächster bekannter Bericht'));
+      entry.earnings_date
+        ? T('js.cell.report.title_earnings_day', { date: entry.earnings_date })
+        : T('js.cell.report.title_next')));
     zellen.push(optionsCell(entry));
     return zellen;
   }
@@ -612,8 +615,8 @@
       button.setAttribute('aria-expanded', 'false');
       button.setAttribute('aria-controls', group.ids.join(' '));
       button.title = count === 1
-        ? 'die eine Alternative dieser Zeile aufklappen'
-        : count + ' Alternativen dieser Zeile aufklappen';
+        ? T('js.cell.rank.one')
+        : T('js.cell.rank.many', { count: count });
       button.addEventListener('click', function (ev) {
         // Das Ereignis darf nicht zur Zeile durchlaufen: sonst oeffnete der
         // Zaehler beim Aufklappen auch das Detail.
@@ -745,15 +748,15 @@
     if (!el.expandAll) return;
     var offen = allGroupsOpen();
     el.expandAll.hidden = !groups.length;
-    el.expandAll.textContent = offen ? 'alle zuklappen' : 'alle aufklappen';
+    el.expandAll.textContent = offen ? T('js.expand.close') : T('js.expand.open');
     el.expandAll.setAttribute('aria-expanded', offen ? 'true' : 'false');
   }
 
   function reasonText(entry, body) {
     if (entry && entry.reason === 'no_spread_ge_rr') {
-      return 'kein Spread mit R/R mindestens ' + rrHurdleText(body);
+      return T('js.reason.no_spread_ge_rr', { rr: rrHurdleText(body) });
     }
-    return REASONS[entry.reason] || entry.message || entry.reason || 'Grund unbekannt';
+    return REASONS[entry.reason] || entry.message || entry.reason || T('js.reason.unknown');
   }
 
   function fillList(details, summary, list, entries, label, textOf) {
@@ -776,13 +779,13 @@
         .filter(Boolean).join(' · ');
       list.appendChild(li);
     });
-    if (summary) summary.textContent = label + ' (' + entries.length + ')';
+    if (summary) summary.textContent = T('js.list.summary', { label: label, count: entries.length });
     details.hidden = false;
   }
 
   function failureText(entry) {
     if (entry.code && entry.message) return entry.code + ' — ' + entry.message;
-    return entry.message || entry.code || 'Grund unbekannt';
+    return entry.message || entry.code || T('js.reason.unknown');
   }
 
   // --- Detail eines Spreads ------------------------------------------------ //
@@ -803,7 +806,7 @@
     if (!el.detail) return;
     el.detail.hidden = true;
     el.detail.open = false;
-    if (el.detailSummary) el.detailSummary.textContent = 'Detail zum Spread';
+    if (el.detailSummary) el.detailSummary.textContent = T('js.detail.summary');
     if (el.detailBody) el.detailBody.textContent = '';
   }
 
@@ -823,23 +826,22 @@
     var body = antwort.body;
     var code = body && body.error;
     if (code === 'unknown_symbol') {
-      return 'Zu diesem Titel gibt es an diesem Tag keine Zeile.';
+      return T('js.detail.unknown_symbol');
     }
     if (code === 'leg_not_listed') {
-      return 'Ein Leg dieses Spreads liegt nicht in der Kette.';
+      return T('js.detail.leg_not_listed');
     }
     if (code === 'chain_unavailable') {
-      return 'Die Optionskette dieses Titels ist nicht lesbar.';
+      return T('js.detail.chain_unavailable');
     }
     if (code === 'no_next_earnings') {
-      return 'Für diesen Titel ist kein nächster Berichtstermin bekannt.';
+      return T('js.detail.no_next_earnings');
     }
     if (code === 'no_expiry_after_earnings') {
-      return 'Kein gelisteter Verfall liegt nach dem nächsten Bericht.';
+      return T('js.detail.no_expiry');
     }
     if (code === 'no_candidate' || code === 'no_spread_ge_rr' || code === 'no_gap') {
-      return body && body.message ? body.message
-        : 'Dieser Titel ist an diesem Tag kein Kandidat des Trichters.';
+      return body && body.message ? body.message : T('js.detail.no_candidate');
     }
     return messageFor(antwort.status, body);
   }
@@ -853,7 +855,7 @@
     var gen = detailGeneration + 1;
     detailGeneration = gen;
     setActiveRow(row);
-    openDetail('Detail zu ' + symbol + ' — lädt …');
+    openDetail(T('js.detail.loading', { symbol: symbol }));
     el.detailBody.textContent = '';
 
     var url = DETAIL_API + '?symbol=' + encodeURIComponent(symbol)
@@ -880,14 +882,14 @@
           return;
         }
         if (!antwort.body || typeof antwort.body !== 'object') {
-          renderDetailError(symbol, 'Die Antwort war kein JSON.');
+          renderDetailError(symbol, T('js.error.not_json'));
           return;
         }
         renderDetail(antwort.body);
       })
       .catch(function (err) {
         if (gen !== detailGeneration) return;
-        renderDetailError(symbol, 'Detail für ' + symbol + ' fehlgeschlagen: ' + err.message);
+        renderDetailError(symbol, T('js.detail.failed', { symbol: symbol, message: err.message }));
       });
   }
 
@@ -899,7 +901,7 @@
     el.detailBody.appendChild(fehler);
     // Der Block bleibt offen und die Zeile aktiv: ein zweiter Klick ist der
     // zweite Versuch, kein neuer Zustand.
-    openDetail('Detail zu ' + symbol);
+    openDetail(T('js.detail.title', { symbol: symbol }));
   }
 
   function subtitle(text) {
@@ -938,7 +940,7 @@
   function legTable(legs) {
     var rows = (Array.isArray(legs) ? legs : []).map(function (leg) {
       return [
-        leg.side === 'short' ? 'Short' : 'Long',
+        leg.side === 'short' ? T('js.legs.side.short') : T('js.legs.side.long'),
         de(leg.strike, 2),
         de(leg.bid, 2),
         de(leg.ask, 2),
@@ -948,7 +950,9 @@
         de(leg.delta, 2)
       ];
     });
-    return table(['Seite', 'Strike', 'Bid', 'Ask', 'Mid', 'IV', 'OI', 'Delta'], rows);
+    return table([T('js.legs.col.side'), T('js.legs.col.strike'), T('js.legs.col.bid'),
+      T('js.legs.col.ask'), T('js.legs.col.mid'), T('js.legs.col.iv'),
+      T('js.legs.col.oi'), T('js.legs.col.delta')], rows);
   }
 
   function scenarioTable(scenarios) {
@@ -963,7 +967,10 @@
         signedDe(s.theta, 2)
       ];
     });
-    return table(['Prozent', 'Basiswert', 'G&V', 'Delta', 'Gamma', 'Vega', 'Theta'], rows);
+    return table([T('js.scenarios.col.change'), T('js.scenarios.col.underlying'),
+      T('js.scenarios.col.pl'), T('js.scenarios.col.delta'),
+      T('js.scenarios.col.gamma'), T('js.scenarios.col.vega'),
+      T('js.scenarios.col.theta')], rows);
   }
 
   var SVG_NS = 'http://www.w3.org/2000/svg';
@@ -1068,19 +1075,15 @@
       width: '100%',
       class: 'detail-chart-svg',
       role: 'img',
-      'aria-label': 'G&V von ' + (detail.symbol || '') + ': durchgezogen heute,'
-        + ' gestrichelt bei Verfall'
+      'aria-label': T('js.chart.aria', { symbol: detail.symbol || '' })
     });
     // Titel und Beschreibung sind der Text, den ein Screenreader statt der
     // Linien liest; aria-label allein nennt nur die Kurven, nicht die Achsen.
     var titel = svgNode('title');
-    titel.textContent = 'G&V je Spread über den Kurs — heute und bei Verfall';
+    titel.textContent = T('js.chart.title');
     box.appendChild(titel);
     var beschreibung = svgNode('desc');
-    beschreibung.textContent = 'Durchgezogene Linie: G&V heute nach dem Modell. '
-      + 'Gestrichelte Linie: G&V bei Verfall. Senkrechte Linie: Kurs '
-      + de(detail.spot, 2) + '. Waagerechte Achse: Kurs. Senkrechte Achse: '
-      + 'G&V in US-Dollar je Spread.';
+    beschreibung.textContent = T('js.chart.desc', { spot: de(detail.spot, 2) });
     box.appendChild(beschreibung);
     if (!serie.length || !num(detail.spot)) return box;
 
@@ -1177,7 +1180,7 @@
         stroke: '#091217', 'stroke-width': 3, 'stroke-linejoin': 'round',
         'paint-order': 'stroke'
       });
-      spotText.textContent = 'Spot ' + de(detail.spot, 2);
+      spotText.textContent = T('js.chart.spot', { value: de(detail.spot, 2) });
       box.appendChild(spotText);
     }
 
@@ -1205,7 +1208,7 @@
       'font-size': 11, 'font-family': 'monospace', 'text-anchor': 'middle',
       class: 'chart-axis-title'
     });
-    kursTitel.textContent = 'Kurs';
+    kursTitel.textContent = T('js.chart.axis.price');
     box.appendChild(kursTitel);
 
     var gvMitte = plotY + plotH / 2;
@@ -1214,7 +1217,7 @@
       'font-family': 'monospace', 'text-anchor': 'middle',
       transform: 'rotate(-90 14 ' + gvMitte + ')', class: 'chart-axis-title'
     });
-    gvTitel.textContent = 'G&V (USD je Spread)';
+    gvTitel.textContent = T('js.chart.axis.pl');
     box.appendChild(gvTitel);
 
     return box;
@@ -1226,7 +1229,8 @@
   function chartLegend() {
     var legende = document.createElement('div');
     legende.className = 'detail-legend';
-    [['solid', 'heute (Modell)'], ['dashed', 'bei Verfall']].forEach(function (paar) {
+    [['solid', T('js.chart.legend.today')],
+      ['dashed', T('js.chart.legend.expiry')]].forEach(function (paar) {
       var zeile = document.createElement('span');
       zeile.className = 'detail-legend-item';
       var strich = document.createElement('i');
@@ -1318,15 +1322,16 @@
   function figures(detail, zeile) {
     var raster = document.createElement('div');
     raster.className = 'detail-figures';
-    raster.appendChild(figure('Debit', de(detail.net_debit, 2)));
-    raster.appendChild(figure('Break-even', de(detail.breakeven, 2)));
-    raster.appendChild(figure('max. Verlust', de(detail.max_loss, 2)));
-    raster.appendChild(figure('max. Gewinn', de(detail.max_profit, 2)));
-    raster.appendChild(figure('R/R', rrText(detail.rr)));
-    raster.appendChild(figure('nötig', zeile ? moveText(zeile.required_move_pct) : '—'));
-    raster.appendChild(figure('Schwankung',
+    raster.appendChild(figure(T('js.figures.debit'), de(detail.net_debit, 2)));
+    raster.appendChild(figure(T('js.figures.breakeven'), de(detail.breakeven, 2)));
+    raster.appendChild(figure(T('js.figures.max_loss'), de(detail.max_loss, 2)));
+    raster.appendChild(figure(T('js.figures.max_profit'), de(detail.max_profit, 2)));
+    raster.appendChild(figure(T('js.figures.rr'), rrText(detail.rr)));
+    raster.appendChild(figure(T('js.figures.required_move'),
+      zeile ? moveText(zeile.required_move_pct) : '—'));
+    raster.appendChild(figure(T('js.figures.volatility'),
       zeile && num(zeile.volatility_pct) ? de(zeile.volatility_pct, 1) + ' %' : '—'));
-    raster.appendChild(figure('Treffer',
+    raster.appendChild(figure(T('js.figures.hit_rate'),
       zeile && num(zeile.hit_rate_pct) ? de(zeile.hit_rate_pct, 0) + ' %' : '—'));
     return raster;
   }
@@ -1367,8 +1372,10 @@
     // von den Zwischentiteln des Blocks (Legs, Bild, Szenarien) getrennt - die
     // sind Versalien, der Untertitel des Kopfes ist Fliesstext.
     unter.className = 'detail-sub detail-head-sub';
-    unter.textContent = (detail.strategy_label || STRATEGY[detail.strategy] || '–')
-      + ' · Verfall ' + dayText(detail.expiration);
+    unter.textContent = T('js.detail.subtitle', {
+      strategy: detail.strategy_label || STRATEGY[detail.strategy] || '–',
+      expiration: dayText(detail.expiration)
+    });
     kopf.appendChild(unter);
 
     kopf.appendChild(figures(detail, zeile));
@@ -1380,10 +1387,10 @@
     var zeile = structureFor(detail);
     el.detailBody.appendChild(detailHead(detail, zeile));
 
-    el.detailBody.appendChild(subtitle('Beide Legs'));
+    el.detailBody.appendChild(subtitle(T('js.detail.legs_heading')));
     el.detailBody.appendChild(legTable(detail.legs));
 
-    el.detailBody.appendChild(subtitle('G&V über den Kurs — heute und bei Verfall'));
+    el.detailBody.appendChild(subtitle(T('js.detail.chart_heading')));
     var chartBox = document.createElement('div');
     chartBox.className = 'detail-chart';
     chartBox.appendChild(chart(detail));
@@ -1391,7 +1398,7 @@
     el.detailBody.appendChild(chartBox);
     letztesDetail = detail;
 
-    el.detailBody.appendChild(subtitle('Szenarien'));
+    el.detailBody.appendChild(subtitle(T('js.detail.scenarios_heading')));
     el.detailBody.appendChild(scenarioTable(detail.scenarios));
 
     // Der Methodik-Absatz steht bei den Notizen des Details, nicht im Kopf: er
@@ -1402,16 +1409,14 @@
         && num(zeile.windows_measured) && zeile.windows_measured > 0) {
       var methodik = document.createElement('p');
       methodik.className = 'detail-notes';
-      methodik.textContent = 'Methodik: ' + hitSentence(
-        zeile.window_sessions,
-        num(zeile.dte) ? zeile.dte : 'dte',
-        zeile.windows_measured)
-        + ' Eine Häufigkeit, keine Wahrscheinlichkeit.'
-        // Die Chance ist eine Lesehilfe aus zwei Zahlen, keine zweite Messung -
-        // und sie sagt NICHT, wie die Liste sortiert ist.
-        + ' Chance = Trefferquote × R/R; weil die Trefferquote das Erreichen des'
-        + ' Break-even misst, ist das eine Obergrenze des Erwartungswerts, keine'
-        + ' Zusage. Sortiert wird weiter nach Trefferquote.';
+      // Dieselben zwei Absaetze wie im Fuss, nur mit "weiter" im letzten Satz:
+      // hier steht die Chance schon in der Liste daneben.
+      methodik.textContent = T('js.detail.method', {
+        sentence: hitSentence(zeile.window_sessions,
+          num(zeile.dte) ? zeile.dte : 'dte', zeile.windows_measured)
+          + ' ' + T('js.foot.frequency')
+          + ' ' + T('js.foot.chance_method')
+      });
       el.detailBody.appendChild(methodik);
     }
 
@@ -1423,9 +1428,9 @@
       el.detailBody.appendChild(hinweis);
     }
 
-    openDetail('Detail zu ' + (detail.symbol || '–') + ' · '
+    openDetail(T('js.detail.title', { symbol: detail.symbol || '–' }) + ' · '
       + (detail.strategy_label || STRATEGY[detail.strategy] || '–')
-      + ' · Verfall ' + (detail.expiration || '–'));
+      + ' · ' + T('js.detail.expiry_label', { expiration: detail.expiration || '–' }));
   }
 
   function render() {
@@ -1499,9 +1504,9 @@
     }
 
     fillList(el.excludedBlock, el.excludedSummary, el.excluded, ausschluesse,
-      'Ausschlüsse', function (entry) { return reasonText(entry, body); });
+      T('js.list.excluded'), function (entry) { return reasonText(entry, body); });
     fillList(el.failuresBlock, el.failuresSummary, el.failures, fehlschlaege,
-      'Fehlschläge', failureText);
+      T('js.list.failures'), failureText);
 
     el.state.textContent = T('js.state.ready', {
       clock: clock(current.at),
