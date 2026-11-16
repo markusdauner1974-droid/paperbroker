@@ -315,6 +315,51 @@ class PluralMatrixTest(CatalogueTestCase):
         self.assertEqual("45 möglich", _possible_pairs_word(45))
         self.assertEqual("? möglich", _possible_pairs_word(None))
 
+class ExclusionVocabularyTest(CatalogueTestCase):
+    """Die Ausschluss-Woerter kommen aus dem Katalog - und bleiben dieselben.
+
+    Sie reisen im Payload von ``/api/screen`` und ``/api/v1/earnings-scan``,
+    also wird hier nicht nur die Existenz geprueft, sondern der Wortlaut, den
+    die Bloecke tragen. Aendert jemand ein Wort, wird dieser Test rot - und
+    sieht dabei, dass er eine Anzeige UND eine Payload aendert.
+    """
+
+    def test_the_levels_are_named_the_way_the_payload_says(self):
+        from paperbroker import exclusions
+
+        erwartet = {
+            exclusions.LEVEL_CONTRACT: ("Kontrakte", "Kontrakt"),
+            exclusions.LEVEL_PAIR: ("Spread-Kombinationen", "Spread-Kombination"),
+            exclusions.LEVEL_EXPIRY: ("Verfälle", "Verfall"),
+            exclusions.LEVEL_SYMBOL: ("Aktien", "Aktie"),
+        }
+        for level, (plural, singular) in erwartet.items():
+            with self.subTest(level=level):
+                self.assertEqual(plural, exclusions.unit_label(level))
+                self.assertEqual(singular, exclusions.unit_singular(level))
+
+    def test_a_summary_reads_as_the_payload_states_it(self):
+        from paperbroker import exclusions
+
+        zusammenfassung = exclusions.summarise(
+            [("c1", "OI 120 < 500"), ("c2", "IV fehlt")],
+            exclusions.LEVEL_CONTRACT,
+            criteria=None,
+        )
+        self.assertEqual("Kontrakte", zusammenfassung["unit"])
+        self.assertEqual("Kontrakt", zusammenfassung["unit_singular"])
+        self.assertEqual(
+            "Je Kontrakt zählt genau ein Grund: der erste Filter, der ihn "
+            "abgelehnt hat. Weitere zutreffende Gründe werden nicht gezählt und "
+            "deshalb auch nicht behauptet.",
+            zusammenfassung["first_reason_note"],
+        )
+        self.assertEqual(
+            "Kontrakte: 2 ausgeschlossen - Liquidität 1 · fehlende Daten 1 "
+            "(je Kontrakt zählt der erste Grund)",
+            exclusions.headline(zusammenfassung),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
