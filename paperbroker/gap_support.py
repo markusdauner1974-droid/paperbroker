@@ -31,6 +31,7 @@ from .gap_scan import (
     select_candidates,
 )
 from .reachability import HISTORY_BARS
+from .texts import t
 from .view_support import _DATE_RE, _calendar_failure, _scan_limit, _us_today
 
 GAP_SCAN_MODE = "post_earnings_gap"
@@ -45,28 +46,51 @@ _US_CLOSE_HOUR_ET = 16
 
 
 _GAP_SPREADS_PARAMETERS = ("max_required_move_pct",)
-_GAP_SPREADS_NOTES = (
-    "Gerechnet wird auf dem letzten verfügbaren Marktstand "
-    "(data_mode=last_available) - es gibt keinen Altersfilter.",
-    "R/R = net_return_pct / 100, Gebühren eingeschlossen "
-    "(fees=0.0 USD je Position, weil dieses Repo keine Gebührenordnung kennt).",
-    "Verfall: die erste gelistete Reihe STRIKT nach dem nächsten "
-    "Berichtstermin; ohne Berichtstermin oder ohne spätere Reihe entfällt "
-    "der Kandidat.",
-    "Strike-Paar: alle Kombinationen des Verfalls, höchstes R/R - aber nur "
-    "mit |Delta| des Long-Legs >= 20 und Netto-Debit >= 0.50 USD.",
-    "Laufzeit (dte) in Kalendertagen ab dem gescannten Tag, nicht ab heute.",
-    "Nötige Bewegung = Abstand des Schlusskurses zum Break-even des Spreads "
-    "in Prozent (Vorzeichen = Richtung); zugelassen ist ein Betrag bis "
-    f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f} %. Das R/R hat weiterhin "
-    "nur eine Untergrenze, keine Obergrenze.",
-    "Trefferquote = Anteil der vergangenen Fenster von so vielen "
-    "Handelstagen, wie die Laufzeit bis Verfall umfasst (dte in "
-    "Kalendertagen, je Zeile in window_sessions umgerechnet), in denen der "
-    "Kurs die nötige Bewegung mindestens erreicht hat; gemessen an "
-    f"höchstens {HISTORY_BARS} Tagesbars. Eine Häufigkeit, "
-    "keine Wahrscheinlichkeit.",
-)
+def _schranke_text(wert):
+    """The bound as text, without rounding it.
+
+    ``f"{wert:.0f}"`` was wrong here in two ways: 0.4 came out as "0" and 2.5 as
+    "2" (half-to-even), while the body of the same answer carried 0.4 and 2.5. The
+    note must name the number the reader sees, so it is rendered with no rounding
+    at all - and a whole number simply loses its ".0".
+    """
+    text = repr(float(wert))
+    return text[:-2] if text.endswith(".0") else text
+
+
+def gap_spreads_notes(language=None, max_move_pct=None):
+    """The methodology notes of the gap-spread list, in ``language``.
+
+    A function and not a module constant: the sentences may not be frozen at
+    import time, because this list is one of the page-facing answers that will
+    follow the language switch.
+
+    ``language=None`` means the default. That is what the route passes TODAY -
+    there is no request language yet, ``resolve_language`` has no production
+    caller until the switch lands. The parameter exists so that the switch is one
+    line at the call site and not an edit to seven sentences; it is not a promise
+    that the language already varies.
+
+    ``max_move_pct`` is the bound the answer ACTUALLY applied, not the default:
+    the route accepts it per request and writes it twice into the same body, so a
+    note naming the default would contradict the field next to it. ``None`` means
+    the default, which is what a request without the parameter gets.
+
+    The two numbers travel as text variables - the German formatting stays where
+    it was (``f"{x:.0f}"``), so a language switch cannot silently turn 0.5 into
+    0,5.
+    """
+    schranke = (gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT
+                if max_move_pct is None else max_move_pct)
+    return [
+        t("gap.notes.data_mode", language=language),
+        t("gap.notes.rr", language=language),
+        t("gap.notes.expiry", language=language),
+        t("gap.notes.strike_pair", language=language),
+        t("gap.notes.dte", language=language),
+        t("gap.notes.required_move", language=language, max_move=_schranke_text(schranke)),
+        t("gap.notes.hit_rate", language=language, bars=str(HISTORY_BARS)),
+    ]
 _GAP_SPREADS_SCHEMA_VERSION = "1.0"
 _SPREAD_DETAIL_CODES = {
     gap_funnel.REASON_NO_NEXT_EARNINGS: "no_next_earnings",

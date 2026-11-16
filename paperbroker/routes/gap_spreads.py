@@ -26,7 +26,6 @@ from ..gap_scan import (
 from ..gap_scan import _counts as gap_run_counts
 from ..gap_support import (
     _GAP_DEADLINE_SECONDS,
-    _GAP_SPREADS_NOTES,
     _GAP_SPREADS_PARAMETERS,
     _GAP_SPREADS_SCHEMA_VERSION,
     _SPREAD_DETAIL_CODES,
@@ -37,6 +36,7 @@ from ..gap_support import (
     _gap_scan_args,
     _gap_scan_error,
     _required_move_cap,
+    gap_spreads_notes,
 )
 from ..view_support import _same_strike
 from .context import context
@@ -200,7 +200,7 @@ def api_gap_spreads():
         "with_reachable_move": lauf.counts["with_reachable_move"],
         "shown": lauf.counts["shown"],
     }
-    notes = list(_GAP_SPREADS_NOTES)
+    notes = gap_spreads_notes(max_move_pct=max_move)
     if kandidaten and not lauf.counts["with_next_earnings"] and any(
             "FINNHUB_API_KEY" in str(e.message) for e in lauf.excluded):
         notes.append(
