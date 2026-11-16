@@ -28,7 +28,7 @@ The chain below is hand-computed (close 101, expiry 2027-03-19)::
     106 /130     -        -      -       (not in the section)
 
 The three characters land on three different strike pairs, so the display order
-is exactly the order of ``VARIANT_LABELS``.
+is exactly the order of ``VARIANT_IDS``.
 """
 
 import unittest
@@ -49,7 +49,7 @@ CLOSE = 101.0
 REACTION = date(2026, 11, 12)
 
 #: The fields of one variant, in the order of the agreed contract.
-VARIANT_KEYS = {"label", "long_strike", "short_strike", "net_debit", "max_loss",
+VARIANT_KEYS = {"id", "label", "long_strike", "short_strike", "net_debit", "max_loss",
                 "max_profit", "rr", "chance", "required_move_pct", "bid_ask_pct",
                 "hit_rate_pct", "windows_measured", "liquidity", "open_interest"}
 
@@ -101,15 +101,21 @@ def rising_bars(count=31, end=CLOSE, step=0.01):
 
 
 def labels(variants):
-    return [variant["label"] for variant in variants]
+    """Die IDs der Charaktere - die Identitaet, nicht den Anzeigetext.
+
+    Vorher stand hier der deutsche Satz; mit einem englischen Buch waere das keine
+    Identitaet mehr. Der Satz wird dort geprueft, wo er hingehoert: in
+    ``EveryVariantCarriesItsSentenceTest``.
+    """
+    return [variant["id"] for variant in variants]
 
 
 def strikes(variants):
     return [(variant["long_strike"], variant["short_strike"]) for variant in variants]
 
 
-def by_label(variants, label):
-    return next(variant for variant in variants if variant["label"] == label)
+def by_id(variants, variant_id):
+    return next(variant for variant in variants if variant["id"] == variant_id)
 
 
 class NearMoneyCharacter(unittest.TestCase):
@@ -120,7 +126,7 @@ class NearMoneyCharacter(unittest.TestCase):
         variants = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                         close=CLOSE, bars=level_bars(), dte=127,
                                         now_fn=NOW)
-        nah = by_label(variants, gf.VARIANT_NEAR_MONEY)
+        nah = by_id(variants, gf.VARIANT_NEAR_MONEY)
         # |100 - 101| = 1 against |103 - 101| = 2 and |106 - 101| = 5.
         self.assertEqual((nah["long_strike"], nah["short_strike"]), (100.0, 106.0))
 
@@ -129,7 +135,7 @@ class NearMoneyCharacter(unittest.TestCase):
         variants = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                         close=CLOSE, bars=level_bars(), dte=127,
                                         now_fn=NOW)
-        nah = by_label(variants, gf.VARIANT_NEAR_MONEY)
+        nah = by_id(variants, gf.VARIANT_NEAR_MONEY)
         # 100/109 carries 3.92 and 100/112 5.22 - the character is the NEAREST
         # strike, not the best ratio, so both stay behind 100/106 (2.64).
         self.assertEqual(nah["short_strike"], 106.0)
@@ -140,7 +146,7 @@ class NearMoneyCharacter(unittest.TestCase):
         variants = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                         close=CLOSE, bars=level_bars(), dte=127,
                                         now_fn=NOW)
-        nah = by_label(variants, gf.VARIANT_NEAR_MONEY)
+        nah = by_id(variants, gf.VARIANT_NEAR_MONEY)
         # All three long-100 pairs touch the close equally close: +0.64 %,
         # +0.82 % and +0.92 % - the shortest distance wins.
         self.assertEqual(nah["required_move_pct"], 0.64)
@@ -156,7 +162,7 @@ class ResistanceCharacter(unittest.TestCase):
         variants = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                         close=CLOSE, bars=level_bars(), dte=127,
                                         now_fn=NOW)
-        widerstand = by_label(variants, gf.VARIANT_AT_RESISTANCE)
+        widerstand = by_id(variants, gf.VARIANT_AT_RESISTANCE)
         self.assertEqual(widerstand["long_strike"], 106.0)
         # Both long-106 pairs sit ON the level; the tie goes to the smaller
         # required move (+5.45 % against +5.54 %), not to the better ratio.
@@ -201,7 +207,7 @@ class TightestSpreadCharacter(unittest.TestCase):
         variants = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                         close=CLOSE, bars=level_bars(), dte=127,
                                         now_fn=NOW)
-        eng = by_label(variants, gf.VARIANT_TIGHTEST_SPREAD)
+        eng = by_id(variants, gf.VARIANT_TIGHTEST_SPREAD)
         # 103/109: long (0.63 - 0.60) / 0.615 = 4.88 %, short
         # (0.22 - 0.12) / 0.17 = 58.82 % - the worse leg is the short one.
         self.assertEqual((eng["long_strike"], eng["short_strike"]), (103.0, 109.0))
@@ -215,8 +221,8 @@ class TightestSpreadCharacter(unittest.TestCase):
                                         close=CLOSE, bars=level_bars(), dte=127,
                                         now_fn=NOW)
         self.assertNotIn((106.0, 109.0),
-                         strikes([by_label(variants, gf.VARIANT_TIGHTEST_SPREAD)]))
-        self.assertEqual(by_label(variants, gf.VARIANT_AT_RESISTANCE)["bid_ask_pct"], 69.57)
+                         strikes([by_id(variants, gf.VARIANT_TIGHTEST_SPREAD)]))
+        self.assertEqual(by_id(variants, gf.VARIANT_AT_RESISTANCE)["bid_ask_pct"], 69.57)
 
     def test_a_leg_without_a_mid_cannot_win_the_character(self):
         # A one-sided quote has no mid, so it has no spread percentage either -
@@ -239,7 +245,7 @@ class TheRowIsNeverOneOfItsOwnVariants(unittest.TestCase):
                                         now_fn=NOW)
         self.assertTrue(variants)
         self.assertNotIn((103.0, 112.0), strikes(variants))
-        self.assertNotIn(gf.ROW_PICK_LABEL, labels(variants))
+        self.assertNotIn(gf.ROW_PICK_ID, labels(variants))
 
     def test_without_another_qualifying_pair_the_list_is_empty(self):
         # One call ladder with a single valid pair: the pick has no alternative.
@@ -263,7 +269,7 @@ class DedupeAndOrder(unittest.TestCase):
         variants = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                         close=CLOSE, bars=level_bars(), dte=127,
                                         now_fn=NOW)
-        self.assertEqual(labels(variants), list(gf.VARIANT_LABELS))
+        self.assertEqual(labels(variants), list(gf.VARIANT_IDS))
         self.assertEqual(strikes(variants), [(100.0, 106.0), (106.0, 109.0), (103.0, 109.0)])
 
     def test_two_characters_on_one_pair_yield_one_variant(self):
@@ -339,10 +345,10 @@ class TheFrequencyComesFromTheRowsBars(unittest.TestCase):
         bars = rising_bars()
         variants = gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                          close=CLOSE, bars=bars, dte=1, now_fn=NOW)
-        nah = by_label(variants, gf.VARIANT_NEAR_MONEY)
+        nah = by_id(variants, gf.VARIANT_NEAR_MONEY)
         self.assertEqual(nah["hit_rate_pct"], 100.0)
         self.assertEqual(nah["windows_measured"], 30)
-        self.assertEqual(by_label(variants, gf.VARIANT_TIGHTEST_SPREAD)["hit_rate_pct"], 0.0)
+        self.assertEqual(by_id(variants, gf.VARIANT_TIGHTEST_SPREAD)["hit_rate_pct"], 0.0)
         # This series ends ON its high, so there is no level and no third
         # character - every rate that IS shown still comes from the same bars.
         self.assertEqual(labels(variants), [gf.VARIANT_NEAR_MONEY,
@@ -351,7 +357,7 @@ class TheFrequencyComesFromTheRowsBars(unittest.TestCase):
     def test_the_measure_is_the_one_the_row_uses(self):
         pair, _criteria = row_pick()
         bars = rising_bars()
-        variant = by_label(
+        variant = by_id(
             gf.variant_characters(character_chain(), BULL_CALL_DEBIT, primary=pair,
                                   close=CLOSE, bars=bars, dte=1, now_fn=NOW),
             gf.VARIANT_NEAR_MONEY)
@@ -410,7 +416,7 @@ class TheRunCarriesTheCharacters(unittest.TestCase):
 
     def test_the_row_lists_three_named_alternatives(self):
         row = self._row()
-        self.assertEqual(labels(row["variants"]), list(gf.VARIANT_LABELS))
+        self.assertEqual(labels(row["variants"]), list(gf.VARIANT_IDS))
         self.assertEqual((row["long_strike"], row["short_strike"]), (103.0, 112.0))
         self.assertNotIn((row["long_strike"], row["short_strike"]), strikes(row["variants"]))
 
@@ -479,7 +485,7 @@ class OneEnumerationPerRow(unittest.TestCase):
         self.assertEqual(len(run.results), 1)
         row = run.results[0]
         # The candidate HAS alternatives, so both needs really occurred.
-        self.assertEqual(labels(row["variants"]), list(gf.VARIANT_LABELS))
+        self.assertEqual(labels(row["variants"]), list(gf.VARIANT_IDS))
         self.assertEqual(len(calls), 1)
 
     def test_the_alternatives_are_the_ones_of_the_same_list(self):
@@ -532,6 +538,34 @@ class NoLadderVersusEmptyLadder(unittest.TestCase):
         row = {"symbol": "AAA", "required_move_pct": 1.0, "dte": 127, "variants": []}
         gf.measure_reachability([row], fetch_daily=None, day=date(2026, 11, 12))
         self.assertIsNone(row["variants"])
+
+
+class EveryVariantCarriesItsSentenceTest(unittest.TestCase):
+    """Die ID ist die Identitaet, der Satz kommt aus dem Katalog.
+
+    Vorher war der deutsche Satz BEIDES. Mit einem englischen Buch waere damit die
+    Zuordnung auseinandergefallen - und ein Test, der auf den Satz schaut, haette es
+    erst in der englischen Fassung gemerkt.
+    """
+
+    def test_every_label_is_the_catalogued_sentence_for_its_id(self):
+        from paperbroker.texts import t
+
+        for variant_id in gf.VARIANT_IDS:
+            with self.subTest(variant=variant_id):
+                self.assertEqual(gf.variant_label(variant_id),
+                                 t(f"funnel.variant.{variant_id}"))
+
+    def test_the_row_pick_has_a_sentence_of_its_own(self):
+        from paperbroker.texts import t
+
+        self.assertEqual(gf.variant_label(gf.ROW_PICK_ID),
+                         t("funnel.variant.row_pick"))
+        self.assertNotIn(gf.ROW_PICK_ID, gf.VARIANT_IDS)
+
+    def test_no_variant_calls_itself_the_row(self):
+        row = TheRunCarriesTheCharacters()._row()
+        self.assertNotIn(gf.ROW_PICK_ID, labels(row["variants"]))
 
 
 if __name__ == "__main__":
