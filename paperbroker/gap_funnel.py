@@ -101,6 +101,7 @@ from .screener import (
     strategy_option_type,
     vertical_spreads,
 )
+from .texts import t
 
 #: Reward/risk floor: the best case must be worth at least twice the risk.
 DEFAULT_RR_MIN = 2.0
@@ -247,9 +248,12 @@ def _zahl(value):
 
 def move_too_far_message(required_move_pct, max_required_move_pct):
     """The sentence of a ``move_too_far`` exclusion, with both numbers."""
-    richtung = "steigen" if required_move_pct > 0 else "fallen"
-    return (f"Der Kurs müsste sich um {_zahl(required_move_pct)} % {richtung}; "
-            f"zugelassen sind {_zahl(max_required_move_pct)} %.")
+    return t(
+        "funnel.move.too_far",
+        move=_zahl(required_move_pct),
+        direction=t("funnel.move.up" if required_move_pct > 0 else "funnel.move.down"),
+        limit=_zahl(max_required_move_pct),
+    )
 
 
 def required_move_of(pair, close):
@@ -407,25 +411,19 @@ def _valid_pairs(number):
     German inflects the adjective AND the noun, so "1 gültige Paare" is wrong
     twice over; the count itself is untouched.
     """
-    if number == 1:
-        return "1 gültiges Paar"
-    return f"{_tausender(number)} gültige Paare"
+    return t("funnel.pairs.valid", n=number, count=_tausender(number))
 
 
 def _enumerated_pairs(number):
     """``"von 1 aufgezählten Paar"`` / ``"von 5 aufgezählten Paaren"``."""
-    if number == 1:
-        return "1 aufgezählten Paar"
-    return f"{_tausender(number)} aufgezählten Paaren"
+    return t("funnel.pairs.enumerated", n=number, count=_tausender(number))
 
 
 def _possible_pairs_word(number):
     """``"1 mögliches Paar"`` / ``"45 möglich"`` / ``"?"`` - one number, one number word."""
     if number is None:
-        return "? möglich"
-    if number == 1:
-        return "1 mögliches Paar"
-    return f"{_tausender(number)} möglich"
+        return t("funnel.pairs.possible_unknown")
+    return t("funnel.pairs.possible", n=number, count=_tausender(number))
 
 
 def _capped_counts(text, checked, coverage, section, strategy):
@@ -455,8 +453,14 @@ def _capped_counts(text, checked, coverage, section, strategy):
     possible_word = _possible_pairs_word(possible)
     limit = report.get("limit")
     deckel = "?" if not isinstance(limit, int) else _tausender(limit)
-    return (f"{text} ({_valid_pairs(checked)} von {_enumerated_pairs(enumerated)}, "
-            f"Suche am Deckel von {deckel} - {possible_word})")
+    return t(
+        "funnel.pairs.capped",
+        text=text,
+        valid=_valid_pairs(checked),
+        enumerated=_enumerated_pairs(enumerated),
+        limit=deckel,
+        possible=possible_word,
+    )
 
 
 def liquidity_of(pair, min_oi=DEFAULT_MIN_OI):
@@ -486,9 +490,10 @@ def legs_liquid(pair, min_oi=DEFAULT_MIN_OI):
     for name, leg in (("long", pair.long), ("short", pair.short)):
         interest = getattr(leg, "open_interest", None)
         if interest is None:
-            return False, f"Open Interest des {name}-Legs fehlt"
+            return False, t("funnel.oi.missing", leg=name)
         if interest < min_oi:
-            return False, f"Open Interest des {name}-Legs {int(interest)} < {int(min_oi)}"
+            return False, t("funnel.oi.below", leg=name,
+                            value=int(interest), minimum=int(min_oi))
     return True, None
 
 
@@ -549,11 +554,11 @@ def _select(kept, criteria, *, rr_min=DEFAULT_RR_MIN,
     """
     if not kept:
         if not section:
-            return None, "keine Kontrakte in diesem Verfall", coverage
+            return None, t("funnel.expiry.empty"), coverage
         if criteria.pair_max_width is None:
-            return None, "nur ein Strike gelistet - kein Strike-Paar möglich", coverage
-        return None, ("kein gültiges Strike-Paar im Screening"
-                      + (f" (z. B. {sample_drop})" if sample_drop else "")), coverage
+            return None, t("funnel.strike.single"), coverage
+        return None, (t("funnel.strike.no_pair")
+                      + (t("funnel.strike.sample", sample=sample_drop) if sample_drop else "")), coverage
 
     ratios = 0
     deltas = 0
@@ -573,15 +578,17 @@ def _select(kept, criteria, *, rr_min=DEFAULT_RR_MIN,
         return pair, None, coverage
     if not ratios:
         return None, _capped_counts(
-            f"kein Paar mit R/R >= {rr_min:.1f}", len(kept), coverage, section,
+            t("funnel.rr.none", limit=f"{rr_min:.1f}"), len(kept), coverage, section,
             strategy), coverage
     if not deltas:
         return None, _capped_counts(
-            f"R/R erfüllt ({ratios} von {len(kept)}), aber |Delta| des Long-Legs "
-            f"< {min_long_delta:.0f}", len(kept), coverage, section, strategy), coverage
+            t("funnel.rr.delta", ratios=ratios, checked=len(kept),
+              limit=f"{min_long_delta:.0f}"),
+            len(kept), coverage, section, strategy), coverage
     return None, _capped_counts(
-        f"R/R und Delta erfüllt ({deltas} von {len(kept)}), aber Netto-Debit "
-        f"< {min_net_debit:.2f} USD", len(kept), coverage, section, strategy), coverage
+        t("funnel.rr.debit", ratios=deltas, checked=len(kept),
+          limit=f"{min_net_debit:.2f}"),
+        len(kept), coverage, section, strategy), coverage
 
 
 def best_spread(section, strategy, *, now_fn=None, rr_min=DEFAULT_RR_MIN,
@@ -1038,10 +1045,9 @@ def _classify_chain_error(exc):
     """
     reason = getattr(exc, "reason", None)
     if reason in _CHAIN_NO_OPTION:
-        return (REASON_NOT_OPTIONABLE, None,
-                "Die Quelle listet keine handelbare Optionskette für diesen Titel.")
+        return REASON_NOT_OPTIONABLE, None, t("funnel.chain.not_listed")
     detail = f" ({reason})" if isinstance(reason, str) and reason else ""
-    return None, _CODE_CHAIN_FAILED, f"Die Optionskette konnte nicht gelesen werden{detail}."
+    return None, _CODE_CHAIN_FAILED, t("funnel.chain.unreadable", detail=detail)
 
 
 def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
@@ -1063,12 +1069,12 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
               "move": False}
     if not symbol:
         return None, Exclusion("", REASON_NO_NEXT_EARNINGS,
-                               "Ein Kandidat ohne Symbol hat keinen Berichtstermin."), None, stages, None
+                               t("funnel.earnings.no_symbol")), None, stages, None
 
     strategy = STRATEGY_BY_DIRECTION.get(candidate.get("direction"))
     if strategy is None:
         return None, Exclusion(symbol, REASON_NO_SPREAD,
-                               "Der Gap hat keine Richtung - keine Debit-Strategie."), None, stages, None
+                               t("funnel.gap.no_direction")), None, stages, None
 
     # 1) the next report date
     try:
@@ -1081,12 +1087,11 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         return None, None, Failure(symbol, exc.code, exc.message), stages, None
     except Exception as exc:                    # noqa: BLE001 - boundary by design
         return None, None, Failure(symbol, "next_earnings_failed",
-                                   f"Der Berichtstermin konnte nicht gelesen werden "
-                                   f"({type(exc).__name__})."), stages, None
+                                   t("funnel.earnings.unreadable",
+                                     error=type(exc).__name__)), stages, None
     if next_earnings is None:
         return None, Exclusion(symbol, REASON_NO_NEXT_EARNINGS,
-                               "Die Quelle nennt für diesen Titel keinen "
-                               "Berichtstermin im Fenster."), None, stages, None
+                               t("funnel.earnings.none_in_window")), None, stages, None
     stages["next_earnings"] = True
 
     # 2) the chain - one request per symbol, all expiries in it
@@ -1099,7 +1104,7 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         return None, Exclusion(symbol, reason, message), None, stages, None
     if not chain:
         return None, Exclusion(symbol, REASON_NOT_OPTIONABLE,
-                               "Die Kette dieses Titels enthält keinen Kontrakt."), None, stages, None
+                               t("funnel.chain.empty")), None, stages, None
     stages["chain"] = True
 
     # 3) the first listed expiry strictly after the report
@@ -1107,8 +1112,8 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
     if expiration is None:
         return None, Exclusion(
             symbol, REASON_NO_EXPIRY,
-            f"Kein gelisteter Verfall liegt nach dem Berichtstermin "
-            f"{next_earnings.isoformat()}."), None, stages, None
+            t("funnel.expiry.none_after_earnings", date=next_earnings.isoformat()),
+        ), None, stages, None
     stages["expiry"] = True
 
     # 4) the best debit spread of that expiry - ONE enumeration of the section,
@@ -1130,7 +1135,8 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         # message read like a full search that found nothing.
         report = coverage or {}
         return None, Exclusion(
-            symbol, REASON_NO_SPREAD, f"Verfall {expiration.isoformat()}: {note}",
+            symbol, REASON_NO_SPREAD,
+            t("funnel.expiry.line", date=expiration.isoformat(), note=note),
             pairs_capped=bool(report.get("capped")),
             pairs_enumerated=report.get("enumerated"),
             pairs_possible=possible_pairs(section, strategy_option_type(strategy)),
@@ -1190,11 +1196,9 @@ def cap_note(rows, excluded=None):
     limits = sorted({row.get("pairs_limit") for row in capped
                      if isinstance(row.get("pairs_limit"), int)})
     deckel = f" ({_tausender(limits[0])})" if limits else ""
-    titel = f"{count} Titel" if count == 1 else f"{count} Titeln"
-    return (f"Bei {titel} war die Paarsuche am Deckel{deckel} - dort ist das "
-            f"gezeigte R/R das beste GEFUNDENE Paar, und \"kein Paar\" heißt "
-            f"\"keins im geprüften Teil\"; ein besseres Paar weiter hinten in "
-            f"der Aufzählung wurde nicht geprüft.")
+    return t("funnel.pairs.capped_note",
+             title=t("funnel.pairs.capped_title", n=count, count=count),
+             ceiling=deckel)
 
 
 def _row_variants(context, bars):
@@ -1408,15 +1412,14 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
         symbol = str(candidate.get("symbol") or "").strip().upper()
         if future not in finished:
             run.failures.append(Failure(symbol, CODE_DEADLINE,
-                                        "Die Prüfung endete nicht innerhalb des "
-                                        "Zeitbudgets."))
+                                        t("funnel.budget.timeout")))
             continue
         try:
             row, exclusion, failure, stages, context = future.result()
         except Exception as exc:                # noqa: BLE001 - a bug is not a 500
             run.failures.append(Failure(symbol, "funnel_error",
-                                        f"Die Prüfung ist gescheitert "
-                                        f"({type(exc).__name__})."))
+                                        t("funnel.budget.failed",
+                                          error=type(exc).__name__)))
             continue
         if stages.get("next_earnings"):
             counts["with_next_earnings"] += 1
