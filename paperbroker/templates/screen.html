@@ -222,21 +222,19 @@
    ist EIN Trichter. Die Route fuellt ihre uebrigen Variablen weiter - gelesen
    wird hier keine davon, damit nichts an fehlendem Kontext scheitert. #}
 <header>
-  <h1>Gap-Spread-Trichter</h1>
-  <p class="lede">Earnings-Gap, Optionen, Verfall nach dem nächsten Bericht.
-    Zugelassen: R/R ≥ <span id="funnel-rr">1 : 2</span> und eine nötige Bewegung bis
-    <span id="funnel-cap">30</span> %.</p>
+  <h1>{{ t('page.head.title') }}</h1>
+  <p class="lede">{{ t('page.head.lede_before') }}<span id="funnel-rr">1 : 2</span>{{ t('page.head.lede_between') }}<span id="funnel-cap">30</span>{{ t('page.head.lede_after') }}</p>
 </header>
 <main>
   <section id="gap-funnel" aria-labelledby="funnel-title">
-    <h2 class="lede" id="funnel-title">Reaktionstag prüfen</h2>
+    <h2 class="lede" id="funnel-title">{{ t('page.form.heading') }}</h2>
     <div class="funnel-form">
-      <label for="funnel-day">Reaktionstag</label>
+      <label for="funnel-day">{{ t('page.form.day_label') }}</label>
       <input type="date" id="funnel-day" autocomplete="off">
-      <button type="button" class="funnel-btn" id="funnel-run">Scannen</button>
+      <button type="button" class="funnel-btn" id="funnel-run">{{ t('page.form.run') }}</button>
       <span class="stale" id="funnel-stale" role="status" hidden></span>
     </div>
-    <p class="note" id="funnel-state" aria-live="polite">Noch kein Scan gelaufen</p>
+    <p class="note" id="funnel-state" aria-live="polite">{{ t('page.state.no_run') }}</p>
     <p class="err" id="funnel-error" role="alert" hidden></p>
     <p class="stats" id="funnel-counts" aria-live="polite" hidden></p>
     <p class="note" id="funnel-notes" hidden></p>
@@ -246,29 +244,29 @@
        Gruppe ueber ihren Zaehler bedienbar. #}
     <div class="funnel-groups" id="funnel-groups">
       <button type="button" class="funnel-btn" id="funnel-expand-all"
-              aria-controls="funnel-tbody" aria-expanded="false" hidden>alle aufklappen</button>
+              aria-controls="funnel-tbody" aria-expanded="false" hidden>{{ t('page.form.expand_all') }}</button>
     </div>
     <div class="tbl" id="funnel-table-wrap" hidden>
       <table id="funnel-table">
         <thead>
           <tr>
-            <th>Nummer</th>
-            <th>Symbol</th>
-            <th>Gap Prozent</th>
-            <th>Strategie</th>
-            <th>Kurs</th>
-            <th>Strikes (Long / Short)</th>
-            <th>maximaler Verlust</th>
-            <th>maximaler Gewinn</th>
-            <th>R/R</th>
-            <th>Chance</th>
-            <th>nötig %</th>
-            <th>Schwankung</th>
-            <th>Treffer</th>
-            <th>Verfall</th>
-            <th>DTE</th>
-            <th>nächster Bericht</th>
-            <th>Optionen</th>
+            <th>{{ t('page.table.col.number') }}</th>
+            <th>{{ t('page.table.col.symbol') }}</th>
+            <th>{{ t('page.table.col.gap') }}</th>
+            <th>{{ t('page.table.col.strategy') }}</th>
+            <th>{{ t('page.table.col.close') }}</th>
+            <th>{{ t('page.table.col.strikes') }}</th>
+            <th>{{ t('page.table.col.max_loss') }}</th>
+            <th>{{ t('page.table.col.max_profit') }}</th>
+            <th>{{ t('page.table.col.rr') }}</th>
+            <th>{{ t('page.table.col.chance') }}</th>
+            <th>{{ t('page.table.col.required_move') }}</th>
+            <th>{{ t('page.table.col.volatility') }}</th>
+            <th>{{ t('page.table.col.hit_rate') }}</th>
+            <th>{{ t('page.table.col.expiration') }}</th>
+            <th>{{ t('page.table.col.dte') }}</th>
+            <th>{{ t('page.table.col.next_report') }}</th>
+            <th>{{ t('page.table.col.options') }}</th>
           </tr>
         </thead>
         <tbody id="funnel-tbody"></tbody>
@@ -279,20 +277,20 @@
        beides aus der Antwort kommt und nicht aus der Seite. #}
     <p class="note funnel-foot" id="funnel-foot" hidden></p>
     <details class="dropped-summary" id="funnel-detail" hidden>
-      <summary id="funnel-detail-summary">Detail zum Spread</summary>
+      <summary id="funnel-detail-summary">{{ t('page.detail.summary') }}</summary>
       <div id="funnel-detail-body"></div>
     </details>
     <details class="dropped-summary" id="funnel-excluded-block" hidden>
-      <summary id="funnel-excluded-summary">Ausschlüsse</summary>
+      <summary id="funnel-excluded-summary">{{ t('page.excluded.summary') }}</summary>
       <ul id="funnel-excluded"></ul>
     </details>
     <details class="dropped-summary" id="funnel-failures-block" hidden>
-      <summary id="funnel-failures-summary">Fehlschläge</summary>
+      <summary id="funnel-failures-summary">{{ t('page.failures.summary') }}</summary>
       <ul id="funnel-failures"></ul>
     </details>
   </section>
   <footer>
-    <p class="note">CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit.</p>
+    <p class="note">{{ t('page.foot.feed_note') }}</p>
   </footer>
 </main>
 {# Das Verhalten liegt in einer eigenen Datei: der Block traegt Zustaende,

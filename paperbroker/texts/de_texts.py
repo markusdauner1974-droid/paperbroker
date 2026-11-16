@@ -18,7 +18,48 @@ from __future__ import annotations
 #: so it declares none of them.
 TEXTS: dict[str, object] = {
     # --- page.* ---------------------------------------------------------
-    # routes/page.py and templates/screen.html: the page itself
+    # templates/screen.html: the page itself. The route computes a lot more
+    # context than this template reads - measured: the only Jinja expressions in
+    # screen.html are two url_for() calls - so the route's own sentences are not
+    # in here. They are dead for this page and are named in the PR, not
+    # translated.
+    "page.head.title": "Gap-Spread-Trichter",
+    # The lede is split into three text nodes by the two live spans the script
+    # fills (R/R hurdle, movement cap). The whitespace belongs to the text, not
+    # to the template: a line break inside a sentence is a formatting decision a
+    # translator has to see.
+    "page.head.lede_before": (
+        "Earnings-Gap, Optionen, Verfall nach dem nächsten Bericht.\n"
+        "    Zugelassen: R/R ≥ "
+    ),
+    "page.head.lede_between": " und eine nötige Bewegung bis\n    ",
+    "page.head.lede_after": " %.",
+    "page.form.heading": "Reaktionstag prüfen",
+    "page.form.day_label": "Reaktionstag",
+    "page.form.run": "Scannen",
+    "page.form.expand_all": "alle aufklappen",
+    "page.state.no_run": "Noch kein Scan gelaufen",
+    "page.table.col.number": "Nummer",
+    "page.table.col.symbol": "Symbol",
+    "page.table.col.gap": "Gap Prozent",
+    "page.table.col.strategy": "Strategie",
+    "page.table.col.close": "Kurs",
+    "page.table.col.strikes": "Strikes (Long / Short)",
+    "page.table.col.max_loss": "maximaler Verlust",
+    "page.table.col.max_profit": "maximaler Gewinn",
+    "page.table.col.rr": "R/R",
+    "page.table.col.chance": "Chance",
+    "page.table.col.required_move": "nötig %",
+    "page.table.col.volatility": "Schwankung",
+    "page.table.col.hit_rate": "Treffer",
+    "page.table.col.expiration": "Verfall",
+    "page.table.col.dte": "DTE",
+    "page.table.col.next_report": "nächster Bericht",
+    "page.table.col.options": "Optionen",
+    "page.detail.summary": "Detail zum Spread",
+    "page.excluded.summary": "Ausschlüsse",
+    "page.failures.summary": "Fehlschläge",
+    "page.foot.feed_note": "CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit.",
     #
     # --- js.* -----------------------------------------------------------
     # static/gap_funnel.js: the table, the detail block and the error states
