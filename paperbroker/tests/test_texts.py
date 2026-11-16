@@ -192,8 +192,13 @@ class ThirdLanguageTest(CatalogueTestCase):
             "switch_to": "de",
         }
         with mock.patch.dict(texts.LANGUAGES, {"xx": entry}):
+            # Every SHIPPED language is primed too: ``prime`` only replaces the
+            # books it names, so an unprimed ``en`` would keep its real content and
+            # this probe would measure the shipped book instead of the third
+            # language - it went red the moment ``en`` got its first section.
             self.prime({
                 "de": ({"page.head.hurdle": "Zugelassen: R/R >= 1 : 2"}, ()),
+                "en": ({"page.head.hurdle": "Allowed: R/R >= 1 : 2"}, ()),
                 "xx": ({"page.head.hurdle": "R/R >= 1 : 2 erlaubt"}, ("page",)),
             })
             self.assertEqual(texts.t("page.head.hurdle", language="xx"),

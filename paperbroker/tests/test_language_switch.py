@@ -50,12 +50,12 @@ class _ClientTestCase(unittest.TestCase):
 
 
 class TheTwoEndpointsFollowTheLanguageTest(_ClientTestCase):
-    def test_the_default_list_reads_the_same_in_every_available_language(self):
-        """Solange das Zielbuch leer ist, ist die Uebersetzung der Rueckfall.
+    def test_the_list_still_reads_german_because_its_section_is_not_translated(self):
+        """Ein Abschnitt, den das Zielbuch nicht deklariert, faellt als GANZES zurueck.
 
-        Der Test ist damit ein Vertrag fuer HEUTE: der Umschalter aendert an einer
-        Sprache ohne Buch keinen einzigen Buchstaben. Sobald ``en`` Texte hat,
-        kippt genau diese Zusage - und das ist gewollt sichtbar.
+        Die Notizen der Liste (``gap.notes.*``) sind noch nicht uebersetzt, also
+        liest ``?lang=en`` hier weiter Deutsch - nicht halb uebersetzt, sondern
+        vollstaendig zurueckgefallen. Das ist der Rueckfall ohne Sonderlogik.
         """
         ohne = self.rumpf(LISTE, day=TAG_OHNE_QUELLE)
         for code in texts.languages():
@@ -63,19 +63,43 @@ class TheTwoEndpointsFollowTheLanguageTest(_ClientTestCase):
                 self.assertEqual(
                     self.rumpf(LISTE, day=TAG_OHNE_QUELLE, lang=code), ohne)
 
-    def test_the_detail_answer_reads_the_same_in_every_available_language(self):
-        def hole(lang=None):
-            parameter = {"symbol": "AAA", "day": "2026-11-12"}
-            if lang is not None:
-                parameter["lang"] = lang
-            antwort = self.detail.get(DETAIL, query_string=parameter)
-            return antwort.status_code, antwort.get_data(as_text=True)
+    def test_the_switch_never_touches_the_default_answer(self):
+        """Ohne ``lang`` und mit ``lang=de`` muss dieselbe Antwort kommen.
 
-        ohne = hole()
-        self.assertEqual(ohne[0], 200)
-        for code in texts.languages():
-            with self.subTest(language=code):
-                self.assertEqual(hole(code), ohne)
+        Diese Zusage gilt in JEDER Sprache des Buchs: der Umschalter aendert nur,
+        was ausdruecklich verlangt wird.
+        """
+        for pfad, parameter in (
+            (LISTE, {"day": TAG_OHNE_QUELLE}),
+            (DETAIL, {"symbol": "AAA", "day": "2026-11-12"}),
+        ):
+            with self.subTest(pfad=pfad):
+                ohne = self.rumpf(pfad, **parameter)
+                self.assertEqual(self.rumpf(pfad, **parameter, lang="de"), ohne)
+
+    def test_the_detail_speaks_english_because_its_section_is_translated(self):
+        """Der erste uebersetzte Abschnitt - hier wird der Umschalter sichtbar.
+
+        ``detail`` ist im Zielbuch deklariert, also liest ``?lang=en`` die
+        englischen Saetze und die deutschen sind aus dem Rumpf verschwunden.
+        """
+        def hole(lang):
+            antwort = self.detail.get(DETAIL, query_string={
+                "symbol": "AAA", "day": "2026-11-12", "lang": lang})
+            self.assertEqual(antwort.status_code, 200)
+            return antwort.get_json()
+
+        # Der Rumpf maskiert Umlaute als \u00fc - verglichen wird der gelesene
+        # Wert, nicht die Rohbytes.
+        deutsch, englisch = hole("de")["notes"], hole("en")["notes"]
+        self.assertIn(texts.t("detail.notes.pl", language="de"), deutsch)
+        self.assertIn(texts.t("detail.notes.pl", language="en"), englisch)
+        self.assertNotIn(texts.t("detail.notes.pl", language="de"), englisch)
+        # Preisachse und Heute-Kurve tragen Zahlen: sie muessen in beiden Sprachen
+        # dieselben Zahlen tragen, nur der Satz drumherum wechselt.
+        self.assertEqual(len(deutsch), len(englisch))
+        for satz in englisch:
+            self.assertNotIn("\u00fc", satz)
 
     def test_a_code_in_any_case_is_accepted(self):
         ohne = self.rumpf(LISTE, day=TAG_OHNE_QUELLE)
