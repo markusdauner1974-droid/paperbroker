@@ -57,6 +57,8 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from .exclusions import Reason
+
 # ---------------------------------------------------------------------- #
 # modes
 # ---------------------------------------------------------------------- #
@@ -108,9 +110,9 @@ ZONE_ASSUMED_NOTE = (
 # reason texts (German - they go to the page and therefore must not lie)
 # ---------------------------------------------------------------------- #
 
-REASON_MISSING = "Aktualität unbekannt (kein Zeitstempel)"
-REASON_UNREADABLE = "Aktualität unbekannt (Zeitstempel unlesbar)"
-REASON_CLOCK = "Aktualität unbekannt (Uhrfehler)"
+REASON_MISSING = Reason("Aktualität unbekannt (kein Zeitstempel)", "age_missing")
+REASON_UNREADABLE = Reason("Aktualität unbekannt (Zeitstempel unlesbar)", "age_unreadable")
+REASON_CLOCK = Reason("Aktualität unbekannt (Uhrfehler)", "age_clock")
 
 #: Clock skew is seconds, not minutes. More than a minute in the FUTURE is a
 #: broken feed, not a fast clock - a plain ``age > limit`` check can never see
@@ -260,10 +262,10 @@ def assess(stamp, clock, max_age_min):
         # the wording keeps the rounding of the stale branch below: the existing
         # edge (30 min + 1 s reads "veraltet: 30 Min.") must not move
         return QuoteAge(STATE_FUTURE, zone, age_min, raw, utc_text,
-                        f"Zeitstempel in der Zukunft (+{(-age_s) / 60:.0f} Min.)")
+                        Reason(f"Zeitstempel in der Zukunft (+{(-age_s) / 60:.0f} Min.)", "age_future"))
     if age_s > max_age_min * 60:
         return QuoteAge(STATE_STALE, zone, age_min, raw, utc_text,
-                        f"veraltet: {age_min:.0f} Min.")
+                        Reason(f"veraltet: {age_min:.0f} Min.", "age_stale"))
     return QuoteAge(STATE_FRESH, zone, age_min, raw, utc_text, None)
 
 
