@@ -200,7 +200,7 @@ def api_gap_spreads():
         "with_reachable_move": lauf.counts["with_reachable_move"],
         "shown": lauf.counts["shown"],
     }
-    notes = gap_spreads_notes()
+    notes = gap_spreads_notes(max_move_pct=max_move)
     if kandidaten and not lauf.counts["with_next_earnings"] and any(
             "FINNHUB_API_KEY" in str(e.message) for e in lauf.excluded):
         notes.append(

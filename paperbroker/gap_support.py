@@ -46,7 +46,7 @@ _US_CLOSE_HOUR_ET = 16
 
 
 _GAP_SPREADS_PARAMETERS = ("max_required_move_pct",)
-def gap_spreads_notes(language=None):
+def gap_spreads_notes(language=None, max_move_pct=None):
     """The methodology notes of the gap-spread list, in ``language``.
 
     A function and not a module constant: the sentences may not be frozen at
@@ -59,18 +59,24 @@ def gap_spreads_notes(language=None):
     line at the call site and not an edit to seven sentences; it is not a promise
     that the language already varies.
 
+    ``max_move_pct`` is the bound the answer ACTUALLY applied, not the default:
+    the route accepts it per request and writes it twice into the same body, so a
+    note naming the default would contradict the field next to it. ``None`` means
+    the default, which is what a request without the parameter gets.
+
     The two numbers travel as text variables - the German formatting stays where
     it was (``f"{x:.0f}"``), so a language switch cannot silently turn 0.5 into
     0,5.
     """
+    schranke = (gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT
+                if max_move_pct is None else max_move_pct)
     return [
         t("gap.notes.data_mode", language=language),
         t("gap.notes.rr", language=language),
         t("gap.notes.expiry", language=language),
         t("gap.notes.strike_pair", language=language),
         t("gap.notes.dte", language=language),
-        t("gap.notes.required_move", language=language,
-          max_move=f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f}"),
+        t("gap.notes.required_move", language=language, max_move=f"{schranke:.0f}"),
         t("gap.notes.hit_rate", language=language, bars=str(HISTORY_BARS)),
     ]
 _GAP_SPREADS_SCHEMA_VERSION = "1.0"
