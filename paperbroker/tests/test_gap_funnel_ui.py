@@ -45,6 +45,7 @@ import urllib.parse
 from pathlib import Path
 
 import paperbroker
+from paperbroker import texts
 from paperbroker.tests.test_gap_scan_endpoint import DAY, _client
 
 PANEL_JS = Path(paperbroker.__file__).parent / "static" / "gap_funnel.js"
@@ -66,6 +67,8 @@ const answerPath = argv[1];
 const nowAt = argv.indexOf('--now');
 const FROZEN = new Date(nowAt >= 0 ? argv[nowAt + 1] : '2026-11-12T15:00:00Z').getTime();
 const scanFirst = argv.indexOf('--scan') >= 0;
+const i18nAt = argv.indexOf('--i18n');
+const I18N_TEXT = i18nAt >= 0 ? fs.readFileSync(argv[i18nAt + 1], 'utf8') : '{}';
 const actionsAt = argv.indexOf('--actions');
 const ACTIONS = actionsAt >= 0 ? argv[actionsAt + 1].split(',').filter(Boolean) : [];
 
@@ -157,7 +160,13 @@ ids.forEach((id) => {
 nodes['funnel-day'].type = 'date';
 
 const document = {
-  getElementById(id) { return nodes[id] || null; },
+  // The page inlines the catalogue as one JSON block; the panel reads its texts
+  // from it. Handing it in keeps the harness on the REAL path instead of
+  // letting T() fall back to the key.
+  getElementById(id) {
+    if (id === 'i18n-js') { return { textContent: I18N_TEXT }; }
+    return nodes[id] || null;
+  },
   createElement(tag) { return new El(tag); },
   // SVG nodes come through this path - the chart is built with the SVG
   // namespace, exactly as a browser needs it.
@@ -519,8 +528,9 @@ def _render(*, list_body=None, details=None, actions=None, scan=True):
         tmp = Path(tmp)
         (tmp / "answers.json").write_text(json.dumps(antworten), encoding="utf-8")
         (tmp / "harness.js").write_text(_HARNESS, encoding="utf-8")
+        (tmp / "i18n.json").write_text(json.dumps(texts.block("js")), encoding="utf-8")
         befehl = [NODE, str(tmp / "harness.js"), str(PANEL_JS), str(tmp / "answers.json"),
-                  "--now", PANEL_NOW]
+                  "--now", PANEL_NOW, "--i18n", str(tmp / "i18n.json")]
         if scan:
             befehl.append("--scan")
         if actions:

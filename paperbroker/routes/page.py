@@ -13,6 +13,7 @@ from urllib.parse import urlencode
 
 from flask import current_app, jsonify, render_template, request
 
+from .. import texts
 from ..earnings_calendar import (
     CONFIRMATION_CONFIRMED,
     CONFIRMATION_ESTIMATED,
@@ -208,6 +209,9 @@ def index():
         # what its table is called come from one server-side table.
         scan=scan_view_data(),
         feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit",
+        # The script's texts travel as one JSON block: one source, no second
+        # catalogue file in JavaScript. The block also names the plural rule.
+        js_i18n=texts.block("js"),
         data_state=zustand)
 
 

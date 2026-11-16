@@ -60,11 +60,46 @@
   // koennte.
   var DETAIL_API = '/api/v1/gap-spreads/detail';
 
+  // Die Texte kommen als EIN JSON-Block ins gerenderte HTML (id="i18n-js"):
+  // eine Quelle, keine zweite Katalogdatei in JavaScript. Der Block nennt auch
+  // die Mehrfach-Regel der Sprache - dieselbe, die der Server benutzt.
+  var I18N = (function () {
+    var node = document.getElementById('i18n-js');
+    if (!node) return { texts: {}, plural: 'one_other' };
+    try {
+      return JSON.parse(node.textContent || '{}');
+    } catch (err) {
+      return { texts: {}, plural: 'one_other' };
+    }
+  }());
+
+  // Dieselben Regeln wie ``texts/registry.py``, benannt nach dem Feld, das der
+  // Block mitliefert. Eine 3-6-Formen-Regel steht hier NICHT auf Vorrat.
+  var PLURAL_RULES = {
+    one_other: function (count) { return count === 1 ? 'one' : 'other'; }
+  };
+
+  // Text nach Schluessel, mit {platzhalter}-Einsetzung. Fehlt der Schluessel,
+  // steht der Schluessel da: sichtbar falsch statt still leer.
+  function T(key, vars) {
+    var text = (I18N.texts || {})[key];
+    if (text && typeof text === 'object') {
+      var rule = PLURAL_RULES[I18N.plural] || PLURAL_RULES.one_other;
+      var branch = rule(vars ? vars.n : undefined);
+      text = text[branch] || text.other || text.one;
+    }
+    if (typeof text !== 'string') return key;
+    if (!vars) return text;
+    return text.replace(/\{(\w+)\}/g, function (match, name) {
+      return Object.prototype.hasOwnProperty.call(vars, name) ? String(vars[name]) : match;
+    });
+  }
+
   // Die Strategie waehlt die Route. Hier steht nur, wie sie heisst, falls die
   // Antwort keinen Klartext mitliefert.
   var STRATEGY = {
-    bull_call_debit: 'Bull Call',
-    bear_put_debit: 'Bear Put'
+    bull_call_debit: T('js.strategy.bull_call_debit'),
+    bear_put_debit: T('js.strategy.bear_put_debit')
   };
   // Grund eines Ausschlusses in Klartext. Der Code selbst bleibt im Tooltip -
   // ein Leser soll den Grund lesen, nicht einen Bezeichner entziffern.
@@ -73,10 +108,10 @@
   // (``limits.rr_min``, siehe ``rrHurdleText``). Eine Grenze, die die Datei
   // selbst kennt, wuerde bei jedem Lauf mit anderer Huerde luegen.
   var REASONS = {
-    no_next_earnings: 'kein nächster Bericht bekannt',
-    no_expiry_after_earnings: 'kein Verfall nach dem nächsten Bericht',
-    not_optionable: 'keine gelisteten Optionen',
-    chain_unavailable: 'Optionskette nicht lesbar'
+    no_next_earnings: T('js.reason.no_next_earnings'),
+    no_expiry_after_earnings: T('js.reason.no_expiry_after_earnings'),
+    not_optionable: T('js.reason.not_optionable'),
+    chain_unavailable: T('js.reason.chain_unavailable')
     // move_too_far fehlt hier ABSICHTLICH: der Satz der Route nennt die noetige
     // Bewegung UND die Grenze ("Der Kurs müsste sich um 61,3 % steigen;
     // zugelassen sind 20 %.") - ein Etikett waere weniger Auskunft, nicht mehr.
@@ -86,7 +121,7 @@
   // Route nennt in ``limits``, welche Grenze sie angewandt hat. Fehlt der
   // Block (aeltere Antwort), bleibt die heutige Vorgabe stehen - ein alter
   // Server liefert dann den alten Satz, keine kaputte Seite.
-  var RR_HURDLE_FALLBACK = '1 : 2';
+  var RR_HURDLE_FALLBACK = T('js.rr_hurdle.fallback');
 
   function rrHurdleText(body) {
     var limits = body && body.limits;
@@ -97,8 +132,7 @@
   }
 
   var DAY_RE = /^\d{4}-\d{2}-\d{2}$/;
-  var STALE = 'Kalenderstand veraltet — die Zeilen stammen aus einem alten '
-    + 'Kalenderstand und können sich noch ändern.';
+  var STALE = T('js.stale');
 
   var generation = 0;      // nur die neueste Anfrage darf zeichnen
   var timer = null;
@@ -136,9 +170,9 @@
   }
 
   function directionWord(direction) {
-    if (direction === 'up') return { arrow: '↑', word: 'aufwärts' };
-    if (direction === 'down') return { arrow: '↓', word: 'abwärts' };
-    return { arrow: '–', word: 'unbekannt' };
+    if (direction === 'up') return { arrow: '↑', word: T('js.direction.up') };
+    if (direction === 'down') return { arrow: '↓', word: T('js.direction.down') };
+    return { arrow: '–', word: T('js.direction.unknown') };
   }
 
   // Risiko : Gewinn, mit deutschem Dezimalkomma.
@@ -161,7 +195,7 @@
   }
 
   function liquidityWord(value) {
-    return value === 'full' ? 'voll liquide' : 'dünn';
+    return value === 'full' ? T('js.liquidity.full') : T('js.liquidity.thin');
   }
 
   // Ein Vorzeichen ist eine Aussage, kein Schmuck: "+185,00" und "-145,00"
@@ -192,8 +226,8 @@
   // Ein Strich mit Grund: "keine Messung" ist eine Aussage ueber die Historie,
   // nicht ueber den Titel - der Grund gehoert unter die Zahl.
   function historyWord(state) {
-    if (state === 'too_short') return 'zu wenig Historie';
-    if (state === 'source_failed') return 'Quelle nicht lesbar';
+    if (state === 'too_short') return T('js.history.too_short');
+    if (state === 'source_failed') return T('js.history.source_failed');
     return '';
   }
 
@@ -225,7 +259,7 @@
     stopTimer();
     function paint() {
       var sekunden = Math.round((Date.now() - startedAt) / 1000);
-      el.state.textContent = 'Lauf für ' + day + ' … ' + sekunden + ' s';
+      el.state.textContent = T('js.state.running', { day: day, seconds: sekunden });
     }
     paint();
     timer = setInterval(function () {
@@ -243,8 +277,10 @@
     return 'HTTP ' + status;
   }
 
-  function plural(count, one, many) {
-    return count + ' ' + (count === 1 ? one : many);
+  // Mehrfachform: der Zweig steht im Katalog, die Auswahl kommt aus der Regel,
+  // die der Block mitliefert - dieselbe, die die Registry benutzt.
+  function plural(count, key) {
+    return T(key, { n: count });
   }
 
   // Die Grenze der noetigen Bewegung, die dieser Lauf wirklich benutzt hat -
@@ -264,14 +300,14 @@
   // Bewegung, angezeigt.
   function countsText(counts, body) {
     return [
-      plural(n(counts.gaps_computed), 'Gap gemessen', 'Gaps gemessen'),
-      n(counts.turnover_passed) + ' über Umsatzhürde',
-      plural(n(counts.candidates), 'Kandidat', 'Kandidaten'),
-      n(counts.with_next_earnings) + ' mit nächstem Termin',
-      n(counts.with_expiry_after_earnings) + ' mit passendem Verfall',
-      n(counts.with_spread_ge_rr) + ' mit R/R mindestens ' + rrHurdleText(body),
-      n(counts.with_reachable_move) + ' mit nötiger Bewegung bis ' + moveCap(body) + ' %',
-      n(counts.shown) + ' angezeigt'
+      plural(n(counts.gaps_computed), 'js.counts.gaps'),
+      T('js.counts.turnover', { n: n(counts.turnover_passed) }),
+      plural(n(counts.candidates), 'js.counts.candidates'),
+      T('js.counts.next_earnings', { n: n(counts.with_next_earnings) }),
+      T('js.counts.expiry', { n: n(counts.with_expiry_after_earnings) }),
+      T('js.counts.rr', { n: n(counts.with_spread_ge_rr), rr: rrHurdleText(body) }),
+      T('js.counts.move', { n: n(counts.with_reachable_move), cap: moveCap(body) }),
+      T('js.counts.shown', { n: n(counts.shown) })
     ].join(', ');
   }
 
@@ -280,10 +316,9 @@
   // an wie vielen Fenstern. Zwei Einheiten, zwei Namen - "dte-Handelstage"
   // gibt es nicht, dte allein ist die Kalenderdistanz bis Verfall.
   function hitSentence(sessions, calendarDays, windows) {
-    return 'Treffer = Anteil der vergangenen Fenster von ' + sessions
-      + ' Handelstagen (≈ ' + calendarDays + ' Kalendertage bis Verfall), in denen '
-      + 'der Kurs die nötige Bewegung mindestens erreicht hat; gemessen an '
-      + windows + ' Fenstern aus höchstens 520 Tagesbars.';
+    return T('js.foot.hit_sentence', {
+      sessions: sessions, calendar: calendarDays, windows: windows
+    });
   }
 
   // Der Fuss erklaert, was "Treffer" misst - und nennt Fensterlaenge in
@@ -309,22 +344,20 @@
     var kalender = dten.length === 1 ? String(dten[0]) : 'dte';
     var anzahl = fenster.length === 1 ? String(fenster[0]) : 'n';
     return hitSentence(sessions, kalender, anzahl)
-      + ' Eine Häufigkeit, keine Wahrscheinlichkeit.'
+      + ' ' + T('js.foot.frequency')
       // Die Spalte Chance steht in der Liste, also wird sie hier erklaert und
       // nicht nur im Detail: sie ist eine Lesehilfe, und sie sortiert nichts.
-      + ' Chance = Trefferquote × R/R; weil die Trefferquote das Erreichen des'
-      + ' Break-even misst, ist das eine Obergrenze des Erwartungswerts, keine'
-      + ' Zusage. Sortiert wird nach Trefferquote.';
+      + ' ' + T('js.foot.chance');
   }
 
   // "Kein Kandidat" nennt IMMER die Zahl der Ausschluesse: ein Tag, an dem
   // zwanzig Titel ausschieden, ist kein ruhiger Tag ohne Befund.
   function emptyText(excluded, failures) {
-    var teile = [plural(excluded.length, 'Ausschluss', 'Ausschlüsse')];
+    var teile = [plural(excluded.length, 'js.plural.excluded')];
     if (failures.length) {
-      teile.push(plural(failures.length, 'Fehlschlag', 'Fehlschläge'));
+      teile.push(plural(failures.length, 'js.plural.failure'));
     }
-    return 'Kein Kandidat — ' + teile.join(', ') + '.';
+    return T('js.empty.no_candidate', { parts: teile.join(', ') });
   }
 
   function clearResult() {
@@ -355,7 +388,7 @@
 
   function fail(text) {
     clearResult();
-    el.state.textContent = 'Lauf fehlgeschlagen';
+    el.state.textContent = T('js.state.failed');
     el.error.textContent = text;
     el.error.hidden = false;
   }
@@ -365,9 +398,8 @@
       // Das Datumsfeld liefert "leer" statt Unsinn - dann wird nicht angefragt,
       // sondern benannt, was fehlt.
       clearResult();
-      el.state.textContent = 'Kein Lauf gestartet';
-      el.error.textContent = 'Kein gültiges Datum — bitte einen Reaktionstag im '
-        + 'Format JJJJ-MM-TT angeben.';
+      el.state.textContent = T('js.state.not_started');
+      el.error.textContent = T('js.error.invalid_day');
       el.error.hidden = false;
       return;
     }
@@ -397,7 +429,7 @@
           return;
         }
         if (!antwort.body || typeof antwort.body !== 'object') {
-          fail('Die Antwort war kein JSON.');
+          fail(T('js.error.not_json'));
           return;
         }
         current = { day: day, body: antwort.body, at: new Date() };
@@ -407,7 +439,7 @@
         if (gen !== generation) return;
         stopTimer();
         el.run.disabled = false;
-        fail('Lauf für ' + day + ' fehlgeschlagen: ' + err.message);
+        fail(T('js.error.run_failed', { day: day, message: err.message }));
       });
   }
 
@@ -1471,8 +1503,10 @@
     fillList(el.failuresBlock, el.failuresSummary, el.failures, fehlschlaege,
       'Fehlschläge', failureText);
 
-    el.state.textContent = 'Stand ' + clock(current.at) + ' · '
-      + plural(ergebnisse.length, 'Zeile', 'Zeilen');
+    el.state.textContent = T('js.state.ready', {
+      clock: clock(current.at),
+      rows: plural(ergebnisse.length, 'js.plural.rows')
+    });
   }
 
   // Vorgabe ist gestern - der letzte abgeschlossene Kalendertag. Kein Lauf beim

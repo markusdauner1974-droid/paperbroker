@@ -62,7 +62,68 @@ TEXTS: dict[str, object] = {
     "page.foot.feed_note": "CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit.",
     #
     # --- js.* -----------------------------------------------------------
-    # static/gap_funnel.js: the table, the detail block and the error states
+    # static/gap_funnel.js: the table, the detail block and the error states.
+    # The script gets these through one JSON block in the page; a value may be a
+    # {one, other} branch, and the script selects the branch with the rule the
+    # block names (the same rule the registry uses).
+    "js.strategy.bull_call_debit": "Bull Call",
+    "js.strategy.bear_put_debit": "Bear Put",
+    "js.reason.no_next_earnings": "kein nächster Bericht bekannt",
+    "js.reason.no_expiry_after_earnings": "kein Verfall nach dem nächsten Bericht",
+    "js.reason.not_optionable": "keine gelisteten Optionen",
+    "js.reason.chain_unavailable": "Optionskette nicht lesbar",
+    "js.rr_hurdle.fallback": "1 : 2",
+    "js.stale": (
+        "Kalenderstand veraltet — die Zeilen stammen aus einem alten "
+        "Kalenderstand und können sich noch ändern."
+    ),
+    "js.state.running": "Lauf für {day} … {seconds} s",
+    "js.state.failed": "Lauf fehlgeschlagen",
+    "js.state.not_started": "Kein Lauf gestartet",
+    "js.state.ready": "Stand {clock} · {rows}",
+    "js.error.invalid_day": (
+        "Kein gültiges Datum — bitte einen Reaktionstag im Format JJJJ-MM-TT angeben."
+    ),
+    "js.error.not_json": "Die Antwort war kein JSON.",
+    "js.error.run_failed": "Lauf für {day} fehlgeschlagen: {message}",
+    "js.direction.up": "aufwärts",
+    "js.direction.down": "abwärts",
+    "js.direction.unknown": "unbekannt",
+    "js.liquidity.full": "voll liquide",
+    "js.liquidity.thin": "dünn",
+    "js.history.too_short": "zu wenig Historie",
+    "js.history.source_failed": "Quelle nicht lesbar",
+    # Counts line: one key per hurdle, the number inside the text so the plural
+    # form can inflect the noun (German inflects the adjective too).
+    "js.counts.gaps": {"one": "{n} Gap gemessen", "other": "{n} Gaps gemessen"},
+    "js.counts.turnover": "{n} über Umsatzhürde",
+    "js.counts.candidates": {"one": "{n} Kandidat", "other": "{n} Kandidaten"},
+    "js.counts.next_earnings": "{n} mit nächstem Termin",
+    "js.counts.expiry": "{n} mit passendem Verfall",
+    "js.counts.rr": "{n} mit R/R mindestens {rr}",
+    "js.counts.move": "{n} mit nötiger Bewegung bis {cap} %",
+    "js.counts.shown": "{n} angezeigt",
+    "js.plural.excluded": {"one": "{n} Ausschluss", "other": "{n} Ausschlüsse"},
+    "js.plural.failure": {"one": "{n} Fehlschlag", "other": "{n} Fehlschläge"},
+    "js.plural.rows": {"one": "{n} Zeile", "other": "{n} Zeilen"},
+    "js.empty.no_candidate": "Kein Kandidat — {parts}.",
+    "js.foot.hit_sentence": (
+        "Treffer = Anteil der vergangenen Fenster von {sessions} Handelstagen "
+        "(≈ {calendar} Kalendertage bis Verfall), in denen der Kurs die nötige "
+        "Bewegung mindestens erreicht hat; gemessen an {windows} Fenstern aus "
+        "höchstens 520 Tagesbars."
+    ),
+    "js.foot.frequency": "Eine Häufigkeit, keine Wahrscheinlichkeit.",
+    "js.foot.chance": (
+        "Chance = Trefferquote × R/R; weil die Trefferquote das Erreichen des"
+        " Break-even misst, ist das eine Obergrenze des Erwartungswerts, keine"
+        " Zusage. Sortiert wird nach Trefferquote."
+    ),
+    "js.foot.chance_method": (
+        "Chance = Trefferquote × R/R; weil die Trefferquote das Erreichen des"
+        " Break-even misst, ist das eine Obergrenze des Erwartungswerts, keine"
+        " Zusage. Sortiert wird weiter nach Trefferquote."
+    ),
     #
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
