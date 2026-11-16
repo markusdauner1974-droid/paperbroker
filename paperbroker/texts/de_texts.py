@@ -295,6 +295,44 @@ TEXTS: dict[str, object] = {
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
     #
+    # --- routes/gap_spreads.py --------------------------------------------- #
+    # Fehlermeldungen der Gap-Spread-Route. Sie entstehen dort direkt, jede aus
+    # mehreren Fragmenten; hier steht jeder Satz EINMAL und ganz. Zahlen und
+    # Symbole kommen als Textvariablen, damit die Schreibweise dort bleibt, wo
+    # sie war.
+    "gap_spreads.note.finnhub_missing": (
+        "Ohne FINNHUB_API_KEY lässt sich kein Berichtstermin lesen - "
+        "jeder Kandidat endet dann bei no_next_earnings."
+    ),
+    "gap_spreads.note.deadline": (
+        "{count} Kandidat(en) wurden innerhalb von {seconds} s nicht fertig "
+        "geprüft (deadline_exceeded)."
+    ),
+    "gap_spreads.error.invalid_symbol": "{symbol} ist kein gültiges Symbol.",
+    "gap_spreads.error.incomplete_structure": (
+        "expiration, long und short benennen EINE Struktur - alle drei "
+        "oder keine (gegeben: {given})."
+    ),
+    "gap_spreads.error.not_in_calendar": (
+        "{symbol} steht am {day} nicht im Reaktionskalender - zu diesem "
+        "Titel gibt es an diesem Tag keine Zeile."
+    ),
+    "gap_spreads.error.gap_not_measurable": (
+        "Der Gap von {symbol} ließ sich am {day} nicht messen ({code})."
+    ),
+    "gap_spreads.error.no_candidate": (
+        "{symbol} ist am {day} kein Kandidat des Trichters (Schwelle "
+        "{threshold} %, Umsatz >= {turnover} USD, Kurs >= {price} USD)."
+    ),
+    "gap_spreads.error.chain_unreadable": "Die Optionskette von {symbol} ist nicht lesbar.",
+    "gap_spreads.error.expiration_not_listed": (
+        "Der Verfall {expiration} ist für {symbol} nicht gelistet (gelistet: {listed})."
+    ),
+    "gap_spreads.error.strike_missing": (
+        "Der Strike {strike} fehlt in der Kette von {symbol} zum "
+        "Verfall {expiration}."
+    ),
+
     # --- earnings_calendar.py ---------------------------------------------- #
     # Gate-Gruende, Ausstiegsregel und Klartext-Zusaetze des Earnings-Fensters.
     # Die Schluessel tragen den Code, damit Code und Satz nicht auseinander
