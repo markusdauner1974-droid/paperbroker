@@ -128,8 +128,12 @@ class Reason(str):
     differently, and only to prefer the code over the text.
     """
 
-    __slots__ = ("code",)
+    #: Der Code des Filters, der diesen Grund geschrieben hat.
+    code: str
 
+    # Kein __slots__: auf einer str-Unterklasse ist das je nach Interpreter
+    # nicht erlaubt (CPython lehnt nichtleere __slots__ fuer Unterklassen
+    # variabler Builtins ab), und der Gewinn waere ein einziges Attribut.
     def __new__(cls, text, code):
         obj = super().__new__(cls, text)
         obj.code = code
@@ -143,14 +147,17 @@ class Reason(str):
 _CODE_CATEGORIES = {
     **SCAN_STATE_CATEGORIES,
     **EXPIRY_REASON_CATEGORIES,
-    "not_optionable": CAT_DATA,
-    "chain_failed": CAT_DATA,
-    "no_next_earnings": CAT_DATA,
-    "no_expiry": CAT_DTE,
-    "no_spread": CAT_LIQUIDITY,
-    "move_too_far": CAT_OTHER,
-    "deadline": CAT_SCAN_LIMIT,
-    "funnel_error": CAT_SCAN_LIMIT,
+    # Die Schluessel sind die Werte der REASON_*-Konstanten aus gap_funnel.py,
+    # nicht ihre Namen: getaggt wird der Wert, und ein Tippfehler hier faellt
+    # nicht auf, sondern wirft den Grund still in "sonstiges". Der Test
+    # "every_funnel_reason_has_a_category" haelt beide Seiten zusammen.
+    "not_optionable": CAT_DATA,            # REASON_NOT_OPTIONABLE
+    "chain_fetch_failed": CAT_DATA,        # _CODE_CHAIN_FAILED
+    "no_next_earnings": CAT_DATA,          # REASON_NO_NEXT_EARNINGS
+    "no_expiry_after_earnings": CAT_DTE,   # REASON_NO_EXPIRY
+    "no_spread_ge_rr": CAT_LIQUIDITY,      # REASON_NO_SPREAD
+    "move_too_far": CAT_OTHER,             # REASON_MOVE_TOO_FAR
+    "deadline_exceeded": CAT_SCAN_LIMIT,   # CODE_DEADLINE
 }
 
 
@@ -252,7 +259,15 @@ def summarise(dropped, level, criteria=None):
         except (TypeError, ValueError):
             gruende.append(str(eintrag))
             continue
-        gruende.append("" if reason is None else str(reason))
+        # NICHT str(reason): ein Reason ist schon ein str, und str() wuerde
+        # seine .code wegwerfen - die Kategorie kaeme dann wieder aus dem
+        # deutschen Satz. Nur echte Nicht-Strings werden umgewandelt.
+        if reason is None:
+            gruende.append("")
+        elif isinstance(reason, str):
+            gruende.append(reason)
+        else:
+            gruende.append(str(reason))
     zaehler = {}
     unbekannt = []
     for reason in gruende:

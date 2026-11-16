@@ -238,8 +238,46 @@ class ReasonCodeTest(unittest.TestCase):
     def test_the_code_decides_the_category_not_the_text(self):
         from paperbroker.exclusions import CAT_AGE, CAT_LIQUIDITY, Reason, categorise
 
-        self.assertEqual(CAT_LIQUIDITY, categorise(Reason("nothing qualified here", "no_spread")))
+        self.assertEqual(CAT_LIQUIDITY, categorise(Reason("nothing qualified here", "no_spread_ge_rr")))
         self.assertEqual(CAT_AGE, categorise(Reason("whatever words", "stale_data")))
+
+    def test_a_tagged_reason_survives_summarise(self):
+        """Der Weg, den die Pipeline geht: (item, reason) durch summarise.
+
+        Ohne diesen Test war der Code-Zweig fuer die wichtigste Eingabeform tot:
+        summarise hat den Grund mit str() geglaettet und damit .code verworfen.
+        """
+        from paperbroker.exclusions import CAT_LIQUIDITY, LEVEL_CONTRACT, Reason, summarise
+
+        zusammenfassung = summarise(
+            [("c1", Reason("open interest missing", "no_spread_ge_rr"))], LEVEL_CONTRACT
+        )
+        zaehler = {k["key"]: k["count"] for k in zusammenfassung["categories"]}
+        self.assertEqual({CAT_LIQUIDITY: 1}, zaehler)
+        self.assertEqual(1, zusammenfassung["counted"])
+
+    def test_every_funnel_reason_has_a_category(self):
+        """Drift-Waechter: die Tabelle muss die ECHTEN Codes des Trichters kennen.
+
+        Ein Schluessel, der nur so aehnlich klingt ("no_spread" statt
+        "no_spread_ge_rr"), faellt sonst nirgends auf: der getaggte Grund landet
+        still in "sonstiges", und in der Quellsprache sieht man es nicht.
+        """
+        from paperbroker import gap_funnel
+        from paperbroker.exclusions import code_category
+
+        codes = [
+            gap_funnel.REASON_NO_NEXT_EARNINGS,
+            gap_funnel.REASON_NO_EXPIRY,
+            gap_funnel.REASON_NO_SPREAD,
+            gap_funnel.REASON_NOT_OPTIONABLE,
+            gap_funnel.REASON_MOVE_TOO_FAR,
+            gap_funnel._CODE_CHAIN_FAILED,
+            gap_funnel.CODE_DEADLINE,
+        ]
+        for code in codes:
+            with self.subTest(code=code):
+                self.assertIsNotNone(code_category(code), f"{code} fehlt in _CODE_CATEGORIES")
 
     def test_an_untagged_reason_still_uses_the_text_rules(self):
         from paperbroker.exclusions import CAT_AGE, CAT_LIQUIDITY, categorise
