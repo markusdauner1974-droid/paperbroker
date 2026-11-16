@@ -295,6 +295,43 @@ TEXTS: dict[str, object] = {
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
     #
+    # --- routes/page.py ---------------------------------------------------- #
+    # Die Texte der Alt-Antwort /api/screen. Dieser Endpunkt bleibt deutsch
+    # (Vertrag), auch nach der Umschaltung - der Abschnitt wird in en_texts.py
+    # deshalb nicht deklariert. Die Badge-Woerter unten sind bewusst KEINE
+    # Uebersetzung von Feldern: sie stehen so, wie sie im JSON stehen.
+    "page_route.hint.unknown_params": (
+        "Unbekannte Parameter ignoriert: {names} (bedienbar sind: {fields})"
+    ),
+    "page_route.error.invalid_ticker": "Ungültiger Ticker - 1-6 Buchstaben A-Z.",
+    "page_route.error.invalid_expiration": "Ungültiges Verfallsdatum - JJJJ-MM-TT.",
+    "page_route.error.expiration_not_listed": "Verfallsdatum ist für diesen Ticker nicht gelistet.",
+    "page_route.error.market_data": "Marktdaten-Fehler - Details im Server-Log.",
+    "page_route.error.source_unreadable": "Quelle nicht lesbar - Details im Server-Log.",
+    "page_route.feed_note.cboe": "CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit",
+    "page_route.option_note.unavailable": "Options-Liste nicht abrufbar - ungefiltert",
+    "page_route.option_note.hidden": "{count} Titel ohne gelistete Optionen ausgeblendet",
+    "page_route.option_note.hidden_none": "kein Titel ohne gelistete Optionen ausgeblendet",
+    "page_route.option_note.stale_suffix": " (Options-Liste aus letztem Stand)",
+    "page_route.earnings.note.no_source": "keine Earnings-Quelle konfiguriert",
+    "page_route.earnings.note.source_silent": "Quelle antwortet nicht",
+    "page_route.earnings.note.last_state": "letzter Stand, Quelle antwortet nicht",
+    "page_route.earnings.note.one_day_failed": "ein Tag konnte nicht abgerufen werden",
+    "page_route.earnings.note.days_failed": "{count} Tage konnten nicht abgerufen werden",
+    "page_route.confirmation.confirmed": "bestätigt",
+    "page_route.confirmation.estimated": "geschätzt",
+    "page_route.session.before": "vorbörslich",
+    "page_route.session.after": "nachbörslich",
+    "page_route.status.unknown_time": "Zeitpunkt unbekannt",
+    "page_route.failure.source_reports": "Quelle meldet {code}",
+    "page_route.failure.source_blocked": "Quelle blockt die Anfrage",
+    "page_route.failure.source_throttled": "Quelle drosselt die Anfragen",
+    "page_route.failure.source_unreachable": "Quelle nicht erreichbar",
+    "page_route.failure.invalid_payload": "Quelle liefert unbrauchbare Daten",
+    "page_route.failure.invalid_json": "Quelle liefert kein JSON",
+    "page_route.failure.recent_failure": "letzter Versuch gerade gescheitert",
+
+
     # --- routes/gap_spreads.py --------------------------------------------- #
     # Fehlermeldungen der Gap-Spread-Route. Sie entstehen dort direkt, jede aus
     # mehreren Fragmenten; hier steht jeder Satz EINMAL und ganz. Zahlen und

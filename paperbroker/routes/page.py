@@ -33,6 +33,7 @@ from ..screener import (
     strategy_option_type,
     vertical_spreads,
 )
+from ..texts import t
 from ..view_support import (
     _CRITERIA_FIELDS,
     _DATE_RE,
@@ -94,23 +95,23 @@ def index():
         strategy = gewuenschte if gewuenschte in STRATEGIES else None
         spread_type = None if strategy is None else strategy_option_type(strategy)
     if unknown:
-        hint = ("Unbekannte Parameter ignoriert: " + ", ".join(unknown)
-                + " (bedienbar sind: " + ", ".join(_CRITERIA_FIELDS)
-                + ", ignore_quote_age, sort)")
+        hint = t("page_route.hint.unknown_params",
+                 names=", ".join(unknown),
+                 fields=", ".join([*_CRITERIA_FIELDS, "ignore_quote_age", "sort"]))
     if criteria_error:
         error = criteria_error
     try:
         if ticker and not criteria_error and not strategy_error:
             if not _TICKER_RE.match(ticker):
-                error = "Ungültiger Ticker - 1-6 Buchstaben A-Z."
+                error = t("page_route.error.invalid_ticker")
             else:
                 dates = ctx.broker.get_expiration_dates(ticker)
                 selectable = _selectable_dates(dates, criteria, ctx.now_fn)
                 if expiration:
                     if not _DATE_RE.match(expiration):
-                        error = "Ungültiges Verfallsdatum - JJJJ-MM-TT."
+                        error = t("page_route.error.invalid_expiration")
                     elif not dates or expiration not in dates:
-                        error = "Verfallsdatum ist für diesen Ticker nicht gelistet."
+                        error = t("page_route.error.expiration_not_listed")
                     else:
                         quotes = ctx.broker.get_options(ticker, expiration)
                         results, dropped = screen(
@@ -125,7 +126,7 @@ def index():
         # CboeRequestError carries raw requests messages) - log it,
         # show a generic box; the server log holds the details
         current_app.logger.exception("screen failed for %s %s", ticker, expiration)
-        error = "Marktdaten-Fehler - Details im Server-Log."
+        error = t("page_route.error.market_data")
     lamp_source = quotes if quotes is not None else results
     # B-14: the <select> and the validation must read the same list. The
     # offer is the DTE-filtered list, but a bookmarked date that is real
@@ -208,7 +209,7 @@ def index():
         # The day scan is the page's second action: what it may send and
         # what its table is called come from one server-side table.
         scan=scan_view_data(),
-        feed_note="CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit",
+        feed_note=t("page_route.feed_note.cboe"),
         # The script's texts travel as one JSON block: one source, no second
         # catalogue file in JavaScript. The block also names the plural rule.
         js_i18n=texts.block("js"),
@@ -287,11 +288,11 @@ def _option_note(applied, hidden, stale):
     unavailable list must not name a number: a "0" would read like a result.
     """
     if not applied:
-        return "Options-Liste nicht abrufbar - ungefiltert"
-    satz = (f"{hidden} Titel ohne gelistete Optionen ausgeblendet" if hidden
-            else "kein Titel ohne gelistete Optionen ausgeblendet")
+        return t("page_route.option_note.unavailable")
+    satz = (t("page_route.option_note.hidden", count=hidden) if hidden
+            else t("page_route.option_note.hidden_none"))
     if stale:
-        satz += " (Options-Liste aus letztem Stand)"
+        satz += t("page_route.option_note.stale_suffix")
     return satz
 
 
@@ -469,7 +470,7 @@ def _calendar_view(ctx):
         ausgefallen = sum(1 for z in zustaende if z == "unavailable")
         letzter_stand = "stale" in zustaende or state == "stale"
         if state == "not_configured":
-            note = "keine Earnings-Quelle konfiguriert"
+            note = t("page_route.earnings.note.no_source")
         else:
             # One sentence per failure mode, because a partial outage and a
             # stale answer are different promises: the first says a day is
@@ -479,13 +480,14 @@ def _calendar_view(ctx):
             # weekend's two empty-but-answered days free of any warning.
             saetze = []
             if not vorhanden:
-                saetze.append("Quelle antwortet nicht")
+                saetze.append(t("page_route.earnings.note.source_silent"))
             elif ausgefallen == 1:
-                saetze.append("ein Tag konnte nicht abgerufen werden")
+                saetze.append(t("page_route.earnings.note.one_day_failed"))
             elif ausgefallen:
-                saetze.append(f"{ausgefallen} Tage konnten nicht abgerufen werden")
+                saetze.append(t("page_route.earnings.note.days_failed",
+                                count=ausgefallen))
             if letzter_stand:
-                saetze.append("letzter Stand, Quelle antwortet nicht")
+                saetze.append(t("page_route.earnings.note.last_state"))
             # One reason per distinct failure, named next to the sentence:
             # "does not answer" alone hides that the source DID answer 403.
             gruende = []
@@ -526,22 +528,27 @@ def _calendar_view(ctx):
         return {
             "available": False,
             "state": "unavailable",
-            "note": "Quelle nicht lesbar - Details im Server-Log.",
+            "note": t("page_route.error.source_unreadable"),
             "stand": None,
             "groups": [],
             "option_filter": {"applied": False, "stale": False, "unavailable": True},
             "option_stamp": None,
-            "option_note": "Options-Liste nicht abrufbar - ungefiltert",
+            "option_note": t("page_route.option_note.unavailable"),
         }
 
 
-_CONFIRMATION_TEXT = {CONFIRMATION_CONFIRMED: "bestätigt", CONFIRMATION_ESTIMATED: "geschätzt"}
+#: Die drei Badge-Mappen bleiben Modulkonstanten: /api/screen ist ein
+#: Alt-Vertrag und bleibt deutsch, auch nach der Umschaltung. Der Abschnitt
+#: "page_route" wird in en_texts.py deshalb nicht deklariert.
+_CONFIRMATION_TEXT = {CONFIRMATION_CONFIRMED: t("page_route.confirmation.confirmed"),
+                      CONFIRMATION_ESTIMATED: t("page_route.confirmation.estimated")}
 
 
-_SESSION_TEXT = {SESSION_BEFORE: "vorbörslich", SESSION_AFTER: "nachbörslich"}
+_SESSION_TEXT = {SESSION_BEFORE: t("page_route.session.before"),
+                 SESSION_AFTER: t("page_route.session.after")}
 
 
-_SESSION_UNKNOWN_TEXT = "Zeitpunkt unbekannt"
+_SESSION_UNKNOWN_TEXT = t("page_route.status.unknown_time")
 
 
 def _calendar_day_label(iso_text, today_iso):
@@ -579,7 +586,7 @@ def _failure_reason(error):
     code = str(error.get("code") or "").strip()
     if not code:
         return None
-    text = _FAILURE_REASONS.get(code, f"Quelle meldet {code}")
+    text = _FAILURE_REASONS.get(code, t("page_route.failure.source_reports", code=code))
     status = error.get("http_status")
     if status:
         text = f"{text} (HTTP {status})"
@@ -603,14 +610,18 @@ def _short_day(iso_text):
     return f"{_WEEKDAY_SHORT_DE[wert.weekday()]} {wert.strftime('%d.%m.')}"
 
 
-_FAILURE_REASONS = {
-    "source_blocked": "Quelle blockt die Anfrage",
-    "source_throttled": "Quelle drosselt die Anfragen",
-    "source_unreachable": "Quelle nicht erreichbar",
-    "invalid_payload": "Quelle liefert unbrauchbare Daten",
-    "invalid_json": "Quelle liefert kein JSON",
-    "recent_failure": "letzter Versuch gerade gescheitert",
+#: Code -> Katalogschluessel; der Schluessel wiederholt den Code, damit Code und
+#: Satz nicht auseinanderlaufen koennen.
+_FAILURE_REASON_KEYS = {
+    "source_blocked": "page_route.failure.source_blocked",
+    "source_throttled": "page_route.failure.source_throttled",
+    "source_unreachable": "page_route.failure.source_unreachable",
+    "invalid_payload": "page_route.failure.invalid_payload",
+    "invalid_json": "page_route.failure.invalid_json",
+    "recent_failure": "page_route.failure.recent_failure",
 }
+
+_FAILURE_REASONS = {code: t(key) for code, key in _FAILURE_REASON_KEYS.items()}
 
 
 _WEEKDAY_SHORT_DE = ("Mo", "Di", "Mi", "Do", "Fr", "Sa", "So")
