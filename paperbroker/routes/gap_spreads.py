@@ -38,6 +38,7 @@ from ..gap_support import (
     _required_move_cap,
     gap_spreads_notes,
 )
+from ..texts import t
 from ..view_support import _same_strike
 from .context import context
 
@@ -203,18 +204,12 @@ def api_gap_spreads():
     notes = gap_spreads_notes(max_move_pct=max_move)
     if kandidaten and not lauf.counts["with_next_earnings"] and any(
             "FINNHUB_API_KEY" in str(e.message) for e in lauf.excluded):
-        notes.append(
-            "Ohne FINNHUB_API_KEY lässt sich kein Berichtstermin lesen - "
-            "jeder Kandidat endet dann bei no_next_earnings."
-        )
+        notes.append(t("gap_spreads.note.finnhub_missing"))
     verspaetet = sum(1 for failure in lauf.failures
                      if failure.code == gap_funnel.CODE_DEADLINE)
     if verspaetet:
-        notes.append(
-            f"{verspaetet} Kandidat(en) wurden innerhalb von "
-            f"{int(gap_funnel.DEFAULT_DEADLINE_SECONDS)} s nicht fertig "
-            f"geprüft (deadline_exceeded)."
-        )
+        notes.append(t("gap_spreads.note.deadline", count=str(verspaetet),
+                       seconds=str(int(gap_funnel.DEFAULT_DEADLINE_SECONDS))))
     # The run's OWN notes are part of this answer, not a module secret: a
     # capped pair search makes every shown R/R "the best pair FOUND", and a
     # limitation that never reaches the JSON is a silent one. Appended last
@@ -300,8 +295,7 @@ def api_gap_spreads_detail():
     if zeile is None:
         return _gap_scan_error(
             404, "unknown_symbol",
-            f"{symbol} steht am {day} nicht im Reaktionskalender - zu diesem "
-            f"Titel gibt es an diesem Tag keine Zeile.",
+            t("gap_spreads.error.not_in_calendar", symbol=symbol, day=day),
         )
 
     try:
@@ -316,7 +310,8 @@ def api_gap_spreads_detail():
     if code is not None:
         return _gap_scan_error(
             404, "no_gap",
-            f"Der Gap von {symbol} ließ sich am {day} nicht messen ({code}).",
+            t("gap_spreads.error.gap_not_measurable", symbol=symbol, day=day,
+              code=code),
         )
 
     ausgewaehlt = select_candidates(
@@ -330,10 +325,10 @@ def api_gap_spreads_detail():
     if kandidat is None:
         return _gap_scan_error(
             404, "no_candidate",
-            f"{symbol} ist am {day} kein Kandidat des Trichters (Schwelle "
-            f"{DEFAULT_THRESHOLD_PCT:.1f} %, Umsatz >= "
-            f"{DEFAULT_MIN_TURNOVER_USD:.0f} USD, Kurs >= "
-            f"{DEFAULT_MIN_PRICE:.2f} USD).",
+            t("gap_spreads.error.no_candidate", symbol=symbol, day=day,
+              threshold=f"{DEFAULT_THRESHOLD_PCT:.1f}",
+              turnover=f"{DEFAULT_MIN_TURNOVER_USD:.0f}",
+              price=f"{DEFAULT_MIN_PRICE:.2f}"),
         )
 
     # One candidate, one chain request - memoised, because the legs are
@@ -391,7 +386,7 @@ def api_gap_spreads_detail():
         return _gap_scan_error(
             404, "chain_unavailable",
             fehlschlag.message if fehlschlag
-            else f"Die Optionskette von {symbol} ist nicht lesbar.",
+            else t("gap_spreads.error.chain_unreadable", symbol=symbol),
         )
 
     chain = ketten.get(symbol) or []
@@ -413,8 +408,8 @@ def api_gap_spreads_detail():
             gelistet = ", ".join(day.isoformat() for day in listed) or "keiner"
             return _gap_scan_error(
                 404, "expiration_not_listed",
-                f"Der Verfall {genannt} ist für {symbol} nicht gelistet "
-                f"(gelistet: {gelistet}).",
+                t("gap_spreads.error.expiration_not_listed", expiration=genannt,
+                  symbol=symbol, listed=gelistet),
             )
         long_strike, short_strike = struktur["long"], struktur["short"]
     section = gap_funnel.slice_chain(chain, expiration)
@@ -424,8 +419,8 @@ def api_gap_spreads_detail():
         fehlend = long_strike if lang is None else short_strike
         return _gap_scan_error(
             404, "leg_not_listed",
-            f"Der Strike {fehlend} fehlt in der Kette von {symbol} zum "
-            f"Verfall {expiration.isoformat()}.",
+            t("gap_spreads.error.strike_missing", strike=str(fehlend),
+              symbol=symbol, expiration=expiration.isoformat()),
         )
 
     # The character of THIS structure: the pick is the Hebel, a named
@@ -548,14 +543,14 @@ def _spread_detail_args(ctx):
         # No ticker shape, no ticker: "unknown" is the honest answer, and it
         # costs neither the calendar nor the chain a request.
         return None, _gap_scan_error(
-            404, "unknown_symbol", f"{symbol or '?'} ist kein gültiges Symbol."
+            404, "unknown_symbol",
+            t("gap_spreads.error.invalid_symbol", symbol=symbol or "?"),
         )
     gegeben = [name for name in _STRUCTURE_PARAMS if name in request.args]
     if gegeben and len(gegeben) != len(_STRUCTURE_PARAMS):
         return None, _gap_scan_error(
             400, "incomplete_structure",
-            "expiration, long und short benennen EINE Struktur - alle drei "
-            f"oder keine (gegeben: {', '.join(gegeben)}).",
+            t("gap_spreads.error.incomplete_structure", given=", ".join(gegeben)),
         )
     struktur = None
     if gegeben:
