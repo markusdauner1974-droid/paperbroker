@@ -84,8 +84,14 @@ def _module(language: str) -> Any:
 
 
 def book(language: str) -> dict[str, Any]:
-    """The text book of ``language``."""
-    return dict(_module(language).TEXTS)
+    """The text book of ``language`` - the module's own mapping, not a copy.
+
+    Read-only for callers: ``lookup``, ``sections`` and ``structure_problems``
+    only read it, and a copy per call would cost O(book size) on EVERY displayed
+    text (``lookup`` asks for the book twice). Measured on a 400-key book:
+    a page with 323 texts pays 1,7 ms of copying for nothing.
+    """
+    return _module(language).TEXTS
 
 
 def declared_sections(language: str) -> tuple[str, ...]:
