@@ -26,7 +26,7 @@ from urllib.parse import urlencode
 import arrow
 from flask import Flask, abort, jsonify, render_template, request
 
-from . import exclusions, gap_funnel, quote_age, spread_detail
+from . import exclusions, gap_funnel, quote_age, spread_detail, texts
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
@@ -270,6 +270,10 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     without it answers ``no_next_earnings`` instead of guessing a date.
     """
     app = Flask(__name__, template_folder="templates")
+    # The templates look their text up by key. Today the catalogue answers in the
+    # default language; the language switch (a later pull request) replaces this
+    # binding with a request-aware one, and no template has to change for that.
+    app.jinja_env.globals["t"] = texts.t
     if now_fn is None:
         now_fn = arrow.get
 
