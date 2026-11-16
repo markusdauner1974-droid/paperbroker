@@ -9,6 +9,7 @@ promises the page makes:
   missing - and no category appears that the pipeline did not really produce.
 """
 
+import json
 import unittest
 
 import arrow
@@ -214,6 +215,42 @@ class TestTheScanOverview(unittest.TestCase):
         self.assertIn("erste Grund", satz)
         self.assertIsNone(exclusions.headline(
             exclusions.summarise([], exclusions.LEVEL_CONTRACT)))
+
+
+class ReasonCodeTest(unittest.TestCase):
+    """Ein Grund mit Code: die Kategorie haengt am CODE, nicht am Satz.
+
+    Das ist die Voraussetzung dafuer, dass die Saetze spaeter uebersetzt werden
+    duerfen. Der Test beweist die Trennung, indem er einen Grund mit ENGLISCHEM
+    Text und deutschem Code nimmt - die Textregeln wuerden ihn in "sonstiges"
+    werfen, der Code nicht.
+    """
+
+    def test_a_reason_is_still_its_text(self):
+        from paperbroker.exclusions import Reason
+
+        grund = Reason("OI 120 < 500", "no_spread")
+        self.assertIsInstance(grund, str)
+        self.assertEqual("OI 120 < 500", grund)
+        self.assertEqual(json.dumps("OI 120 < 500"), json.dumps(grund))
+        self.assertEqual(("c1", "OI 120 < 500"), ("c1", grund))
+
+    def test_the_code_decides_the_category_not_the_text(self):
+        from paperbroker.exclusions import CAT_AGE, CAT_LIQUIDITY, Reason, categorise
+
+        self.assertEqual(CAT_LIQUIDITY, categorise(Reason("nothing qualified here", "no_spread")))
+        self.assertEqual(CAT_AGE, categorise(Reason("whatever words", "stale_data")))
+
+    def test_an_untagged_reason_still_uses_the_text_rules(self):
+        from paperbroker.exclusions import CAT_AGE, CAT_LIQUIDITY, categorise
+
+        self.assertEqual(CAT_AGE, categorise("veraltet: 41 Min."))
+        self.assertEqual(CAT_LIQUIDITY, categorise("OI 120 < 500"))
+
+    def test_an_unknown_code_falls_back_to_the_text_rules(self):
+        from paperbroker.exclusions import CAT_LIQUIDITY, Reason, categorise
+
+        self.assertEqual(CAT_LIQUIDITY, categorise(Reason("OI 120 < 500", "code_that_does_not_exist")))
 
 
 if __name__ == "__main__":

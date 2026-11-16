@@ -111,6 +111,53 @@ EXPIRY_REASON_CATEGORIES = {
 # A pair reason may quote a leg reason ("strike 240.0 call: OI 1500 < 2000").
 _LEG_PREFIX = re.compile(r"^strike\s+\S+\s+(?:call|put):\s*")
 
+
+class Reason(str):
+    """A drop reason that still IS its text, and knows which filter wrote it.
+
+    The summary groups reasons by category. Today it has to READ the German
+    sentence to do that (``_RULES`` below), which means the reasons can never be
+    translated: an English "open interest missing" would fall through every
+    prefix test and land in ``sonstiges``. A code is the stable half - the
+    sentence is presentation, the code is what happened.
+
+    It is a ``str`` subclass on purpose, so nothing downstream changes: the
+    payload still carries a string, ``json`` still writes it as one, the tuple
+    shapes ``(item, reason)`` stay the same, and every existing comparison
+    against a plain string keeps working. Only ``categorise`` treats it
+    differently, and only to prefer the code over the text.
+    """
+
+    __slots__ = ("code",)
+
+    def __new__(cls, text, code):
+        obj = super().__new__(cls, text)
+        obj.code = code
+        return obj
+
+
+#: Code -> category. The codes that exist today: the scan states and the expiry
+#: reasons of this module, and the funnel's own rejection reasons. A producer
+#: that starts tagging hands its code in here, so the mapping stays one table
+#: and not one table per producer.
+_CODE_CATEGORIES = {
+    **SCAN_STATE_CATEGORIES,
+    **EXPIRY_REASON_CATEGORIES,
+    "not_optionable": CAT_DATA,
+    "chain_failed": CAT_DATA,
+    "no_next_earnings": CAT_DATA,
+    "no_expiry": CAT_DTE,
+    "no_spread": CAT_LIQUIDITY,
+    "move_too_far": CAT_OTHER,
+    "deadline": CAT_SCAN_LIMIT,
+    "funnel_error": CAT_SCAN_LIMIT,
+}
+
+
+def code_category(code):
+    """Category of a reason CODE, or ``None`` when the code is unknown."""
+    return _CODE_CATEGORIES.get(str(code))
+
 #: Ordered rules: (category, prefix/substring test). The FIRST match wins, which
 #: mirrors the pipeline: a reason is produced by exactly one filter, so it must
 #: be attributable to exactly one category.
@@ -147,6 +194,11 @@ _RULES = (
 
 def categorise(reason):
     """Category key of ONE drop reason. Unknown reasons land in ``CAT_OTHER``."""
+    # Ein getaggter Grund nennt seine Kategorie selbst - der Text ist dann nur
+    # noch Anzeige und darf uebersetzt werden, ohne die Zuordnung zu brechen.
+    tagged = code_category(getattr(reason, "code", None))
+    if tagged is not None:
+        return tagged
     text = _LEG_PREFIX.sub("", str(reason or "").strip())
     for key, test in _RULES:
         if test(text):
