@@ -141,5 +141,48 @@ class TheLanguageCanBeSetInCodeTest(unittest.TestCase):
         self.assertEqual(texts.active_language(), registry.DEFAULT_LANGUAGE)
 
 
+class AWorkerThreadDoesNotInheritTheLanguageTest(unittest.TestCase):
+    """Kody's Befund: ein ThreadPoolExecutor erbt keine ContextVar.
+
+    Der Fehler waere still: die Antwort bliebe formal englisch, aber Ausschluss- und
+    Fehlertexte kaemen deutsch heraus - aus dem Arbeiter, der die Quellsprache sieht.
+    Der Test haelt BEIDE Haelften fest: den Bruch (ohne Umhuellung) und die Umhuellung.
+    """
+
+    def test_a_bare_worker_reads_the_source_language(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with texts.use_language("en"):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                gesehen = pool.submit(texts.active_language).result()
+        self.assertEqual(gesehen, registry.DEFAULT_LANGUAGE)
+
+    def test_a_wrapped_worker_reads_the_language_of_the_request(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with texts.use_language("en"):
+            umhuellt = texts.in_language("en", texts.active_language)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                gesehen = pool.submit(umhuellt).result()
+        self.assertEqual(gesehen, "en")
+
+    def test_the_wrapper_passes_arguments_and_keeps_them(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with texts.use_language("en"):
+            umhuellt = texts.in_language("en", lambda a, b=0: (texts.active_language(), a, b))
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                self.assertEqual(pool.submit(umhuellt, "x", b=7).result(), ("en", "x", 7))
+
+    def test_the_language_is_restored_after_the_worker(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        with texts.use_language("en"):
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                pool.submit(texts.in_language("en", texts.active_language)).result()
+            self.assertEqual(texts.active_language(), "en")
+        self.assertEqual(texts.active_language(), registry.DEFAULT_LANGUAGE)
+
+
 if __name__ == "__main__":
     unittest.main()

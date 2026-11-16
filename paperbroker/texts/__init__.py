@@ -41,6 +41,7 @@ __all__ = [
     "active_language",
     "book",
     "declared_sections",
+    "in_language",
     "is_language",
     "languages",
     "lookup",
@@ -70,6 +71,22 @@ _ACTIVE: contextvars.ContextVar[str] = contextvars.ContextVar(
 def active_language() -> str:
     """The language set for the current request (source language by default)."""
     return _ACTIVE.get()
+
+
+def in_language(code: str | None, fn: Any) -> Any:
+    """``fn``, but running with ``code`` active - for threads that inherit nothing.
+
+    A ``ThreadPoolExecutor`` starts its workers in a fresh context, so a worker
+    would read the default language and put German sentences into an English
+    answer. The language is read HERE, in the submitting thread, and set inside the
+    worker: one decision, made before the work is handed out.
+    """
+
+    def lauf(*args: Any, **kwargs: Any) -> Any:
+        with use_language(code):
+            return fn(*args, **kwargs)
+
+    return lauf
 
 
 @contextlib.contextmanager
