@@ -28,6 +28,8 @@ selected, and if none of them lies after the earnings date the answer is
 import re
 from datetime import date, timedelta
 
+from .texts import t
+
 SCHEMA_VERSION = "1.0"
 
 # --- release session ------------------------------------------------------ #
@@ -66,27 +68,40 @@ FLAG_DATE_IN_PAST = "earnings_date_in_past"
 FLAG_CACHE_TIMESTAMP_FUTURE = "cache_timestamp_in_future"
 
 # --- decision reasons (stable codes for machines, text for humans) -------- #
-REASON_TEXT = {
-    "earnings_source_not_configured": "Keine Earnings-Quelle konfiguriert - es wird nichts geschätzt.",
-    "earnings_date_unknown": "Kein nächster Earnings-Termin bekannt.",
-    "earnings_source_unavailable": "Die Earnings-Quelle ist nicht erreichbar und kein Cache-Eintrag liegt vor.",
-    "earnings_data_invalid": "Die Earnings-Antwort ist unbrauchbar oder widersprüchlich.",
-    "earnings_data_stale": "Der Earnings-Nachweis ist zu alt - er darf keinen Handel freigeben.",
-    "earnings_status_unknown": "Der Prüfstatus des Earnings-Eintrags ist unbekannt - ohne belegten Status keine Freigabe.",
-    "earnings_status_unrecognised": "Der Prüfstatus ist ein unbekannter Wert - keine Freigabe.",
-    # Cause before consequence: a report TODAY is why the exit day is already
-    # past. The derived date reasons below stay for the cases where the report
-    # was yesterday or earlier.
-    "earnings_today": "Der Bericht ist heute — ein Einstieg vor dem Termin ist nicht mehr möglich.",
-    "earnings_date_in_past": "Der Earnings-Termin liegt in der Vergangenheit.",
-    "date_confirmation_unknown": "Der Termin ist weder bestätigt noch als Schätzung belegt.",
-    "expirations_unavailable": "Die gelisteten Verfallstermine konnten nicht gelesen werden.",
-    "no_expirations_listed": "Die Optionskette nennt keinen Verfallstermin.",
-    "no_listed_expiration_after_earnings": "Kein gelisteter Verfall liegt nach dem Earnings-Termin.",
-    "exit_day_not_resolvable": "Vor dem Earnings-Termin ist kein US-Handelstag bestimmbar.",
-    "exit_day_in_past": "Der geplante Ausstiegstag liegt in der Vergangenheit.",
-    "expiration_not_after_earnings": "Der Verfall liegt nicht nach dem Earnings-Termin.",
-}
+#: Code -> catalogue key. The sentence lives in the book; this table only knows
+#: WHERE it lives, and the key repeats the code so the two cannot drift apart.
+REASON_KEYS = {code: f"earnings.reason.{code}" for code in (
+    "earnings_source_not_configured",
+    "earnings_date_unknown",
+    "earnings_source_unavailable",
+    "earnings_data_invalid",
+    "earnings_data_stale",
+    "earnings_status_unknown",
+    "earnings_status_unrecognised",
+    "earnings_today",
+    "earnings_date_in_past",
+    "date_confirmation_unknown",
+    "expirations_unavailable",
+    "no_expirations_listed",
+    "no_listed_expiration_after_earnings",
+    "exit_day_not_resolvable",
+    "exit_day_in_past",
+    "expiration_not_after_earnings",
+)}
+
+
+def reason_text(code):
+    """The sentence of a decision reason, or the code itself if it has none.
+
+    The code is the fallback on purpose: an unknown reason must stay visible as a
+    machine word, never as an empty line.
+    """
+    key = REASON_KEYS.get(code)
+    return t(key) if key else code
+
+
+#: Derived, not a second source: payload code that only needs the whole table.
+REASON_TEXT = {code: reason_text(code) for code in REASON_KEYS}
 
 # Reasons that mean "we do not know", as opposed to "we know it does not fit".
 UNKNOWN_REASONS = frozenset({
@@ -102,7 +117,7 @@ UNKNOWN_REASONS = frozenset({
     "exit_day_not_resolvable",
 })
 
-EXIT_RULE = "letzter US-Handelstag strikt vor dem Earnings-Termin"
+EXIT_RULE = t("earnings.exit_rule")
 
 # --- precheck: what the record alone can settle --------------------------- #
 # Reasons about a CHAIN, not about the record. A precheck reads no chain, so
@@ -218,7 +233,7 @@ def parse_nasdaq_earnings_date(payload):
     if treffer is None:
         return {
             "parse_status": "invalid",
-            "reason": "no MM/DD/YYYY date in the source text",
+            "reason": t("earnings.parse.no_date"),
             "raw": raw,
         }
 
@@ -500,7 +515,7 @@ def remaining_trading_days(today, exit_day, max_calendar_days=400):
 # Earnings + listed expirations -> trade window                           #
 # ---------------------------------------------------------------------- #
 def _reason(code):
-    return {"code": code, "message": REASON_TEXT.get(code, code)}
+    return {"code": code, "message": reason_text(code)}
 
 
 def _clean_expirations(expirations):
@@ -696,7 +711,7 @@ def window_precheck(earnings, today):
     heute = today.isoformat() if isinstance(today, date) else None
     if heute is not None and isinstance(bericht, str) and bericht.strip() == heute:
         gruende = [
-            {"code": "earnings_today", "message": REASON_TEXT["earnings_today"]}
+            {"code": "earnings_today", "message": reason_text("earnings_today")}
             if g["code"] == "exit_day_in_past" else g
             for g in gruende
         ]
@@ -719,13 +734,11 @@ def _notes(entscheidung, ausgewaehlt, termin, session, confirmation):
     """Plain-language additions; empty when there is nothing to add."""
     texte = []
     if ausgewaehlt is not None:
-        texte.append(
-            f"Erster gelisteter Verfall nach dem Earnings-Termin: {ausgewaehlt.isoformat()}."
-        )
+        texte.append(t("earnings.notes.first_expiry", date=ausgewaehlt.isoformat()))
     if termin is not None and session == SESSION_UNKNOWN:
-        texte.append("Veröffentlichungszeit unbekannt - der Ausstiegstag ist deshalb der letzte Handelstag davor.")
+        texte.append(t("earnings.notes.session_unknown"))
     if termin is not None and confirmation == CONFIRMATION_ESTIMATED:
-        texte.append("Der Termin ist eine Schätzung der Quelle, keine bestätigte Ankündigung.")
+        texte.append(t("earnings.notes.estimated"))
     if entscheidung == "ok":
-        texte.append("Der Verfall nach Earnings ist eine notwendige, keine hinreichende Bedingung für einen Trade.")
+        texte.append(t("earnings.notes.necessary_not_sufficient"))
     return texte

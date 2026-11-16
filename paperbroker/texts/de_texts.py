@@ -295,6 +295,53 @@ TEXTS: dict[str, object] = {
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
     #
+    # --- earnings_calendar.py ---------------------------------------------- #
+    # Gate-Gruende, Ausstiegsregel und Klartext-Zusaetze des Earnings-Fensters.
+    # Die Schluessel tragen den Code, damit Code und Satz nicht auseinander
+    # laufen koennen; der Code selbst bleibt Maschinenwert und wird nicht
+    # uebersetzt.
+    "earnings.reason.earnings_source_not_configured":
+        "Keine Earnings-Quelle konfiguriert - es wird nichts geschätzt.",
+    "earnings.reason.earnings_date_unknown": "Kein nächster Earnings-Termin bekannt.",
+    "earnings.reason.earnings_source_unavailable":
+        "Die Earnings-Quelle ist nicht erreichbar und kein Cache-Eintrag liegt vor.",
+    "earnings.reason.earnings_data_invalid":
+        "Die Earnings-Antwort ist unbrauchbar oder widersprüchlich.",
+    "earnings.reason.earnings_data_stale":
+        "Der Earnings-Nachweis ist zu alt - er darf keinen Handel freigeben.",
+    "earnings.reason.earnings_status_unknown":
+        "Der Prüfstatus des Earnings-Eintrags ist unbekannt - ohne belegten Status keine Freigabe.",
+    "earnings.reason.earnings_status_unrecognised":
+        "Der Prüfstatus ist ein unbekannter Wert - keine Freigabe.",
+    "earnings.reason.earnings_today":
+        "Der Bericht ist heute — ein Einstieg vor dem Termin ist nicht mehr möglich.",
+    "earnings.reason.earnings_date_in_past":
+        "Der Earnings-Termin liegt in der Vergangenheit.",
+    "earnings.reason.date_confirmation_unknown":
+        "Der Termin ist weder bestätigt noch als Schätzung belegt.",
+    "earnings.reason.expirations_unavailable":
+        "Die gelisteten Verfallstermine konnten nicht gelesen werden.",
+    "earnings.reason.no_expirations_listed":
+        "Die Optionskette nennt keinen Verfallstermin.",
+    "earnings.reason.no_listed_expiration_after_earnings":
+        "Kein gelisteter Verfall liegt nach dem Earnings-Termin.",
+    "earnings.reason.exit_day_not_resolvable":
+        "Vor dem Earnings-Termin ist kein US-Handelstag bestimmbar.",
+    "earnings.reason.exit_day_in_past":
+        "Der geplante Ausstiegstag liegt in der Vergangenheit.",
+    "earnings.reason.expiration_not_after_earnings":
+        "Der Verfall liegt nicht nach dem Earnings-Termin.",
+    "earnings.exit_rule": "letzter US-Handelstag strikt vor dem Earnings-Termin",
+    "earnings.notes.first_expiry":
+        "Erster gelisteter Verfall nach dem Earnings-Termin: {date}.",
+    "earnings.notes.session_unknown":
+        "Veröffentlichungszeit unbekannt - der Ausstiegstag ist deshalb der letzte Handelstag davor.",
+    "earnings.notes.estimated":
+        "Der Termin ist eine Schätzung der Quelle, keine bestätigte Ankündigung.",
+    "earnings.notes.necessary_not_sufficient":
+        "Der Verfall nach Earnings ist eine notwendige, keine hinreichende Bedingung für einen Trade.",
+    "earnings.parse.no_date": "no MM/DD/YYYY date in the source text",
+
     # --- spread_detail.py -------------------------------------------------- #
     # Meldungen und Methodik-Notizen der Detail-Antwort. "long"/"short"/"ask"
     # und "bid" sind Feldnamen der Boerse und reisen als Textvariablen - sie
