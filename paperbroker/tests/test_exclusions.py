@@ -279,6 +279,58 @@ class ReasonCodeTest(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIsNotNone(code_category(code), f"{code} fehlt in _CODE_CATEGORIES")
 
+    def test_code_and_text_agree_today(self):
+        """Code-Pfad und Textpfad muessen HEUTE dieselbe Kategorie liefern.
+
+        Der Grund, warum das kein Luxus ist: sobald ein Grund durch eine
+        f-Zeichenkette geglaettet wird (``leg_drop_reason`` tut das), ist der
+        Code weg und es greifen wieder die Textregeln. Weichen die beiden
+        Wege ab, zaehlt derselbe Ablehnungsgrund auf Vertragsebene anders als
+        auf Paarebene - und niemand sieht es, weil beide Zahlen fuer sich
+        plausibel sind.
+
+        Gefunden hat genau das ein Review: "DTE fehlt" war im Code als DATA
+        eingetragen, die Textregel (Praefix "DTE " vor der "fehlt"-Regel) sagt
+        aber DTE. Der Abdruck deckte es nicht ab, weil dort kein solcher Grund
+        vorkam.
+        """
+        from paperbroker.exclusions import Reason, categorise
+
+        # (Satz, wie ihn der Producer schreibt, Code, den er setzt)
+        proben = (
+            ("iv=0 illiquide", "iv_zero_illiquid"),
+            ("oi=0 illiquide", "oi_zero_illiquid"),
+            ("Spread: kein Geld-/Briefkurs", "quote_missing"),
+            ("absoluter Spread 0.35$ > 0.30$ (Mitte 1.20)", "spread_abs_above"),
+            ("Spread 12.0% > 10.0%", "spread_pct_above"),
+            ("OI fehlt", "oi_missing"),
+            ("OI 120 < 500", "oi_below_min"),
+            ("Volumen fehlt", "volume_missing"),
+            ("Volumen 5 <= 10", "volume_below_min"),
+            ("IV fehlt", "iv_missing"),
+            ("IV 18 < 30", "iv_below_min"),
+            ("IV 70 > 60", "iv_above_max"),
+            ("DTE fehlt", "dte_missing"),
+            ("DTE 3 < 7", "dte_below_min"),
+            ("DTE 90 > 60", "dte_above_max"),
+            ("Größe unter Minimum", "size_below_min"),
+            ("Credit nicht bestimmbar - kein gültiger Geld-/Briefkurs", "credit_unknown"),
+            ("Credit 6.5 außerhalb (0, 5.0) - kein gültiger Credit", "credit_out_of_range"),
+            ("Debit 0.02 außerhalb (0, 5.0) - kein Gewinn möglich", "debit_out_of_range"),
+            ("Nach Kosten nicht gewinnfähig: netto -0.40 USD (Einsatz 500.00 USD)",
+             "costs_exceed_profit"),
+            ("Position 900.00 USD > Budget 800.00 USD", "budget_exceeded"),
+            ("Aktualität unbekannt (kein Zeitstempel)", "age_missing"),
+            ("Aktualität unbekannt (Zeitstempel unlesbar)", "age_unreadable"),
+            ("Aktualität unbekannt (Uhrfehler)", "age_clock"),
+            ("Zeitstempel in der Zukunft (+3 Min.)", "age_future"),
+            ("veraltet: 41 Min.", "age_stale"),
+        )
+        for satz, code in proben:
+            with self.subTest(code=code):
+                self.assertEqual(categorise(satz), categorise(Reason(satz, code)),
+                                 f"{code} weicht vom Textpfad ab")
+
     def test_the_screener_and_age_codes_carry_the_right_category(self):
         """Die Zuordnung gepinnt - ohne den deutschen Satz zu befragen.
 
@@ -310,7 +362,7 @@ class ReasonCodeTest(unittest.TestCase):
             "oi_missing": CAT_DATA,
             "volume_missing": CAT_DATA,
             "iv_missing": CAT_DATA,
-            "dte_missing": CAT_DATA,
+            "dte_missing": CAT_DTE,
             "iv_below_min": CAT_VOLATILITY,
             "iv_above_max": CAT_VOLATILITY,
             "dte_below_min": CAT_DTE,

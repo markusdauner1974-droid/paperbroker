@@ -160,8 +160,12 @@ _CODE_CATEGORIES = {
     "deadline_exceeded": CAT_SCAN_LIMIT,   # CODE_DEADLINE
     # --- die Filter des Screener (screener.py) --------------------------- #
     # Der Code benennt den FILTER, nicht die Formulierung. Die Kategorie ist
-    # heute genau die, die die Textregel darunter liefert - der Test
-    # "code_and_text_agree_today" haelt beide Seiten wortgleich zusammen.
+    # heute GENAU die, die die Textregel darunter liefert - der Test
+    # ReasonCodeTest.test_code_and_text_agree_today haelt beide Wege
+    # wortgleich zusammen. Der Grund fuer diesen Test: wird ein Grund durch eine
+    # f-Zeichenkette geglaettet (leg_drop_reason tut das), ist der Code weg und
+    # es greifen die Textregeln - weichen die beiden ab, zaehlt derselbe Grund
+    # auf Vertragsebene anders als auf Paarebene.
     "iv_zero_illiquid": CAT_LIQUIDITY,
     "oi_zero_illiquid": CAT_LIQUIDITY,
     "quote_missing": CAT_LIQUIDITY,
@@ -174,7 +178,7 @@ _CODE_CATEGORIES = {
     "iv_missing": CAT_DATA,
     "iv_below_min": CAT_VOLATILITY,
     "iv_above_max": CAT_VOLATILITY,
-    "dte_missing": CAT_DATA,
+    "dte_missing": CAT_DTE,
     "dte_below_min": CAT_DTE,
     "dte_above_max": CAT_DTE,
     "size_below_min": CAT_LIQUIDITY,
