@@ -86,7 +86,9 @@ def api_gap_spreads():
     ``windows_measured``, ``history_state``), after the funnel and only for
     the rows that have a spread - one extra request each.
     """
-    args, fehler = _gap_scan_args(ctx, extra=_GAP_SPREADS_PARAMETERS)
+    # "lang" is accepted here and only here (plus the detail route): this answer
+    # follows the language of the request, every other endpoint stays in German.
+    args, fehler = _gap_scan_args(ctx, extra=(*_GAP_SPREADS_PARAMETERS, "lang"))
     if fehler is not None:
         return fehler
     max_move, fehler = _required_move_cap(request.args.get("max_required_move_pct"))
@@ -522,13 +524,13 @@ def _spread_detail_args(ctx):
     with the route's defaults, and accepting a different threshold would let
     one request describe a spread the list never showed.
     """
-    erlaubt = {"day", "symbol"} | set(_STRUCTURE_PARAMS)
+    erlaubt = {"day", "symbol", "lang"} | set(_STRUCTURE_PARAMS)
     unbekannt = sorted(set(request.args) - erlaubt)
     if unbekannt:
         return None, _gap_scan_error(
             400, "unknown_parameter",
             f"unknown parameter(s): {', '.join(unbekannt)}. "
-            f"Allowed: day, symbol, expiration, long, short",
+            f"Allowed: day, symbol, expiration, long, short, lang",
         )
     doppelt = sorted(name for name in erlaubt if len(request.args.getlist(name)) > 1)
     if doppelt:

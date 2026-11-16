@@ -24,7 +24,7 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import arrow
-from flask import Flask, abort, jsonify, render_template, request
+from flask import Flask, abort, g, jsonify, render_template, request
 
 from . import exclusions, gap_funnel, quote_age, spread_detail, texts
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
@@ -271,10 +271,49 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     without it answers ``no_next_earnings`` instead of guessing a date.
     """
     app = Flask(__name__, template_folder="templates")
-    # The templates look their text up by key. Today the catalogue answers in the
-    # default language; the language switch (a later pull request) replaces this
-    # binding with a request-aware one, and no template has to change for that.
+    # The templates look their text up by key. The catalogue answers in whatever
+    # language the request set (see _serve_in_request_language) - the default is
+    # the source language, so a request without a setting reads exactly as before.
     app.jinja_env.globals["t"] = texts.t
+
+    #: The two endpoints that follow the language. Every other endpoint stays in
+    #: the source language on purpose: /api/screen, the option chain, the earnings
+    #: routes and the scan answers are stable legacy payloads, and a language
+    #: switch must not move a byte in them.
+    language_endpoints = {"api_gap_spreads", "api_gap_spreads_detail"}
+
+    @app.before_request
+    def _serve_in_request_language():
+        """Read ``?lang=`` for the allowed endpoints, ignore it everywhere else.
+
+        An unknown code is refused with 400 instead of falling back: a caller that
+        asks for a language we do not have gets told, not silently served German
+        under an English name.
+        """
+        if request.endpoint not in language_endpoints:
+            g.language = texts.DEFAULT_LANGUAGE
+            return None
+        try:
+            g.language = texts.resolve_language(request.args.get("lang"))
+        except texts.UnknownLanguage as fehler:
+            return jsonify({
+                "error": "unknown_language",
+                "requested": str(fehler),
+                "available": list(texts.languages()),
+            }), 400
+        return None
+
+    @app.before_request
+    def _enter_request_language():
+        """Everything below this hook reads the language of the request."""
+        texts._ACTIVE.set(getattr(g, "language", texts.DEFAULT_LANGUAGE))
+        return None
+
+    @app.teardown_request
+    def _leave_request_language(_ausnahme=None):
+        """Undo the setting - a leaked language would colour the NEXT request."""
+        texts._ACTIVE.set(texts.DEFAULT_LANGUAGE)
+        return None
     if now_fn is None:
         now_fn = arrow.get
 
