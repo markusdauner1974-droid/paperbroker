@@ -36,6 +36,7 @@ from .screener import (
     resolve_strategy,
     strategy_option_type,
 )
+from .texts import t
 
 _TICKER_RE = re.compile(r"^[A-Z]{1,6}$")
 
@@ -83,31 +84,30 @@ def _parse_criteria_value(field, raw):
     """
     text = str(raw).strip()
     if "," in text:
-        raise ValueError(f"{field}: bitte den Punkt als Dezimaltrenner verwenden "
-                         f"(z. B. 7.5 statt '{text}').")
+        raise ValueError(t("support.parse.comma", field=field, text=text))
     if field in _CRITERIA_INT_FIELDS:
         try:
             return int(text)
         except ValueError as exc:
-            raise ValueError(f"{field}: '{text}' ist keine ganze Zahl.") from exc
+            raise ValueError(t("support.parse.integer", field=field, text=text)) from exc
     if field in _CRITERIA_BOOL_FIELDS:
         # The empty field (handled above) means "keep the default"; a switch
         # therefore only has to name the two explicit states.
         if text not in ("0", "1"):
-            raise ValueError(f"{field}: '0' oder '1' erwartet (ist: '{text}').")
+            raise ValueError(t("support.parse.flag", field=field, text=text))
         return text == "1"
     if field in _CRITERIA_CHOICE_FIELDS:
         erlaubt = _CRITERIA_CHOICE_FIELDS[field]
         if text not in erlaubt:
-            raise ValueError(f"{field}: einer von {', '.join(erlaubt)} erwartet "
-                             f"(ist: '{text}').")
+            raise ValueError(t("support.parse.choice", field=field,
+                               allowed=", ".join(erlaubt), text=text))
         return text
     try:
         value = float(text)
     except ValueError as exc:
-        raise ValueError(f"{field}: '{text}' ist keine Zahl.") from exc
+        raise ValueError(t("support.parse.number", field=field, text=text)) from exc
     if not math.isfinite(value):
-        raise ValueError(f"{field}: '{text}' ist keine endliche Zahl.")
+        raise ValueError(t("support.parse.finite", field=field, text=text))
     return value
 
 def _criteria_from_request(base_criteria, args):

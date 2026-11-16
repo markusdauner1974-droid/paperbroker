@@ -114,6 +114,7 @@ from .screener import (
     strategy_option_type,
     vertical_spreads,
 )
+from .texts import t
 from .view_support import (
     _CRITERIA_BOOL_FIELDS,
     _CRITERIA_CHOICE_FIELDS,
@@ -594,9 +595,9 @@ def _trend_display(ticker):
         # "source down" (signal here) and "no provider configured" (sig None,
         # no badge at all) are different situations - only this one needs an
         # explanation, and it must not read like a calm flat market.
-        return {"direction": "unavailable", "label": "Trend nicht verfügbar",
-                "note": ("Trend-Quelle nicht erreichbar - die Liste steht "
-                         "ohne Trend-Prüfung da.")}
+        return {"direction": "unavailable",
+                "label": t("trend.unavailable.label"),
+                "note": t("trend.unavailable.note")}
     return {"direction": sig.direction, "label": _trend_label(sig.direction)}
 
 
