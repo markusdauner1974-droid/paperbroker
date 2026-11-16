@@ -61,6 +61,63 @@ TEXTS: dict[str, object] = {
     "page.failures.summary": "Fehlschläge",
     "page.foot.feed_note": "CBOE-Kursdaten zeitversetzt – ca. 15 Minuten hinter Echtzeit.",
     #
+    # --- funnel.* -------------------------------------------------------
+    # gap_funnel.py: what the funnel measured, what it rejected, and the pair
+    # counters - the first values that inflect, so the branch lives in the
+    # value and the rule stays with the language.
+    # ---------------------------------------------------------------------
+    "funnel.variant.near_money": "nah am Geld",
+    "funnel.variant.at_resistance": "am Widerstand",
+    "funnel.variant.tightest_spread": "engster Spread",
+    "funnel.variant.row_pick": "Hebel (Zeile)",
+    "funnel.move.up": "steigen",
+    "funnel.move.down": "fallen",
+    "funnel.move.too_far": (
+        "Der Kurs müsste sich um {move} % {direction}; zugelassen sind {limit} %."
+    ),
+    "funnel.pairs.valid": {"one": "{count} gültiges Paar", "other": "{count} gültige Paare"},
+    "funnel.pairs.enumerated": {
+        "one": "{count} aufgezählten Paar",
+        "other": "{count} aufgezählten Paaren",
+    },
+    "funnel.pairs.possible": {"one": "{count} mögliches Paar", "other": "{count} möglich"},
+    "funnel.pairs.possible_unknown": "? möglich",
+    # Dativ: "Bei 1 Titel war", "Bei 3 Titeln war" - die Form haengt am Zaehlwort.
+    "funnel.pairs.capped_title": {"one": "{count} Titel", "other": "{count} Titeln"},
+    "funnel.pairs.capped": (
+        "{text} ({valid} von {enumerated}, Suche am Deckel von {limit} - {possible})"
+    ),
+    "funnel.pairs.capped_note": (
+        'Bei {title} war die Paarsuche am Deckel{ceiling} - dort ist das gezeigte R/R '
+        'das beste GEFUNDENE Paar, und "kein Paar" heißt "keins im geprüften Teil"; '
+        "ein besseres Paar weiter hinten in der Aufzählung wurde nicht geprüft."
+    ),
+    "funnel.chain.unreadable": "Die Optionskette konnte nicht gelesen werden{detail}.",
+    "funnel.chain.not_listed": "Die Quelle listet keine handelbare Optionskette für diesen Titel.",
+    "funnel.chain.empty": "Die Kette dieses Titels enthält keinen Kontrakt.",
+    "funnel.expiry.empty": "keine Kontrakte in diesem Verfall",
+    "funnel.expiry.none_after_earnings": (
+        "Kein gelisteter Verfall liegt nach dem Berichtstermin {date}."
+    ),
+    "funnel.expiry.line": "Verfall {date}: {note}",
+    "funnel.strike.single": "nur ein Strike gelistet - kein Strike-Paar möglich",
+    "funnel.strike.no_pair": "kein gültiges Strike-Paar im Screening",
+    "funnel.strike.sample": " (z. B. {sample})",
+    "funnel.oi.missing": "Open Interest des {leg}-Legs fehlt",
+    "funnel.oi.below": "Open Interest des {leg}-Legs {value} < {minimum}",
+    "funnel.rr.none": "kein Paar mit R/R >= {limit}",
+    "funnel.rr.delta": "R/R erfüllt ({ratios} von {checked}), aber |Delta| des Long-Legs < {limit}",
+    "funnel.rr.debit": (
+        "R/R und Delta erfüllt ({ratios} von {checked}), aber Netto-Debit < {limit} USD"
+    ),
+    "funnel.gap.no_direction": "Der Gap hat keine Richtung - keine Debit-Strategie.",
+    "funnel.earnings.no_symbol": "Ein Kandidat ohne Symbol hat keinen Berichtstermin.",
+    "funnel.earnings.none_in_window": (
+        "Die Quelle nennt für diesen Titel keinen Berichtstermin im Fenster."
+    ),
+    "funnel.earnings.unreadable": "Der Berichtstermin konnte nicht gelesen werden ({error}).",
+    "funnel.budget.timeout": "Die Prüfung endete nicht innerhalb des Zeitbudgets.",
+    "funnel.budget.failed": "Die Prüfung ist gescheitert ({error}).",
     # --- js.* -----------------------------------------------------------
     # static/gap_funnel.js: the table, the detail block and the error states.
     # The script gets these through one JSON block in the page; a value may be a

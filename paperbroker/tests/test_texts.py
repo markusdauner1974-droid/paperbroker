@@ -236,6 +236,85 @@ class GlossaryTest(unittest.TestCase):
                 for code in texts.languages():
                     self.assertEqual(texts.book(code).get(key, expected), expected)
 
+class PluralMatrixTest(CatalogueTestCase):
+    """Die Mehrfach-Matrix, festgenagelt - nicht nur "geht nicht kaputt".
+
+    Zwei Zusagen, beide noetig:
+
+    * **Form:** ein Wert mit Zweigen hat GENAU die Zweige, die seine Regel
+      braucht - nicht mehr, nicht weniger. Ein Buch mit einem dritten Zweig
+      waere in de/en nie erreichbar, und ein fehlender Zweig wuerde erst beim
+      Rendern auffallen.
+    * **Inhalt:** welche Zahl welchen Text ergibt, steht hier wortgetreu. Wer
+      eine Form aendert, aendert diesen Test - und sieht dabei, dass er eine
+      Anzeige aendert.
+    """
+
+    #: Die Zweige, die eine Regel bei diesen Zahlen verlangt. Bewusst aus der
+    #: Regel ABGELEITET, nicht hartkodiert: eine neue Sprache mit anderen Formen
+    #: bringt ihre Zweige selbst mit.
+    PROBEN = (0, 1, 2, 11, 1000)
+
+    def test_every_branched_value_has_exactly_the_branches_its_rule_needs(self):
+        for code in texts.languages():
+            rule = registry.PLURAL_RULES[str(registry.LANGUAGES[code]["plural"])]
+            erwartet = {rule(n) for n in self.PROBEN}
+            for key, value in texts.book(code).items():
+                if not isinstance(value, dict):
+                    continue
+                with self.subTest(sprache=code, key=key):
+                    self.assertEqual(erwartet, set(value), f"{code}/{key}")
+
+    def test_the_german_plural_matrix_is_pinned(self):
+        # Die Zifferngruppierung kommt aus der Produktion, nicht aus dem Test:
+        # sonst pinnt der Test eine Zeichenkette, die die Seite nie zeigt.
+        from paperbroker.gap_funnel import _tausender
+
+        faelle = {
+            "funnel.pairs.valid": {
+                0: "0 gültige Paare",
+                1: "1 gültiges Paar",
+                2: "2 gültige Paare",
+                1000: "1 000 gültige Paare",
+            },
+            "funnel.pairs.enumerated": {
+                1: "1 aufgezählten Paar",
+                2: "2 aufgezählten Paaren",
+            },
+            "funnel.pairs.possible": {
+                1: "1 mögliches Paar",
+                45: "45 möglich",
+            },
+            "funnel.pairs.capped_title": {
+                1: "1 Titel",
+                3: "3 Titeln",
+            },
+        }
+        for key, faelle_je_zahl in faelle.items():
+            for zahl, erwartet in faelle_je_zahl.items():
+                with self.subTest(key=key, n=zahl):
+                    self.assertEqual(
+                        erwartet, texts.t(key, n=zahl, count=_tausender(zahl))
+                    )
+
+    def test_the_three_funnel_counters_read_as_the_page_says(self):
+        from paperbroker.gap_funnel import (
+            _enumerated_pairs,
+            _possible_pairs_word,
+            _valid_pairs,
+        )
+
+        self.assertEqual("1 gültiges Paar", _valid_pairs(1))
+        self.assertEqual("45 gültige Paare", _valid_pairs(45))
+        # Vierstellig: die Produktion gruppiert mit einem Leerzeichen ("1 000"),
+        # nicht mit einem Punkt - der Test haelt genau das fest.
+        self.assertEqual("1 000 gültige Paare", _valid_pairs(1000))
+        self.assertEqual("1 aufgezählten Paar", _enumerated_pairs(1))
+        self.assertEqual("45 aufgezählten Paaren", _enumerated_pairs(45))
+        self.assertEqual("1 mögliches Paar", _possible_pairs_word(1))
+        self.assertEqual("45 möglich", _possible_pairs_word(45))
+        self.assertEqual("? möglich", _possible_pairs_word(None))
+
 
 if __name__ == "__main__":
     unittest.main()
