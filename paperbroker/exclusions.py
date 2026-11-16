@@ -158,6 +158,37 @@ _CODE_CATEGORIES = {
     "no_spread_ge_rr": CAT_LIQUIDITY,      # REASON_NO_SPREAD
     "move_too_far": CAT_OTHER,             # REASON_MOVE_TOO_FAR
     "deadline_exceeded": CAT_SCAN_LIMIT,   # CODE_DEADLINE
+    # --- die Filter des Screener (screener.py) --------------------------- #
+    # Der Code benennt den FILTER, nicht die Formulierung. Die Kategorie ist
+    # heute genau die, die die Textregel darunter liefert - der Test
+    # "code_and_text_agree_today" haelt beide Seiten wortgleich zusammen.
+    "iv_zero_illiquid": CAT_LIQUIDITY,
+    "oi_zero_illiquid": CAT_LIQUIDITY,
+    "quote_missing": CAT_LIQUIDITY,
+    "spread_abs_above": CAT_LIQUIDITY,
+    "spread_pct_above": CAT_LIQUIDITY,
+    "oi_missing": CAT_DATA,
+    "oi_below_min": CAT_LIQUIDITY,
+    "volume_missing": CAT_DATA,
+    "volume_below_min": CAT_LIQUIDITY,
+    "iv_missing": CAT_DATA,
+    "iv_below_min": CAT_VOLATILITY,
+    "iv_above_max": CAT_VOLATILITY,
+    "dte_missing": CAT_DATA,
+    "dte_below_min": CAT_DTE,
+    "dte_above_max": CAT_DTE,
+    "size_below_min": CAT_LIQUIDITY,
+    "credit_unknown": CAT_PRICE,
+    "credit_out_of_range": CAT_PRICE,
+    "debit_out_of_range": CAT_PRICE,
+    "costs_exceed_profit": CAT_COSTS,
+    "budget_exceeded": CAT_BUDGET,
+    # --- das Datenalter (quote_age.py) ----------------------------------- #
+    "age_missing": CAT_AGE,
+    "age_unreadable": CAT_AGE,
+    "age_clock": CAT_AGE,
+    "age_future": CAT_AGE,
+    "age_stale": CAT_AGE,
 }
 
 

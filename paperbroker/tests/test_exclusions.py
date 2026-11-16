@@ -279,6 +279,57 @@ class ReasonCodeTest(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIsNotNone(code_category(code), f"{code} fehlt in _CODE_CATEGORIES")
 
+    def test_the_screener_and_age_codes_carry_the_right_category(self):
+        """Die Zuordnung gepinnt - ohne den deutschen Satz zu befragen.
+
+        Diese Tabelle ist der Grund, warum die Saetze spaeter uebersetzt werden
+        duerfen: sie nennt Kategorien zu CODES. Aendert jemand eine Zuordnung,
+        wird dieser Test rot, ohne dass ein Satz im Spiel ist.
+        """
+        from paperbroker.exclusions import (
+            CAT_AGE,
+            CAT_BUDGET,
+            CAT_COSTS,
+            CAT_DATA,
+            CAT_DTE,
+            CAT_LIQUIDITY,
+            CAT_PRICE,
+            CAT_VOLATILITY,
+            code_category,
+        )
+
+        erwartet = {
+            "iv_zero_illiquid": CAT_LIQUIDITY,
+            "oi_zero_illiquid": CAT_LIQUIDITY,
+            "quote_missing": CAT_LIQUIDITY,
+            "spread_abs_above": CAT_LIQUIDITY,
+            "spread_pct_above": CAT_LIQUIDITY,
+            "oi_below_min": CAT_LIQUIDITY,
+            "volume_below_min": CAT_LIQUIDITY,
+            "size_below_min": CAT_LIQUIDITY,
+            "oi_missing": CAT_DATA,
+            "volume_missing": CAT_DATA,
+            "iv_missing": CAT_DATA,
+            "dte_missing": CAT_DATA,
+            "iv_below_min": CAT_VOLATILITY,
+            "iv_above_max": CAT_VOLATILITY,
+            "dte_below_min": CAT_DTE,
+            "dte_above_max": CAT_DTE,
+            "credit_unknown": CAT_PRICE,
+            "credit_out_of_range": CAT_PRICE,
+            "debit_out_of_range": CAT_PRICE,
+            "costs_exceed_profit": CAT_COSTS,
+            "budget_exceeded": CAT_BUDGET,
+            "age_missing": CAT_AGE,
+            "age_unreadable": CAT_AGE,
+            "age_clock": CAT_AGE,
+            "age_future": CAT_AGE,
+            "age_stale": CAT_AGE,
+        }
+        for code, kategorie in erwartet.items():
+            with self.subTest(code=code):
+                self.assertEqual(kategorie, code_category(code))
+
     def test_an_untagged_reason_still_uses_the_text_rules(self):
         from paperbroker.exclusions import CAT_AGE, CAT_LIQUIDITY, categorise
 

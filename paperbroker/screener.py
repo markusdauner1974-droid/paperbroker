@@ -25,6 +25,7 @@ from dataclasses import dataclass, field, fields
 from typing import Optional, Protocol
 
 from . import quote_age
+from .exclusions import Reason
 from .quote_age import (
     AGE_MODES,
     FUTURE_TOLERANCE_S,
@@ -309,10 +310,10 @@ def filter_data_complete(quotes):
     kept, dropped = [], []
     for q in quotes:
         if q.iv is not None and q.iv == 0:
-            dropped.append((q, "iv=0 illiquide"))
+            dropped.append((q, Reason("iv=0 illiquide", "iv_zero_illiquid")))
             continue
         if q.open_interest is not None and q.open_interest == 0:
-            dropped.append((q, "oi=0 illiquide"))
+            dropped.append((q, Reason("oi=0 illiquide", "oi_zero_illiquid")))
             continue
         kept.append(q)
     return kept, dropped
@@ -326,7 +327,7 @@ def filter_spread(quotes, criteria: ScreenerCriteria):
     for q in quotes:
         sp = _spread_pct(q)
         if sp is None:
-            dropped.append((q, "Spread: kein Geld-/Briefkurs"))
+            dropped.append((q, Reason("Spread: kein Geld-/Briefkurs", "quote_missing")))
             continue
         abs_sp = (q.ask - q.bid)
         mid = (q.bid + q.ask) / 2
@@ -341,9 +342,11 @@ def filter_spread(quotes, criteria: ScreenerCriteria):
             kept.append(q)
         else:
             if abs_bound is not None and abs_sp > abs_bound:
-                dropped.append((q, f"absoluter Spread {abs_sp:.2f}$ > {abs_bound:.2f}$ (Mitte {mid:.2f})"))
+                dropped.append((q, Reason(f"absoluter Spread {abs_sp:.2f}$ > {abs_bound:.2f}$ (Mitte {mid:.2f})",
+                                          "spread_abs_above")))
             else:
-                dropped.append((q, f"Spread {sp:.1f}% > {criteria.max_spread_pct}%"))
+                dropped.append((q, Reason(f"Spread {sp:.1f}% > {criteria.max_spread_pct}%",
+                                          "spread_pct_above")))
     return kept, dropped
 
 
@@ -353,12 +356,12 @@ def filter_oi(quotes, criteria: ScreenerCriteria):
         oi = q.open_interest
         if oi is None:
             if criteria.require_oi:
-                dropped.append((q, "OI fehlt"))
+                dropped.append((q, Reason("OI fehlt", "oi_missing")))
             else:
                 kept.append(q)
             continue
         if criteria.min_oi is not None and oi < criteria.min_oi:
-            dropped.append((q, f"OI {oi} < {criteria.min_oi}"))
+            dropped.append((q, Reason(f"OI {oi} < {criteria.min_oi}", "oi_below_min")))
         else:
             kept.append(q)
     return kept, dropped
@@ -370,12 +373,12 @@ def filter_volume(quotes, criteria: ScreenerCriteria):
         v = q.volume
         if v is None:
             if criteria.require_volume:
-                dropped.append((q, "Volumen fehlt"))
+                dropped.append((q, Reason("Volumen fehlt", "volume_missing")))
             else:
                 kept.append(q)
             continue
         if criteria.min_volume is not None and v <= criteria.min_volume:
-            dropped.append((q, f"Volumen {v} <= {criteria.min_volume}"))
+            dropped.append((q, Reason(f"Volumen {v} <= {criteria.min_volume}", "volume_below_min")))
         else:
             kept.append(q)
     return kept, dropped
@@ -387,13 +390,13 @@ def filter_iv(quotes, criteria: ScreenerCriteria):
     for q in quotes:
         iv = q.iv
         if iv is None:
-            dropped.append((q, "IV fehlt"))
+            dropped.append((q, Reason("IV fehlt", "iv_missing")))
             continue
         if criteria.iv_min is not None and iv < criteria.iv_min:
-            dropped.append((q, f"IV {iv:.0f} < {criteria.iv_min}"))
+            dropped.append((q, Reason(f"IV {iv:.0f} < {criteria.iv_min}", "iv_below_min")))
             continue
         if criteria.iv_max is not None and iv > criteria.iv_max:
-            dropped.append((q, f"IV {iv:.0f} > {criteria.iv_max}"))
+            dropped.append((q, Reason(f"IV {iv:.0f} > {criteria.iv_max}", "iv_above_max")))
             continue
         kept.append(q)
     return kept, dropped
@@ -413,13 +416,13 @@ def filter_dte(quotes, criteria: ScreenerCriteria, now_fn=None):
         asset = getattr(q, "asset", None)
         d = asset.get_days_to_expiration(clock()) if asset is not None else q.days_to_expiration
         if d is None:
-            dropped.append((q, "DTE fehlt"))
+            dropped.append((q, Reason("DTE fehlt", "dte_missing")))
             continue
         if criteria.dte_min is not None and d < criteria.dte_min:
-            dropped.append((q, f"DTE {d} < {criteria.dte_min}"))
+            dropped.append((q, Reason(f"DTE {d} < {criteria.dte_min}", "dte_below_min")))
             continue
         if criteria.dte_max is not None and d > criteria.dte_max:
-            dropped.append((q, f"DTE {d} > {criteria.dte_max}"))
+            dropped.append((q, Reason(f"DTE {d} > {criteria.dte_max}", "dte_above_max")))
             continue
         kept.append(q)
     return kept, dropped
@@ -436,7 +439,7 @@ def filter_sizes(quotes, criteria: ScreenerCriteria):
         if ok:
             kept.append(q)
         else:
-            dropped.append((q, "Größe unter Minimum"))
+            dropped.append((q, Reason("Größe unter Minimum", "size_below_min")))
     return kept, dropped
 
 
@@ -1310,22 +1313,26 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
         if pair.is_credit:
             credit = pair.net_credit
             if credit is None:
-                dropped.append((pair, "Credit nicht bestimmbar - kein gültiger Geld-/Briefkurs"))
+                dropped.append((pair, Reason(
+                    "Credit nicht bestimmbar - kein gültiger Geld-/Briefkurs", "credit_unknown")))
                 continue
             if not 0 < credit < pair.strike_width:
                 # 0 <= credit means the bought leg costs as much as the sold one
                 # pays; credit >= width means the market pays more than the
                 # spread can ever lose - an incoherent quote pair, no trade.
-                dropped.append((pair, f"Credit {credit} außerhalb (0, {pair.strike_width}) - "
-                                      f"kein gültiger Credit"))
+                dropped.append((pair, Reason(
+                    f"Credit {credit} außerhalb (0, {pair.strike_width}) - kein gültiger Credit",
+                    "credit_out_of_range")))
                 continue
         # D18: a construction that can only lose after the costs is not a hit. Only with
         # fees does this say more than the pair rule below - at fees 0 the two agree, and
         # the older, more precise reason ("kein Gewinn möglich") should keep the field.
         if (criteria.fees or 0.0) > 0 and pair.profitable_after_costs(criteria) is False:
-            dropped.append((pair, f"Nach Kosten nicht gewinnfähig: "
-                                 f"netto {pair.net_max_profit(criteria):.2f} USD "
-                                 f"(Einsatz {pair.risk_budget(criteria):.2f} USD)"))
+            dropped.append((pair, Reason(
+                f"Nach Kosten nicht gewinnfähig: "
+                f"netto {pair.net_max_profit(criteria):.2f} USD "
+                f"(Einsatz {pair.risk_budget(criteria):.2f} USD)",
+                "costs_exceed_profit")))
             continue
         if criteria.budget is not None:
             # The budget bounds the CAPITAL AT RISK, not the premium: for a credit
@@ -1334,7 +1341,9 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
             groesse = pair.risk_budget(criteria)
             if groesse is not None and groesse > criteria.budget:
                 etikett = "Risikobudget" if pair.is_credit else "Position"
-                dropped.append((pair, f"{etikett} {groesse:.2f} USD > Budget {criteria.budget:.2f} USD"))
+                dropped.append((pair, Reason(
+                    f"{etikett} {groesse:.2f} USD > Budget {criteria.budget:.2f} USD",
+                    "budget_exceeded")))
                 continue
         if not pair.is_credit and (pair.net_debit <= 0 or pair.net_debit >= pair.strike_width):
             # PAIR-level rule (both legs are quoted by now). Debit <= 0 means the
@@ -1345,8 +1354,9 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
             # upper strike, outside the payoff range, and a "distance to
             # break-even" built from it is meaningless. Such a construction is
             # not a result.
-            dropped.append((pair, f"Debit {pair.net_debit} außerhalb "
-                                  f"(0, {pair.strike_width}) - kein Gewinn möglich"))
+            dropped.append((pair, Reason(
+                f"Debit {pair.net_debit} außerhalb (0, {pair.strike_width}) - kein Gewinn möglich",
+                "debit_out_of_range")))
             continue
         reason = (leg_drop_reason(pair.long, criteria, now_fn)
                   or leg_drop_reason(pair.short, criteria, now_fn))
