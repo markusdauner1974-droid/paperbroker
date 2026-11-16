@@ -295,6 +295,27 @@ TEXTS: dict[str, object] = {
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
     #
+    # --- spread_detail.py -------------------------------------------------- #
+    # Meldungen und Methodik-Notizen der Detail-Antwort. "long"/"short"/"ask"
+    # und "bid" sind Feldnamen der Boerse und reisen als Textvariablen - sie
+    # werden nicht uebersetzt, sondern benannt.
+    "detail.error.no_strike": "Ein Leg hat keinen Strike.",
+    "detail.error.leg_value": "Der {side}-Leg hat keinen lesbaren Wert für {name}.",
+    "detail.error.free_spread": (
+        "Der Spread kostet nichts - Ask des Long-Legs liegt nicht über dem "
+        "Bid des Short-Legs."
+    ),
+    "detail.error.same_strike": "Beide Legs haben denselben Strike.",
+    "detail.error.no_price_axis": "Kein Kurs für die Preisachse.",
+    "detail.error.missing_day_or_expiry": "Tag oder Verfall fehlt.",
+    "detail.notes.pl": "G&V je 1 Spread (100 Aktien), ohne Gebühren.",
+    "detail.notes.today_curve": (
+        "Heute-Kurve: Black-Scholes mit der IV des jeweiligen Legs "
+        "(r = {rate} %, q = 0 %); Verfall exakt."
+    ),
+    "detail.notes.price_axis": "Preisachse {from_pct} % bis {to_pct} % des Spot ({source}).",
+    "detail.notes.no_iv": "Ohne IV eines Legs bleibt die Heute-Kurve leer.",
+
     # --- gap_support.py --------------------------------------------------- #
     # Die Methodik-Notizen der Gap-Spread-Liste. Zwei von ihnen tragen Zahlen;
     # die Zahlen kommen als Textvariable herein (f"{x:.0f}"), damit die deutsche
