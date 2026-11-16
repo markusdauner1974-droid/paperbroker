@@ -295,6 +295,18 @@ TEXTS: dict[str, object] = {
     # --- funnel.* -------------------------------------------------------
     # gap_funnel.py: variant labels and the reasons the funnel rejects a title
     #
+    # --- earnings_scan.py ------------------------------------------------- #
+    # Der Scan ist ein Alt-Endpunkt: seine Antwort bleibt deutsch, auch nach
+    # der Sprachumschaltung. Der Abschnitt wird in en_texts.py deshalb NICHT
+    # deklariert - dann faellt er als Ganzes auf diese Saetze zurueck.
+    "scan.chain.not_listed": "Die Quelle listet für diesen Titel keine Optionskette.",
+    "scan.chain.blocked": "Die Quelle blockt den Abruf (HTTP 403).",
+    "scan.chain.throttled": "Die Quelle drosselt den Abruf (HTTP 429) — später erneut versuchen.",
+    "scan.chain.unreachable": "Die Optionskette war nicht erreichbar.",
+    "scan.chain.malformed": "Die Antwort der Quelle war nicht lesbar.",
+    "scan.chain.unusable": "Die Kette wurde gelesen, aber kein Kontrakt ist brauchbar.",
+    "scan.chain_note.window_blocked": "nicht geladen (Fenster verhindert)",
+
     # --- exclusion.* ----------------------------------------------------
     # exclusions.py: the exclusion overview per unit
     # ---------------------------------------------------------------------

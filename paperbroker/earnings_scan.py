@@ -65,6 +65,7 @@ from .earnings_calendar import (
 )
 from .earnings_day_calendar import rank_rows
 from .screener import MAX_PAIRS_PER_SECTION, STRATEGIES, STRATEGY_IDS, filter_stale, pair_search_report, vertical_spreads
+from .texts import t
 
 SCHEMA_VERSION = "1.0"
 
@@ -176,14 +177,32 @@ def _exclusion(code, message):
 #: (``CboeChainError.reason``); the wording lives HERE, next to the other
 #: exclusion texts - and never the exception text, which carries URLs and
 #: socket details into a 200 body.
-CHAIN_REASON_TEXT = {
-    "not_listed": "Die Quelle listet für diesen Titel keine Optionskette.",
-    "blocked": "Die Quelle blockt den Abruf (HTTP 403).",
-    "throttled": "Die Quelle drosselt den Abruf (HTTP 429) — später erneut versuchen.",
-    "unreachable": "Die Optionskette war nicht erreichbar.",
-    "malformed": "Die Antwort der Quelle war nicht lesbar.",
-    "unusable": "Die Kette wurde gelesen, aber kein Kontrakt ist brauchbar.",
+#: Reason class -> catalogue key. The sentence lives in the book; this table only
+#: knows WHERE it lives, so nothing here has to be touched when the wording moves.
+CHAIN_REASON_KEYS = {
+    "not_listed": "scan.chain.not_listed",
+    "blocked": "scan.chain.blocked",
+    "throttled": "scan.chain.throttled",
+    "unreachable": "scan.chain.unreachable",
+    "malformed": "scan.chain.malformed",
+    "unusable": "scan.chain.unusable",
 }
+
+
+def chain_reason_text(reason):
+    """The sentence of a chain-failure class, in the DEFAULT language.
+
+    Not request-dependent on purpose: /api/v1/earnings-scan is a stable legacy
+    interface and its payload stays German after the switch as well. The
+    ``scan`` section is therefore not declared in the English book, and this
+    stays the German sentence for good.
+    """
+    return t(CHAIN_REASON_KEYS[reason])
+
+
+#: Derived, not a second source: the adapter test pins that EVERY class the
+#: adapter can produce has a sentence, and it reads this mapping's keys.
+CHAIN_REASON_TEXT = {code: t(key) for code, key in CHAIN_REASON_KEYS.items()}
 
 
 def _chain_exclusion(exc):
@@ -195,9 +214,9 @@ def _chain_exclusion(exc):
     message - it is not upgraded to a claim about the source.
     """
     reason = getattr(exc, "reason", None)
-    if reason in CHAIN_REASON_TEXT:
+    if reason in CHAIN_REASON_KEYS:
         return {"code": "chain_fetch_failed", "reason": reason,
-                "message": CHAIN_REASON_TEXT[reason]}
+                "message": chain_reason_text(reason)}
     return _exclusion("chain_fetch_failed", "option chain could not be read")
 
 
@@ -738,7 +757,7 @@ def _scan_symbol(symbol, row, ctx):
             # A decision, not a failed read - and the UI says so in words.
             "chain_requested": False,
             "chain_contracts": None,
-            "chain_note": "nicht geladen (Fenster verhindert)",
+            "chain_note": t("scan.chain_note.window_blocked"),
             "chain_skipped_contracts": None,
             "chain_quote_timestamp_raw": None,
             "chain_quote_timestamp_utc": None,
