@@ -21,7 +21,8 @@ from ..texts import t
 class PageRouteSentencesTest(unittest.TestCase):
     def test_the_sentences_are_word_for_word_the_old_ones(self):
         erwartet = {
-            "page_route.hint.unknown_params": "Unbekannte Parameter ignoriert: {names}",
+            "page_route.hint.unknown_params":
+                "Unbekannte Parameter ignoriert: {names} (bedienbar sind: {fields})",
             "page_route.error.invalid_ticker": "Ungültiger Ticker - 1-6 Buchstaben A-Z.",
             "page_route.error.invalid_expiration": "Ungültiges Verfallsdatum - JJJJ-MM-TT.",
             "page_route.error.expiration_not_listed":
@@ -83,6 +84,60 @@ class TheDerivedTablesStayInStepTest(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertTrue(satz, f"{code} hat keinen Satz")
                 self.assertEqual(satz, t(f"page_route.failure.{code}"))
+
+
+class TheUnknownParameterHintIsBuiltTest(unittest.TestCase):
+    """Kody hat den Schluessel zu Recht als tot bezeichnet - jetzt ist er es nicht mehr.
+
+    Der Code baute den Satz weiter selbst, waehrend der Katalogschluessel daneben
+    stand; ein Pin-Test haette dann eine Fassung festgehalten, die niemand sieht.
+
+    ZWEI Befunde dazu, beide hier festgehalten statt still entschieden:
+
+    1. Der Satz hat zwei Platzhalter - die Liste der bedienbaren Felder gehoert in
+       den Satz, nicht in den Aufrufer. So steht es jetzt.
+    2. Der Hinweis wird von KEINEM Template gelesen und steht in KEINEM JSON. Er
+       reist im Template-Kontext und endet dort. Das war vorher schon so und ist
+       nicht Teil dieses PR - der Satz selbst bleibt darum wortgleich.
+
+    Geprueft wird der Kontext, den die Route an ``render_template`` uebergibt: das
+    ist die Stelle, an der der Satz tatsaechlich entsteht.
+    """
+
+    def test_an_unknown_parameter_produces_the_catalogued_hint(self):
+        from unittest import mock
+
+        from ..routes import page as page_route
+        from ..server import create_app
+        from .test_eva_quality import _clock, _MockAdapter, make
+
+        app = create_app(quote_adapter=_MockAdapter(make()), screener=None,
+                         now_fn=_clock())
+        app.config["TESTING"] = True
+        echt = page_route.render_template
+        gesehen = {}
+
+        def merke(name, **kontext):
+            gesehen.update(kontext)
+            return echt(name, **kontext)
+
+        with mock.patch.object(page_route, "render_template", merke):
+            antwort = app.test_client().get(
+                "/", query_string={"ticker": "SPY",
+                                    "expiration": "2026-10-16",
+                                    "quatsch": "1"})
+        self.assertEqual(antwort.status_code, 200)
+        felder = (
+            "dte_min, dte_max, min_oi, min_volume, max_quote_age_min, "
+            "min_bid_size, min_ask_size, multiplier, quantity, max_spread_pct, "
+            "max_spread_abs, pair_max_width, iv_min, iv_max, weight_spread, "
+            "weight_oi, weight_iv, fees, budget, require_oi, require_volume, "
+            "iv_pref, pair_mode, data_mode, ignore_quote_age, sort"
+        )
+        self.assertEqual(
+            gesehen["hint"],
+            f"Unbekannte Parameter ignoriert: quatsch (bedienbar sind: {felder})",
+        )
 
 
 if __name__ == "__main__":

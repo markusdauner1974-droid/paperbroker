@@ -95,9 +95,9 @@ def index():
         strategy = gewuenschte if gewuenschte in STRATEGIES else None
         spread_type = None if strategy is None else strategy_option_type(strategy)
     if unknown:
-        hint = ("Unbekannte Parameter ignoriert: " + ", ".join(unknown)
-                + " (bedienbar sind: " + ", ".join(_CRITERIA_FIELDS)
-                + ", ignore_quote_age, sort)")
+        hint = t("page_route.hint.unknown_params",
+                 names=", ".join(unknown),
+                 fields=", ".join([*_CRITERIA_FIELDS, "ignore_quote_age", "sort"]))
     if criteria_error:
         error = criteria_error
     try:

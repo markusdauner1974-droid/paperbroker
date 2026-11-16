@@ -300,7 +300,9 @@ TEXTS: dict[str, object] = {
     # (Vertrag), auch nach der Umschaltung - der Abschnitt wird in en_texts.py
     # deshalb nicht deklariert. Die Badge-Woerter unten sind bewusst KEINE
     # Uebersetzung von Feldern: sie stehen so, wie sie im JSON stehen.
-    "page_route.hint.unknown_params": "Unbekannte Parameter ignoriert: {names}",
+    "page_route.hint.unknown_params": (
+        "Unbekannte Parameter ignoriert: {names} (bedienbar sind: {fields})"
+    ),
     "page_route.error.invalid_ticker": "Ungültiger Ticker - 1-6 Buchstaben A-Z.",
     "page_route.error.invalid_expiration": "Ungültiges Verfallsdatum - JJJJ-MM-TT.",
     "page_route.error.expiration_not_listed": "Verfallsdatum ist für diesen Ticker nicht gelistet.",
