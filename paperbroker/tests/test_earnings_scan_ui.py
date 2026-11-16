@@ -122,8 +122,13 @@ class TestTheOldScreenIsGone(unittest.TestCase):
 
     def test_the_page_carries_no_inline_javascript(self):
         seite = _page()
-        self.assertEqual(1, seite.count("<script"))
-        self.assertIn('<script src=', seite)
+        # Zwei script-Tags, aber nur EINES ist Code: der Katalog reist als
+        # nicht ausfuehrbarer JSON-Block (type="application/json") mit. Die
+        # Zusage bleibt "kein Inline-JavaScript", und sie wird jetzt genauer
+        # geprueft als vorher.
+        self.assertEqual(2, seite.count("<script"))
+        self.assertEqual(1, seite.count("<script src="))
+        self.assertEqual(1, seite.count('type="application/json"'))
         self.assertIn("/static/gap_funnel.js", seite)
         # kein zweites Inline-Skript, kein Handler im Markup
         self.assertNotIn("onclick=", seite)

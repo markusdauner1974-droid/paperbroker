@@ -42,6 +42,7 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import paperbroker
+from paperbroker import texts
 from paperbroker.tests.test_gap_scan_endpoint import DAY, _client
 
 #: The instant the panel's clock is frozen at in every render below: 15:00 UTC
@@ -86,6 +87,8 @@ const answerPath = argv[1];
 const nowAt = argv.indexOf('--now');
 const FROZEN = new Date(nowAt >= 0 ? argv[nowAt + 1] : '2026-11-12T15:00:00Z').getTime();
 const click = argv.indexOf('--click') >= 0;
+const i18nAt = argv.indexOf('--i18n');
+const I18N_TEXT = i18nAt >= 0 ? fs.readFileSync(argv[i18nAt + 1], 'utf8') : '{}';
 
 const source = fs.readFileSync(jsPath, 'utf8');
 const answer = JSON.parse(fs.readFileSync(answerPath, 'utf8'));   // {status, body}
@@ -176,7 +179,13 @@ ids.forEach((id) => {
 nodes['funnel-day'].type = 'date';
 
 const document = {
-  getElementById(id) { return nodes[id] || null; },
+  // The page inlines the catalogue as one JSON block; the panel reads its texts
+  // from it. Handing it in keeps the harness on the REAL path instead of
+  // letting T() fall back to the key.
+  getElementById(id) {
+    if (id === 'i18n-js') { return { textContent: I18N_TEXT }; }
+    return nodes[id] || null;
+  },
   createElement(tag) { return new El(tag); }
 };
 
@@ -300,8 +309,9 @@ def _render(answer, *, click=False, now=None):
         tmp = Path(tmp)
         (tmp / "answer.json").write_text(json.dumps(answer), encoding="utf-8")
         (tmp / "harness.js").write_text(_HARNESS, encoding="utf-8")
+        (tmp / "i18n.json").write_text(json.dumps(texts.block("js")), encoding="utf-8")
         befehl = [NODE, str(tmp / "harness.js"), str(PANEL_JS), str(tmp / "answer.json"),
-                  "--now", now or PANEL_NOW]
+                  "--now", now or PANEL_NOW, "--i18n", str(tmp / "i18n.json")]
         if click:
             befehl.append("--click")
         # TZ is pinned so the injected instant lands on the same calendar day
@@ -435,7 +445,11 @@ class TestThePageIsOneFunnel(unittest.TestCase):
         seite = _page()
         self.assertIn("/static/gap_funnel.js", seite)
         self.assertTrue(PANEL_JS.is_file())
-        self.assertEqual(1, seite.count("<script"))
+        # Ein Verhaltens-Skript, ein Datenblock - der Katalog ist keine zweite
+        # Codequelle, sondern ein JSON-Block mit type="application/json".
+        self.assertEqual(2, seite.count("<script"))
+        self.assertEqual(1, seite.count("<script src="))
+        self.assertEqual(1, seite.count('type="application/json"'))
         # kein Inline-Handler, kein zweites Skript
         self.assertNotIn("onclick=", seite)
         self.assertNotIn("addEventListener", seite)

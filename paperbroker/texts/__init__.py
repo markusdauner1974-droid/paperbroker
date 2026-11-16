@@ -40,8 +40,10 @@ __all__ = [
     "is_language",
     "languages",
     "lookup",
+    "block",
     "render",
     "resolve_language",
+    "section",
     "sections",
     "structure_problems",
     "t",
@@ -150,6 +152,27 @@ def t(key: str, *, language: str | None = None, **variables: Any) -> str:
     if code not in LANGUAGES:
         raise UnknownLanguage(code)
     return render(lookup(key, code), code, variables)
+
+
+def section(prefix: str, language: str | None = None) -> dict[str, Any]:
+    """Only the keys of one catalogue family (``js`` -> every ``js.*`` key)."""
+    code = language or DEFAULT_LANGUAGE
+    return {
+        key: value
+        for key, value in book(code).items()
+        if key == prefix or key.startswith(prefix + ".")
+    }
+
+
+def block(prefix: str, language: str | None = None) -> dict[str, Any]:
+    """One family plus the language's plural-rule name, for the page's JSON block.
+
+    The script needs both: the texts, and the name of the rule that picks a
+    ``{one, other}`` branch - so the decision stays with the language and is not
+    re-invented as a comparison inside the script.
+    """
+    code = language or DEFAULT_LANGUAGE
+    return {"plural": LANGUAGES[code]["plural"], "texts": section(prefix, code)}
 
 
 def sections(language: str) -> dict[str, set[str]]:

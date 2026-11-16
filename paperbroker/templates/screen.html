@@ -295,6 +295,10 @@
 </main>
 {# Das Verhalten liegt in einer eigenen Datei: der Block traegt Zustaende,
    Zeilen und Fehlertexte, nicht Text. #}
+{# Die Texte des Skripts als EIN Block: eine Quelle (das Buch), keine zweite
+   Katalogdatei in JavaScript. Der Block nennt auch die Mehrfach-Regel der
+   Sprache, damit das Skript sie nicht selbst erfindet. Er wird nicht gerendert. #}
+<script id="i18n-js" type="application/json">{{ js_i18n|tojson }}</script>
 <script src="{{ url_for('static', filename='gap_funnel.js') }}" defer></script>
 </body>
 </html>
