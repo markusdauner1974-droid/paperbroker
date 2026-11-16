@@ -46,6 +46,18 @@ _US_CLOSE_HOUR_ET = 16
 
 
 _GAP_SPREADS_PARAMETERS = ("max_required_move_pct",)
+def _schranke_text(wert):
+    """The bound as text, without rounding it.
+
+    ``f"{wert:.0f}"`` was wrong here in two ways: 0.4 came out as "0" and 2.5 as
+    "2" (half-to-even), while the body of the same answer carried 0.4 and 2.5. The
+    note must name the number the reader sees, so it is rendered with no rounding
+    at all - and a whole number simply loses its ".0".
+    """
+    text = repr(float(wert))
+    return text[:-2] if text.endswith(".0") else text
+
+
 def gap_spreads_notes(language=None, max_move_pct=None):
     """The methodology notes of the gap-spread list, in ``language``.
 
@@ -76,7 +88,7 @@ def gap_spreads_notes(language=None, max_move_pct=None):
         t("gap.notes.expiry", language=language),
         t("gap.notes.strike_pair", language=language),
         t("gap.notes.dte", language=language),
-        t("gap.notes.required_move", language=language, max_move=f"{schranke:.0f}"),
+        t("gap.notes.required_move", language=language, max_move=_schranke_text(schranke)),
         t("gap.notes.hit_rate", language=language, bars=str(HISTORY_BARS)),
     ]
 _GAP_SPREADS_SCHEMA_VERSION = "1.0"
