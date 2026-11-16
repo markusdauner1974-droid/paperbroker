@@ -46,23 +46,32 @@ _US_CLOSE_HOUR_ET = 16
 
 
 _GAP_SPREADS_PARAMETERS = ("max_required_move_pct",)
-def gap_spreads_notes():
-    """The methodology notes of the gap-spread list, in the CURRENT request's language.
+def gap_spreads_notes(language=None):
+    """The methodology notes of the gap-spread list, in ``language``.
 
-    A function and not a module constant: the list follows the language, so the
-    sentences may not be frozen at import time. The two numbers travel as text
-    variables - the German formatting stays where it was (``f"{x:.0f}"``), and a
-    language switch cannot silently turn ``0.5`` into ``0,5``.
+    A function and not a module constant: the sentences may not be frozen at
+    import time, because this list is one of the page-facing answers that will
+    follow the language switch.
+
+    ``language=None`` means the default. That is what the route passes TODAY -
+    there is no request language yet, ``resolve_language`` has no production
+    caller until the switch lands. The parameter exists so that the switch is one
+    line at the call site and not an edit to seven sentences; it is not a promise
+    that the language already varies.
+
+    The two numbers travel as text variables - the German formatting stays where
+    it was (``f"{x:.0f}"``), so a language switch cannot silently turn 0.5 into
+    0,5.
     """
     return [
-        t("gap.notes.data_mode"),
-        t("gap.notes.rr"),
-        t("gap.notes.expiry"),
-        t("gap.notes.strike_pair"),
-        t("gap.notes.dte"),
-        t("gap.notes.required_move",
+        t("gap.notes.data_mode", language=language),
+        t("gap.notes.rr", language=language),
+        t("gap.notes.expiry", language=language),
+        t("gap.notes.strike_pair", language=language),
+        t("gap.notes.dte", language=language),
+        t("gap.notes.required_move", language=language,
           max_move=f"{gap_funnel.DEFAULT_MAX_REQUIRED_MOVE_PCT:.0f}"),
-        t("gap.notes.hit_rate", bars=str(HISTORY_BARS)),
+        t("gap.notes.hit_rate", language=language, bars=str(HISTORY_BARS)),
     ]
 _GAP_SPREADS_SCHEMA_VERSION = "1.0"
 _SPREAD_DETAIL_CODES = {
