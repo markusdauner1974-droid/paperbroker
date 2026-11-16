@@ -15,6 +15,7 @@ ueber JEDE registrierte Sprache.
 from __future__ import annotations
 
 import unittest
+from string import Formatter
 
 from paperbroker import texts
 from paperbroker.texts import registry
@@ -22,6 +23,20 @@ from paperbroker.texts import registry
 
 def _werte(code: str) -> dict[str, object]:
     return dict(texts.book(code))
+
+
+def _gefuellt(satz: str) -> str:
+    """Der Satz, mit jedem genannten Platzhalter einmal gefuellt.
+
+    Ein Format-Spezifikum (``{rate:.2f}``) vertraegt keinen Text, deshalb bekommt
+    ein Feld mit Spezifikum eine Zahl und ein Feld ohne eine Zeichenkette.
+    """
+    teile = list(Formatter().parse(satz))
+    werte: dict[str, object] = {}
+    for _, feld, spezifikum, _ in teile:
+        if feld:
+            werte[feld] = 1 if spezifikum else "x"
+    return str(satz).format(**werte)
 
 
 class TheShippedBookHasNoHoleTest(unittest.TestCase):
@@ -46,6 +61,14 @@ class TheShippedBookHasNoHoleTest(unittest.TestCase):
                     with self.subTest(sprache=code, schluessel=schluessel):
                         self.assertIsInstance(satz, str)
                         self.assertTrue(str(satz).strip(), f"{code}/{schluessel} ist leer")
+                        # Ein Platzhalter ist am ROHEN Wert nicht zu erkennen:
+                        # render() formatiert nur, wenn Variablen da sind. Erst
+                        # gefuellt zeigt sich, ob "{n}" als Text durchrutscht
+                        # (etwa "{{n}}" - doppelte Klammern sind ein Literal).
+                        gefuellt = _gefuellt(str(satz))
+                        self.assertNotIn(
+                            "{", gefuellt,
+                            f"{code}/{schluessel} laesst einen Platzhalter stehen")
 
 
 class EveryShippedKeyReadsInEveryLanguageTest(unittest.TestCase):
