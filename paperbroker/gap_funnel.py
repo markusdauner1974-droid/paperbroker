@@ -91,7 +91,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
-from . import reachability
+from . import reachability, texts
 from .gap_scan import GAP_DOWN, GAP_UP, STRATEGY_BEAR_PUT_DEBIT, STRATEGY_BULL_CALL_DEBIT
 from .next_earnings import CODE_NO_API_KEY, NextEarningsError
 from .quote_age import MODE_LAST_AVAILABLE
@@ -1289,7 +1289,11 @@ def measure_reachability(rows, *, fetch_daily, day, max_workers=DEFAULT_MAX_WORK
     pairs = []
     finished = set()
     try:
-        pairs = [(row, pool.submit(_one, row)) for row in rows]
+        # Die Sprache der Anfrage MUSS mit in den Arbeiter: ein ThreadPoolExecutor
+        # erbt keine ContextVar, der Arbeiter saehe sonst die Quellsprache und
+        # schriebe deutsche Ausschluss- und Fehlertexte in eine englische Antwort.
+        sprache = texts.active_language()
+        pairs = [(row, pool.submit(texts.in_language(sprache, _one), row)) for row in rows]
         finished, open_futures = wait([future for _row, future in pairs], timeout=budget)
         # Same deadline rule as the chain stage: what has not started is
         # cancelled, what is in flight finishes in the background.
@@ -1385,8 +1389,9 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
     pairs = []
     finished = set()
     try:
+        sprache = texts.active_language()
         pairs = [(row, pool.submit(
-            _assess, row,
+            texts.in_language(sprache, _assess), row,
             fetch_next_earnings=fetch_next_earnings, fetch_chain=fetch_chain,
             day=day, now_fn=now_fn, rr_min=rr_min, min_oi=min_oi,
             min_long_delta=min_long_delta, min_net_debit=min_net_debit,

@@ -28,15 +28,20 @@ Four rules the code enforces:
 
 from __future__ import annotations
 
+import contextlib
+import contextvars
 import importlib
+from collections.abc import Iterator
 from typing import Any
 
 from .registry import DEFAULT_LANGUAGE, FALLBACK_LANGUAGE, LANGUAGES, PLURAL_RULES
 
 __all__ = [
     "UnknownLanguage",
+    "active_language",
     "book",
     "declared_sections",
+    "in_language",
     "is_language",
     "languages",
     "lookup",
@@ -47,11 +52,56 @@ __all__ = [
     "sections",
     "structure_problems",
     "t",
+    "use_language",
 ]
 
 #: Language code -> imported book module. Filled on first use. Typed loosely so
 #: a test can install a stand-in with the same two attributes (TEXTS, SECTIONS).
 _BOOKS: dict[str, Any] = {}
+
+#: The language of the request being served. A route sets it once
+#: (``with use_language(code):``), and every ``t()`` call underneath reads it -
+#: so a text deep inside a helper needs no parameter of its own. The default is
+#: the source language, which is what every request got before the switch
+#: existed; a request without a setting is therefore byte-identical to before.
+_ACTIVE: contextvars.ContextVar[str] = contextvars.ContextVar(
+    "paperbroker_texts_language", default=DEFAULT_LANGUAGE)
+
+
+def active_language() -> str:
+    """The language set for the current request (source language by default)."""
+    return _ACTIVE.get()
+
+
+def in_language(code: str | None, fn: Any) -> Any:
+    """``fn``, but running with ``code`` active - for threads that inherit nothing.
+
+    A ``ThreadPoolExecutor`` starts its workers in a fresh context, so a worker
+    would read the default language and put German sentences into an English
+    answer. The language is read HERE, in the submitting thread, and set inside the
+    worker: one decision, made before the work is handed out.
+    """
+
+    def lauf(*args: Any, **kwargs: Any) -> Any:
+        with use_language(code):
+            return fn(*args, **kwargs)
+
+    return lauf
+
+
+@contextlib.contextmanager
+def use_language(code: str | None) -> Iterator[str]:
+    """Serve everything inside this block in ``code``.
+
+    ``None`` means the default. A code the registry does not list is refused, not
+    guessed - the same rule as ``resolve_language``.
+    """
+    resolved = DEFAULT_LANGUAGE if code is None else resolve_language(code)
+    token = _ACTIVE.set(resolved)
+    try:
+        yield resolved
+    finally:
+        _ACTIVE.reset(token)
 
 
 class UnknownLanguage(ValueError):
@@ -148,7 +198,7 @@ def t(key: str, *, language: str | None = None, **variables: Any) -> str:
 
     ``n`` selects a plural branch; every other keyword fills a ``{placeholder}``.
     """
-    code = language or DEFAULT_LANGUAGE
+    code = language or active_language()
     if code not in LANGUAGES:
         raise UnknownLanguage(code)
     return render(lookup(key, code), code, variables)
@@ -156,7 +206,7 @@ def t(key: str, *, language: str | None = None, **variables: Any) -> str:
 
 def section(prefix: str, language: str | None = None) -> dict[str, Any]:
     """Only the keys of one catalogue family (``js`` -> every ``js.*`` key)."""
-    code = language or DEFAULT_LANGUAGE
+    code = language or active_language()
     return {
         key: value
         for key, value in book(code).items()
@@ -171,7 +221,7 @@ def block(prefix: str, language: str | None = None) -> dict[str, Any]:
     ``{one, other}`` branch - so the decision stays with the language and is not
     re-invented as a comparison inside the script.
     """
-    code = language or DEFAULT_LANGUAGE
+    code = language or active_language()
     return {"plural": LANGUAGES[code]["plural"], "texts": section(prefix, code)}
 
 
