@@ -255,7 +255,19 @@ class TestTheGreekCurves(unittest.TestCase):
                                           "delta", "gamma", "vega", "theta"})
             for name in sd.GREEKS:
                 self.assertIsInstance(punkt[name], float)
-                self.assertEqual(punkt[name], round(punkt[name], 2))
+                # Vier Dezimalen: die Kurve braucht sie, die Anzeige rundet.
+                self.assertEqual(punkt[name], round(punkt[name], 4))
+
+    def test_the_greek_curve_is_not_quantised(self):
+        # Zwei Dezimalen waeren als Kurve eine Treppe: Theta liegt zwischen
+        # -0,10 und +0,30, das sind 41 Stufen fuer 166 Punkte. Gemessen wird
+        # hier die Zahl der verschiedenen Werte - sie muss in die Naehe der
+        # Punktzahl kommen, sonst steht die Kurve wieder in Stufen da.
+        body = detail(*call_spread())
+        for name in sd.GREEKS:
+            werte = [punkt[name] for punkt in body["series"]]
+            self.assertGreater(len(set(werte)), len(werte) * 0.9,
+                               f"{name} ist quantisiert: {len(set(werte))} von {len(werte)}")
 
     def test_the_seven_scenario_prices_are_points_of_the_series(self):
         body = detail(*call_spread())
@@ -264,14 +276,14 @@ class TestTheGreekCurves(unittest.TestCase):
             self.assertIn(szenario["underlying"], preise)
 
     def test_a_marker_and_its_table_cell_are_the_same_number(self):
-        # Same price, one computation: the value at the scenario price IS the
-        # value of the scenario row, not a second one rounded differently.
+        # One computation, two roundings: the series keeps four decimals for the
+        # curve, the table shows two. What a reader sees is the same number.
         body = detail(*call_spread())
         je_preis = {punkt["price"]: punkt for punkt in body["series"]}
         for szenario in body["scenarios"]:
             punkt = je_preis[szenario["underlying"]]
             for name in sd.GREEKS:
-                self.assertEqual(punkt[name], szenario[name], name)
+                self.assertEqual(round(punkt[name], 2), szenario[name], name)
             self.assertEqual(punkt["pl_expiry"], szenario["pl_expiry"])
 
     def test_the_delta_at_the_spot_is_the_model_delta_of_the_position(self):
@@ -280,11 +292,11 @@ class TestTheGreekCurves(unittest.TestCase):
         body = detail(*call_spread())
         punkt = [p for p in body["series"] if p["price"] == SPOT][0]
         jahre = DAYS / 365.0
-        lang = sd.model_greeks("call", SPOT, 100.0, jahre, 0.30)
-        kurz = sd.model_greeks("call", SPOT, 103.3, jahre, 0.31)
+        lang = sd.model_greeks("call", SPOT, 100.0, jahre, 0.30, digits=4)
+        kurz = sd.model_greeks("call", SPOT, 103.3, jahre, 0.31, digits=4)
         links, rechts = lang["delta"], kurz["delta"]
         assert isinstance(links, float) and isinstance(rechts, float)
-        self.assertEqual(punkt["delta"], round(links - rechts, 2))
+        self.assertEqual(punkt["delta"], round(links - rechts, 4))
         # Ein Call-Spread ist positiv und deutlich unter 100 Delta.
         self.assertGreater(punkt["delta"], 0.0)
         self.assertLess(punkt["delta"], 100.0)
@@ -322,7 +334,7 @@ class TestTheGreekCurves(unittest.TestCase):
             self.assertIn(szenario["underlying"], preise)
             punkt = preise[szenario["underlying"]]
             for name in sd.GREEKS:
-                self.assertEqual(punkt[name], szenario[name], name)
+                self.assertEqual(round(punkt[name], 2), szenario[name], name)
 
     def test_without_a_volatility_the_greeks_stay_none(self):
         lang, kurz = call_spread()
