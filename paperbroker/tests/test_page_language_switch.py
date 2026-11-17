@@ -38,6 +38,28 @@ class ThePageFollowsTheLanguageTest(unittest.TestCase):
         self.assertIn(texts.t("page.head.title", language="de"), rumpf)
         self.assertNotIn(texts.t("page.head.title", language="en"), rumpf)
 
+    def test_the_document_declares_the_language_it_speaks(self):
+        """Das ``<html lang>`` folgt der Antwort - sonst sagt sie das Falsche.
+
+        Die Seite war englisch, waehrend das Dokument sich als deutsch ausgab:
+        ein Screenreader liest dann englischen Text mit deutscher Aussprache,
+        und die Silbentrennung arbeitet mit der falschen Regel. Die Ablehnung
+        (400) bleibt deutsch - sie rendert in der Quellsprache.
+        """
+        for code in texts.languages():
+            with self.subTest(code=code):
+                _client_obj, antwort = _seite(lang=code)
+                rumpf = antwort.get_data(as_text=True)
+                self.assertIn(f'<html lang="{code}">', rumpf)
+                for andere in texts.languages():
+                    if andere != code:
+                        self.assertNotIn(f'<html lang="{andere}">', rumpf)
+        # nackter Aufruf = Standardsprache, und die Ablehnung bleibt deutsch
+        _client_obj, nackt = _seite()
+        self.assertIn(f'<html lang="{texts.DEFAULT_LANGUAGE}">', nackt.get_data(as_text=True))
+        _client_obj, ablehnung = _seite(lang="xx")
+        self.assertIn('<html lang="de">', ablehnung.get_data(as_text=True))
+
     def test_an_unknown_language_is_refused_with_400(self):
         _client_obj, antwort = _seite(lang="xx")
         self.assertEqual(400, antwort.status_code)
