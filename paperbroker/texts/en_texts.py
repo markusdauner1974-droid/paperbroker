@@ -36,10 +36,46 @@ TEXTS: dict[str, object] = {
         "Price axis {from_pct} % to {to_pct} % of spot ({source})."
     ),
     "detail.notes.no_iv": "Without a leg's IV the today curve stays empty.",
+    # --- gap.notes.* -------------------------------------------------------- #
+    # gap_support.gap_spreads_notes(): the method notes under the list answer.
+    # Machine names (data_mode, net_return_pct, window_sessions) and the fee
+    # figure travel as they are; only the sentences around them are English.
+    "gap.notes.data_mode": (
+        "The calculation runs on the last available market state "
+        "(data_mode=last_available) - there is no age filter."
+    ),
+    "gap.notes.rr": (
+        "R/R = net_return_pct / 100, fees included (fees=0.0 USD per position, "
+        "because this repo knows no fee schedule)."
+    ),
+    "gap.notes.expiry": (
+        "Expiration: the first listed chain STRICTLY after the next earnings "
+        "date; without an earnings date or without a later chain the candidate "
+        "is dropped."
+    ),
+    "gap.notes.strike_pair": (
+        "Strike pair: every combination of the expiration, highest R/R - but only "
+        "with |delta| of the long leg >= 20 and a net debit >= 0.50 USD."
+    ),
+    "gap.notes.dte": (
+        "Time to expiration (dte) in calendar days from the scanned day, not from "
+        "today."
+    ),
+    "gap.notes.required_move": (
+        "Required move = distance from the close to the spread's break-even in "
+        "percent (sign = direction); an amount up to {max_move} % is allowed. "
+        "R/R still has a lower bound only, no upper bound."
+    ),
+    "gap.notes.hit_rate": (
+        "Hit rate = share of past windows of as many trading days as the time to "
+        "expiration covers (dte in calendar days, converted per row into "
+        "window_sessions), in which the price reached the required move at least; "
+        "measured on at most {bars} daily bars. A frequency, not a probability."
+    ),
 }
 
 #: Sections of this book that are translated completely. The structure check
 #: treats every listed section as a promise: one missing key turns it red.
 #: A section that is not listed falls back to German as a whole, so a
 #: half-translated section is never shipped.
-SECTIONS: tuple[str, ...] = ("detail",)
+SECTIONS: tuple[str, ...] = ("detail", "gap")
