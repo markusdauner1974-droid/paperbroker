@@ -66,6 +66,29 @@ class TheComposedMessagesTest(unittest.TestCase):
             with self.subTest(meldung=meldung):
                 self.assert_english(meldung)
 
+    def test_the_refusal_keeps_its_category_in_both_languages(self):
+        """Ein Grund zaehlt nach seinem CODE, nicht nach seinem Satz.
+
+        Kody, PR #128: die Meldung war ein nackter Text. Im Deutschen traf sie
+        zufaellig die Textregel "Verfall: Laufzeit ...", im Englischen fiel sie
+        in "sonstiges" - derselbe Grund, zwei Kategorien.
+        """
+        from paperbroker import exclusions
+        from paperbroker.screener import vertical_spreads
+        from paperbroker.tests.test_screener import TheSpreadSectionSharesTheClockBasis
+
+        fenster = TheSpreadSectionSharesTheClockBasis._window(7, 45)
+        weit = [TheSpreadSectionSharesTheClockBasis._leg("AAPL261213C00250000", 1.00, 1.10),
+                TheSpreadSectionSharesTheClockBasis._leg("AAPL261213C00252500", 0.45, 0.55)]
+        from paperbroker.tests.test_screener import _DAY_CHANGE
+
+        for code in texts.languages():
+            with self.subTest(code=code), texts.use_language(code):
+                _behalten, verworfen = vertical_spreads(weit, fenster, now_fn=_DAY_CHANGE)
+                grund = verworfen[0][1]
+                self.assertEqual("dte_outside", grund.code)
+                self.assertEqual(exclusions.CAT_DTE, exclusions.categorise(grund))
+
     def test_the_pair_join(self):
         from paperbroker.gap_funnel import _capped_counts
 

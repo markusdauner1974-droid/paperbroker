@@ -1294,8 +1294,14 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
                      and (criteria.dte_max is None or _laufzeit(q) <= criteria.dte_max)]
         if (chain or []) and not gefiltert:
             tage = sorted({_laufzeit(q) for q in chain if _laufzeit(q) is not None})
-            return [], [(None, t("exclusion.dte_outside", days=tage,
-                                 low=criteria.dte_min, high=criteria.dte_max))]
+            # Mit Code, nicht als nackter Text: ``categorise`` liest den Code,
+            # und der Text ist danach frei uebersetzbar. Ohne Code faellt die
+            # englische Meldung durch jede Textregel in "sonstiges" - im
+            # Deutschen traf sie zufaellig "Verfall: Laufzeit ...".
+            return [], [(None, Reason(
+                t("exclusion.dte_outside", days=tage,
+                  low=criteria.dte_min, high=criteria.dte_max),
+                "dte_outside"))]
         chain = gefiltert
     pair_mode, _mode_error = resolve_pair_mode(criteria)
     # an adjacent search takes no width: the number is reported as ignored by
