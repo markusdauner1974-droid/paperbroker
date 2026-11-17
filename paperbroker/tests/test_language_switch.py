@@ -21,6 +21,9 @@ from .. import texts
 from ..server import create_app
 from ..texts import registry
 from .test_eva_quality import _clock, _MockAdapter, make
+from .test_gap_funnel import DAY as FUNNEL_DAY
+from .test_gap_funnel import _client as funnel_client
+from .test_gap_funnel import _fixture as funnel_fixture
 from .test_gap_spreads_detail_endpoint import _client as detail_client
 
 LISTE = "/api/v1/gap-spreads"
@@ -50,18 +53,43 @@ class _ClientTestCase(unittest.TestCase):
 
 
 class TheTwoEndpointsFollowTheLanguageTest(_ClientTestCase):
-    def test_the_list_still_reads_german_because_its_section_is_not_translated(self):
-        """Ein Abschnitt, den das Zielbuch nicht deklariert, faellt als GANZES zurueck.
+    def test_an_answer_without_notes_does_not_change_with_the_language(self):
+        """Ohne Notizen im Rumpf gibt es nichts zu uebersetzen - die Bytes bleiben.
 
-        Die Notizen der Liste (``gap.notes.*``) sind noch nicht uebersetzt, also
-        liest ``?lang=en`` hier weiter Deutsch - nicht halb uebersetzt, sondern
-        vollstaendig zurueckgefallen. Das ist der Rueckfall ohne Sonderlogik.
+        Der Fehlerfall der Liste (keine Berichtstermin-Quelle) traegt keine Notiz;
+        ``?lang=en`` darf daran nichts aendern. Der Fall mit Notizen steht in
+        ``test_the_list_notes_speak_english_because_they_are_translated``.
         """
         ohne = self.rumpf(LISTE, day=TAG_OHNE_QUELLE)
+        self.assertEqual(ohne[0], 503)
         for code in texts.languages():
             with self.subTest(language=code):
                 self.assertEqual(
                     self.rumpf(LISTE, day=TAG_OHNE_QUELLE, lang=code), ohne)
+
+    def test_the_list_notes_speak_english_because_they_are_translated(self):
+        """Die Notizen der Liste - die erste Familie, die im LISTEN-Rumpf ankommt.
+
+        Ein 200 braucht den Aufbau der Trichter-Tests (Kalender, Historie, Ketten);
+        deshalb wird deren Fixture importiert statt eine zweite erfunden.
+        """
+        def hole(lang=None):
+            kalender, historie, ketten, termine = funnel_fixture()
+            client = funnel_client(kalender, historie, ketten, termine)
+            parameter = {"day": FUNNEL_DAY}
+            if lang is not None:
+                parameter["lang"] = lang
+            antwort = client.get(LISTE, query_string=parameter)
+            self.assertEqual(antwort.status_code, 200)
+            return antwort.get_json()["notes"]
+
+        deutsch, englisch = hole("de"), hole("en")
+        self.assertNotEqual(deutsch, englisch)
+        # Ohne Parameter und mit de dieselbe Antwort - der Umschalter ist opt-in.
+        self.assertEqual(deutsch, hole())
+        self.assertIn(texts.t("gap.notes.rr", language="en"), englisch)
+        self.assertNotIn(texts.t("gap.notes.rr", language="de"), englisch)
+        self.assertEqual(len(deutsch), len(englisch))
 
     def test_the_switch_never_touches_the_default_answer(self):
         """Ohne ``lang`` und mit ``lang=de`` muss dieselbe Antwort kommen.
