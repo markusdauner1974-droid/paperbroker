@@ -117,7 +117,9 @@ UNKNOWN_REASONS = frozenset({
     "exit_day_not_resolvable",
 })
 
-EXIT_RULE = t("earnings.exit_rule")
+#: Der Satz stand hier als Modul-Konstante und wurde beim IMPORT uebersetzt -
+#: damit blieb er fuer immer deutsch, egal welche Sprache die Anfrage nennt. Er
+#: wird jetzt an der Verbrauchsstelle gelesen.
 
 # --- precheck: what the record alone can settle --------------------------- #
 # Reasons about a CHAIN, not about the record. A precheck reads no chain, so
@@ -656,7 +658,7 @@ def combine_earnings_and_expirations(earnings, expirations, *, today):
         "earnings": earnings,
         "exit": {
             "planned_last_exit_date": ausstieg.isoformat() if ausstieg else None,
-            "rule": EXIT_RULE,
+            "rule": t("earnings.exit_rule"),
             "is_trading_day": bool(ausstieg is not None and is_us_trading_day(ausstieg)),
             # Informational only: it never feeds ``eligible``. An exit day in the
             # past counts 0 and is still blocked by its own reason below.

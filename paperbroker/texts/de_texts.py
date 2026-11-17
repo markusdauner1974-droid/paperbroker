@@ -88,6 +88,9 @@ TEXTS: dict[str, object] = {
         "one": "{count} aufgezählten Paar",
         "other": "{count} aufgezählten Paaren",
     },
+    # Die Fuge zwischen geprueften und aufgezaehlten Paaren - ein Wort, das die
+    # Sprache stellt, nicht der Code.
+    "funnel.pairs.of": "{valid} von {enumerated}",
     "funnel.pairs.possible": {"one": "{count} mögliches Paar", "other": "{count} möglich"},
     "funnel.pairs.possible_unknown": "? möglich",
     # Dativ: "Bei 1 Titel war", "Bei 3 Titeln war" - die Form haengt am Zaehlwort.
@@ -518,6 +521,12 @@ TEXTS: dict[str, object] = {
     "exclusion.unit.symbol": "Aktie",
     "exclusion.category.scan_limit": "Scan-Grenze (Budget/Zeit)",
     "exclusion.category.liquidity": "Liquidität",
+    # Die drei Saetze standen als f-Strings im Code - hier stehen sie als Text,
+    # mit denselben Woertern und denselben Klammern, damit die deutsche Antwort
+    # byte-gleich bleibt.
+    "exclusion.dte_outside": "Verfall: Laufzeit {days} Tage außerhalb [{low}, {high}]",
+    "exclusion.credit_out_of_range": "Credit {credit} außerhalb (0, {width}) - kein gültiger Credit",
+    "exclusion.debit_out_of_range": "Debit {debit} außerhalb (0, {width}) - kein Gewinn möglich",
     "exclusion.category.age": "Datenalter",
     "exclusion.category.dte": "Laufzeit",
     "exclusion.category.volatility": "Volatilität",

@@ -166,6 +166,7 @@ _CODE_CATEGORIES = {
     # f-Zeichenkette geglaettet (leg_drop_reason tut das), ist der Code weg und
     # es greifen die Textregeln - weichen die beiden ab, zaehlt derselbe Grund
     # auf Vertragsebene anders als auf Paarebene.
+    "dte_outside": CAT_DTE,
     "iv_zero_illiquid": CAT_LIQUIDITY,
     "oi_zero_illiquid": CAT_LIQUIDITY,
     "quote_missing": CAT_LIQUIDITY,

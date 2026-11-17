@@ -475,7 +475,11 @@ def _capped_counts(text, checked, coverage, section, strategy):
     if not isinstance(enumerated, int) or isinstance(enumerated, bool):
         return f"{text} ({_valid_pairs(checked)})"
     if not report.get("capped"):
-        return f"{text} ({_valid_pairs(checked)} von {_enumerated_pairs(enumerated)})"
+        return "{} ({})".format(
+        text,
+        t("funnel.pairs.of", valid=_valid_pairs(checked),
+          enumerated=_enumerated_pairs(enumerated)),
+    )
     possible = possible_pairs(section, strategy_option_type(strategy))
     possible_word = _possible_pairs_word(possible)
     limit = report.get("limit")

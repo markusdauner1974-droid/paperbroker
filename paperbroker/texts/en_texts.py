@@ -434,6 +434,84 @@ TEXTS: dict[str, object] = {
     "sort.net_ratio_desc": "Net payout ratio (after costs)",
     "sort.none": "Chain order",
     "sort.rendite_desc": "Gross return (max. profit / max. loss)",
+    "earnings.reason.date_confirmation_unknown": "The date is neither confirmed nor documented as an estimate.",
+    "earnings.reason.earnings_data_invalid": "The earnings answer is unusable or contradicts itself.",
+    "earnings.reason.earnings_data_stale": "The earnings evidence is too old - it may not clear a trade.",
+    "earnings.reason.earnings_date_in_past": "The earnings date lies in the past.",
+    "earnings.reason.earnings_date_unknown": "No next earnings date known.",
+    "earnings.reason.earnings_source_not_configured": "No earnings source configured - nothing is estimated.",
+    "earnings.reason.earnings_source_unavailable": "The earnings source is unreachable and no cache entry exists.",
+    "earnings.reason.earnings_status_unknown": (
+        "The review status of the earnings entry is unknown - no clearance without "
+        "documented status."
+    ),
+    "earnings.reason.earnings_status_unrecognised": "The review status is an unknown value - no clearance.",
+    "earnings.reason.earnings_today": "The report is today — an entry before the date is no longer possible.",
+    "earnings.reason.exit_day_in_past": "The planned exit day lies in the past.",
+    "earnings.reason.exit_day_not_resolvable": "No US trading day can be determined before the earnings date.",
+    "earnings.reason.expiration_not_after_earnings": "The expiration does not lie after the earnings date.",
+    "earnings.reason.expirations_unavailable": "The listed expiration dates could not be read.",
+    "earnings.reason.no_expirations_listed": "The option chain names no expiration date.",
+    "earnings.reason.no_listed_expiration_after_earnings": "No listed expiration lies after the earnings date.",
+    # --- exclusion.* -------------------------------------------------------- #
+    # exclusions.py: the composed refusals. The three sentences that used to live
+    # in the screener as f-strings carry the SAME words in German, so the German
+    # answer stays byte-identical.
+    "exclusion.category.age": "Data age",
+    "exclusion.category.budget": "Budget",
+    "exclusion.category.costs": "Costs",
+    "exclusion.category.data": "missing data",
+    "exclusion.category.dte": "Maturity",
+    "exclusion.category.liquidity": "Liquidity",
+    "exclusion.category.other": "other",
+    "exclusion.category.price": "invalid debit/credit",
+    "exclusion.category.scan_limit": "scan limit (budget/time)",
+    "exclusion.category.volatility": "Volatility",
+    "exclusion.headline": "{unit}: {counted} excluded - {parts} (one reason per {unit_one}: the first)",
+    "exclusion.note.first_reason": (
+        "Exactly one reason counts per {unit}: the first filter that rejected it. Further "
+        "reasons that also apply are not counted and therefore not claimed."
+    ),
+    "exclusion.note.worst_state": (
+        "Exactly one state counts per {unit} - the most severe that applies. Further "
+        "reasons are not counted."
+    ),
+    "exclusion.not_checked.oi_off": "{label} (OI limit off)",
+    "exclusion.not_checked.spread_off": "{label} (spread limit off)",
+    "exclusion.unit.contract": "contract",
+    "exclusion.unit.contracts": "contracts",
+    "exclusion.unit.expiry": "Expiration",
+    "exclusion.unit.expiries": "Expirations",
+    "exclusion.unit.pair": "spread combination",
+    "exclusion.unit.pairs": "spread combinations",
+    "exclusion.unit.symbol": "stock",
+    "exclusion.unit.symbols": "stocks",
+    "exclusion.dte_outside": "Expiration: maturity {days} days outside [{low}, {high}]",
+    "exclusion.credit_out_of_range": "Credit {credit} outside (0, {width}) - not a valid credit",
+    "exclusion.debit_out_of_range": "Debit {debit} outside (0, {width}) - no profit possible",
+    # --- scan.* ------------------------------------------------------------- #
+    # earnings_scan.py: why a chain could not be read.
+    "scan.chain.blocked": "The source blocks the request (HTTP 403).",
+    "scan.chain.malformed": "The source's answer was unreadable.",
+    "scan.chain.not_listed": "The source lists no option chain for this symbol.",
+    "scan.chain.throttled": "The source throttles the request (HTTP 429) - try again later.",
+    "scan.chain.unreachable": "The option chain was unreachable.",
+    "scan.chain.unusable": "The chain was read, but no contract is usable.",
+    "scan.chain_note.window_blocked": "not loaded (window prevented)",
+    # --- earnings.* --------------------------------------------------------- #
+    # earnings_calendar.py: the rule and the notes of the earnings window. The
+    # verdicts (earnings.reason.*) stay German - they belong to the legacy payload.
+    "earnings.exit_rule": "last US trading day strictly before the earnings date",
+    "earnings.notes.estimated": "The date is the source's estimate, not a confirmed announcement.",
+    "earnings.notes.first_expiry": "First listed expiration after the earnings date: {date}.",
+    "earnings.notes.necessary_not_sufficient": "The expiration after earnings is a necessary condition, not a sufficient one.",
+    "earnings.notes.session_unknown": (
+        "Publication time unknown - the exit day is therefore the last trading day before "
+        "it."
+    ),
+    "earnings.parse.no_date": "no MM/DD/YYYY date in the source text",
+    # --- funnel.pairs.of ---------------------------------------------------- #
+    "funnel.pairs.of": "{valid} of {enumerated}",
 }
 
 #: Sections of this book that are translated completely. The structure check
@@ -442,12 +520,15 @@ TEXTS: dict[str, object] = {
 #: half-translated section is never shipped.
 SECTIONS: tuple[str, ...] = (
     "detail",
+    "earnings",
+    "exclusion",
     "funnel",
     "gap",
     "gap_spreads",
     "js",
     "page",
     "page_route",
+    "scan",
     "sort",
     "support",
     "trend",
