@@ -7,6 +7,8 @@
      LAN, und die Seite haengt an keinem CDN. #}
   <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
   <title>{{ t('page.head.title') }}</title>
+  {# (f2) Sprach-Merkung: nur im Browser, Server zustandslos, Blatt aus der Registry. #}<script type="application/json" id="lang-boot">{{ lang_boot|tojson }}</script>
+  <script id="lang-memo">{{ lang_memo|safe }}</script>
   <style>
     :root{
       --base:#091217; --panel:#0d181e; --ink:#fafafa;
