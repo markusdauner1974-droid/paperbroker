@@ -182,6 +182,8 @@ TEXTS: dict[str, object] = {
     # --- page.* ------------------------------------------------------------- #
     # templates/screen.html: the page itself. lede_before/between/after keep the
     # line break and the spaces of the German template - they wrap around numbers.
+    "page.settings.summary": "Settings",
+    "page.settings.language": "Language",
     "page.error.unknown_language": "Unknown language '{requested}'. Available: {available}.",
     "page.detail.summary": "Spread details",
     "page.excluded.summary": "Exclusions",

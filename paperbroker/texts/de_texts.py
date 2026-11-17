@@ -58,6 +58,11 @@ TEXTS: dict[str, object] = {
     "page.table.col.options": "Optionen",
     # Der 400-Pfad der Seite: die angefragte Sprache gibt es nicht, also steht die
     # Antwort in der Quellsprache - sie muss ohne die gewuenschte lesbar sein.
+    # Der Fuss traegt die Einstellungen: ein zugeklapptes details, keine zweite
+    # Wechsel-Flaeche. Eine Sprache, ein Wort - der Wechsler selbst kommt aus der
+    # Registry.
+    "page.settings.summary": "Einstellungen",
+    "page.settings.language": "Sprache",
     "page.error.unknown_language": "Unbekannte Sprache '{requested}'. Verfügbar: {available}.",
     "page.detail.summary": "Detail zum Spread",
     "page.excluded.summary": "Ausschlüsse",

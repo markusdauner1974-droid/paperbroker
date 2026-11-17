@@ -48,9 +48,10 @@ class TheEnglishPageDraftTest(unittest.TestCase):
         self.en = _seite(texts.book("en"))
 
     def test_all_page_texts_are_translated(self):
-        # 193 Seitentexte aus der Durchsicht + der eine Satz des 400-Pfades
-        # ("Unbekannte Sprache ..."), den erst die Umschaltung gebraucht hat.
-        self.assertEqual(len(self.de), 194)
+        # 193 Seitentexte aus der Durchsicht, dazu was erst die Umschaltung und das
+        # Panel gebraucht haben: der Satz des 400-Pfades und die zwei Woerter des
+        # Einstellungs-Panels.
+        self.assertEqual(len(self.de), 196)
         self.assertEqual(set(self.en), set(self.de), "kein Schluessel darf fehlen")
 
     def test_every_placeholder_is_unchanged(self):
