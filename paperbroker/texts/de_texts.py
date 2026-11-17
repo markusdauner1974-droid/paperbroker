@@ -266,6 +266,25 @@ TEXTS: dict[str, object] = {
     "js.greeks.gamma": "Gamma",
     "js.greeks.vega": "Vega",
     "js.greeks.theta": "Theta",
+    # Die Erklaerzeile rechts in der Legende - nur bei aktivem Overlay. Die
+    # Zahlen kommen fertig aus der Antwort ({delta}, {cents}, {theta},
+    # {theta_cents}); das Skript setzt sie nur ein.
+    "js.greeks.explain.delta": (
+        "Delta = Beteiligung: {delta} heißt, mit 1 US-Dollar Kursanstieg macht "
+        "der Spread rund {cents} Cent."
+    ),
+    "js.greeks.explain.gamma": (
+        "Gamma = Tempo des Deltas: wie stark sich die Beteiligung je Kurspunkt "
+        "ändert — in der Mitte, nahe dem gekauften Strike, am größten."
+    ),
+    "js.greeks.explain.vega": (
+        "Vega = Nervositätsempfindlichkeit: steigt die Volatilität, gewinnt der "
+        "Spread Wert; beruhigt sich der Markt, verliert er."
+    ),
+    "js.greeks.explain.theta": (
+        "Theta = Zeitzins: {theta} heißt, der Spread verliert rund "
+        "{theta_cents} Cent pro Tag, wenn der Kurs stehen bleibt."
+    ),
     "js.chart.aria": "G&V von {symbol}: durchgezogen heute, gestrichelt bei Verfall",
     "js.chart.aria.greek": "{greek} als zusätzliche gestrichelte Linie",
     "js.chart.title": "G&V je Spread über den Kurs — heute und bei Verfall",

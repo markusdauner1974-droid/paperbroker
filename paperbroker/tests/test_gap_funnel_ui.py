@@ -455,6 +455,7 @@ def _detail(symbol="CTVA", label="Bear Put"):
         "max_loss": 135.0, "max_profit": 115.0, "breakeven": 8.65, "rr": 0.85,
         "position_greeks": {"delta": -31.0, "gamma": 5.12, "vega": 1.38,
                             "theta": -0.32, "rho": None},
+        "greek_explain": {"delta_value": -40, "theta_value": -0.3, "theta_cents": 30},
         "series": _series(),
         "scenarios": [
             {"change_pct": pct, "underlying": round(9.19 * (1 + pct / 100.0), 2),
@@ -1121,6 +1122,42 @@ class TestTheGreekOverlay(unittest.TestCase):
         # Wort UND Strichart - die hellblaue Linie ist nicht der einzige Traeger.
         self.assertEqual({"solid", "dashed", "greek"},
                          {n["cls"] for n in _by_tag(legende, "i")})
+
+    def test_the_legend_explains_the_active_metric_in_one_sentence(self):
+        panel = _render(actions=["click:0", "greek:0"])
+        legende = _by_class(panel["detail"]["tree"], "detail-legend")[0]
+        saetze = _by_class(legende, "detail-legend-note")
+        self.assertEqual(1, len(saetze))
+        # Screenreader lesen den Wechsel, ohne dass der Fokus springt.
+        self.assertEqual("polite", saetze[0]["attrs"]["aria-live"])
+        text = saetze[0]["text"]
+        self.assertIn("Beteiligung", text)
+        # Die Zahl der Position steht im Satz - 40 Delta, also 40 Cent je Dollar.
+        self.assertIn("-40", text)
+        self.assertIn("40 Cent", text)
+
+    def test_the_sentence_follows_the_metric_and_keeps_gamma_vega_without_a_number(self):
+        panel = _render(actions=["click:0", "greek:3"])
+        satz = _by_class(_by_class(panel["detail"]["tree"], "detail-legend")[0],
+                         "detail-legend-note")[0]["text"]
+        self.assertIn("Zeitzins", satz)
+        self.assertIn("-0,30", satz)
+        self.assertIn("30 Cent", satz)
+        # Gamma und Vega tragen bewusst KEIN Zahlenbeispiel: die Konvention
+        # (per Kurspunkt, per ganze Vol-Einheit) macht eine Kurzzeile falsch.
+        for index, wort in ((1, "Tempo"), (2, "Nervosität")):
+            panel = _render(actions=["click:0", f"greek:{index}"])
+            text = _by_class(_by_class(panel["detail"]["tree"], "detail-legend")[0],
+                             "detail-legend-note")[0]["text"]
+            self.assertIn(wort, text)
+            self.assertFalse(any(z.isdigit() for z in text),
+                             f"{wort}-Satz enthaelt eine Zahl: {text}")
+
+    def test_no_sentence_without_an_overlay(self):
+        panel = _render(actions=["click:0"])
+        self.assertEqual([], _by_class(panel["detail"]["tree"], "detail-legend-note"))
+        panel = _render(actions=["click:0", "greek:0", "greek:0"])
+        self.assertEqual([], _by_class(panel["detail"]["tree"], "detail-legend-note"))
 
     def test_a_second_metric_replaces_the_first(self):
         panel = _render(actions=["click:0", "greek:0", "greek:1"])

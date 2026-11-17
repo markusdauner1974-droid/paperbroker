@@ -52,8 +52,9 @@ class TheEnglishPageDraftTest(unittest.TestCase):
         # Panel gebraucht haben: der Satz des 400-Pfades und die zwei Woerter des
         # Einstellungs-Panels. Die elf Texte der Griechen-Tasten (fuenf Namen,
         # vier Achsentitel, der Legendeneintrag und der Satz fuer den
-        # Screenreader) kommen mit dem Overlay hinzu: 196 + 11.
-        self.assertEqual(len(self.de), 207)
+        # Screenreader) kommen mit dem Overlay hinzu, die vier Erklaersaetze
+        # mit der Erklaerzeile: 196 + 11 + 4.
+        self.assertEqual(len(self.de), 211)
         self.assertEqual(set(self.en), set(self.de), "kein Schluessel darf fehlen")
 
     def test_every_placeholder_is_unchanged(self):

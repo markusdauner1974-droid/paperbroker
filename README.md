@@ -188,6 +188,12 @@ on the same button takes it away again — a different button replaces the first
 in light blue, dashed `6 4`, and carries the seven scenario values as small numbers; the legend names the
 metric in words next to its stroke. No greek at expiration is drawn: at expiration gamma, vega and theta
 are zero and the line would be empty. The page computes nothing — the values come from `series`.
+
+Next to the legend entries, on the same line and only while an overlay is active, one sentence explains
+the active greek in words. The numbers it names come from `greek_explain` in the answer
+(`delta_value`, `theta_value`, `theta_cents`) — delta in percent IS cents per dollar, so one number
+serves the sentence. On a narrow screen the sentence wraps below the legend entries; it never overlaps
+them.
 * A symbol that is not a row of that day is answered as such and not with a different row: `404
   unknown_symbol`. A strike that is not in the chain is `404 leg_not_listed`; both carry a readable
   `message` in the language of the request.

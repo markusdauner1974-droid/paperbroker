@@ -368,6 +368,22 @@ TEXTS: dict[str, object] = {
         "amount; measured on {windows} windows from at most 520 daily bars."
     ),
     "js.greeks.delta": "Delta",
+    "js.greeks.explain.delta": (
+        "Delta = participation: {delta} means the spread moves roughly {cents} "
+        "cents per 1 US dollar of price gain."
+    ),
+    "js.greeks.explain.gamma": (
+        "Gamma = the tempo of delta: how strongly participation changes per price "
+        "point — strongest in the middle, near the bought strike."
+    ),
+    "js.greeks.explain.theta": (
+        "Theta = time cost: {theta} means the spread loses roughly {theta_cents} "
+        "cents per day while the price stands still."
+    ),
+    "js.greeks.explain.vega": (
+        "Vega = sensitivity to market nerves: when volatility rises, the spread "
+        "gains value; when the market calms down, it loses."
+    ),
     "js.greeks.gamma": "Gamma",
     "js.greeks.label": "Greeks over the price",
     "js.greeks.theta": "Theta",
