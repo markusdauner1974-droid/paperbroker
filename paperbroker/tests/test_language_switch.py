@@ -91,6 +91,28 @@ class TheTwoEndpointsFollowTheLanguageTest(_ClientTestCase):
         self.assertNotIn(texts.t("gap.notes.rr", language="de"), englisch)
         self.assertEqual(len(deutsch), len(englisch))
 
+    def test_a_reason_from_a_worker_thread_is_english_too(self):
+        """Der Beleg fuer Kodys ThreadPool-Befund, end-to-end.
+
+        Der Ausschlussgrund dieser Antwort entsteht im Arbeiter des Trichters, nicht
+        im Anfrage-Thread; ohne ``texts.in_language`` stuende hier Deutsch in einer
+        englischen Antwort.
+        """
+        kalender, historie, ketten, termine = funnel_fixture()
+        client = funnel_client(kalender, historie, ketten, termine)
+
+        def ausschluss(lang):
+            antwort = client.get(LISTE, query_string={"day": FUNNEL_DAY, "lang": lang})
+            self.assertEqual(antwort.status_code, 200)
+            gruende = antwort.get_json()["excluded"]
+            self.assertTrue(gruende, "der Aufbau muss mindestens einen Ausschluss tragen")
+            return gruende[0]["message"]
+
+        deutsch, englisch = ausschluss("de"), ausschluss("en")
+        self.assertEqual(deutsch, texts.t("funnel.earnings.none_in_window", language="de"))
+        self.assertEqual(englisch, texts.t("funnel.earnings.none_in_window", language="en"))
+        self.assertNotEqual(deutsch, englisch)
+
     def test_the_switch_never_touches_the_default_answer(self):
         """Ohne ``lang`` und mit ``lang=de`` muss dieselbe Antwort kommen.
 

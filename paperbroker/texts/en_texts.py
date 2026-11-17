@@ -72,10 +72,79 @@ TEXTS: dict[str, object] = {
         "window_sessions), in which the price reached the required move at least; "
         "measured on at most {bars} daily bars. A frequency, not a probability."
     ),
+    # --- funnel.* ----------------------------------------------------------- #
+    # gap_funnel.py: the variants of a row, and the reasons the funnel rejects a
+    # symbol - stage by stage. {direction} carries an already-rendered word for
+    # 'rising'/'falling'; the four plural entries keep the German structure
+    # (one/other) because they are composed into sentences above.
+    "funnel.variant.near_money": "near the money",
+    "funnel.variant.at_resistance": "at resistance",
+    "funnel.variant.tightest_spread": "tightest spread",
+    "funnel.variant.row_pick": "Leverage (row)",
+    "funnel.move.up": "rise",
+    "funnel.move.down": "fall",
+    "funnel.move.too_far": (
+        "The price would have to {direction} {move} %; {limit} % is allowed."
+    ),
+    "funnel.pairs.valid": {
+        "one": "{count} valid pair",
+        "other": "{count} valid pairs",
+    },
+    "funnel.pairs.enumerated": {
+        "one": "{count} enumerated pair",
+        "other": "{count} enumerated pairs",
+    },
+    "funnel.pairs.possible": {
+        "one": "{count} possible pair",
+        "other": "{count} possible",
+    },
+    "funnel.pairs.possible_unknown": "? possible",
+    "funnel.pairs.capped_title": {
+        "one": "{count} symbol",
+        "other": "{count} symbols",
+    },
+    "funnel.pairs.capped": (
+        "{text} ({valid} of {enumerated}, search at the cap of {limit} - {possible})"
+    ),
+    "funnel.pairs.capped_note": (
+        "At {title} the pair search hit the cap{ceiling} - the R/R shown there is "
+        "the best pair FOUND, and \"no pair\" means \"none in the part that was "
+        "checked\"; a better pair further down the enumeration was not checked."
+    ),
+    "funnel.chain.unreadable": "The option chain could not be read{detail}.",
+    "funnel.chain.not_listed": (
+        "The source lists no tradable option chain for this symbol."
+    ),
+    "funnel.chain.empty": "The chain of this symbol contains no contract.",
+    "funnel.expiry.empty": "no contracts in this expiration",
+    "funnel.expiry.none_after_earnings": (
+        "No listed expiration lies after the earnings date {date}."
+    ),
+    "funnel.expiry.line": "Expiration {date}: {note}",
+    "funnel.strike.single": "only one strike listed - no strike pair possible",
+    "funnel.strike.no_pair": "no valid strike pair in the screening",
+    "funnel.strike.sample": " (e.g. {sample})",
+    "funnel.oi.missing": "open interest of the {leg} leg is missing",
+    "funnel.oi.below": "open interest of the {leg} leg {value} < {minimum}",
+    "funnel.rr.none": "no pair with R/R >= {limit}",
+    "funnel.rr.delta": (
+        "R/R met ({ratios} of {checked}), but |delta| of the long leg < {limit}"
+    ),
+    "funnel.rr.debit": (
+        "R/R and delta met ({ratios} of {checked}), but net debit < {limit} USD"
+    ),
+    "funnel.gap.no_direction": "The gap has no direction - no debit strategy.",
+    "funnel.earnings.no_symbol": "A candidate without a symbol has no earnings date.",
+    "funnel.earnings.none_in_window": (
+        "The source names no earnings date in the window for this symbol."
+    ),
+    "funnel.earnings.unreadable": "The earnings date could not be read ({error}).",
+    "funnel.budget.timeout": "The check did not finish within the time budget.",
+    "funnel.budget.failed": "The check failed ({error}).",
 }
 
 #: Sections of this book that are translated completely. The structure check
 #: treats every listed section as a promise: one missing key turns it red.
 #: A section that is not listed falls back to German as a whole, so a
 #: half-translated section is never shipped.
-SECTIONS: tuple[str, ...] = ("detail", "gap")
+SECTIONS: tuple[str, ...] = ("detail", "funnel", "gap")
