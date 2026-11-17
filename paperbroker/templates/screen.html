@@ -209,6 +209,22 @@
 
     footer{border-top:1px dotted var(--hair);margin:34px 0 0;padding:14px 0 0}
     footer .note{font-size:11.5px;color:var(--faint)}
+    /* Einstellungen: ein zugeklapptes <details>, kein Skript, keine zweite
+       Wechsel-Flaeche. Der Pfeil ist derselbe wie bei den Listen oben. */
+    footer .settings{margin:10px 0 0}
+    footer .settings summary{font-family:var(--font-mono);font-size:10px;
+      letter-spacing:.08em;text-transform:uppercase;color:var(--muted);
+      cursor:pointer;list-style:none;padding:4px 0}
+    footer .settings summary::-webkit-details-marker{display:none}
+    footer .settings summary::before{content:"\203A  ";color:var(--primary)}
+    footer .settings[open] summary::before{content:"\2304  "}
+    footer .settings .settings-row{margin:6px 0 0;display:flex;flex-wrap:wrap;
+      gap:6px 10px;align-items:baseline}
+    footer .settings .settings-label{font-family:var(--font-mono);font-size:10px;
+      letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+    footer .settings .lang-switch{color:var(--muted);text-decoration:none;
+      border-bottom:1px dotted var(--edge)}
+    footer .settings .lang-switch:hover{color:var(--ink);border-color:var(--primary)}
 
     @media (max-width:900px){
       main{padding:18px 18px 56px}
@@ -295,18 +311,23 @@
   </section>
   <footer>
     <p class="note">{{ t('page.foot.feed_note') }}</p>
-    {# Der Wechsler kommt aus der Registry: jede registrierte Sprache, die gelesene
-       markiert, alle Abfrage-Parameter bleiben stehen. Kein Skript. #}
-    <p class="note lang-bar">
-      {%- for sprache in switch_links -%}
-        {%- if sprache.current -%}
-          <span aria-current="true">{{ sprache.code|upper }}</span>
-        {%- else -%}
-          <a class="lang-switch" href="{{ sprache.href }}" hreflang="{{ sprache.code }}">{{ sprache.code|upper }}</a>
-        {%- endif -%}
-        {%- if not loop.last %} · {% endif -%}
-      {%- endfor -%}
-    </p>
+    {# Eine sichtbare Wechsel-Flaeche je Zustand: die Sprachzeile liegt IM
+       zugeklappten Einstellungs-Panel, nicht daneben. Ein natives <details>,
+       kein Skript, alles serverseitig gerendert. #}
+    <details class="settings" id="settings">
+      <summary>{{ t('page.settings.summary') }}</summary>
+      <p class="note settings-row">
+        <span class="settings-label">{{ t('page.settings.language') }}</span>
+        {%- for sprache in switch_links -%}
+          {%- if sprache.current -%}
+            <span aria-current="true">{{ sprache.code|upper }}</span>
+          {%- else -%}
+            <a class="lang-switch" href="{{ sprache.href }}" hreflang="{{ sprache.code }}">{{ sprache.code|upper }}</a>
+          {%- endif -%}
+          {%- if not loop.last %} · {% endif -%}
+        {%- endfor -%}
+      </p>
+    </details>
   </footer>
 </main>
 {# Das Verhalten liegt in einer eigenen Datei: der Block traegt Zustaende,
