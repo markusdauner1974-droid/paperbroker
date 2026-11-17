@@ -104,8 +104,15 @@ class TestTheOldScreenIsGone(unittest.TestCase):
 
     def test_the_page_has_one_input_and_it_is_the_reaction_day(self):
         seite = _page()
-        self.assertEqual(1, seite.count("<input"))
+        # Ein BEDIENFELD: das Reaktionsdatum. Das versteckte Feld der
+        # Sprachumschaltung (name="lang") ist kein Bedienteil - es traegt die
+        # gelesene Sprache in die Suche und ist nicht anwaehlbar. Die Zusicherung
+        # "genau ein Feld" gilt deshalb fuer die sichtbaren Felder.
+        sichtbar = [feld for feld in re.findall(r"<input[^>]*>", seite)
+                    if 'type="hidden"' not in feld]
+        self.assertEqual(1, len(sichtbar))
         self.assertIn('<input type="date" id="funnel-day"', seite)
+        self.assertEqual(1, len(re.findall(r'<input[^>]*type="hidden"[^>]*name="lang"', seite)))
         # keine Zahlenfelder, keine Schalter, keine Auswahlfelder
         for feld in ('type="number"', 'type="checkbox"', 'type="radio"',
                      'type="submit"', "<select", "<fieldset", "<textarea"):

@@ -56,6 +56,9 @@ TEXTS: dict[str, object] = {
     "page.table.col.dte": "DTE",
     "page.table.col.next_report": "nächster Bericht",
     "page.table.col.options": "Optionen",
+    # Der 400-Pfad der Seite: die angefragte Sprache gibt es nicht, also steht die
+    # Antwort in der Quellsprache - sie muss ohne die gewuenschte lesbar sein.
+    "page.error.unknown_language": "Unbekannte Sprache '{requested}'. Verfügbar: {available}.",
     "page.detail.summary": "Detail zum Spread",
     "page.excluded.summary": "Ausschlüsse",
     "page.failures.summary": "Fehlschläge",

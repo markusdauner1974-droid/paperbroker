@@ -26,12 +26,17 @@ LANGUAGES: dict[str, dict[str, object]] = {
         # the source book: every key has to exist here
         "book": "paperbroker.texts.de_texts",
         "plural": "one_other",
+        # How the language writes a number. A translated sentence with a German
+        # decimal comma reads as a foreign word inside it - the digits are data,
+        # their spelling is language.
+        "numbers": {"decimal": ",", "thousands": "."},
         "switch_to": None,
     },
     "en": {
         "name": "English",
         "book": "paperbroker.texts.en_texts",
         "plural": "one_other",
+        "numbers": {"decimal": ".", "thousands": ","},
         "switch_to": "de",
     },
 }

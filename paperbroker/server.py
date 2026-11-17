@@ -24,7 +24,8 @@ from datetime import datetime, timedelta
 from urllib.parse import urlencode
 
 import arrow
-from flask import Flask, abort, g, jsonify, render_template, request
+from flask import Flask, g, jsonify, render_template, request, url_for
+from markupsafe import escape
 
 from . import exclusions, gap_funnel, quote_age, spread_detail, texts
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
@@ -280,7 +281,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     #: the source language on purpose: /api/screen, the option chain, the earnings
     #: routes and the scan answers are stable legacy payloads, and a language
     #: switch must not move a byte in them.
-    language_endpoints = {"api_gap_spreads", "api_gap_spreads_detail"}
+    language_endpoints = {"api_gap_spreads", "api_gap_spreads_detail", "index"}
 
     @app.before_request
     def _serve_in_request_language():
@@ -296,6 +297,19 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         try:
             g.language = texts.resolve_language(request.args.get("lang"))
         except texts.UnknownLanguage as fehler:
+            if request.endpoint == "index":
+                # Eine Seite, die um eine Sprache gebeten wird, die es nicht gibt,
+                # antwortet als Seite - und in der Quellsprache, weil die gewuenschte
+                # gerade nicht lesbar ist.
+                satz = texts.t(
+                    "page.error.unknown_language",
+                    requested=str(fehler),
+                    available=", ".join(texts.languages()),
+                )
+                return (
+                    "<!doctype html><html lang=\"de\"><meta charset=\"utf-8\">"
+                    f"<title>400</title><p>{escape(satz)}</p>"
+                ), 400, {"Content-Type": "text/html; charset=utf-8"}
             return jsonify({
                 "error": "unknown_language",
                 "requested": str(fehler),

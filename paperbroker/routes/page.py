@@ -11,7 +11,7 @@ from __future__ import annotations
 from datetime import datetime
 from urllib.parse import urlencode
 
-from flask import current_app, jsonify, render_template, request
+from flask import current_app, jsonify, render_template, request, url_for
 
 from .. import texts
 from ..earnings_calendar import (
@@ -58,6 +58,26 @@ from ..view_support import (
     _vertical_sort_key,
 )
 from .context import context
+
+
+def _switch_links() -> list[dict[str, object]]:
+    """Der Fuss-Wechsler - aus der Registry, nicht aus einer Liste im Template.
+
+    Jede registrierte Sprache bekommt einen Eintrag; die gerade gelesene ist kein
+    Link, sondern eine Markierung. Alle Abfrage-Parameter bleiben stehen, nur
+    ``lang`` wird getauscht - sonst verliert ein Wechsel die Suche.
+    """
+    werte = {key: value for key, value in request.args.items() if key != "lang"}
+    jetzt = texts.active_language()
+    eintraege = []
+    for code in texts.languages():
+        eintraege.append({
+            "code": code,
+            "name": texts.language_name(code),
+            "current": code == jetzt,
+            "href": url_for("index", **{**werte, "lang": code}),
+        })
+    return eintraege
 
 
 def index():
@@ -213,6 +233,8 @@ def index():
         # The script's texts travel as one JSON block: one source, no second
         # catalogue file in JavaScript. The block also names the plural rule.
         js_i18n=texts.block("js"),
+        lang=texts.active_language(),
+        switch_links=_switch_links(),
         data_state=zustand)
 
 

@@ -6,7 +6,7 @@
   {# Die Schriftschnitte liegen als woff2 im Paket: keine Anfrage verlaesst das
      LAN, und die Seite haengt an keinem CDN. #}
   <link rel="stylesheet" href="{{ url_for('static', filename='fonts.css') }}">
-  <title>Gap-Spread-Trichter</title>
+  <title>{{ t('page.head.title') }}</title>
   <style>
     :root{
       --base:#091217; --panel:#0d181e; --ink:#fafafa;
@@ -228,12 +228,16 @@
 <main>
   <section id="gap-funnel" aria-labelledby="funnel-title">
     <h2 class="lede" id="funnel-title">{{ t('page.form.heading') }}</h2>
-    <div class="funnel-form">
+    {# Ein GET-Formular, damit die Suche die Sprache traegt: das versteckte Feld
+       wird vom Server gefuellt, nicht vom Skript. Ohne Skript bleibt der Knopf
+       wirkungslos - die Seite ist dann eine Anzeige, kein Bedienteil. #}
+    <form class="funnel-form" method="get" action="/">
+      <input type="hidden" name="lang" value="{{ lang }}">
       <label for="funnel-day">{{ t('page.form.day_label') }}</label>
       <input type="date" id="funnel-day" autocomplete="off">
       <button type="button" class="funnel-btn" id="funnel-run">{{ t('page.form.run') }}</button>
       <span class="stale" id="funnel-stale" role="status" hidden></span>
-    </div>
+    </form>
     <p class="note" id="funnel-state" aria-live="polite">{{ t('page.state.no_run') }}</p>
     <p class="err" id="funnel-error" role="alert" hidden></p>
     <p class="stats" id="funnel-counts" aria-live="polite" hidden></p>
@@ -291,6 +295,18 @@
   </section>
   <footer>
     <p class="note">{{ t('page.foot.feed_note') }}</p>
+    {# Der Wechsler kommt aus der Registry: jede registrierte Sprache, die gelesene
+       markiert, alle Abfrage-Parameter bleiben stehen. Kein Skript. #}
+    <p class="note lang-bar">
+      {%- for sprache in switch_links -%}
+        {%- if sprache.current -%}
+          <span aria-current="true">{{ sprache.code|upper }}</span>
+        {%- else -%}
+          <a class="lang-switch" href="{{ sprache.href }}" hreflang="{{ sprache.code }}">{{ sprache.code|upper }}</a>
+        {%- endif -%}
+        {%- if not loop.last %} · {% endif -%}
+      {%- endfor -%}
+    </p>
   </footer>
 </main>
 {# Das Verhalten liegt in einer eigenen Datei: der Block traegt Zustaende,
