@@ -140,17 +140,25 @@ class DetailEndpointTest(unittest.TestCase):
     def test_every_number_carries_two_decimals(self):
         _antwort, body = _get()
 
-        def floats(value):
+        def floats(value, pfad=()):
             if isinstance(value, dict):
-                for item in value.values():
-                    yield from floats(item)
+                for key, item in value.items():
+                    yield from floats(item, pfad + (key,))
             elif isinstance(value, list):
                 for item in value:
-                    yield from floats(item)
+                    yield from floats(item, pfad)
             elif isinstance(value, float):
-                yield value
+                yield pfad, value
 
-        for number in floats(body):
+        for pfad, number in floats(body):
+            # Die vier Griechen eines Serienpunkts tragen vier Dezimalen: eine
+            # Kurve aus zwei Dezimalen ist eine Treppe (Theta lebt zwischen
+            # -0,10 und +0,30, das waeren 41 Stufen fuer 166 Punkte). Alles,
+            # was ein Leser zu sehen bekommt, bleibt zweistellig.
+            if pfad and pfad[-1] in {"delta", "gamma", "vega", "theta"}:
+                self.assertEqual(number, round(number, 4),
+                                 f"{'.'.join(pfad)}: {number} has more than four decimals")
+                continue
             self.assertEqual(number, round(number, 2), f"{number} has more than two decimals")
 
     def test_no_exception_text_reaches_a_200(self):

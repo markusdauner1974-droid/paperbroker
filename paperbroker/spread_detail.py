@@ -119,6 +119,25 @@ def _round2(value):
     return round(number, 2)
 
 
+def _round4(value):
+    """Four decimals - the precision of a SERIES greek, not of a display.
+
+    Two decimals are the display contract, but they are too coarse for a curve:
+    theta lives between -0.10 and +0.30, so two decimals leave 41 levels for 166
+    points and the line becomes a staircase. The series therefore keeps four
+    decimals; every number a reader sees is still rounded to two.
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(number):
+        return None
+    return round(number, 4)
+
+
 def _int_or_none(value):
     if isinstance(value, bool) or value is None:
         return None
@@ -174,7 +193,8 @@ def black_scholes(option_type, spot, strike, years, vol, rate=RATE, dividend=DIV
     return spot * discount_q * norm_cdf(d1) - strike * discount_r * norm_cdf(d2)
 
 
-def model_greeks(option_type, spot, strike, years, vol, rate=RATE, dividend=DIVIDEND):
+def model_greeks(option_type, spot, strike, years, vol, rate=RATE, dividend=DIVIDEND,
+                 digits=2):
     """The four greeks of one option in the repo's percentage convention.
 
     ``delta`` and ``gamma`` are multiplied by 100 like the chain's own values
@@ -182,7 +202,17 @@ def model_greeks(option_type, spot, strike, years, vol, rate=RATE, dividend=DIVI
     ``theta`` the change per CALENDAR day - both per spread, so they can stand
     beside the adapter's numbers without a second unit. A greek that the model
     cannot compute (no time, no vol, no price) is ``None``, not zero.
+
+    ``digits`` is the rounding of the RESULT. Two decimals are the display
+    contract; a CURVE needs finer values, because the difference of two
+    two-decimal greeks is a two-decimal number and theta between -0.10 and
+    +0.30 would then be drawn as a staircase. ``digits=None`` returns the raw
+    float.
     """
+
+    def runde(value):
+        return value if digits is None else round(value, digits)
+
     if spot is None or strike is None or spot <= 0 or strike <= 0:
         return {"delta": None, "gamma": None, "vega": None, "theta": None}
     if years is None or years <= 0 or not vol or vol <= 0:
@@ -194,7 +224,7 @@ def model_greeks(option_type, spot, strike, years, vol, rate=RATE, dividend=DIVI
             delta = -1.0 if spot < strike else 0.0
         else:
             delta = 1.0 if spot > strike else 0.0
-        return {"delta": round(delta * 100.0, 2), "gamma": 0.0, "vega": 0.0, "theta": 0.0}
+        return {"delta": runde(delta * 100.0), "gamma": 0.0, "vega": 0.0, "theta": 0.0}
 
     root = vol * math.sqrt(years)
     d1 = (math.log(spot / strike) + (rate - dividend + 0.5 * vol * vol) * years) / root
@@ -215,11 +245,11 @@ def model_greeks(option_type, spot, strike, years, vol, rate=RATE, dividend=DIVI
                         + dividend * spot * discount_q * norm_cdf(d1))
 
     return {
-        "delta": round(delta * 100.0, 2),
-        "gamma": round(discount_q * density / (spot * root) * 100.0, 2),
+        "delta": runde(delta * 100.0),
+        "gamma": runde(discount_q * density / (spot * root) * 100.0),
         # Per volatility POINT and per 100 shares: S * phi(d1) * sqrt(T).
-        "vega": round(spot * discount_q * density * math.sqrt(years), 2),
-        "theta": round(theta_annual * MULTIPLIER / DAYS_PER_YEAR, 2),
+        "vega": runde(spot * discount_q * density * math.sqrt(years)),
+        "theta": runde(theta_annual * MULTIPLIER / DAYS_PER_YEAR),
     }
 
 
@@ -331,15 +361,20 @@ def position_greeks(long_quote, short_quote):
 
 def _model_position_greeks(option_type, price, long_strike, short_strike, years,
                            iv_long, iv_short):
-    """The position's model greeks at one price, or ``None`` per greek."""
+    """The position's model greeks at one price, or ``None`` per greek.
+
+    UNROUNDED on purpose: the series needs the fine value for its curve, the
+    scenario table rounds the same number to two decimals. One computation, two
+    roundings - never two computations.
+    """
     if iv_long is None or iv_short is None or iv_long <= 0 or iv_short <= 0:
         return {"delta": None, "gamma": None, "vega": None, "theta": None}
-    lang = model_greeks(option_type, price, long_strike, years, iv_long / 100.0)
-    kurz = model_greeks(option_type, price, short_strike, years, iv_short / 100.0)
+    lang = model_greeks(option_type, price, long_strike, years, iv_long / 100.0, digits=4)
+    kurz = model_greeks(option_type, price, short_strike, years, iv_short / 100.0, digits=4)
     out = {}
     for name in ("delta", "gamma", "vega", "theta"):
         links, rechts = lang[name], kurz[name]
-        out[name] = None if links is None or rechts is None else _round2(links - rechts)
+        out[name] = None if links is None or rechts is None else links - rechts
     return out
 
 
@@ -420,14 +455,15 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
             leg_row(short_quote, "short", short_strike)]
 
     preise = series_prices(spot)
-    # EIN Modellwert je Rasterpreis: die Serie und die Szenariotabelle lesen
-    # dieselbe Rechnung, damit ein Marker und die Zelle darunter nie um eine
-    # Nachkommastelle auseinanderlaufen.
+    # EIN Modellwert je Rasterpreis: die Serie traegt ihn mit vier Dezimalen
+    # (sonst wird die Kurve zur Treppe), die Szenariotabelle rundet DENSELBEN
+    # Wert auf zwei - eine Rechnung, zwei Darstellungen.
     greeks_je_preis = {}
     serie = []
     for price in preise:
-        werte = _model_position_greeks(option_type, price, long_strike, short_strike,
-                                       years, iv_long, iv_short)
+        roh = _model_position_greeks(option_type, price, long_strike, short_strike,
+                                     years, iv_long, iv_short)
+        werte = {name: _round4(roh[name]) for name in GREEKS}
         greeks_je_preis[price] = werte
         serie.append({
             "price": price,
@@ -450,7 +486,9 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
         preis = round(roh, 2)
         if preis not in greeks_je_preis:
             preis = min(preise, key=lambda punkt: abs(punkt - roh))
-        werte = greeks_je_preis[preis]
+        # Dieselbe Zahl wie im Serienpunkt, nur auf zwei Dezimalen: die Zelle
+        # der Tabelle und die Zahl am Marker sind damit zeichengleich.
+        werte = {name: _round2(greeks_je_preis[preis][name]) for name in GREEKS}
         szenarien.append({
             "change_pct": change,
             "underlying": _round2(preis),
