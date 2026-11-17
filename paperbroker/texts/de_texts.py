@@ -258,7 +258,16 @@ TEXTS: dict[str, object] = {
     "js.scenarios.col.gamma": "Gamma",
     "js.scenarios.col.vega": "Vega",
     "js.scenarios.col.theta": "Theta",
+    # Griechen: die vier Tasten ueber dem Bild und die rechte Achse. Der Name
+    # der Metrik steht EINMAL im Katalog - Taste, Achse und Legende lesen
+    # dieselbe Zeichenkette statt drei eigener.
+    "js.greeks.label": "Griechen über dem Kurs",
+    "js.greeks.delta": "Delta",
+    "js.greeks.gamma": "Gamma",
+    "js.greeks.vega": "Vega",
+    "js.greeks.theta": "Theta",
     "js.chart.aria": "G&V von {symbol}: durchgezogen heute, gestrichelt bei Verfall",
+    "js.chart.aria.greek": "{greek} als zusätzliche gestrichelte Linie",
     "js.chart.title": "G&V je Spread über den Kurs — heute und bei Verfall",
     "js.chart.desc": (
         "Durchgezogene Linie: G&V heute nach dem Modell. Gestrichelte Linie: "
@@ -267,9 +276,14 @@ TEXTS: dict[str, object] = {
     ),
     "js.chart.axis.price": "Kurs",
     "js.chart.axis.pl": "G&V (USD je Spread)",
+    "js.chart.axis.greek.delta": "Delta",
+    "js.chart.axis.greek.gamma": "Gamma",
+    "js.chart.axis.greek.vega": "Vega",
+    "js.chart.axis.greek.theta": "Theta",
     "js.chart.spot": "Spot {value}",
     "js.chart.legend.today": "heute (Modell)",
     "js.chart.legend.expiry": "bei Verfall",
+    "js.chart.legend.greek": "{greek} (Modell)",
     "js.figures.debit": "Debit",
     "js.figures.breakeven": "Break-even",
     "js.figures.max_loss": "max. Verlust",

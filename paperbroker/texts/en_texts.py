@@ -288,6 +288,11 @@ TEXTS: dict[str, object] = {
     "js.cell.windows": "n={count}",
     "js.cell.windows_sessions": "{count} TD",
     "js.chart.aria": "P&L of {symbol}: solid today, dashed at expiration",
+    "js.chart.aria.greek": "{greek} as an additional dashed line",
+    "js.chart.axis.greek.delta": "Delta",
+    "js.chart.axis.greek.gamma": "Gamma",
+    "js.chart.axis.greek.theta": "Theta",
+    "js.chart.axis.greek.vega": "Vega",
     "js.chart.axis.pl": "P&L (USD per spread)",
     "js.chart.axis.price": "Price",
     "js.chart.desc": (
@@ -296,6 +301,7 @@ TEXTS: dict[str, object] = {
         "spread."
     ),
     "js.chart.legend.expiry": "at expiration",
+    "js.chart.legend.greek": "{greek} (model)",
     "js.chart.legend.today": "today (model)",
     "js.chart.spot": "Spot {value}",
     "js.chart.title": "P&L per spread against the price — today and at expiration",
@@ -361,6 +367,11 @@ TEXTS: dict[str, object] = {
         "calendar days to expiration) in which the price moved by at least the required "
         "amount; measured on {windows} windows from at most 520 daily bars."
     ),
+    "js.greeks.delta": "Delta",
+    "js.greeks.gamma": "Gamma",
+    "js.greeks.label": "Greeks over the price",
+    "js.greeks.theta": "Theta",
+    "js.greeks.vega": "Vega",
     "js.history.source_failed": "source unreadable",
     "js.history.too_short": "too little history",
     "js.legs.col.ask": "Ask",

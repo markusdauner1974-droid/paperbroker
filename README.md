@@ -173,9 +173,21 @@ otherwise). Without them the row's own pick is used (`is_row_pick: true`). Keys:
 * `legs` — one object per leg: `side` (`long`/`short`), `strike`, `bid`, `ask`, `mid`, `iv`, `delta`,
   `gamma`, `theta`, `vega`, `open_interest`, `volume`.
 * `series` — the two curves of the chart (today, model-based, and at expiration), drawn as **inline SVG**;
-  no chart library, no build chain.
+  no chart library, no build chain. Every point carries `price`, `pl_expiry`, `pl_today` and the four
+  model greeks `delta`, `gamma`, `vega`, `theta`; the seven `scenarios` prices are points of the same
+  axis, so a value marker sits on the curve and shows the number of the scenario row below it.
+  `schema_version` 1.1 (1.0 had no greeks in the series).
 * `scenarios` — seven underlying changes with `underlying`, `change_pct`, `pl_expiry`, `delta`, `gamma`,
   `theta`, `vega`.
+
+### The greek overlay
+
+Above the chart stand four buttons (Delta, Gamma, Vega, Theta). Opening the detail shows the two P&L
+curves only; a click lays **one** greek curve over them, on its own axis on the right, and a second click
+on the same button takes it away again — a different button replaces the first one. The overlay is drawn
+in light blue, dashed `6 4`, and carries the seven scenario values as small numbers; the legend names the
+metric in words next to its stroke. No greek at expiration is drawn: at expiration gamma, vega and theta
+are zero and the line would be empty. The page computes nothing — the values come from `series`.
 * A symbol that is not a row of that day is answered as such and not with a different row: `404
   unknown_symbol`. A strike that is not in the chain is `404 leg_not_listed`; both carry a readable
   `message` in the language of the request.

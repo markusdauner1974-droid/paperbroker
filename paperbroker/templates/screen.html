@@ -196,6 +196,18 @@
        dem Seitenverhaeltnis der viewBox, also verzerrt nichts. */
     .detail-chart{margin:4px 0 0;max-width:100%;overflow-x:auto}
     .detail-chart svg{display:block;width:100%;max-width:100%;height:auto}
+    /* Die Tastenwahl ueber dem Bild: vier Metriken, hoechstens eine aktiv. Die
+       Ruhe ist neutral, die aktive Taste traegt die Farbe der Verfallslinie als
+       Kante und Schrift - kein gefuellter Knopf, das Bild bleibt die Hauptsache. */
+    .detail-greeks{display:flex;flex-wrap:wrap;gap:6px;margin:8px 0 2px}
+    .detail-greeks button{font-family:var(--font-mono);font-size:10.5px;
+      letter-spacing:.04em;padding:3px 10px;border-radius:2px;cursor:pointer;
+      background:none;color:var(--ink);border:1px solid rgba(250,250,250,.22)}
+    .detail-greeks button:hover{border-color:rgba(250,250,250,.45)}
+    .detail-greeks button:focus-visible{outline:2px solid var(--primary);
+      outline-offset:2px}
+    .detail-greeks button[aria-pressed="true"]{border-color:var(--primary);
+      color:var(--primary)}
     .detail-legend{display:flex;flex-wrap:wrap;gap:6px 20px;margin:8px 0 2px;
       font-family:var(--font-mono);font-size:10px;color:var(--muted)}
     .detail-legend-item{display:inline-flex;align-items:center;gap:8px}
@@ -206,6 +218,10 @@
     .detail-legend i.dashed{border-top:0;height:2px;
       background-image:repeating-linear-gradient(90deg,
         var(--primary) 0 5px,transparent 5px 9px)}
+    /* Das Overlay: Strichmuster der Kurve (6 4) in ihrem Hellblau. */
+    .detail-legend i.greek{border-top:0;height:2px;
+      background-image:repeating-linear-gradient(90deg,
+        #4dc3ff 0 6px,transparent 6px 10px)}
     .detail-notes{font-size:11px;color:var(--faint);margin:14px 0 12px;
       max-width:90ch}
 

@@ -374,6 +374,23 @@ async function main() {
         prevented.push({ spec, prevented: ev.defaultPrevented });
       }
     }
+    if (parts[0] === 'greek') {
+      // Eine Griechen-Taste ueber dem Bild: ein echter Klick, wie im Browser.
+      const knopf = findAll(nodes['funnel-detail-body'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('greek-btn') >= 0)[Number(parts[1])];
+      if (knopf) knopf.click();
+    }
+    if (parts[0] === 'greekkey') {
+      const knopf = findAll(nodes['funnel-detail-body'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('greek-btn') >= 0)[Number(parts[1])];
+      if (knopf) {
+        const taste = parts[2] === 'Space' ? ' ' : (parts[2] || 'Enter');
+        const ev = { type: 'keydown', key: taste, defaultPrevented: false,
+          preventDefault() { ev.defaultPrevented = true; } };
+        knopf.dispatchEvent(ev);
+        prevented.push({ spec, prevented: ev.defaultPrevented });
+      }
+    }
     if (parts[0] === 'sub') {
       const liste = subsOf(Number(parts[1]));
       const stelle = liste[Number(parts[2])];
@@ -394,6 +411,27 @@ async function main() {
 
 main();
 """
+
+
+def _series():
+    """The axis of the fixture: a 46-cent grid plus the seven scenario prices.
+
+    Every point carries the four greeks - the page draws the overlay from these
+    numbers and computes nothing itself. The delta is the fixture's model curve
+    (minus 40 at the spot, one point per percent of move), so the marker at a
+    scenario price carries exactly the number of that row.
+    """
+    preise = {round(4.6 + index * 0.46, 2) for index in range(21)}
+    preise |= {round(9.19 * (1 + pct / 100.0), 2)
+               for pct in (-30, -20, -10, 0, 10, 20, 30)}
+    return [
+        {"price": preis,
+         "pl_expiry": -135.0 if preis < 9.19 * 1.07 else 115.0,
+         "pl_today": round(-60.0 + (preis - 4.6) * 19.0, 2),
+         "delta": -40.0 + round((preis / 9.19 - 1.0) * 100.0),
+         "gamma": 4.0, "vega": 1.2, "theta": -0.3}
+        for preis in sorted(preise)
+    ]
 
 
 def _detail(symbol="CTVA", label="Bear Put"):
@@ -417,12 +455,7 @@ def _detail(symbol="CTVA", label="Bear Put"):
         "max_loss": 135.0, "max_profit": 115.0, "breakeven": 8.65, "rr": 0.85,
         "position_greeks": {"delta": -31.0, "gamma": 5.12, "vega": 1.38,
                             "theta": -0.32, "rho": None},
-        "series": [
-            {"price": round(4.6 + index * 0.46, 2),
-             "pl_expiry": -135.0 if index < 8 else 115.0,
-             "pl_today": -60.0 + index * 9.0}
-            for index in range(21)
-        ],
+        "series": _series(),
         "scenarios": [
             {"change_pct": pct, "underlying": round(9.19 * (1 + pct / 100.0), 2),
              "pl_expiry": -135.0 if pct < -6 else 115.0,
@@ -1001,6 +1034,154 @@ class TestWhatTheBlockShows(unittest.TestCase):
         self.assertIn("+30 %", text)
         self.assertIn("-135,00", text)
         self.assertIn("+115,00", text)
+
+
+class TestTheGreekOverlay(unittest.TestCase):
+    """The four buttons over the chart and the one curve they lay on top.
+
+    The two P&L curves never move: the overlay is added above them, with its own
+    axis on the right and its own legend entry, and it is gone again after a
+    second click. Everything is read from the answer - the panel computes no
+    second curve.
+    """
+
+    def _buttons(self, panel):
+        gruppen = _by_class(panel["detail"]["tree"], "detail-greeks")
+        self.assertEqual(1, len(gruppen))
+        return _by_tag(gruppen[0], "button")
+
+    def test_the_four_buttons_stand_between_the_chart_title_and_the_image(self):
+        panel = _render(actions=["click:0"])
+        knoepfe = self._buttons(panel)
+        self.assertEqual(["Delta", "Gamma", "Vega", "Theta"],
+                         [knopf["text"] for knopf in knoepfe])
+        # Inaktiv beim Oeffnen - alle vier.
+        self.assertEqual({"false"}, {k["attrs"]["aria-pressed"] for k in knoepfe})
+        # Echte Tasten, keine nachgebauten Kacheln.
+        self.assertEqual({"button"}, {str(k["tag"]).lower() for k in knoepfe})
+        gruppe = _by_class(panel["detail"]["tree"], "detail-greeks")[0]
+        self.assertEqual("group", gruppe["attrs"]["role"])
+        # Die Zeile steht zwischen Diagrammtitel und SVG.
+        klassen = [child["cls"] for child in panel["detail"]["tree"]["children"]]
+        self.assertEqual(klassen.index("detail-greeks") + 1, klassen.index("detail-chart"))
+
+    def test_opening_the_detail_shows_the_two_curves_and_nothing_else(self):
+        panel = _render(actions=["click:0"])
+        self.assertEqual(1, panel["detail"]["svgs"])
+        self.assertEqual(2, len(panel["detail"]["paths"]))
+        tree = panel["detail"]["tree"]
+        # keine rechte Achse, kein dritter Legendeneintrag
+        self.assertEqual([], _by_class(tree, "chart-greek-tick"))
+        self.assertEqual([], _by_class(tree, "chart-greek-value"))
+        legende = _by_class(tree, "detail-legend")[0]
+        self.assertEqual({"solid", "dashed"},
+                         {n["cls"] for n in _by_tag(legende, "i")})
+
+    def test_a_click_on_delta_lays_one_curve_over_the_two_pnl_curves(self):
+        panel = _render(actions=["click:0", "greek:0"])
+        pfade = panel["detail"]["paths"]
+        self.assertEqual(3, len(pfade))
+        # Die beiden G&V-Kurven bleiben, unveraendert in Farbe und Strichart.
+        self.assertTrue(any(p.get("stroke") == "#fafafa" for p in pfade))
+        self.assertTrue(any(p.get("stroke") == "#e05534"
+                            and p.get("stroke-dasharray") == "5 4" for p in pfade))
+        # Und darueber genau eine Griechen-Kurve.
+        griechen = [p for p in pfade if p.get("stroke") == "#4dc3ff"]
+        self.assertEqual(1, len(griechen))
+        self.assertEqual("6 4", griechen[0].get("stroke-dasharray"))
+        self.assertEqual("1.6", griechen[0].get("stroke-width"))
+        self.assertTrue(griechen[0]["d"].startswith("M"))
+        # Genau EINE Taste ist aktiv.
+        knoepfe = self._buttons(panel)
+        self.assertEqual(["true", "false", "false", "false"],
+                         [k["attrs"]["aria-pressed"] for k in knoepfe])
+
+    def test_the_right_axis_appears_with_the_overlay_and_names_the_metric(self):
+        panel = _render(actions=["click:0", "greek:0"])
+        tree = panel["detail"]["tree"]
+        ticks = _by_class(tree, "chart-greek-tick")
+        self.assertGreaterEqual(len(ticks), 4)
+        for tick in ticks:
+            self.assertRegex(tick["text"], r"^[+-]?\d+(,\d+)?$")
+        titel = _by_class(tree, "chart-greek-axis-title")
+        self.assertEqual(1, len(titel))
+        self.assertEqual("Delta", titel[0]["text"])
+        # Die linke Achse bleibt die G&V-Achse.
+        links = [n for n in _by_class(tree, "chart-axis-title")
+                 if "chart-greek-axis-title" not in n["cls"]]
+        self.assertEqual(["Kurs", "G&V (USD je Spread)"], [n["text"] for n in links])
+
+    def test_the_legend_names_the_overlay_as_a_third_line(self):
+        panel = _render(actions=["click:0", "greek:2"])
+        legende = _by_class(panel["detail"]["tree"], "detail-legend")[0]
+        text = _all_text(legende)
+        self.assertIn("heute", text)
+        self.assertIn("bei Verfall", text)
+        self.assertIn("Vega", text)
+        # Wort UND Strichart - die hellblaue Linie ist nicht der einzige Traeger.
+        self.assertEqual({"solid", "dashed", "greek"},
+                         {n["cls"] for n in _by_tag(legende, "i")})
+
+    def test_a_second_metric_replaces_the_first(self):
+        panel = _render(actions=["click:0", "greek:0", "greek:1"])
+        self.assertEqual(3, len(panel["detail"]["paths"]))
+        knoepfe = self._buttons(panel)
+        self.assertEqual(["false", "true", "false", "false"],
+                         [k["attrs"]["aria-pressed"] for k in knoepfe])
+
+    def test_a_second_click_on_the_active_button_takes_the_overlay_away(self):
+        panel = _render(actions=["click:0", "greek:0", "greek:0"])
+        tree = panel["detail"]["tree"]
+        self.assertEqual(2, len(panel["detail"]["paths"]))
+        self.assertEqual([], _by_class(tree, "chart-greek-tick"))
+        self.assertEqual([], _by_class(tree, "chart-greek-value"))
+        self.assertEqual({"false"}, {k["attrs"]["aria-pressed"]
+                                     for k in self._buttons(panel)})
+        legende = _by_class(tree, "detail-legend")[0]
+        self.assertEqual({"solid", "dashed"},
+                         {n["cls"] for n in _by_tag(legende, "i")})
+
+    def test_the_seven_markers_carry_the_numbers_of_the_scenario_table(self):
+        panel = _render(actions=["click:0", "greek:0"])
+        tree = panel["detail"]["tree"]
+        marken = [m["text"] for m in _by_class(tree, "chart-greek-value")]
+        self.assertEqual(7, len(marken))
+        # Dieselben sieben Zahlen wie die Delta-Spalte der Szenarientabelle,
+        # in derselben Reihenfolge von -30 % bis +30 %.
+        tabellen = _by_tag(tree, "table")
+        self.assertEqual(2, len(tabellen))
+        zeilen = _by_tag(tabellen[1], "tr")[1:]
+        self.assertEqual(7, len(zeilen))
+        self.assertEqual([_by_tag(zeile, "td")[3]["text"] for zeile in zeilen],
+                         marken)
+
+    def test_the_keyboard_switches_the_overlay_too(self):
+        panel = _render(actions=["click:0", "greekkey:3:Enter"])
+        knoepfe = self._buttons(panel)
+        self.assertEqual(["false", "false", "false", "true"],
+                         [k["attrs"]["aria-pressed"] for k in knoepfe])
+        self.assertEqual(3, len(panel["detail"]["paths"]))
+        # Die Leertaste nimmt dieselbe Kurve wieder weg.
+        panel = _render(actions=["click:0", "greekkey:3:Enter", "greekkey:3:Space"])
+        self.assertEqual(2, len(panel["detail"]["paths"]))
+        self.assertEqual({"false"}, {k["attrs"]["aria-pressed"]
+                                     for k in self._buttons(panel)})
+
+    def test_the_buttons_are_neutral_until_they_are_active(self):
+        seite = _page()
+        ruhe = re.search(r"\.detail-greeks button\{([^}]*)\}", seite)
+        assert ruhe is not None
+        ruhig = ruhe.group(1).replace(" ", "").replace("\n", "")
+        # Kein gefuellter Knopf: der Grund bleibt durchsichtig.
+        self.assertIn("background:none", ruhig)
+        aktiv = re.search(r"\.detail-greeks button\[aria-pressed=\"true\"\]\{([^}]*)\}",
+                          seite)
+        assert aktiv is not None
+        farbe = aktiv.group(1).replace(" ", "").replace("\n", "")
+        self.assertIn("border-color:var(--primary)", farbe)
+        self.assertIn("color:var(--primary)", farbe)
+        # --primary ist die Farbe der Verfallslinie (#e05534).
+        self.assertIn("--primary:#e05534", seite)
 
 
 class TestAnErrorStaysInsideTheBlock(unittest.TestCase):
