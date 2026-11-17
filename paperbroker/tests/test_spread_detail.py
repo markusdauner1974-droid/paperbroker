@@ -303,6 +303,27 @@ class TestTheGreekCurves(unittest.TestCase):
         assert einzel is not None
         self.assertGreaterEqual(einzel, 0.0)
 
+    def test_a_sub_dollar_spot_keeps_the_scenario_prices_on_the_axis(self):
+        # Unter einem Dollar faellt das Gitter auf vier Dezimalen (sonst
+        # kollabiert die Achse). Die Szenariopreise muessen trotzdem exakt die
+        # Punkte bleiben, die die Tabelle zeigt - sonst sitzt der Marker neben
+        # der Kurve und die Zelle nennt einen Preis, den die Kurve nicht hat.
+        spot = 0.85
+        lang = quote("call", spot, 0.10, 0.12, iv=40.0)
+        kurz = quote("call", round(spot * 1.03, 2), 0.05, 0.07, iv=41.0)
+        body = detail(lang, kurz, spot=spot)
+        vierstellig = [p["price"] for p in body["series"] if round(p["price"], 2) != p["price"]]
+        self.assertTrue(vierstellig, "das Raster muss hier vierstellig sein")
+        self.assertGreaterEqual(len(body["series"]), 120)
+        preise = {p["price"]: p for p in body["series"]}
+        for szenario in body["scenarios"]:
+            self.assertEqual(szenario["underlying"],
+                             round(spot * (1 + szenario["change_pct"] / 100.0), 2))
+            self.assertIn(szenario["underlying"], preise)
+            punkt = preise[szenario["underlying"]]
+            for name in sd.GREEKS:
+                self.assertEqual(punkt[name], szenario[name], name)
+
     def test_without_a_volatility_the_greeks_stay_none(self):
         lang, kurz = call_spread()
         lang.iv = None

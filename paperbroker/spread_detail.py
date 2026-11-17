@@ -372,7 +372,12 @@ def series_prices(spot):
     def grid(digits):
         prices = [round(low + step * index, digits) for index in range(SERIES_POINTS)]
         prices.append(round(spot, digits))
-        prices.extend(round(scenario_price(spot, change), digits)
+        # Die Szenariopreise kommen IMMER mit zwei Dezimalen ins Raster - auch
+        # wenn das Gitter selbst vier braucht (Sub-Dollar-Spot). Sonst stuende
+        # in der Tabelle ein Preis, der kein Punkt der Kurve ist: 0,12501 wird
+        # als Gitterpunkt 0,125 gefuehrt, die Tabelle zeigt aber 0,13, und die
+        # Marker saessen neben der Kurve.
+        prices.extend(round(scenario_price(spot, change), 2)
                       for change in SCENARIO_CHANGES)
         return sorted(set(prices))
 
@@ -439,8 +444,12 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
     szenarien = []
     for change in SCENARIO_CHANGES:
         roh = scenario_price(spot, change)
-        # Der Szenariopreis ist ein Punkt der Serie - dort sitzt sein Marker.
-        preis = min(preise, key=lambda punkt: abs(punkt - roh))
+        # Der Szenariopreis ist genau der Punkt der Serie, den series_prices()
+        # fuer ihn eingelegt hat - kein Nachbarpunkt: ein Nachbarpunkt im
+        # vierstelligen Raster wuerde nach _round2 um einen Cent daneben liegen.
+        preis = round(roh, 2)
+        if preis not in greeks_je_preis:
+            preis = min(preise, key=lambda punkt: abs(punkt - roh))
         werte = greeks_je_preis[preis]
         szenarien.append({
             "change_pct": change,
