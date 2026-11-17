@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import re
 import unittest
+from unittest import mock
 
 from paperbroker import texts
 from paperbroker.tests.test_gap_spreads_detail_endpoint import _client
@@ -76,8 +77,28 @@ class TheLanguageLineComesFromTheRegistryTest(unittest.TestCase):
         seite = _seite("en")
         self.assertNotIn("lang-bar", seite,
                          "eine sichtbare Wechsel-Flaeche je Zustand")
-        # Genau ein Wechsler-Link im ganzen Dokument - nicht zwei Flaechen.
-        self.assertEqual(1, len(re.findall(r'class="lang-switch"', seite)))
+        # Gezaehlt wird die FLaeche, nicht die Zahl der Links: die Zahl der Links
+        # ist len(languages()) - 1 und waechst mit jeder neuen Sprache. Eine
+        # Konstante hier haette die dokumentierte Erweiterung um eine Sprache
+        # (eine Zeile in der Registry) blockiert - Befund Kody, PR #127.
+        self.assertEqual(1, len(re.findall(r'<details class="settings"', seite)))
+        self.assertEqual(len(texts.languages()) - 1,
+                         len(re.findall(r'class="lang-switch"', seite)))
+
+    def test_a_third_language_adds_a_link_not_a_second_surface(self):
+        """Die Erweiterung um eine Sprache bleibt eine Zeile in der Registry."""
+        entry = {
+            "name": "Testsprache",
+            "book": "paperbroker.texts.de_texts",
+            "plural": "one_other",
+            "numbers": {"decimal": ",", "thousands": "."},
+            "switch_to": "de",
+        }
+        with mock.patch.dict(texts.LANGUAGES, {"xx": entry}):
+            seite = _seite()
+            self.assertEqual(3, len(texts.languages()))
+            self.assertEqual(1, len(re.findall(r'<details class="settings"', seite)))
+            self.assertEqual(2, len(re.findall(r'class="lang-switch"', seite)))
 
 
 class ThePanelChangesNothingElseTest(unittest.TestCase):
