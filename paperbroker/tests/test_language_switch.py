@@ -258,5 +258,46 @@ class AWorkerThreadDoesNotInheritTheLanguageTest(unittest.TestCase):
         self.assertEqual(texts.active_language(), registry.DEFAULT_LANGUAGE)
 
 
+class TheNumberInASentenceFollowsTheSentenceTest(unittest.TestCase):
+    """Kody #121: '12,5 %' in einem englischen Satz ist ein Fehler.
+
+    Die Zahl selbst bleibt Datum - der Rumpf traegt weiter seine Floats, und das
+    CSV-Format ist unberuehrt. Nur ihre SCHREIBWEISE im Satz gehoert zur Sprache.
+    """
+
+    def test_the_decimal_separator_follows_the_sentence(self):
+        from .. import gap_funnel as gf
+
+        with texts.use_language("de"):
+            self.assertIn("12,5 %", gf.move_too_far_message(12.5, 10.0))
+        with texts.use_language("en"):
+            self.assertIn("12.5 %", gf.move_too_far_message(12.5, 10.0))
+        self.assertEqual(texts.active_language(), texts.registry.DEFAULT_LANGUAGE)
+
+    def test_the_thousands_grouping_follows_the_sentence(self):
+        from .. import gap_funnel as gf
+
+        with texts.use_language("de"):
+            self.assertEqual(gf._tausender(45000), "45 000")
+        with texts.use_language("en"):
+            self.assertEqual(gf._tausender(45000), "45,000")
+
+    def test_a_whole_number_keeps_no_dead_zeros_in_either_language(self):
+        from .. import gap_funnel as gf
+
+        for code in texts.languages():
+            with self.subTest(language=code), texts.use_language(code):
+                self.assertEqual(gf._zahl(20.0), "20")
+
+    def test_the_payload_still_carries_the_plain_float(self):
+        """Die Zahl im Rumpf ist Datum - der Satz ist der einzige Ort mit Schreibweise."""
+        from .. import gap_funnel as gf
+
+        with texts.use_language("en"):
+            satz = gf.move_too_far_message(12.5, 10.0)
+        self.assertIn("12.5", satz)
+        self.assertNotIn("12,5", satz)
+
+
 if __name__ == "__main__":
     unittest.main()

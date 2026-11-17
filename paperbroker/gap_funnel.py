@@ -253,13 +253,18 @@ def chance_of(hit_rate_pct, rr):
 
 
 def _zahl(value):
-    """``20.0`` -> ``"20"``, ``61.25`` -> ``"61,25"`` - German comma, no dead zeros.
+    """``20.0`` -> ``"20"``, ``61.25`` -> ``"61,25"`` (German) - no dead zeros.
 
     The sentence a title is excluded by names real numbers, so a cap of 20 must
     read "20 %" and not "20,0 %", while 12.5 keeps its decimal.
+
+    The SEPARATOR belongs to the sentence, not to the number: a German sentence
+    says "12,5 %", an English one "12.5 %". Only the rendering of the number in
+    prose follows the language - the payload keeps its own floats, and the CSV
+    format is untouched.
     """
     text = f"{abs(float(value)):.2f}".rstrip("0").rstrip(".")
-    return text.replace(".", ",")
+    return text.replace(".", ",") if texts.active_language() == "de" else text
 
 
 def move_too_far_message(required_move_pct, max_required_move_pct):
@@ -390,8 +395,14 @@ def criteria_for(section):
 
 
 def _tausender(number):
-    """``45000`` -> ``"45 000"``: the notes are German prose, the grouping a space."""
-    return f"{int(number):,}".replace(",", " ")
+    """``45000`` -> ``"45 000"`` in German prose, ``"45,000"`` in English.
+
+    Same rule as ``_zahl``: the grouping belongs to the sentence. A translator
+    reading "45 000 valid pairs" in an English note would call it a bug - and
+    would be right.
+    """
+    gruppiert = f"{int(number):,}"
+    return gruppiert.replace(",", " ") if texts.active_language() == "de" else gruppiert
 
 
 def possible_pairs(section, option_type=None):
