@@ -45,6 +45,13 @@ REMEMBER_SCRIPT = """(function () {
   var key = '__KEY__';
   var asked = new URLSearchParams(window.location.search).get('lang');
   if (asked !== null) {
+    // Genau die Normalisierung des Servers (resolve_language: strip + lower),
+    // sonst rendert '?lang=EN' englisch, waehrend die Merkung nichts schreibt -
+    // und der naechste nackte Aufruf springt auf die alte Sprache zurueck.
+    asked = asked.trim().toLowerCase();
+    if (asked === '') { asked = null; }
+  }
+  if (asked !== null) {
     if (boot.allowed.indexOf(asked) !== -1) { store.setItem(key, asked); }
     return;
   }

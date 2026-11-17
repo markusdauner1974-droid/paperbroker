@@ -173,6 +173,26 @@ class TheInstructionDecidesTest(unittest.TestCase):
         self.assertIsNone(aus["replaced"], "eine ungueltige Merkung darf nicht spielen")
         self.assertEqual({}, aus["store"], "die ungueltige Merkung bleibt liegen")
 
+    def test_the_parameter_is_normalised_like_the_server(self):
+        """``?lang=EN`` ist fuer den Server Englisch - fuer die Merkung auch.
+
+        Kody, PR #129: der Server normalisiert ``str(raw).strip().lower()``, die
+        Anweisung verglich den ROHEN Wert. Damit rendert ``?lang=EN`` englisch,
+        waehrend die Merkung nichts schreibt - und der naechste nackte Aufruf
+        springt auf die alte, entgegengesetzte Sprache zurueck.
+        """
+        for roh in ("EN", " en ", "En"):
+            with self.subTest(roh=roh):
+                aus = self.lauf("?lang=" + roh.replace(" ", "%20"))
+                self.assertIsNone(aus["replaced"])
+                self.assertEqual({"paperbroker.lang": "en"}, aus["store"])
+
+    def test_an_empty_parameter_counts_as_no_parameter(self):
+        """``?lang=`` loest serverseitig die Standardsprache auf - also gilt die Merkung."""
+        aus = self.lauf("?lang=", {"paperbroker.lang": "en"})
+        self.assertIsNotNone(aus["replaced"])
+        self.assertTrue(aus["replaced"].endswith("/?lang=en"), aus["replaced"])
+
     def test_the_other_parameters_survive_the_redirect(self):
         aus = self.lauf("", {"paperbroker.lang": "en"}, href="http://localhost/?ticker=X&day=Y")
         self.assertIsNotNone(aus["replaced"])
