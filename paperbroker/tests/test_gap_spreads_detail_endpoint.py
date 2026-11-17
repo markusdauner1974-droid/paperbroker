@@ -61,7 +61,7 @@ DETAIL_KEYS = {
     "schema_version", "symbol", "name", "day", "strategy", "strategy_label",
     "expiration", "dte", "spot", "spot_source", "strikes", "legs", "net_debit",
     "net_debit_basis", "max_loss", "max_profit", "breakeven", "rr",
-    "position_greeks", "series", "scenarios", "notes",
+    "position_greeks", "greek_explain", "series", "scenarios", "notes",
     "structure_label", "is_row_pick",
 }
 LEG_KEYS = {"side", "strike", "bid", "ask", "mid", "iv", "delta", "gamma", "vega",
@@ -180,6 +180,19 @@ class DetailEndpointTest(unittest.TestCase):
         # Position greeks: long minus short, in the chain's convention.
         self.assertEqual(body["position_greeks"]["delta"], 25.0)
         self.assertEqual(body["position_greeks"]["gamma"], 0.0)
+
+    def test_the_explanation_numbers_are_the_position_at_the_spot(self):
+        # Die Legende erklaert die aktive Metrik mit EINER Zahl, und die kommt
+        # fertig aus der Antwort: kein Runden, kein Teilen im Browser.
+        _antwort, body = _get()
+        erklaerung = body["greek_explain"]
+        self.assertEqual(set(erklaerung), {"delta_value", "theta_value", "theta_cents"})
+        spot = [p for p in body["series"] if p["price"] == body["spot"]][0]
+        # Delta in Prozent IST Cent je Dollar - die Zahl steht so in der Kurve.
+        self.assertEqual(erklaerung["delta_value"], int(round(spot["delta"])))
+        self.assertEqual(erklaerung["theta_value"], round(spot["theta"], 2))
+        self.assertEqual(erklaerung["theta_cents"],
+                         int(round(abs(spot["theta"]) * 100.0)))
 
     def test_the_series_covers_the_agreed_axis_and_contains_the_spot(self):
         _antwort, body = _get()

@@ -1378,13 +1378,35 @@
     return box;
   }
 
+  // Der Satz neben den Legende-Eintraegen: EINE Zeile, nur bei aktivem Overlay.
+  // Die Zahlen kommen fertig aus der Antwort (greek_explain) - hier wird nur
+  // formatiert, nie gerechnet.
+  function explainText(metric, detail) {
+    var werte = (detail && detail.greek_explain) || {};
+    if (metric === 'delta') {
+      return T('js.greeks.explain.delta', { delta: fmt(werte.delta_value, 0),
+        cents: fmt(werte.delta_value, 0) });
+    }
+    if (metric === 'theta') {
+      return T('js.greeks.explain.theta', { theta: signedDe(werte.theta_value, 2),
+        theta_cents: fmt(werte.theta_cents, 0) });
+    }
+    return T('js.greeks.explain.' + metric);
+  }
+
   // Die Legende steht unter dem Bild in Textform: sie nennt beide Linien in
   // Worten, und der Strich daneben ist das zweite Signal - nie allein die
   // Farbe, nie allein die Strichart. Der dritte Eintrag erscheint NUR, solange
-  // ein Overlay aktiv ist, und nennt die Metrik beim Namen.
-  function chartLegend(metric) {
+  // ein Overlay aktiv ist, und nennt die Metrik beim Namen; rechts daneben
+  // steht der eine Satz, der sie erklaert.
+  function chartLegend(metric, detail) {
     var legende = document.createElement('div');
     legende.className = 'detail-legend';
+    // Die Eintraege stecken in EINEM Block: so kann der Satz rechts daneben
+    // stehen und trotzdem als Ganzes unter die Eintraege rutschen, wenn der
+    // Platz nicht reicht - statt die Eintraege zu quetschen.
+    var liste = document.createElement('span');
+    liste.className = 'detail-legend-items';
     var eintraege = [['solid', T('js.chart.legend.today')],
       ['dashed', T('js.chart.legend.expiry')]];
     if (metric) {
@@ -1399,8 +1421,18 @@
       var wort = document.createElement('span');
       wort.textContent = paar[1];
       zeile.appendChild(wort);
-      legende.appendChild(zeile);
+      liste.appendChild(zeile);
     });
+    legende.appendChild(liste);
+    if (metric) {
+      var satz = document.createElement('span');
+      satz.className = 'detail-legend-note';
+      // aria-live: der Satz wechselt mit der Metrik, ohne dass der Fokus
+      // dorthin springt - ein Screenreader liest die Aenderung trotzdem vor.
+      satz.setAttribute('aria-live', 'polite');
+      satz.textContent = explainText(metric, detail);
+      legende.appendChild(satz);
+    }
     return legende;
   }
 
@@ -1601,7 +1633,7 @@
     function zeichne() {
       chartBox.textContent = '';
       chartBox.appendChild(chart(detail, overlayMetrik));
-      chartBox.appendChild(chartLegend(overlayMetrik));
+      chartBox.appendChild(chartLegend(overlayMetrik, detail));
     }
 
     var tasten = greekButtons(zeichne);

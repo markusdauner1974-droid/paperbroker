@@ -208,8 +208,10 @@
       outline-offset:2px}
     .detail-greeks button[aria-pressed="true"]{border-color:var(--primary);
       color:var(--primary)}
-    .detail-legend{display:flex;flex-wrap:wrap;gap:6px 20px;margin:8px 0 2px;
+    .detail-legend{display:flex;flex-wrap:wrap;align-items:flex-start;
+      gap:6px 16px;margin:8px 0 2px;
       font-family:var(--font-mono);font-size:10px;color:var(--muted)}
+    .detail-legend-items{display:inline-flex;flex-wrap:wrap;gap:6px 20px}
     .detail-legend-item{display:inline-flex;align-items:center;gap:8px}
     .detail-legend i{display:inline-block;width:24px;height:0;
       border-top:1.6px solid var(--ink)}
@@ -222,6 +224,13 @@
     .detail-legend i.greek{border-top:0;height:2px;
       background-image:repeating-linear-gradient(90deg,
         #4dc3ff 0 6px,transparent 6px 10px)}
+    /* Der Erklaersatz rechts neben den Eintraegen, in derselben Zeile: dezente
+       Schrift, ein Trennstrich als Abgrenzung. Er nimmt den freien Platz rechts
+       und bricht als GANZER Block unter die Eintraege, sobald seine Mindestbreite
+       nicht mehr daneben passt - nie ueberlappend, nie abdeckend. */
+    .detail-legend-note{flex:1 1 30ch;min-width:24ch;padding-left:12px;
+      border-left:1px solid rgba(250,250,250,.16);color:var(--faint);
+      font-size:10px;line-height:1.5}
     .detail-notes{font-size:11px;color:var(--faint);margin:14px 0 12px;
       max-width:90ch}
 

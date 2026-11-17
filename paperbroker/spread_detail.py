@@ -500,6 +500,19 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
             "theta": werte["theta"],
         })
 
+    # Die Erklaerzeile der Legende braucht ZAHLEN, keine Rechnung im Browser:
+    # der Griechen-Wert am Spot, so wie ihn die Kurve an dieser Stelle zeichnet.
+    # Delta in Prozent IST Cent je Dollar (per 100 Aktien gerechnet), deshalb
+    # genuegt fuer den Delta-Satz eine einzige Zahl.
+    spot_punkt = min(serie, key=lambda punkt: abs(punkt["price"] - spot))
+    delta_spot = spot_punkt["delta"]
+    theta_spot = spot_punkt["theta"]
+    greek_explain = {
+        "delta_value": None if delta_spot is None else int(round(delta_spot)),
+        "theta_value": _round2(theta_spot),
+        "theta_cents": None if theta_spot is None else int(round(abs(theta_spot) * 100.0)),
+    }
+
     notes = [
         t("detail.notes.pl"),
         t("detail.notes.today_curve", rate=f"{RATE * 100:.0f}"),
@@ -531,6 +544,7 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
         "breakeven": zahlen["breakeven"],
         "rr": zahlen["rr"],
         "position_greeks": position_greeks(long_quote, short_quote),
+        "greek_explain": greek_explain,
         "series": serie,
         "scenarios": szenarien,
         "notes": notes,

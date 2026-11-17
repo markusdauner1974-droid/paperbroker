@@ -336,6 +336,26 @@ class TestTheGreekCurves(unittest.TestCase):
             for name in sd.GREEKS:
                 self.assertEqual(round(punkt[name], 2), szenario[name], name)
 
+    def test_the_explanation_numbers_come_with_the_answer(self):
+        # Die Legende erklaert die aktive Metrik mit Zahlen aus der Antwort -
+        # 25 Delta heisst 25 Cent je Dollar, dafuer braucht es keine zweite Zahl.
+        body = detail(*call_spread())
+        erklaerung = body["greek_explain"]
+        punkt = [p for p in body["series"] if p["price"] == SPOT][0]
+        self.assertEqual(erklaerung["delta_value"], int(round(punkt["delta"])))
+        self.assertLessEqual(abs(erklaerung["delta_value"] - punkt["delta"]), 0.5)
+        self.assertEqual(erklaerung["theta_value"], round(punkt["theta"], 2))
+        self.assertEqual(erklaerung["theta_cents"],
+                         int(round(abs(punkt["theta"]) * 100.0)))
+
+    def test_without_a_volatility_the_explanation_has_no_number(self):
+        lang, kurz = call_spread()
+        lang.iv = None
+        erklaerung = detail(lang, kurz)["greek_explain"]
+        self.assertIsNone(erklaerung["delta_value"])
+        self.assertIsNone(erklaerung["theta_value"])
+        self.assertIsNone(erklaerung["theta_cents"])
+
     def test_without_a_volatility_the_greeks_stay_none(self):
         lang, kurz = call_spread()
         lang.iv = None
