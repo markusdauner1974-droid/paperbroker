@@ -18,7 +18,12 @@ SEITE = ("page", "page_route", "js", "support", "trend", "sort")
 #: Die zwei Spalten, deren englisches Wort laenger ist als die vereinbarten 20 %.
 #: Nicht "weggekuerzt", sondern benannt: die Tabelle ist 837 px breit, und ein
 #: gekuerztes Wort waere eine andere Entscheidung als eine gemeldete Abweichung.
-UEBER_LAENGE = frozenset({"page.table.col.close", "page.table.col.expiration"})
+UEBER_LAENGE = frozenset({
+    "page.table.col.close",
+    "page.table.col.expiration",
+    "page.table.col.next_report",
+    "page.table.col.required_move",
+})
 
 
 def _seite(book):
@@ -97,6 +102,21 @@ class TheEnglishPageDraftTest(unittest.TestCase):
             for key in keys:
                 with self.subTest(term=wort, key=key):
                     self.assertEqual(self.en[key], wort)
+
+    def test_the_word_expiry_is_refused(self):
+        """Der Begriff heisst 'Expiration' - auch dort, wo 'Expiry' kuerzer waere.
+
+        Die Entscheidung des Eigentuemers vom 17.11.2026 steht in ``TERMS``; hier
+        wird sie durchgesetzt. Schluesselnamen sind davon unberuehrt
+        (``js.detail.expiry_label`` heisst weiter so - er ist keine Anzeige).
+        """
+        self.assertIn("Expiration", glossary.TERMS)
+        for key, wert in self.en.items():
+            texte = wert.values() if isinstance(wert, dict) else [wert]
+            for satz in texte:
+                with self.subTest(key=key):
+                    self.assertNotIn("Expiry", satz)
+                    self.assertNotIn("expiry", satz)
 
     def test_no_german_word_survives_in_the_draft(self):
         """Ein deutscher Rest faellt in der Tabelle auf - hier faellt er frueher."""

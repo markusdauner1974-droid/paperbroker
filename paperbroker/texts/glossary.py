@@ -65,6 +65,11 @@ TERMS: dict[str, str] = {
     "Bid-Ask": "the two sides of the quote; both short forms are English",
     "Open Interest": "exchange field, no German equivalent in use",
     "IV": "implied volatility, used as an abbreviation in both languages",
+    "Expiration": (
+        "one word for the concept, decided by the owner on 17.11.2026: 'Expiry' is "
+        "refused even where a column would be narrower - a reader who meets two "
+        "words assumes two things"
+    ),
     "R/R": "risk to reward, a ratio label and not a sentence",
     "Delta": "greek name, never translated",
     "Bid": "the buy side of the quote - the short form is English in both books",
