@@ -63,8 +63,13 @@ GET /?day=2026-11-16&lang=en
 5. **The spread.** Vertical spreads are formed from that expiry (`bull_call_debit` is the default), and a
    pair survives only while `0 < debit < width`, the long delta is at least `min_long_delta=20`, the debit
    is at least `min_net_debit=0.5` and **R/R ≥ `rr_min` 2.0** (net, fees included).
-6. **The ranking.** Surviving rows are sorted by net return (`net_return_pct`) descending, ties by long
-   strike — the same chain always produces the same order.
+6. **The ranking.** The table is ordered by **hit rate descending** (`result_sort_key`). A row **without** a
+   measured hit rate (`null` — too short a history, a failing source) stands behind every measured one; those
+   rows are ordered among themselves by the same rule, because an unmeasured frequency is not a bad one.
+   Ties: the smaller `|required_move_pct|` first (less to travel at the same frequency), then the bigger
+   `|gap_pct|`, then the symbol — so the order is total and the same day always produces the same list.
+   *Inside* one symbol the pairs are ranked by net return (`net_return_pct`, ties by the two strikes): that
+   decides which structure represents the row, not where the row stands.
 
 ### The table (17 columns)
 
