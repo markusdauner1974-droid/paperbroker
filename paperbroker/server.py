@@ -303,7 +303,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
                 # gerade nicht lesbar ist.
                 satz = texts.t(
                     "page.error.unknown_language",
-                    requested=str(fehler),
+                    requested=fehler.code,
                     available=", ".join(texts.languages()),
                 )
                 return (
