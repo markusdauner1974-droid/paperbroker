@@ -47,6 +47,17 @@ class ThePageFollowsTheLanguageTest(unittest.TestCase):
             with self.subTest(code=code):
                 self.assertIn(code, rumpf, "die verfuegbaren Kuerzel stehen da")
 
+    def test_the_refusal_names_the_code_once_and_lists_what_we_have(self):
+        """Der 400-Satz nennt das Kuerzel - nicht die Ausnahme.
+
+        Ein frueherer Entwurf setzte ``str(fehler)`` ein und schrieb damit
+        "Unbekannte Sprache 'unknown language 'xx''" - die Ausnahme im Satz.
+        """
+        _client_obj, antwort = _seite(lang="xx")
+        rumpf = antwort.get_data(as_text=True)
+        self.assertIn("<p>Unbekannte Sprache &#39;xx&#39;. Verfügbar: de, en.</p>", rumpf)
+        self.assertNotIn("unknown language", rumpf)
+
     def test_a_broken_code_is_refused_too(self):
         # " en" und "" sind ABSICHTLICH nicht dabei: ``resolve_language`` schneidet
         # Leerraum ab und nimmt ein leeres Feld als "kein Wunsch". Nur ein Kuerzel,
