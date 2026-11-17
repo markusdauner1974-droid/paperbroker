@@ -241,6 +241,78 @@ class GlossaryTest(unittest.TestCase):
                 for code in texts.languages():
                     self.assertEqual(texts.book(code).get(key, expected), expected)
 
+class TheTermsAreTheSameInEveryBookTest(CatalogueTestCase):
+    """Ein Fachbegriff wird nicht uebersetzt - auch nicht versehentlich.
+
+    Der Strukturcheck meldet es, nicht nur ein Test: eine Uebersetzung, die
+    "Strike" zu "Ausuebungspreis" macht, ist ein Befund und keine Geschmacksfrage.
+    """
+
+    def test_a_term_that_reads_differently_is_a_structural_problem(self):
+        self.prime({
+            "de": ({"js.legs.col.strike": "Strike"}, ()),
+            "en": ({"js.legs.col.strike": "Exercise price"}, ("js",)),
+        })
+        self.assertIn(
+            "en: js.legs.col.strike must read as in de (a term, not a sentence)",
+            texts.structure_problems(),
+        )
+
+    def test_a_term_in_an_undeclared_section_is_no_problem(self):
+        """Nicht deklariert heisst: faellt ganz auf die Quelle zurueck - also gleich."""
+        self.prime({
+            "de": ({"js.legs.col.strike": "Strike"}, ()),
+            "en": ({}, ()),
+        })
+        self.assertEqual(texts.structure_problems(), [])
+
+    def test_every_identical_key_exists_in_the_source_book(self):
+        source = texts.book(registry.FALLBACK_LANGUAGE)
+        for key in glossary.IDENTICAL_KEYS:
+            with self.subTest(key=key):
+                self.assertIn(key, source)
+
+    def test_every_identical_key_names_a_term_we_have_a_reason_for(self):
+        """Ein Eintrag ohne Begruendung in TERMS ist ein Fehler, keine Abkuerzung."""
+        for key in glossary.IDENTICAL_KEYS:
+            with self.subTest(key=key):
+                wert = texts.book(registry.FALLBACK_LANGUAGE)[key]
+                self.assertIn(
+                    wert, glossary.TERMS,
+                    f"{key} traegt {wert!r}, das in TERMS keine Begruendung hat",
+                )
+
+
+class OneConceptOneWordTest(CatalogueTestCase):
+    """Die Terminologie-Entscheidung des Eigentuemers vom 17.11.2026.
+
+    Deutsch behaelt seine zwei Schreibweisen (Tabelle "maximaler Verlust", Grafik
+    "max. Verlust"). Englisch darf das nicht: wer zwei Woerter sieht, vermutet zwei
+    Dinge. Geprueft wird nur, wo das Zielbuch den Abschnitt deklariert hat.
+    """
+
+    def test_the_english_book_uses_one_word_per_concept(self):
+        for wort, keys in glossary.UNIFORM_TERMS.items():
+            with self.subTest(term=wort):
+                for code in texts.languages():
+                    if code == registry.FALLBACK_LANGUAGE:
+                        continue
+                    buch = texts.book(code)
+                    vorhanden = [k for k in keys if k in buch]
+                    if not vorhanden:
+                        continue          # Abschnitt nicht uebersetzt - Rueckfall
+                    self.assertEqual(len(vorhanden), len(keys),
+                                     f"{code}: nur ein Teil von {keys} ist uebersetzt")
+                    for key in keys:
+                        self.assertEqual(buch[key], wort,
+                                         f"{code}/{key} muss {wort!r} heissen")
+
+    def test_german_keeps_its_two_spellings(self):
+        buch = texts.book(registry.FALLBACK_LANGUAGE)
+        self.assertEqual(buch["page.table.col.max_loss"], "maximaler Verlust")
+        self.assertEqual(buch["js.figures.max_loss"], "max. Verlust")
+
+
 class PluralMatrixTest(CatalogueTestCase):
     """Die Mehrfach-Matrix, festgenagelt - nicht nur "geht nicht kaputt".
 

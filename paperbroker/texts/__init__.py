@@ -34,6 +34,7 @@ import importlib
 from collections.abc import Iterator
 from typing import Any
 
+from . import glossary
 from .registry import DEFAULT_LANGUAGE, FALLBACK_LANGUAGE, LANGUAGES, PLURAL_RULES
 
 __all__ = [
@@ -244,6 +245,10 @@ def structure_problems() -> list[str]:
     """
     problems: list[str] = []
     reference = sections(FALLBACK_LANGUAGE)
+    #: ``reference`` maps family -> keys; the term check needs the flat set AND
+    #: the values, so it reads the source book itself.
+    reference_keys = {key for keys in reference.values() for key in keys}
+    source_book = book(FALLBACK_LANGUAGE)
     for code in languages():
         if code == FALLBACK_LANGUAGE:
             continue
@@ -257,4 +262,13 @@ def structure_problems() -> list[str]:
             if family in declared:
                 for key in sorted(expected - actual):
                     problems.append(f"{code}: missing key {key} (section {family})")
+        # A term this project never translates has to read the SAME in every book.
+        # Reported here, not only in a test, so the structural gate sees it too.
+        other_book = book(code)
+        for key in glossary.IDENTICAL_KEYS:
+            if key in reference_keys and key in other_book:
+                if other_book[key] != source_book[key]:
+                    problems.append(
+                        f"{code}: {key} must read as in {FALLBACK_LANGUAGE} "
+                        f"(a term, not a sentence)")
     return problems
