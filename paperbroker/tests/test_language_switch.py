@@ -91,6 +91,28 @@ class TheTwoEndpointsFollowTheLanguageTest(_ClientTestCase):
         self.assertNotIn(texts.t("gap.notes.rr", language="de"), englisch)
         self.assertEqual(len(deutsch), len(englisch))
 
+    def test_a_reason_from_a_worker_thread_is_english_too(self):
+        """Der Beleg fuer Kodys ThreadPool-Befund, end-to-end.
+
+        Der Ausschlussgrund dieser Antwort entsteht im Arbeiter des Trichters, nicht
+        im Anfrage-Thread; ohne ``texts.in_language`` stuende hier Deutsch in einer
+        englischen Antwort.
+        """
+        kalender, historie, ketten, termine = funnel_fixture()
+        client = funnel_client(kalender, historie, ketten, termine)
+
+        def ausschluss(lang):
+            antwort = client.get(LISTE, query_string={"day": FUNNEL_DAY, "lang": lang})
+            self.assertEqual(antwort.status_code, 200)
+            gruende = antwort.get_json()["excluded"]
+            self.assertTrue(gruende, "der Aufbau muss mindestens einen Ausschluss tragen")
+            return gruende[0]["message"]
+
+        deutsch, englisch = ausschluss("de"), ausschluss("en")
+        self.assertEqual(deutsch, texts.t("funnel.earnings.none_in_window", language="de"))
+        self.assertEqual(englisch, texts.t("funnel.earnings.none_in_window", language="en"))
+        self.assertNotEqual(deutsch, englisch)
+
     def test_the_switch_never_touches_the_default_answer(self):
         """Ohne ``lang`` und mit ``lang=de`` muss dieselbe Antwort kommen.
 
@@ -234,6 +256,47 @@ class AWorkerThreadDoesNotInheritTheLanguageTest(unittest.TestCase):
                 pool.submit(texts.in_language("en", texts.active_language)).result()
             self.assertEqual(texts.active_language(), "en")
         self.assertEqual(texts.active_language(), registry.DEFAULT_LANGUAGE)
+
+
+class TheNumberInASentenceFollowsTheSentenceTest(unittest.TestCase):
+    """Kody #121: '12,5 %' in einem englischen Satz ist ein Fehler.
+
+    Die Zahl selbst bleibt Datum - der Rumpf traegt weiter seine Floats, und das
+    CSV-Format ist unberuehrt. Nur ihre SCHREIBWEISE im Satz gehoert zur Sprache.
+    """
+
+    def test_the_decimal_separator_follows_the_sentence(self):
+        from .. import gap_funnel as gf
+
+        with texts.use_language("de"):
+            self.assertIn("12,5 %", gf.move_too_far_message(12.5, 10.0))
+        with texts.use_language("en"):
+            self.assertIn("12.5 %", gf.move_too_far_message(12.5, 10.0))
+        self.assertEqual(texts.active_language(), texts.registry.DEFAULT_LANGUAGE)
+
+    def test_the_thousands_grouping_follows_the_sentence(self):
+        from .. import gap_funnel as gf
+
+        with texts.use_language("de"):
+            self.assertEqual(gf._tausender(45000), "45 000")
+        with texts.use_language("en"):
+            self.assertEqual(gf._tausender(45000), "45,000")
+
+    def test_a_whole_number_keeps_no_dead_zeros_in_either_language(self):
+        from .. import gap_funnel as gf
+
+        for code in texts.languages():
+            with self.subTest(language=code), texts.use_language(code):
+                self.assertEqual(gf._zahl(20.0), "20")
+
+    def test_the_payload_still_carries_the_plain_float(self):
+        """Die Zahl im Rumpf ist Datum - der Satz ist der einzige Ort mit Schreibweise."""
+        from .. import gap_funnel as gf
+
+        with texts.use_language("en"):
+            satz = gf.move_too_far_message(12.5, 10.0)
+        self.assertIn("12.5", satz)
+        self.assertNotIn("12,5", satz)
 
 
 if __name__ == "__main__":
