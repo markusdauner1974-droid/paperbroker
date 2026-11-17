@@ -141,10 +141,48 @@ TEXTS: dict[str, object] = {
     "funnel.earnings.unreadable": "The earnings date could not be read ({error}).",
     "funnel.budget.timeout": "The check did not finish within the time budget.",
     "funnel.budget.failed": "The check failed ({error}).",
+    # --- gap_spreads.* ------------------------------------------------------ #
+    # routes/gap_spreads.py: the notes and the refusal reasons of the two
+    # endpoints that follow the language. Codes and thresholds arrive as text
+    # variables; the numbers inside them keep their own writing (see _zahl).
+    "gap_spreads.note.finnhub_missing": (
+        "Without FINNHUB_API_KEY no earnings date can be read - every candidate "
+        "then ends at no_next_earnings."
+    ),
+    "gap_spreads.note.deadline": (
+        "{count} candidate(s) were not finished within {seconds} s "
+        "(deadline_exceeded)."
+    ),
+    "gap_spreads.error.invalid_symbol": "{symbol} is not a valid symbol.",
+    "gap_spreads.error.incomplete_structure": (
+        "expiration, long and short name ONE structure - all three or none "
+        "(given: {given})."
+    ),
+    "gap_spreads.error.not_in_calendar": (
+        "{symbol} is not in the reaction calendar on {day} - there is no row for "
+        "this symbol on that day."
+    ),
+    "gap_spreads.error.gap_not_measurable": (
+        "The gap of {symbol} could not be measured on {day} ({code})."
+    ),
+    "gap_spreads.error.no_candidate": (
+        "{symbol} is not a candidate of the funnel on {day} (threshold "
+        "{threshold} %, turnover >= {turnover} USD, price >= {price} USD)."
+    ),
+    "gap_spreads.error.chain_unreadable": (
+        "The option chain of {symbol} cannot be read."
+    ),
+    "gap_spreads.error.expiration_not_listed": (
+        "The expiration {expiration} is not listed for {symbol} (listed: {listed})."
+    ),
+    "gap_spreads.error.strike_missing": (
+        "The strike {strike} is missing in the chain of {symbol} for the expiration "
+        "{expiration}."
+    ),
 }
 
 #: Sections of this book that are translated completely. The structure check
 #: treats every listed section as a promise: one missing key turns it red.
 #: A section that is not listed falls back to German as a whole, so a
 #: half-translated section is never shipped.
-SECTIONS: tuple[str, ...] = ("detail", "funnel", "gap")
+SECTIONS: tuple[str, ...] = ("detail", "funnel", "gap", "gap_spreads")

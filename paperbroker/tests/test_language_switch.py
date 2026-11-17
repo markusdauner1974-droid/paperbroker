@@ -299,5 +299,44 @@ class TheNumberInASentenceFollowsTheSentenceTest(unittest.TestCase):
         self.assertNotIn("12,5", satz)
 
 
+class TheRefusalReasonsSpeakTheRequestedLanguageTest(unittest.TestCase):
+    """Die Fehlertexte der beiden umschaltbaren Endpunkte - ueber HTTP belegt.
+
+    Sie reisen als ``message`` im Fehlerrumpf; ein Test, der nur den Katalog liest,
+    wuerde nicht merken, wenn die Route den Satz weiter selbst baut.
+    """
+
+    def setUp(self):
+        self.client = detail_client()
+
+    def _message(self, pfad, parameter):
+        antwort = self.client.get(pfad, query_string=parameter)
+        return antwort.status_code, antwort.get_json()["message"]
+
+    def test_an_incomplete_structure_is_refused_in_the_requested_language(self):
+        parameter = {"symbol": "AAA", "day": "2026-11-12", "expiration": "2027-03-19"}
+        de = self._message(DETAIL, {**parameter, "lang": "de"})
+        en = self._message(DETAIL, {**parameter, "lang": "en"})
+        self.assertEqual(de[0], 400)
+        self.assertEqual(de[1], texts.t("gap_spreads.error.incomplete_structure",
+                                        language="de", given="expiration"))
+        self.assertEqual(en[1], texts.t("gap_spreads.error.incomplete_structure",
+                                        language="en", given="expiration"))
+        self.assertNotEqual(de[1], en[1])
+
+    def test_a_symbol_outside_the_calendar_is_refused_in_the_requested_language(self):
+        parameter = {"symbol": "ZZZ", "day": "2026-11-12"}
+        de = self._message(DETAIL, {**parameter, "lang": "de"})
+        en = self._message(DETAIL, {**parameter, "lang": "en"})
+        self.assertEqual(de[0], 404)
+        self.assertIn("Reaktionskalender", de[1])
+        self.assertIn("reaction calendar", en[1])
+
+    def test_the_default_answer_keeps_the_german_reason(self):
+        parameter = {"symbol": "ZZZ", "day": "2026-11-12"}
+        self.assertEqual(self._message(DETAIL, parameter)[1],
+                         self._message(DETAIL, {**parameter, "lang": "de"})[1])
+
+
 if __name__ == "__main__":
     unittest.main()
