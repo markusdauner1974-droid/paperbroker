@@ -36,6 +36,7 @@ from .quote_age import (
     STATE_UNCHECKED,
 )
 from .quotes import OptionQuote
+from .texts import t
 
 _PENNY_MID_THRESHOLD = 1.0  # $ mid at/below which the absolute spread bound applies
 
@@ -1293,8 +1294,8 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
                      and (criteria.dte_max is None or _laufzeit(q) <= criteria.dte_max)]
         if (chain or []) and not gefiltert:
             tage = sorted({_laufzeit(q) for q in chain if _laufzeit(q) is not None})
-            return [], [(None, f"Verfall: Laufzeit {tage} Tage außerhalb "
-                              f"[{criteria.dte_min}, {criteria.dte_max}]")]
+            return [], [(None, t("exclusion.dte_outside", days=tage,
+                                 low=criteria.dte_min, high=criteria.dte_max))]
         chain = gefiltert
     pair_mode, _mode_error = resolve_pair_mode(criteria)
     # an adjacent search takes no width: the number is reported as ignored by
@@ -1321,7 +1322,8 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
                 # pays; credit >= width means the market pays more than the
                 # spread can ever lose - an incoherent quote pair, no trade.
                 dropped.append((pair, Reason(
-                    f"Credit {credit} außerhalb (0, {pair.strike_width}) - kein gültiger Credit",
+                    t("exclusion.credit_out_of_range",
+                      credit=credit, width=pair.strike_width),
                     "credit_out_of_range")))
                 continue
         # D18: a construction that can only lose after the costs is not a hit. Only with
@@ -1355,7 +1357,8 @@ def vertical_spreads(chain, criteria, strategy=None, option_type=None, now_fn=No
             # break-even" built from it is meaningless. Such a construction is
             # not a result.
             dropped.append((pair, Reason(
-                f"Debit {pair.net_debit} außerhalb (0, {pair.strike_width}) - kein Gewinn möglich",
+                t("exclusion.debit_out_of_range",
+                  debit=pair.net_debit, width=pair.strike_width),
                 "debit_out_of_range")))
             continue
         reason = (leg_drop_reason(pair.long, criteria, now_fn)
