@@ -179,10 +179,273 @@ TEXTS: dict[str, object] = {
         "The strike {strike} is missing in the chain of {symbol} for the expiration "
         "{expiration}."
     ),
+    # --- page.* ------------------------------------------------------------- #
+    # templates/screen.html: the page itself. lede_before/between/after keep the
+    # line break and the spaces of the German template - they wrap around numbers.
+    "page.detail.summary": "Spread details",
+    "page.excluded.summary": "Exclusions",
+    "page.failures.summary": "Failures",
+    "page.foot.feed_note": "CBOE quotes delayed – about 15 minutes behind real time.",
+    "page.form.day_label": "Reaction day",
+    "page.form.expand_all": "expand all",
+    "page.form.heading": "Check a reaction day",
+    "page.form.run": "Scan",
+    "page.head.lede_after": " %.",
+    "page.head.lede_before": "Earnings gap, options, expiration after the next report.\n    Allowed: R/R ≥ ",
+    "page.head.lede_between": " and a required move up to\n    ",
+    "page.head.title": "Gap spread funnel",
+    "page.state.no_run": "No scan has run yet",
+    "page.table.col.chance": "Score",
+    "page.table.col.close": "Close",
+    "page.table.col.dte": "DTE",
+    "page.table.col.expiration": "Expiration",
+    "page.table.col.gap": "Gap percent",
+    "page.table.col.hit_rate": "Hit rate",
+    "page.table.col.max_loss": "Max loss",
+    "page.table.col.max_profit": "Max profit",
+    "page.table.col.next_report": "Next earnings report",
+    "page.table.col.number": "No.",
+    "page.table.col.options": "Options",
+    "page.table.col.required_move": "Required move %",
+    "page.table.col.rr": "R/R",
+    "page.table.col.strategy": "Strategy",
+    "page.table.col.strikes": "Strikes (Long / Short)",
+    "page.table.col.symbol": "Symbol",
+    "page.table.col.volatility": "Volatility",
+    # --- page_route.* ------------------------------------------------------ #
+    # routes/page.py: hints, badges and refusal reasons of the legacy page answer.
+    # Alt payloads stay German by contract; these values are for the switch.
+    "page_route.confirmation.confirmed": "confirmed",
+    "page_route.confirmation.estimated": "estimated",
+    "page_route.earnings.note.days_failed": "{count} days could not be fetched",
+    "page_route.earnings.note.last_state": "last known state, source is not responding",
+    "page_route.earnings.note.no_source": "no earnings source configured",
+    "page_route.earnings.note.one_day_failed": "one day could not be fetched",
+    "page_route.earnings.note.source_silent": "source is not responding",
+    "page_route.error.expiration_not_listed": "Expiration is not listed for this ticker.",
+    "page_route.error.invalid_expiration": "Invalid expiration - YYYY-MM-DD.",
+    "page_route.error.invalid_ticker": "Invalid ticker - 1-6 letters A-Z.",
+    "page_route.error.market_data": "Market data error - details in the server log.",
+    "page_route.error.source_unreadable": "Source unreadable - details in the server log.",
+    "page_route.failure.invalid_json": "source returns no JSON",
+    "page_route.failure.invalid_payload": "source returns unusable data",
+    "page_route.failure.recent_failure": "last attempt just failed",
+    "page_route.failure.source_blocked": "source blocks the request",
+    "page_route.failure.source_reports": "source reports {code}",
+    "page_route.failure.source_throttled": "source throttles the requests",
+    "page_route.failure.source_unreachable": "source unreachable",
+    "page_route.feed_note.cboe": "CBOE quotes delayed – about 15 minutes behind real time",
+    "page_route.hint.unknown_params": "Unknown parameters ignored: {names} (available: {fields})",
+    "page_route.option_note.hidden": "{count} symbols without listed options hidden",
+    "page_route.option_note.hidden_none": "no symbol without listed options hidden",
+    "page_route.option_note.stale_suffix": " (option list from the last known state)",
+    "page_route.option_note.unavailable": "option list not available - unfiltered",
+    "page_route.session.after": "after hours",
+    "page_route.session.before": "pre-market",
+    "page_route.status.unknown_time": "time unknown",
+    # --- js.* -------------------------------------------------------------- #
+    # static/gap_funnel.js: the injected block. {placeholders} are filled by the
+    # script itself, so their names may not change.
+    "js.cell.chance.title": (
+        "Score = hit rate × R/R; an upper bound of the expected value, not a promise - "
+        "sorted by hit rate"
+    ),
+    "js.cell.close.title": "closing price of the reaction day",
+    "js.cell.dte.title": "calendar days to expiration",
+    "js.cell.expiration.title": "expiration after the next report",
+    "js.cell.gap.title": "gap: close of the reaction day against the close before it",
+    "js.cell.hit.title": (
+        "Percentage of historical {sessions}-trading-day windows in which the price moved "
+        "by at least the required amount (window length in trading days; adjacent DTE "
+        "value in calendar days)"
+    ),
+    "js.cell.max_loss.title": "max loss per unit",
+    "js.cell.max_profit.title": "max profit per unit",
+    "js.cell.move.title": "move to the break-even of the spread, in percent of the reaction day's close",
+    "js.cell.options.bid_ask_max": "Bid-Ask max {spread} %",
+    "js.cell.options.bid_ask_pair": "Bid-Ask {long} % / {short} %",
+    "js.cell.options.oi": "OI {long} / {short}",
+    "js.cell.options.title_one_leg": (
+        "open interest of both legs (long / short) · bid-ask mark-up of the worse leg in "
+        "percent of its mid price"
+    ),
+    "js.cell.options.title_per_leg": (
+        "open interest of both legs (long / short) · bid-ask mark-up in percent of the "
+        "mid price, per leg"
+    ),
+    "js.cell.rank.many": "expand the {count} alternatives of this row",
+    "js.cell.rank.one": "expand the single alternative of this row",
+    "js.cell.report.title_earnings_day": "report on the reaction day: {date}",
+    "js.cell.report.title_next": "next known earnings report",
+    "js.cell.rr.title": "profit to loss at expiration",
+    "js.cell.strikes.sub": "Long / Short",
+    "js.cell.strikes.title": "Long {long} · Short {short}",
+    "js.cell.volatility.day": "day {value} %",
+    "js.cell.volatility.title": "volatility: annualized dispersion of daily returns; below it the mean daily move",
+    "js.cell.windows": "n={count}",
+    "js.cell.windows_sessions": "{count} TD",
+    "js.chart.aria": "P&L of {symbol}: solid today, dashed at expiration",
+    "js.chart.axis.pl": "P&L (USD per spread)",
+    "js.chart.axis.price": "Price",
+    "js.chart.desc": (
+        "Solid line: today's model-based P&L. Dashed line: P&L at expiration. Vertical "
+        "line: price {spot}. Horizontal axis: price. Vertical axis: P&L in US dollars per "
+        "spread."
+    ),
+    "js.chart.legend.expiry": "at expiration",
+    "js.chart.legend.today": "today (model)",
+    "js.chart.spot": "Spot {value}",
+    "js.chart.title": "P&L per spread against the price — today and at expiration",
+    "js.counts.candidates": {
+        "one": "{n} candidate",
+        "other": "{n} candidates",
+    },
+    "js.counts.expiry": "{n} with a matching expiration",
+    "js.counts.gaps": {
+        "one": "{n} gap measured",
+        "other": "{n} gaps measured",
+    },
+    "js.counts.move": "{n} with a required move up to {cap} %",
+    "js.counts.next_earnings": "{n} with a next earnings date",
+    "js.counts.rr": "{n} with R/R at least {rr}",
+    "js.counts.shown": "{n} shown",
+    "js.counts.turnover": "{n} above the turnover hurdle",
+    "js.detail.chain_unavailable": "The option chain of this symbol cannot be read.",
+    "js.detail.chart_heading": "P&L against the price — today and at expiration",
+    "js.detail.expiry_label": "Expiration {expiration}",
+    "js.detail.failed": "Detail for {symbol} failed: {message}",
+    "js.detail.leg_not_listed": "One leg of this spread is not in the chain.",
+    "js.detail.legs_heading": "Both legs",
+    "js.detail.loading": "Detail for {symbol} — loading …",
+    "js.detail.method": "Method: {sentence}",
+    "js.detail.no_candidate": "This symbol is not a candidate of the funnel on this day.",
+    "js.detail.no_expiry": "No listed expiration lies after the next report.",
+    "js.detail.no_next_earnings": "No next earnings date is known for this symbol.",
+    "js.detail.scenarios_heading": "Scenarios",
+    "js.detail.subtitle": "{strategy} · Expiration {expiration}",
+    "js.detail.summary": "Spread details",
+    "js.detail.title": "Detail for {symbol}",
+    "js.detail.unknown_symbol": "There is no row for this symbol on this day.",
+    "js.direction.down": "down",
+    "js.direction.unknown": "unknown",
+    "js.direction.up": "up",
+    "js.empty.no_candidate": "No candidate — {parts}.",
+    "js.error.invalid_day": "No valid date — please give a reaction day in the format YYYY-MM-DD.",
+    "js.error.not_json": "The answer was not JSON.",
+    "js.error.run_failed": "Run for {day} failed: {message}",
+    "js.expand.close": "collapse all",
+    "js.expand.open": "expand all",
+    "js.figures.breakeven": "Break-even",
+    "js.figures.debit": "Debit",
+    "js.figures.hit_rate": "Hit rate",
+    "js.figures.max_loss": "Max loss",
+    "js.figures.max_profit": "Max profit",
+    "js.figures.required_move": "Required move",
+    "js.figures.rr": "R/R",
+    "js.figures.volatility": "Volatility",
+    "js.foot.chance": (
+        "Score = hit rate × R/R; because the hit rate measures reaching the break-even, "
+        "this is an upper bound of the expected value, not a promise. Sorted by hit rate."
+    ),
+    "js.foot.chance_method": (
+        "Score = hit rate × R/R; because the hit rate measures reaching the break-even, "
+        "this is an upper bound of the expected value, not a promise. Still sorted by hit "
+        "rate."
+    ),
+    "js.foot.frequency": "A frequency, not a probability.",
+    "js.foot.hit_sentence": (
+        "Hit rate = share of past windows of {sessions} trading days (≈ {calendar} "
+        "calendar days to expiration) in which the price moved by at least the required "
+        "amount; measured on {windows} windows from at most 520 daily bars."
+    ),
+    "js.history.source_failed": "source unreadable",
+    "js.history.too_short": "too little history",
+    "js.legs.col.ask": "Ask",
+    "js.legs.col.bid": "Bid",
+    "js.legs.col.delta": "Delta",
+    "js.legs.col.iv": "IV",
+    "js.legs.col.mid": "Mid",
+    "js.legs.col.oi": "OI",
+    "js.legs.col.side": "Side",
+    "js.legs.col.strike": "Strike",
+    "js.legs.side.long": "Long",
+    "js.legs.side.short": "Short",
+    "js.liquidity.full": "fully liquid",
+    "js.liquidity.thin": "thin",
+    "js.list.excluded": "Exclusions",
+    "js.list.failures": "Failures",
+    "js.list.summary": "{label} ({count})",
+    "js.move.fall": "fall",
+    "js.move.rise": "rise",
+    "js.plural.excluded": {
+        "one": "{n} exclusion",
+        "other": "{n} exclusions",
+    },
+    "js.plural.failure": {
+        "one": "{n} failure",
+        "other": "{n} failures",
+    },
+    "js.plural.rows": {
+        "one": "{n} row",
+        "other": "{n} rows",
+    },
+    "js.reason.chain_unavailable": "option chain unreadable",
+    "js.reason.no_expiry_after_earnings": "no expiration after the next report",
+    "js.reason.no_next_earnings": "no next earnings date known",
+    "js.reason.no_spread_ge_rr": "no spread with R/R at least {rr}",
+    "js.reason.not_optionable": "no listed options",
+    "js.reason.unknown": "reason unknown",
+    "js.rr_hurdle.fallback": "1 : 2",
+    "js.scenarios.col.change": "Change (%)",
+    "js.scenarios.col.delta": "Delta",
+    "js.scenarios.col.gamma": "Gamma",
+    "js.scenarios.col.pl": "P&L",
+    "js.scenarios.col.theta": "Theta",
+    "js.scenarios.col.underlying": "Underlying",
+    "js.scenarios.col.vega": "Vega",
+    "js.stale": (
+        "Calendar data is outdated — these rows are based on an older version of the "
+        "calendar and may still change."
+    ),
+    "js.state.failed": "Run failed",
+    "js.state.not_started": "No run started",
+    "js.state.ready": "As of {clock} · {rows}",
+    "js.state.running": "Run for {day} … {seconds} s",
+    "js.strategy.bear_put_debit": "Bear Put",
+    "js.strategy.bull_call_debit": "Bull Call",
+    # --- support.* ---------------------------------------------------------- #
+    # view_support.py: parser refusals - the field name arrives as {field}.
+    "support.parse.choice": "{field}: one of {allowed} expected (got: '{text}').",
+    "support.parse.comma": "{field}: please use the dot as decimal separator (e.g. 7.5 instead of '{text}').",
+    "support.parse.finite": "{field}: '{text}' is not a finite number.",
+    "support.parse.flag": "{field}: '0' or '1' expected (got: '{text}').",
+    "support.parse.integer": "{field}: '{text}' is not an integer.",
+    "support.parse.number": "{field}: '{text}' is not a number.",
+    # --- trend.* ------------------------------------------------------------ #
+    "trend.unavailable.label": "Trend not available",
+    "trend.unavailable.note": "Trend source unreachable - the list is displayed without a trend check.",
+    # --- sort.* ------------------------------------------------------------- #
+    "sort.be_asc": "BE distance (nearest first)",
+    "sort.max_loss_asc": "Max loss (smallest first)",
+    "sort.net_profit_desc": "Net profit potential (after costs)",
+    "sort.net_ratio_desc": "Net payout ratio (after costs)",
+    "sort.none": "Chain order",
+    "sort.rendite_desc": "Gross return (max. profit / max. loss)",
 }
 
 #: Sections of this book that are translated completely. The structure check
 #: treats every listed section as a promise: one missing key turns it red.
 #: A section that is not listed falls back to German as a whole, so a
 #: half-translated section is never shipped.
-SECTIONS: tuple[str, ...] = ("detail", "funnel", "gap", "gap_spreads")
+SECTIONS: tuple[str, ...] = (
+    "detail",
+    "funnel",
+    "gap",
+    "gap_spreads",
+    "js",
+    "page",
+    "page_route",
+    "sort",
+    "support",
+    "trend",
+)
