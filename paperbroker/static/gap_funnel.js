@@ -149,6 +149,16 @@
   var detailGeneration = 0;  // dasselbe fuer das Detail eines Spreads
   var groups = [];         // die aufklappbaren Gruppen der aktuellen Tabelle
 
+  // Hoechstens EINE Griechen-Kurve liegt ueber den beiden G&V-Kurven; null
+  // heisst "kein Overlay" - und genau dann sieht das Bild aus wie bisher.
+  var overlayMetrik = null;
+
+  // Die vier Metriken, in der Reihenfolge der Tasten. Der Name kommt aus dem
+  // Katalog; Taste, rechte Achse und Legende lesen dieselbe Zeichenkette.
+  var GREEKS = ['delta', 'gamma', 'vega', 'theta'];
+
+  function greekWord(metric) { return T('js.greeks.' + metric); }
+
   function n(value) { return typeof value === 'number' && isFinite(value) ? value : 0; }
 
   function num(value) { return typeof value === 'number' && isFinite(value); }
@@ -816,6 +826,7 @@
   function clearDetail() {
     detailGeneration += 1;             // eine laufende Anfrage darf nicht mehr zeichnen
     letztesDetail = null;
+    overlayMetrik = null;              // ein neues Detail beginnt ohne Overlay
     if (!el.detail) return;
     el.detail.hidden = true;
     el.detail.open = false;
@@ -1044,6 +1055,18 @@
     return Math.abs(abstand - Math.round(abstand)) > 1e-9 ? 1 : 0;
   }
 
+  // Dieselbe Frage fuer die Griechen-Achse: dort liegen die Stufen oft unter
+  // 1 (Gamma je Vol-Punkt), und "0,0" waere eine falsche Zahl. Eine Stufe von
+  // 0,05 braucht zwei Stellen, eine von 0,005 drei.
+  function tickStellen(ticks) {
+    if (ticks.length < 2) return 2;
+    var abstand = Math.abs(ticks[1] - ticks[0]);
+    if (abstand >= 1) return 0;
+    if (abstand >= 0.1) return 1;
+    if (abstand >= 0.01) return 2;
+    return 3;
+  }
+
   // G&V-Ticks: runde Stufen (1, 2, 2,5, 5, 10 x Zehnerpotenz), damit die
   // Beschriftung "0" und "100" heisst und nicht "-7" und "+56". Die Null ist
   // immer dabei, weil die Nulllinie die eine wichtige Linie im Bild ist.
@@ -1074,12 +1097,29 @@
     return ticks;
   }
 
+  // Der Punkt der Serie, der einem Preis am naechsten liegt. Die Antwort fuehrt
+  // jeden Szenariopreis als eigenen Punkt; der Suchlauf ist nur der robuste Weg
+  // dorthin (ein Sub-Dollar-Raster rundet vierstellig, die Tabelle zweistellig).
+  function naechsterPunkt(liste, preis) {
+    var best = null;
+    var abstand = Infinity;
+    liste.forEach(function (punkt) {
+      if (!num(punkt.price)) return;
+      var d = Math.abs(punkt.price - preis);
+      if (d < abstand) { abstand = d; best = punkt; }
+    });
+    return best;
+  }
+
   // Zwei Kurven in EINEM Bild: heute (durchgezogen, aus dem Modell) und bei
   // Verfall (gestrichelt, exakt). Nulllinie, Marker am Spot, beschriftete
   // Achsen in Kurs und G&V. Gezeichnet aus der Serie der Antwort, nicht aus
   // einer zweiten Rechnung im Browser.
-  function chart(detail) {
+  function chart(detail, metric) {
     var serie = Array.isArray(detail.series) ? detail.series : [];
+    // Ohne Argument gilt der Zustand der Tasten - so zeichnet auch der
+    // Fenster-Handler (der nur `detail` kennt) das aktive Overlay mit.
+    var metrik = metric === undefined ? overlayMetrik : metric;
     var breite = chartBreite();
     var hoehe = Math.max(280, Math.min(560, Math.round(breite * 0.375)));
     var box = svgNode('svg', {
@@ -1089,6 +1129,7 @@
       class: 'detail-chart-svg',
       role: 'img',
       'aria-label': T('js.chart.aria', { symbol: detail.symbol || '' })
+        + (metrik ? ' · ' + T('js.chart.aria.greek', { greek: greekWord(metrik) }) : '')
     });
     // Titel und Beschreibung sind der Text, den ein Screenreader statt der
     // Linien liest; aria-label allein nennt nur die Kurven, nicht die Achsen.
@@ -1100,7 +1141,7 @@
     box.appendChild(beschreibung);
     if (!serie.length || !num(detail.spot)) return box;
 
-    var padL = 84, padR = 22, padT = 18, padB = 56;
+    var padL = 84, padT = 18, padB = 56;
     var preise = serie.map(function (p) { return p.price; });
     var xmin = Math.min.apply(null, preise);
     var xmax = Math.max.apply(null, preise);
@@ -1118,18 +1159,43 @@
     var ylo = ymin - polster;
     var yhi = ymax + polster;
 
+    // Das Overlay hat seine EIGENE Skala rechts: nur die Werte dieser einen
+    // Metrik ueber die ganze Serie, mit demselben Polster. Ohne sie wuerde eine
+    // Griechen-Kurve gegen die Dollar-Achse gezeichnet und waere unlesbar.
+    var overlay = false;
+    var gwerte = [];
+    if (metrik) {
+      serie.forEach(function (p) { if (num(p[metrik])) gwerte.push(p[metrik]); });
+      overlay = gwerte.length > 0;
+    }
+    var glo = 0;
+    var ghi = 1;
+    if (overlay) {
+      glo = Math.min.apply(null, gwerte);
+      ghi = Math.max.apply(null, gwerte);
+      if (ghi === glo) ghi = glo + 1;
+      var gpolster = (ghi - glo) * 0.06;
+      glo -= gpolster;
+      ghi += gpolster;
+    }
+    // Die rechte Achse ist schmaler als die G&V-Achse links (84 px mit Titel):
+    // 58 px reichen fuer Striche, Zahlen und den gedrehten Titel.
+    var padR = overlay ? 58 : 22;
+
     var plotX = padL, plotY = padT;
     var plotW = breite - padL - padR;
     var plotH = hoehe - padT - padB;
 
     function x(price) { return plotX + (price - xmin) / (xmax - xmin) * plotW; }
     function y(pl) { return plotY + (yhi - pl) / (yhi - ylo) * plotH; }
+    function yg(value) { return plotY + (ghi - value) / (ghi - glo) * plotH; }
 
-    function pfad(key) {
+    function pfad(key, skala) {
       var teile = [];
       serie.forEach(function (p) {
         if (!num(p[key])) return;
-        teile.push((teile.length ? 'L' : 'M') + x(p.price).toFixed(1) + ' ' + y(p[key]).toFixed(1));
+        teile.push((teile.length ? 'L' : 'M') + x(p.price).toFixed(1) + ' '
+          + skala(p[key]).toFixed(1));
       });
       return teile.join(' ');
     }
@@ -1169,13 +1235,89 @@
       stroke: 'rgba(250,250,250,.36)', 'stroke-width': 1
     }));
 
+    // Die rechte Achse gehoert dem Overlay: eigene Stufen (dieselbe Rundung wie
+    // links), eigene Beschriftung, und sie verschwindet mit dem Overlay
+    // vollstaendig - ohne aktive Metrik gibt es hier nichts zu lesen.
+    if (overlay) {
+      var gticks = gvTicks(glo, ghi);
+      var gstellen = tickStellen(gticks);
+      gticks.forEach(function (wert) {
+        var gy = yg(wert);
+        box.appendChild(svgNode('line', {
+          x1: plotX + plotW, y1: gy, x2: plotX + plotW + 5, y2: gy,
+          stroke: 'rgba(77,195,255,.45)', 'stroke-width': 1
+        }));
+        var glabel = svgNode('text', {
+          x: plotX + plotW + 9, y: gy + 3.5, fill: 'rgba(77,195,255,.78)',
+          'font-size': 10, 'font-family': 'monospace', 'text-anchor': 'start',
+          class: 'chart-greek-tick'
+        });
+        glabel.textContent = signedDe(wert, gstellen);
+        box.appendChild(glabel);
+      });
+      // Die Null ist nur dann eine Linie, wenn sie im Bereich liegt: eine
+      // Nulllinie ausserhalb der Skala waere eine Linie am Rand.
+      if (glo <= 0 && ghi >= 0) {
+        box.appendChild(svgNode('line', {
+          x1: plotX, y1: yg(0), x2: plotX + plotW, y2: yg(0),
+          stroke: 'rgba(77,195,255,.22)', 'stroke-width': 1
+        }));
+      }
+      var gmitte = plotY + plotH / 2;
+      var gtitel = svgNode('text', {
+        x: breite - 8, y: gmitte, fill: 'rgba(77,195,255,.62)', 'font-size': 10,
+        'font-family': 'monospace', 'text-anchor': 'middle',
+        transform: 'rotate(-90 ' + (breite - 8) + ' ' + gmitte + ')',
+        class: 'chart-axis-title chart-greek-axis-title'
+      });
+      gtitel.textContent = T('js.chart.axis.greek.' + metrik);
+      box.appendChild(gtitel);
+    }
+
     box.appendChild(svgNode('path', {
-      d: pfad('pl_today'), fill: 'none', stroke: '#fafafa', 'stroke-width': 1.6
+      d: pfad('pl_today', y), fill: 'none', stroke: '#fafafa', 'stroke-width': 1.6
     }));
     box.appendChild(svgNode('path', {
-      d: pfad('pl_expiry'), fill: 'none', stroke: '#e05534', 'stroke-width': 1.6,
+      d: pfad('pl_expiry', y), fill: 'none', stroke: '#e05534', 'stroke-width': 1.6,
       'stroke-dasharray': '5 4'
     }));
+
+    // Die Griechen-Kurve liegt DARUEBER, hellblau und anders gestrichelt als
+    // die Verfallslinie - Farbe und Strichart, zwei Signale. Nur die heutige
+    // Modellkurve: bei Verfall sind Gamma/Vega/Theta null, eine zweite Linie
+    // waere leer.
+    if (overlay) {
+      box.appendChild(svgNode('path', {
+        d: pfad(metrik, yg), fill: 'none', stroke: '#4dc3ff', 'stroke-width': 1.6,
+        'stroke-dasharray': '6 4', class: 'chart-greek-path'
+      }));
+      // Sieben Werte an den Szenariopreisen - gelesen aus dem Punkt der Serie,
+      // der dort liegt, damit die Zahl mit der Tabelle darunter uebereinstimmt.
+      var szenarien = Array.isArray(detail.scenarios) ? detail.scenarios : [];
+      szenarien.forEach(function (s) {
+        if (!num(s.underlying)) return;
+        var punkt = naechsterPunkt(serie, s.underlying);
+        if (!punkt || !num(punkt[metrik])) return;
+        if (punkt.price < xmin - 1e-9 || punkt.price > xmax + 1e-9) return;
+        var mx = x(punkt.price);
+        var my = yg(punkt[metrik]);
+        var amRandLinks = mx < plotX + 26;
+        var amRandRechts = mx > plotX + plotW - 26;
+        var platzOben = my > plotY + 26;
+        var marke = svgNode('text', {
+          x: mx + (amRandLinks ? 3 : (amRandRechts ? -3 : 0)),
+          y: my + (platzOben ? -6 : 14),
+          fill: '#4dc3ff', 'font-size': 11, 'font-family': 'monospace',
+          'text-anchor': amRandLinks ? 'start' : (amRandRechts ? 'end' : 'middle'),
+          // dunkler Rand um die Schrift, wie beim Spot-Label: die Kurve laeuft
+          // sonst durch die Zahl
+          stroke: '#091217', 'stroke-width': 3, 'stroke-linejoin': 'round',
+          'paint-order': 'stroke', class: 'chart-greek-value'
+        });
+        marke.textContent = signedDe(punkt[metrik], 2);
+        box.appendChild(marke);
+      });
+    }
 
     if (detail.spot >= xmin && detail.spot <= xmax) {
       box.appendChild(svgNode('line', {
@@ -1238,12 +1380,17 @@
 
   // Die Legende steht unter dem Bild in Textform: sie nennt beide Linien in
   // Worten, und der Strich daneben ist das zweite Signal - nie allein die
-  // Farbe, nie allein die Strichart.
-  function chartLegend() {
+  // Farbe, nie allein die Strichart. Der dritte Eintrag erscheint NUR, solange
+  // ein Overlay aktiv ist, und nennt die Metrik beim Namen.
+  function chartLegend(metric) {
     var legende = document.createElement('div');
     legende.className = 'detail-legend';
-    [['solid', T('js.chart.legend.today')],
-      ['dashed', T('js.chart.legend.expiry')]].forEach(function (paar) {
+    var eintraege = [['solid', T('js.chart.legend.today')],
+      ['dashed', T('js.chart.legend.expiry')]];
+    if (metric) {
+      eintraege.push(['greek', T('js.chart.legend.greek', { greek: greekWord(metric) })]);
+    }
+    eintraege.forEach(function (paar) {
       var zeile = document.createElement('span');
       zeile.className = 'detail-legend-item';
       var strich = document.createElement('i');
@@ -1395,6 +1542,47 @@
     return kopf;
   }
 
+  // Die Tastenwahl ueber dem Bild: vier echte <button>, genau EINE Metrik
+  // gleichzeitig. `aria-pressed` sagt, welche aktiv ist - die orange Kante ist
+  // nur die zweite Aussage dazu. Ein zweiter Klick auf die aktive Taste nimmt
+  // das Overlay wieder weg; jede andere Taste ERSETZT es.
+  function greekButtons(onToggle) {
+    var zeile = document.createElement('div');
+    zeile.className = 'detail-greeks';
+    zeile.setAttribute('role', 'group');
+    zeile.setAttribute('aria-label', T('js.greeks.label'));
+    var knoepfe = GREEKS.map(function (metric) {
+      var knopf = document.createElement('button');
+      knopf.type = 'button';
+      knopf.className = 'greek-btn';
+      knopf.setAttribute('data-greek', metric);
+      knopf.setAttribute('aria-pressed', 'false');
+      knopf.textContent = greekWord(metric);
+      function waehle() {
+        overlayMetrik = overlayMetrik === metric ? null : metric;
+        sync();
+        onToggle();
+      }
+      // Enter und Leertaste: `preventDefault` unterdrueckt den Klick, den der
+      // Browser sonst zusaetzlich ausloest - sonst schaltet die Taste zweimal.
+      knopf.addEventListener('click', waehle);
+      knopf.addEventListener('keydown', function (ev) {
+        if (ev.key !== 'Enter' && ev.key !== ' ' && ev.key !== 'Spacebar') return;
+        ev.preventDefault();
+        waehle();
+      });
+      zeile.appendChild(knopf);
+      return knopf;
+    });
+    function sync() {
+      knoepfe.forEach(function (knopf) {
+        knopf.setAttribute('aria-pressed',
+          knopf.getAttribute('data-greek') === overlayMetrik ? 'true' : 'false');
+      });
+    }
+    return { node: zeile, sync: sync };
+  }
+
   function renderDetail(detail) {
     el.detailBody.textContent = '';
     var zeile = structureFor(detail);
@@ -1404,10 +1592,21 @@
     el.detailBody.appendChild(legTable(detail.legs));
 
     el.detailBody.appendChild(subtitle(T('js.detail.chart_heading')));
+    // Beim Oeffnen KEIN Overlay: das Bild ist genau das von vorher, die
+    // Tasten stehen sichtbar und inaktiv darueber.
+    overlayMetrik = null;
     var chartBox = document.createElement('div');
     chartBox.className = 'detail-chart';
-    chartBox.appendChild(chart(detail));
-    chartBox.appendChild(chartLegend());
+
+    function zeichne() {
+      chartBox.textContent = '';
+      chartBox.appendChild(chart(detail, overlayMetrik));
+      chartBox.appendChild(chartLegend(overlayMetrik));
+    }
+
+    var tasten = greekButtons(zeichne);
+    el.detailBody.appendChild(tasten.node);
+    zeichne();
     el.detailBody.appendChild(chartBox);
     letztesDetail = detail;
 

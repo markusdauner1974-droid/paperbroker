@@ -31,6 +31,12 @@ shifted spot, each with the implied volatility the chain shows for THAT leg
 (r = ``RATE``, q = ``DIVIDEND``), minus the debit. At the current spot it is
 slightly negative, because the debit was paid at the ask/bid and the model
 prices the mid - that difference IS the half-spread the trade costs.
+
+Every series point also carries the four model greeks of the position at that
+price, so the page can lay ONE greek over the two P&L curves without computing
+anything itself. The seven scenario prices are points of the series as well:
+the value markers of the overlay sit on the curve and show the numbers of the
+scenario table, because both read the same computation.
 """
 
 from __future__ import annotations
@@ -63,6 +69,11 @@ SERIES_MIN_DISTINCT = 120
 
 CALL = "call"
 PUT = "put"
+
+#: The four greek curves the detail can lay over the two P&L curves, in the
+#: order the buttons show them. ``rho`` is deliberately absent: the chain does
+#: not deliver it and the model's is not part of the agreed view.
+GREEKS = ("delta", "gamma", "vega", "theta")
 
 #: Days per year for the model. Calendar days: an option's clock does not stop
 #: on weekends, and the chain's own DTE counts them the same way.
@@ -333,13 +344,24 @@ def _model_position_greeks(option_type, price, long_strike, short_strike, years,
 
 
 # --- the shape ------------------------------------------------------------- #
+def scenario_price(spot, change):
+    """The underlying of one scenario step, unrounded - the single definition.
+
+    Both the scenario table and the series use it, so the seven prices of the
+    ladder are literally the same numbers in both places.
+    """
+    return spot * (1.0 + change / 100.0)
+
+
 def series_prices(spot):
     """The price axis of the chart: 50 % .. 170 % of the spot, plus the spot.
 
     The spot is added as its own point even when it does not fall on the grid
     (it never does at 161 points), because the marker of the chart has to sit on
-    a real point of the curve. Duplicates are dropped: a curve with two points
-    at the same price is a vertical line, not information.
+    a real point of the curve. The seven SCENARIO prices are added for the same
+    reason: their value markers have to sit on the curve, not beside it.
+    Duplicates are dropped: a curve with two points at the same price is a
+    vertical line, not information.
     """
     if spot is None or spot <= 0:
         return []
@@ -350,6 +372,13 @@ def series_prices(spot):
     def grid(digits):
         prices = [round(low + step * index, digits) for index in range(SERIES_POINTS)]
         prices.append(round(spot, digits))
+        # Die Szenariopreise kommen IMMER mit zwei Dezimalen ins Raster - auch
+        # wenn das Gitter selbst vier braucht (Sub-Dollar-Spot). Sonst stuende
+        # in der Tabelle ein Preis, der kein Punkt der Kurve ist: 0,12501 wird
+        # als Gitterpunkt 0,125 gefuehrt, die Tabelle zeigt aber 0,13, und die
+        # Marker saessen neben der Kurve.
+        prices.extend(round(scenario_price(spot, change), 2)
+                      for change in SCENARIO_CHANGES)
         return sorted(set(prices))
 
     prices = grid(2)
@@ -390,25 +419,42 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
     legs = [leg_row(long_quote, "long", long_strike),
             leg_row(short_quote, "short", short_strike)]
 
+    preise = series_prices(spot)
+    # EIN Modellwert je Rasterpreis: die Serie und die Szenariotabelle lesen
+    # dieselbe Rechnung, damit ein Marker und die Zelle darunter nie um eine
+    # Nachkommastelle auseinanderlaufen.
+    greeks_je_preis = {}
     serie = []
-    for price in series_prices(spot):
+    for price in preise:
+        werte = _model_position_greeks(option_type, price, long_strike, short_strike,
+                                       years, iv_long, iv_short)
+        greeks_je_preis[price] = werte
         serie.append({
             "price": price,
             "pl_expiry": _round2(expiry_pl(option_type, price, long_strike,
                                            short_strike, net_debit)),
             "pl_today": _round2(today_pl(option_type, price, long_strike, short_strike,
                                          net_debit, iv_long, iv_short, years)),
+            "delta": werte["delta"],
+            "gamma": werte["gamma"],
+            "vega": werte["vega"],
+            "theta": werte["theta"],
         })
 
     szenarien = []
     for change in SCENARIO_CHANGES:
-        underlying = spot * (1.0 + change / 100.0)
-        werte = _model_position_greeks(option_type, underlying, long_strike, short_strike,
-                                       years, iv_long, iv_short)
+        roh = scenario_price(spot, change)
+        # Der Szenariopreis ist genau der Punkt der Serie, den series_prices()
+        # fuer ihn eingelegt hat - kein Nachbarpunkt: ein Nachbarpunkt im
+        # vierstelligen Raster wuerde nach _round2 um einen Cent daneben liegen.
+        preis = round(roh, 2)
+        if preis not in greeks_je_preis:
+            preis = min(preise, key=lambda punkt: abs(punkt - roh))
+        werte = greeks_je_preis[preis]
         szenarien.append({
             "change_pct": change,
-            "underlying": _round2(underlying),
-            "pl_expiry": _round2(expiry_pl(option_type, underlying, long_strike,
+            "underlying": _round2(preis),
+            "pl_expiry": _round2(expiry_pl(option_type, preis, long_strike,
                                            short_strike, net_debit)),
             "delta": werte["delta"],
             "gamma": werte["gamma"],
@@ -426,7 +472,9 @@ def build_detail(*, symbol, name, day, strategy, strategy_label, expiration,
         notes.append(t("detail.notes.no_iv"))
 
     return {
-        "schema_version": "1.0",
+        # 1.1: every series point carries delta/gamma/vega/theta and the seven
+        # scenario prices are part of the axis (the overlay markers need them).
+        "schema_version": "1.1",
         "symbol": symbol,
         "name": name,
         "day": day.isoformat(),

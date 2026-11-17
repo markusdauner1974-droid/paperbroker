@@ -109,7 +109,7 @@ class DetailEndpointTest(unittest.TestCase):
         antwort, body = _get()
         self.assertEqual(antwort.status_code, 200)
         self.assertEqual(set(body), DETAIL_KEYS)
-        self.assertEqual(body["schema_version"], "1.0")
+        self.assertEqual(body["schema_version"], "1.1")
         self.assertEqual(body["symbol"], "AAA")
         self.assertEqual(body["name"], "Alpha Corp")
         self.assertEqual(body["day"], DAY)
@@ -184,7 +184,10 @@ class DetailEndpointTest(unittest.TestCase):
         self.assertAlmostEqual(preise[-1], 170.0, places=2)
         self.assertIn(body["spot"], preise)
         for point in serie:
-            self.assertEqual(set(point), {"price", "pl_expiry", "pl_today"})
+            # Jeder Punkt traegt die vier Modell-Griechen: die Seite legt genau
+            # eine davon ueber die beiden Kurven und rechnet nichts selbst.
+            self.assertEqual(set(point), {"price", "pl_expiry", "pl_today",
+                                          "delta", "gamma", "vega", "theta"})
 
     def test_the_scenarios_are_seven_steps_around_the_spot(self):
         _antwort, body = _get()

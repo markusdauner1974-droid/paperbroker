@@ -239,6 +239,100 @@ class TestTheScenarios(unittest.TestCase):
         self.assertAlmostEqual(put["delta"], lang["delta"] - 100.0, delta=0.5)
 
 
+class TestTheGreekCurves(unittest.TestCase):
+    """The four model greeks per series point, and the seven value markers.
+
+    The page draws ONE greek over the two P&L curves from these numbers; it does
+    not compute anything itself. Two things therefore have to hold: every point
+    of the series carries the four values, and the seven scenario prices are
+    points of that same series - otherwise a marker would float beside the curve
+    or show a number that disagrees with the table below it.
+    """
+
+    def test_every_point_carries_the_four_greeks(self):
+        for punkt in detail(*call_spread())["series"]:
+            self.assertEqual(set(punkt), {"price", "pl_expiry", "pl_today",
+                                          "delta", "gamma", "vega", "theta"})
+            for name in sd.GREEKS:
+                self.assertIsInstance(punkt[name], float)
+                self.assertEqual(punkt[name], round(punkt[name], 2))
+
+    def test_the_seven_scenario_prices_are_points_of_the_series(self):
+        body = detail(*call_spread())
+        preise = {punkt["price"] for punkt in body["series"]}
+        for szenario in body["scenarios"]:
+            self.assertIn(szenario["underlying"], preise)
+
+    def test_a_marker_and_its_table_cell_are_the_same_number(self):
+        # Same price, one computation: the value at the scenario price IS the
+        # value of the scenario row, not a second one rounded differently.
+        body = detail(*call_spread())
+        je_preis = {punkt["price"]: punkt for punkt in body["series"]}
+        for szenario in body["scenarios"]:
+            punkt = je_preis[szenario["underlying"]]
+            for name in sd.GREEKS:
+                self.assertEqual(punkt[name], szenario[name], name)
+            self.assertEqual(punkt["pl_expiry"], szenario["pl_expiry"])
+
+    def test_the_delta_at_the_spot_is_the_model_delta_of_the_position(self):
+        # Recomposed from the single-option greeks, not from the helper the
+        # series uses: the bought leg minus the sold one, each at ITS own vol.
+        body = detail(*call_spread())
+        punkt = [p for p in body["series"] if p["price"] == SPOT][0]
+        jahre = DAYS / 365.0
+        lang = sd.model_greeks("call", SPOT, 100.0, jahre, 0.30)
+        kurz = sd.model_greeks("call", SPOT, 103.3, jahre, 0.31)
+        links, rechts = lang["delta"], kurz["delta"]
+        assert isinstance(links, float) and isinstance(rechts, float)
+        self.assertEqual(punkt["delta"], round(links - rechts, 2))
+        # Ein Call-Spread ist positiv und deutlich unter 100 Delta.
+        self.assertGreater(punkt["delta"], 0.0)
+        self.assertLess(punkt["delta"], 100.0)
+
+    def test_a_put_spread_has_a_negative_delta_over_the_whole_axis(self):
+        body = detail(*put_spread(), option_type="put", strategy="bear_put_debit",
+                      label="Bear Put")
+        for punkt in body["series"]:
+            self.assertLess(punkt["delta"], 0.0)
+            self.assertIsInstance(punkt["gamma"], float)
+        # Eine EINZELNE Option hat nie negatives Gamma. Die Differenz zweier
+        # Legs kann dagegen um eine Hundertstel kippen, weil die beiden Legs
+        # zwei verschiedene Volatilitaeten tragen (-0.01 gemessen) - deshalb
+        # steht hier die einzelne Option, nicht die Position.
+        einzel = sd.model_greeks("put", 95.0, 96.7, DAYS / 365.0, 0.31)["gamma"]
+        assert einzel is not None
+        self.assertGreaterEqual(einzel, 0.0)
+
+    def test_a_sub_dollar_spot_keeps_the_scenario_prices_on_the_axis(self):
+        # Unter einem Dollar faellt das Gitter auf vier Dezimalen (sonst
+        # kollabiert die Achse). Die Szenariopreise muessen trotzdem exakt die
+        # Punkte bleiben, die die Tabelle zeigt - sonst sitzt der Marker neben
+        # der Kurve und die Zelle nennt einen Preis, den die Kurve nicht hat.
+        spot = 0.85
+        lang = quote("call", spot, 0.10, 0.12, iv=40.0)
+        kurz = quote("call", round(spot * 1.03, 2), 0.05, 0.07, iv=41.0)
+        body = detail(lang, kurz, spot=spot)
+        vierstellig = [p["price"] for p in body["series"] if round(p["price"], 2) != p["price"]]
+        self.assertTrue(vierstellig, "das Raster muss hier vierstellig sein")
+        self.assertGreaterEqual(len(body["series"]), 120)
+        preise = {p["price"]: p for p in body["series"]}
+        for szenario in body["scenarios"]:
+            self.assertEqual(szenario["underlying"],
+                             round(spot * (1 + szenario["change_pct"] / 100.0), 2))
+            self.assertIn(szenario["underlying"], preise)
+            punkt = preise[szenario["underlying"]]
+            for name in sd.GREEKS:
+                self.assertEqual(punkt[name], szenario[name], name)
+
+    def test_without_a_volatility_the_greeks_stay_none(self):
+        lang, kurz = call_spread()
+        lang.iv = None
+        body = detail(lang, kurz)
+        for punkt in body["series"]:
+            for name in sd.GREEKS:
+                self.assertIsNone(punkt[name])
+
+
 class TestTheRefusals(unittest.TestCase):
     def test_a_leg_without_an_ask_is_not_a_spread(self):
         lang, kurz = call_spread()
