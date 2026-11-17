@@ -445,11 +445,13 @@ class TestThePageIsOneFunnel(unittest.TestCase):
         seite = _page()
         self.assertIn("/static/gap_funnel.js", seite)
         self.assertTrue(PANEL_JS.is_file())
-        # Ein Verhaltens-Skript, ein Datenblock - der Katalog ist keine zweite
-        # Codequelle, sondern ein JSON-Block mit type="application/json".
-        self.assertEqual(2, seite.count("<script"))
+        # Ein Verhaltens-Skript, zwei Datenbloecke (Katalog + Sprach-Kopf, beide
+        # nicht ausfuehrbar) und genau eine winzige Inline-Anweisung: die
+        # Sprach-Merkung aus (f2), die vor dem Koerper laufen muss.
+        self.assertEqual(4, seite.count("<script"))
         self.assertEqual(1, seite.count("<script src="))
-        self.assertEqual(1, seite.count('type="application/json"'))
+        self.assertEqual(2, seite.count('type="application/json"'))
+        self.assertEqual(1, seite.count('<script id="lang-memo">'))
         # kein Inline-Handler, kein zweites Skript
         self.assertNotIn("onclick=", seite)
         self.assertNotIn("addEventListener", seite)

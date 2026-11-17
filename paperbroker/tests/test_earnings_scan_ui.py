@@ -129,13 +129,17 @@ class TestTheOldScreenIsGone(unittest.TestCase):
 
     def test_the_page_carries_no_inline_javascript(self):
         seite = _page()
-        # Zwei script-Tags, aber nur EINES ist Code: der Katalog reist als
-        # nicht ausfuehrbarer JSON-Block (type="application/json") mit. Die
-        # Zusage bleibt "kein Inline-JavaScript", und sie wird jetzt genauer
-        # geprueft als vorher.
-        self.assertEqual(2, seite.count("<script"))
+        # (f2) Die Zusage hat sich GENAU EINMAL geaendert, und zwar benannt: die
+        # Sprach-Merkung steht als winzige Inline-Anweisung im Kopf (sie muss vor
+        # dem Koerper laufen, sonst blitzt die Quellsprache auf). Damit sind es
+        # zwei Inline-Skripte statt einem - gezaehlt wird jetzt getrennt:
+        # Datenbloecke (nicht ausfuehrbar) gegen Code, und Code gegen Handler.
+        self.assertEqual(4, seite.count("<script"))
         self.assertEqual(1, seite.count("<script src="))
-        self.assertEqual(1, seite.count('type="application/json"'))
+        self.assertEqual(2, seite.count('type="application/json"'))
+        # Genau EINE Inline-Anweisung, und die ist die Merkung.
+        self.assertEqual(1, seite.count('<script id="lang-memo">'))
+        self.assertNotIn("onclick=", seite)
         self.assertIn("/static/gap_funnel.js", seite)
         # kein zweites Inline-Skript, kein Handler im Markup
         self.assertNotIn("onclick=", seite)

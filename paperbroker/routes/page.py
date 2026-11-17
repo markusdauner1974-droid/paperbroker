@@ -13,7 +13,7 @@ from urllib.parse import urlencode
 
 from flask import current_app, jsonify, render_template, request, url_for
 
-from .. import texts
+from .. import lang_memo, texts
 from ..earnings_calendar import (
     CONFIRMATION_CONFIRMED,
     CONFIRMATION_ESTIMATED,
@@ -235,6 +235,11 @@ def index():
         js_i18n=texts.block("js"),
         lang=texts.active_language(),
         switch_links=_switch_links(),
+        # (f2) Kopf-Datenblatt und Merk-Anweisung. Das Blatt ist die einzige
+        # Quelle der Anweisung - beide Angaben kommen aus der Registry.
+        lang_boot={"resolved": texts.active_language(),
+                   "allowed": list(texts.languages())},
+        lang_memo=lang_memo.REMEMBER_SCRIPT,
         data_state=zustand)
 
 
