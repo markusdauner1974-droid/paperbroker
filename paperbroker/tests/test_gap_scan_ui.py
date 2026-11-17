@@ -487,7 +487,7 @@ class TestThePanelScansNothingOnItsOwn(unittest.TestCase):
 class TestTheRowsSpeakTheAnswer(unittest.TestCase):
     def test_the_click_asks_the_route_for_the_default_day(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
-        self.assertEqual("/api/v1/gap-spreads?day=" + DAY, panel["url"])
+        self.assertEqual("/api/v1/gap-spreads?day=" + DAY + "&lang=de", panel["url"])
 
     def test_one_candidate_becomes_one_row_of_seventeen_cells(self):
         panel = _render(_answer(200, _body(results=_three())), click=True)
@@ -673,7 +673,7 @@ class TestTheStatesKeepTheirOwnWords(unittest.TestCase):
         # Der Trichter kennt nur den Tag: Schwelle, Umsatzhuerde, R/R-Grenze und
         # Mindest-OI sind Standardwerte der Route, keine Felder der Seite.
         panel = _render(_answer(200, _body(results=_three())), click=True)
-        self.assertEqual("/api/v1/gap-spreads?day=" + DAY, panel["url"])
+        self.assertEqual("/api/v1/gap-spreads?day=" + DAY + "&lang=de", panel["url"])
         quelle = PANEL_JS.read_text(encoding="utf-8")
         for feld in ("threshold_pct=", "min_turnover_usd=", "rr_min=", "min_oi="):
             self.assertNotIn(feld, quelle)

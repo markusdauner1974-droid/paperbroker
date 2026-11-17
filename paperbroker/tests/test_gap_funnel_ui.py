@@ -817,7 +817,7 @@ class TestTheRowItselfLoadsTheDetail(unittest.TestCase):
     def test_the_row_itself_loads_the_detail(self):
         panel = _render(actions=["click:0"])
         self.assertEqual(2, len(panel["urls"]))
-        self.assertEqual("/api/v1/gap-spreads/detail?symbol=CTVA&day=" + DAY,
+        self.assertEqual("/api/v1/gap-spreads/detail?symbol=CTVA&day=" + DAY + "&lang=de",
                          panel["urls"][1])
         self.assertFalse(panel["detail"]["hidden"])
         self.assertTrue(panel["detail"]["open"])
@@ -829,13 +829,13 @@ class TestTheRowItselfLoadsTheDetail(unittest.TestCase):
 
     def test_the_row_is_keyboard_reachable(self):
         enter = _render(actions=["key:0:Enter"])
-        self.assertEqual("/api/v1/gap-spreads/detail?symbol=CTVA&day=" + DAY,
+        self.assertEqual("/api/v1/gap-spreads/detail?symbol=CTVA&day=" + DAY + "&lang=de",
                          enter["urls"][1])
         self.assertTrue(enter["detail"]["open"])
         self.assertEqual("true", enter["rows"][0]["expanded"])
 
         space = _render(actions=["key:1:Space"])
-        self.assertEqual("/api/v1/gap-spreads/detail?symbol=UPCO&day=" + DAY,
+        self.assertEqual("/api/v1/gap-spreads/detail?symbol=UPCO&day=" + DAY + "&lang=de",
                          space["urls"][1])
         self.assertTrue(space["detail"]["open"])
         # Space darf die Seite nicht scrollen
@@ -858,9 +858,9 @@ class TestTheRowItselfLoadsTheDetail(unittest.TestCase):
                         details=[{"status": 200, "body": _detail()},
                                  {"status": 200, "body": _detail("UPCO", "Bull Call")}])
         self.assertEqual(3, len(panel["urls"]))
-        self.assertEqual("/api/v1/gap-spreads/detail?symbol=CTVA&day=" + DAY,
+        self.assertEqual("/api/v1/gap-spreads/detail?symbol=CTVA&day=" + DAY + "&lang=de",
                          panel["urls"][1])
-        self.assertEqual("/api/v1/gap-spreads/detail?symbol=UPCO&day=" + DAY,
+        self.assertEqual("/api/v1/gap-spreads/detail?symbol=UPCO&day=" + DAY + "&lang=de",
                          panel["urls"][2])
         self.assertEqual(["false", "true"], [r["expanded"] for r in panel["rows"]])
         self.assertIn("UPCO", panel["detail"]["summary"])
@@ -1184,7 +1184,7 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
                         actions=["btn:0", "sub:0:0"])
         self.assertEqual(2, len(panel["urls"]))
         params = self._params(panel["urls"][1])
-        self.assertEqual({"symbol", "day", "expiration", "long", "short"}, set(params))
+        self.assertEqual({"symbol", "day", "expiration", "long", "short", "lang"}, set(params))
         self.assertEqual("CTVA", params["symbol"])
         self.assertEqual(DAY, params["day"])
         self.assertEqual("2027-03-19", params["expiration"])
@@ -1201,7 +1201,7 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
     def test_the_main_row_still_opens_the_detail_of_the_row(self):
         panel = _render(list_body=self._list(), actions=["click:0"])
         params = self._params(panel["urls"][1])
-        self.assertEqual({"symbol", "day"}, set(params))
+        self.assertEqual({"symbol", "day", "lang"}, set(params))
         self.assertIn("10/7,5", _levels(_head(panel))[0]["text"])
         self.assertEqual("Hebel (Zeile)",
                          _by_class(_levels(_head(panel))[0], "detail-tag")[0]["text"])
@@ -1288,7 +1288,9 @@ class TestTheAlternativesAreSubRows(unittest.TestCase):
     def test_enter_on_the_main_row_opens_the_detail(self):
         panel = _render(list_body=self._list(), actions=["key:0:Enter"])
         self.assertEqual(2, len(panel["urls"]))
-        self.assertEqual({"symbol", "day"}, set(self._params(panel["urls"][1])))
+        # Die Sprache reist mit, sie ist aber kein Filter: Symbol und Tag bleiben
+        # die einzigen Angaben, die die Zeile ueber den Spread macht.
+        self.assertEqual({"symbol", "day", "lang"}, set(self._params(panel["urls"][1])))
         self.assertTrue(panel["detail"]["open"])
 
     def test_the_detail_carries_no_second_alternatives_block(self):
@@ -1496,7 +1498,9 @@ class TestThePanelStaysFreeOfForeignCode(unittest.TestCase):
         self.assertIn("/api/v1/gap-spreads/detail", quelle)
         panel = _render(actions=["click:0"])
         detail_url = panel["urls"][1]
-        self.assertEqual({"symbol", "day"},
+        # symbol und day sind die Angaben ueber den Spread; lang ist die Sprache
+        # der Antwort und kein Filter.
+        self.assertEqual({"symbol", "day", "lang"},
                          set(re.findall(r"[?&]([a-z_]+)=", detail_url)))
 
 

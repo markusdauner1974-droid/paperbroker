@@ -123,6 +123,11 @@ def languages() -> tuple[str, ...]:
     return tuple(LANGUAGES)
 
 
+def language_name(code: str) -> str:
+    """Der Name einer Sprache, wie ihn die Registry fuehrt - fuer den Wechsler."""
+    return str(LANGUAGES[code]["name"])
+
+
 def is_language(code: object) -> bool:
     return isinstance(code, str) and code in LANGUAGES
 
@@ -223,7 +228,14 @@ def block(prefix: str, language: str | None = None) -> dict[str, Any]:
     re-invented as a comparison inside the script.
     """
     code = language or active_language()
-    return {"plural": LANGUAGES[code]["plural"], "texts": section(prefix, code)}
+    return {
+        "lang": code,
+        "plural": LANGUAGES[code]["plural"],
+        # A language that names no number style falls back to the dot: the
+        # catalogue must not crash on an entry that predates this field.
+        "numbers": dict(LANGUAGES[code].get("numbers") or {"decimal": ".", "thousands": ","}),
+        "texts": section(prefix, code),
+    }
 
 
 def sections(language: str) -> dict[str, set[str]]:

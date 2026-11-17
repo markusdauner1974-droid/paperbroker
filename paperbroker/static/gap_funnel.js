@@ -73,6 +73,15 @@
     }
   }());
 
+  // Die aufgeloeste Sprache kommt aus demselben Block. Jede Abfrage traegt sie
+  // mit - sonst antwortet der Server in der Quellsprache und die Seite mischt
+  // zwei Sprachen. Fehlt das Feld, bleibt die Abfrage wie sie war.
+  var LANG = I18N && I18N.lang ? String(I18N.lang) : '';
+
+  function inLanguage(url) {
+    return LANG ? url + '&lang=' + encodeURIComponent(LANG) : url;
+  }
+
   // Dieselben Regeln wie ``texts/registry.py``, benannt nach dem Feld, das der
   // Block mitliefert. Eine 3-6-Formen-Regel steht hier NICHT auf Vorrat.
   var PLURAL_RULES = {
@@ -126,7 +135,7 @@
   function rrHurdleText(body) {
     var limits = body && body.limits;
     if (limits && num(limits.rr_min)) {
-      return '1 : ' + de(limits.rr_min, 1).replace(/,0$/, '');
+      return '1 : ' + fmt(limits.rr_min, 1).replace(/,0$/, '');
     }
     return RR_HURDLE_FALLBACK;
   }
@@ -156,17 +165,21 @@
     return num(one) && num(other) && Math.abs(one - other) <= STRIKE_TOLERANCE;
   }
 
-  // Deutsche Zahlen: Dezimalkomma, kein Punkt. Sonst liest der Leser "1.35" als
-  // Tausender und "135.00" als Hundertfünfunddreißig.
-  function de(value, digits) {
+  // Zahlen in der Schreibweise der Sprache, die der Block nennt: Deutsch mit
+  // Dezimalkomma, Englisch mit Punkt. Sonst liest der Leser "1.35" als Tausender
+  // und "135.00" als Hundertfünfunddreißig - oder in der englischen Seite ein
+  // deutsches Komma mitten im englischen Satz.
+  var NUMBERS = (I18N && I18N.numbers) || { decimal: '.', thousands: ',' };
+
+  function fmt(value, digits) {
     if (!num(value)) return '–';
     var text = value.toFixed(digits === undefined ? 2 : digits);
-    return text.replace('.', ',');
+    return NUMBERS.decimal === ',' ? text.replace('.', ',') : text;
   }
 
   function gapText(value) {
     if (!num(value)) return '–';
-    return (value > 0 ? '+' : '') + de(value, 1) + ' %';
+    return (value > 0 ? '+' : '') + fmt(value, 1) + ' %';
   }
 
   function directionWord(direction) {
@@ -177,7 +190,7 @@
 
   // Risiko : Gewinn, mit deutschem Dezimalkomma.
   function rrText(value) {
-    return num(value) ? '1 : ' + de(value, 1) : '–';
+    return num(value) ? '1 : ' + fmt(value, 1) : '–';
   }
 
   // Ein Strike, wie ihn der Kopf der Struktur zeigt: ganze Strikes ohne
@@ -185,7 +198,7 @@
   function strikeText(value) {
     if (!num(value)) return '–';
     if (value % 1 === 0) return String(value);
-    return de(value, 2).replace(/0$/, '');
+    return fmt(value, 2).replace(/0$/, '');
   }
 
   // Derselbe Strike als PARAMETER der Route: ein Punkt, kein Komma - die
@@ -202,12 +215,12 @@
   // stehen als Text da, damit die Richtung nicht an einer Farbe haengt.
   function signedDe(value, digits) {
     if (!num(value)) return '–';
-    return (value > 0 ? '+' : '') + de(value, digits);
+    return (value > 0 ? '+' : '') + fmt(value, digits);
   }
 
   function pctText(value) {
     if (!num(value)) return '–';
-    return (value > 0 ? '+' : '') + de(value, 0) + ' %';
+    return (value > 0 ? '+' : '') + fmt(value, 0) + ' %';
   }
 
   // Die drei Zahlen der Erreichbarkeit. Kein Wert wird erfunden: was die Route
@@ -215,7 +228,7 @@
   // nicht gibt.
   function moveText(value) {
     if (!num(value)) return '—';
-    return (value > 0 ? '+' : '') + de(value, 1) + ' %';
+    return (value > 0 ? '+' : '') + fmt(value, 1) + ' %';
   }
 
   function moveArrow(value) {
@@ -290,9 +303,9 @@
   function moveCap(body) {
     var limits = body && body.limits;
     if (limits && num(limits.max_required_move_pct)) {
-      return de(limits.max_required_move_pct, 0);
+      return fmt(limits.max_required_move_pct, 0);
     }
-    return num(body && body.max_required_move_pct) ? de(body.max_required_move_pct, 0) : '30';
+    return num(body && body.max_required_move_pct) ? fmt(body.max_required_move_pct, 0) : '30';
   }
 
   // Die Zaehlerzeile nennt jede Huerde des Trichters in der Reihenfolge, in der
@@ -411,7 +424,7 @@
     el.run.disabled = true;
     startTimer(day, startedAt, gen);
 
-    fetch(API + '?day=' + encodeURIComponent(day),
+    fetch(inLanguage(API + '?day=' + encodeURIComponent(day)),
       { headers: { Accept: 'application/json' }, cache: 'no-store' })
       .then(function (res) {
         return res.text().then(function (text) {
@@ -478,12 +491,12 @@
     td.title = paare
       ? T('js.cell.options.title_per_leg')
       : T('js.cell.options.title_one_leg');
-    td.textContent = T('js.cell.options.oi', { long: de(oi[0], 0), short: de(oi[1], 0) });
+    td.textContent = T('js.cell.options.oi', { long: fmt(oi[0], 0), short: fmt(oi[1], 0) });
     var spreads = document.createElement('span');
     spreads.className = 'sub';
     spreads.textContent = paare
-      ? T('js.cell.options.bid_ask_pair', { long: de(ba[0], 1), short: de(ba[1], 1) })
-      : T('js.cell.options.bid_ask_max', { spread: de(entry.bid_ask_pct, 1) });
+      ? T('js.cell.options.bid_ask_pair', { long: fmt(ba[0], 1), short: fmt(ba[1], 1) })
+      : T('js.cell.options.bid_ask_max', { spread: fmt(entry.bid_ask_pct, 1) });
     td.appendChild(spreads);
     var liquid = document.createElement('span');
     liquid.className = 'sub';
@@ -505,22 +518,22 @@
     zellen.push(cell(entry.strategy_label || STRATEGY[entry.strategy] || '–', '',
       entry.strategy || ''));
 
-    zellen.push(cell(de(entry.close, 2), '', T('js.cell.close.title')));
+    zellen.push(cell(fmt(entry.close, 2), '', T('js.cell.close.title')));
 
-    zellen.push(stacked(de(entry.long_strike, 1) + ' / ' + de(entry.short_strike, 1),
+    zellen.push(stacked(fmt(entry.long_strike, 1) + ' / ' + fmt(entry.short_strike, 1),
       T('js.cell.strikes.sub'), '',
       T('js.cell.strikes.title', {
-        long: de(entry.long_strike, 1), short: de(entry.short_strike, 1)
+        long: fmt(entry.long_strike, 1), short: fmt(entry.short_strike, 1)
       })));
 
-    zellen.push(cell(de(entry.max_loss, 2), '', T('js.cell.max_loss.title')));
-    zellen.push(cell(de(entry.max_profit, 2), '', T('js.cell.max_profit.title')));
+    zellen.push(cell(fmt(entry.max_loss, 2), '', T('js.cell.max_loss.title')));
+    zellen.push(cell(fmt(entry.max_profit, 2), '', T('js.cell.max_profit.title')));
     zellen.push(cell(rrText(entry.rr), '', T('js.cell.rr.title')));
 
     // Chance: Trefferquote x R/R - eine Lesehilfe, keine zweite Messung. Sie
     // steht direkt neben dem R/R, weil sie aus ihm und der Trefferquote
     // daneben gerechnet ist; sortiert wird trotzdem nach Trefferquote.
-    zellen.push(cell(num(entry.chance) ? de(entry.chance, 2) : '—', '',
+    zellen.push(cell(num(entry.chance) ? fmt(entry.chance, 2) : '—', '',
       T('js.cell.chance.title')));
 
     // Noetige Bewegung: Vorzeichen UND Pfeil, damit die Richtung nicht an einer
@@ -531,9 +544,9 @@
       'dir', T('js.cell.move.title')));
 
     // Schwankung: annualisiert oben, der mittlere Tagesausschlag klein darunter.
-    zellen.push(stacked(num(entry.volatility_pct) ? de(entry.volatility_pct, 1) + ' %' : '—',
+    zellen.push(stacked(num(entry.volatility_pct) ? fmt(entry.volatility_pct, 1) + ' %' : '—',
       num(entry.daily_move_pct)
-        ? T('js.cell.volatility.day', { value: de(entry.daily_move_pct, 1) }) : '',
+        ? T('js.cell.volatility.day', { value: fmt(entry.daily_move_pct, 1) }) : '',
       '', T('js.cell.volatility.title')));
 
     // Treffer: die gemessene Häufigkeit, darunter die Zahl der Fenster und -
@@ -545,7 +558,7 @@
         && num(entry.window_sessions) && entry.window_sessions > 0) {
       fensterText += ' · ' + T('js.cell.windows_sessions', { count: entry.window_sessions });
     }
-    zellen.push(stacked(num(entry.hit_rate_pct) ? de(entry.hit_rate_pct, 0) + ' %' : '—',
+    zellen.push(stacked(num(entry.hit_rate_pct) ? fmt(entry.hit_rate_pct, 0) + ' %' : '—',
       fensterText, '',
       T('js.cell.hit.title', {
         sessions: num(entry.window_sessions) && entry.window_sessions > 0
@@ -866,7 +879,7 @@
         + '&short=' + encodeURIComponent(strikeParam(structure.short));
     }
 
-    fetch(url,
+    fetch(inLanguage(url),
       { headers: { Accept: 'application/json' }, cache: 'no-store' })
       .then(function (res) {
         return res.text().then(function (text) {
@@ -941,13 +954,13 @@
     var rows = (Array.isArray(legs) ? legs : []).map(function (leg) {
       return [
         leg.side === 'short' ? T('js.legs.side.short') : T('js.legs.side.long'),
-        de(leg.strike, 2),
-        de(leg.bid, 2),
-        de(leg.ask, 2),
-        de(leg.mid, 2),
-        num(leg.iv) ? de(leg.iv, 2) + ' %' : '–',
-        de(leg.open_interest, 0),
-        de(leg.delta, 2)
+        fmt(leg.strike, 2),
+        fmt(leg.bid, 2),
+        fmt(leg.ask, 2),
+        fmt(leg.mid, 2),
+        num(leg.iv) ? fmt(leg.iv, 2) + ' %' : '–',
+        fmt(leg.open_interest, 0),
+        fmt(leg.delta, 2)
       ];
     });
     return table([T('js.legs.col.side'), T('js.legs.col.strike'), T('js.legs.col.bid'),
@@ -959,7 +972,7 @@
     var rows = (Array.isArray(scenarios) ? scenarios : []).map(function (s) {
       return [
         pctText(s.change_pct),
-        de(s.underlying, 2),
+        fmt(s.underlying, 2),
         signedDe(s.pl_expiry, 2),
         signedDe(s.delta, 2),
         signedDe(s.gamma, 2),
@@ -1083,7 +1096,7 @@
     titel.textContent = T('js.chart.title');
     box.appendChild(titel);
     var beschreibung = svgNode('desc');
-    beschreibung.textContent = T('js.chart.desc', { spot: de(detail.spot, 2) });
+    beschreibung.textContent = T('js.chart.desc', { spot: fmt(detail.spot, 2) });
     box.appendChild(beschreibung);
     if (!serie.length || !num(detail.spot)) return box;
 
@@ -1180,7 +1193,7 @@
         stroke: '#091217', 'stroke-width': 3, 'stroke-linejoin': 'round',
         'paint-order': 'stroke'
       });
-      spotText.textContent = T('js.chart.spot', { value: de(detail.spot, 2) });
+      spotText.textContent = T('js.chart.spot', { value: fmt(detail.spot, 2) });
       box.appendChild(spotText);
     }
 
@@ -1198,7 +1211,7 @@
         'font-size': 11, 'font-family': 'monospace', 'text-anchor': 'middle',
         class: 'chart-x-tick'
       });
-      xLabel.textContent = de(preis, 2);
+      xLabel.textContent = fmt(preis, 2);
       box.appendChild(xLabel);
     });
 
@@ -1322,17 +1335,17 @@
   function figures(detail, zeile) {
     var raster = document.createElement('div');
     raster.className = 'detail-figures';
-    raster.appendChild(figure(T('js.figures.debit'), de(detail.net_debit, 2)));
-    raster.appendChild(figure(T('js.figures.breakeven'), de(detail.breakeven, 2)));
-    raster.appendChild(figure(T('js.figures.max_loss'), de(detail.max_loss, 2)));
-    raster.appendChild(figure(T('js.figures.max_profit'), de(detail.max_profit, 2)));
+    raster.appendChild(figure(T('js.figures.debit'), fmt(detail.net_debit, 2)));
+    raster.appendChild(figure(T('js.figures.breakeven'), fmt(detail.breakeven, 2)));
+    raster.appendChild(figure(T('js.figures.max_loss'), fmt(detail.max_loss, 2)));
+    raster.appendChild(figure(T('js.figures.max_profit'), fmt(detail.max_profit, 2)));
     raster.appendChild(figure(T('js.figures.rr'), rrText(detail.rr)));
     raster.appendChild(figure(T('js.figures.required_move'),
       zeile ? moveText(zeile.required_move_pct) : '—'));
     raster.appendChild(figure(T('js.figures.volatility'),
-      zeile && num(zeile.volatility_pct) ? de(zeile.volatility_pct, 1) + ' %' : '—'));
+      zeile && num(zeile.volatility_pct) ? fmt(zeile.volatility_pct, 1) + ' %' : '—'));
     raster.appendChild(figure(T('js.figures.hit_rate'),
-      zeile && num(zeile.hit_rate_pct) ? de(zeile.hit_rate_pct, 0) + ' %' : '—'));
+      zeile && num(zeile.hit_rate_pct) ? fmt(zeile.hit_rate_pct, 0) + ' %' : '—'));
     return raster;
   }
 
