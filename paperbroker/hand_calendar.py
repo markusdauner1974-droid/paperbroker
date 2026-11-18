@@ -4,11 +4,24 @@ Why this module exists
 ----------------------
 Finnhub answers ``None`` when its 270-day window holds no report date. For a
 title like that the funnel stops at the first stage, and a title that may well
-report in six weeks disappears from the list. This module stores a date a HUMAN
+report in six weeks disappears from the list. This module holds a date a HUMAN
 typed after reading an announcement - nothing is scraped, nothing is guessed.
 
-The three rules that shape the file
------------------------------------
+Nothing here touches the disk
+-----------------------------
+The entries live in this process's memory, in one plain dict. No file, no lock
+file, no temporary copy, no cache directory - a save cannot fail because a
+mounted volume is not writable, and there is nothing to clean up afterwards.
+
+The price is stated plainly: a restart empties the calendar. That is accepted
+on purpose. The entries are a handful per year, the funnel works without them
+(the title simply stays in the exclusions), and a redeploy is the natural
+moment to re-read an announcement anyway. What a restart does NOT cost is a
+wrong answer: without an entry the title is treated exactly like a title whose
+report date nobody knows.
+
+The three rules that shape the store
+------------------------------------
 * **A curated date never overrides a source date.** The funnel asks Finnhub
   first and only looks here when the source has nothing. A curated entry that
   competes with Finnhub would make the page disagree with the calendar it claims
@@ -16,46 +29,32 @@ The three rules that shape the file
 * **An expired entry is not a date.** ``date <= scan day`` means the report is
   over (or today, which the funnel cannot trade either), so the entry reads
   ``expired`` and the title behaves exactly like one without a date - the badge
-  says why, the funnel does not pretend.
-* **A broken file is an empty file.** This is a hand-maintained artefact in a
-  mounted cache directory; a half-written or wrongly edited file must not break
-  a scan. Reading tolerates, writing is atomic (tmp file + ``os.replace``) and
-  serialised under one lock, so two saves cannot interleave.
+  says why, the funnel does not pretend. Expired entries are also dropped from
+  memory on the next access: there is no reason to carry them, and nothing
+  else would ever remove them.
+* **One lock, one dict.** Reads happen per title inside the scan's workers, so a
+  save replaces the dict under a lock instead of mutating it in place: a running
+  scan sees the old calendar or the new one, never a half-applied one. There is
+  no second process to coordinate with - the app runs as one.
 
-Who writes the file
--------------------
-Only the POST endpoint (``routes/hand_earnings.py``). There is no other writer,
-and no code path here invents an entry: the date always arrives as text from a
-request.
+Who writes it
+-------------
+Only the POST endpoint (``routes/hand_earnings.py``). No code path here invents
+an entry: the date always arrives as text from a request.
 """
 
 from __future__ import annotations
 
-import contextlib
-import fcntl
-import json
 import logging
-import os
 import re
 import threading
 from datetime import date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
-#: Where the curated dates live. The mounted cache directory is the default
-#: (the same one the next-earnings cache uses), the working directory is the
-#: fallback for a run outside a container - the same two-path pattern as
-#: ``next_earnings.py``.
-DEFAULT_PATH = "/app/.cache/hand_earnings.json"
-FALLBACK_PATH = ".cache/hand_earnings.json"
-ENV_PATH = "HAND_EARNINGS_PATH"
-
-FILE_VERSION = 1
-
-#: How many entries the file may hold. Hand calendar entries are a handful per
-#: year, so a cap is not a limit on the feature - it is the bound that keeps the
-#: ONE write path from being used to grow the file without end (each save
-#: rewrites the whole document).
+#: How many entries the store may hold. A hand calendar has a handful per year;
+#: the cap is not a limit on the feature, it is the bound that keeps the one
+#: write path from letting the dict grow without end.
 MAX_STORED_SYMBOLS = 500
 
 #: The window a curated date may live in. 270 days is Finnhub's own window: a
@@ -74,7 +73,7 @@ CODE_TOO_FAR_OUT = "too_far_out"
 CODE_TOO_MANY = "too_many_entries"
 
 #: A US ticker: one to six capital letters. Deliberately strict - this value
-#: becomes a key of a file and a filename-adjacent token, not a free-text field.
+#: becomes a key and is echoed in a badge, not a free-text field.
 _SYMBOL_RE = re.compile(r"^[A-Z]{1,6}$")
 #: ISO date, nothing else. ``datetime.fromisoformat`` would also accept
 #: "2026-12-10T08:00", which is not what the field offers.
@@ -91,15 +90,6 @@ class HandCalendarError(Exception):
 
     def as_dict(self):
         return {"status": "rejected", "code": self.code, "message": self.message}
-
-
-def default_path():
-    """``DEFAULT_PATH`` when its directory exists, else the fallback."""
-    override = os.environ.get(ENV_PATH)
-    if override:
-        return override
-    parent = os.path.dirname(DEFAULT_PATH)
-    return DEFAULT_PATH if os.path.isdir(parent) else FALLBACK_PATH
 
 
 def valid_symbol(symbol):
@@ -138,128 +128,37 @@ def classify(entry, day):
 
 
 class HandCalendar:
-    """The curated dates behind one file, read often and written rarely.
+    """The curated dates, held in memory for the life of this process.
 
-    Reads are served from memory (the funnel asks per title, in workers); a
-    write replaces the in-memory map under the same lock that guards the file,
-    so a running scan sees either the old file or the new one, never a half
-    written pair.
+    Reads are served from a dict the funnel asks per title (in scan workers); a
+    write swaps in a new dict under the lock, so a running scan never sees a
+    half-applied calendar.
     """
 
-    def __init__(self, path=None, now_fn=None):
-        self._path = path if path is not None else default_path()
+    def __init__(self, now_fn=None):
         self._now_fn = now_fn
         self._lock = threading.Lock()
-        self._entries = None
-        self._file_stamp = None
+        self._entries = {}
 
     # --- reading ------------------------------------------------------- #
-    @property
-    def path(self):
-        return self._path
-
-    def _stamp(self):
-        """``(inode, mtime_ns, size)`` of the file, or ``None`` when it is absent.
-
-        The stamp is what makes the in-memory map safe: another PROCESS may have
-        written the file (a second worker's POST, or a human editing it by hand),
-        and a cache that never re-reads would serve the old dates until a restart.
-        """
-        try:
-            stat = os.stat(self._path)
-        except OSError:
-            return None
-        # Der INODE ist der wichtige Teil: geschrieben wird per os.replace, jede
-        # neue Fassung ist also ein neuer Inode. mtime allein kollidiert, wenn
-        # zwei Fassungen innerhalb der Zeitgranularitaet entstehen UND gleich
-        # lang sind - genau dieser Fall ist hier aufgetreten.
-        return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
-
-    def _file_changed(self):
-        return self._stamp() != self._file_stamp
-
-    #: How often a read is retried when a writer interleaves.
-    READ_ATTEMPTS = 3
-
-    def _load(self):
-        """Read the file and its stamp as ONE pair -> ``(entries, stamp)``.
-
-        ``_read`` and ``_stamp`` are two syscalls, so another process can replace
-        the file between them. Recording a stamp that belongs to the NEWER file
-        while holding the OLDER content would make the cache look fresh forever -
-        the one failure a stat-based cache must never have. The pair is therefore
-        only accepted when the stamp is identical before and after the read.
-
-        If a writer keeps interleaving, the data comes back with ``None`` as its
-        stamp: the next call re-reads instead of pinning a pair nobody can vouch
-        for. A stale read for THIS call is unavoidable; a stale cache is not.
-        """
-        stamp = self._stamp()
-        data = {}
-        for _versuch in range(self.READ_ATTEMPTS):
-            data = self._read()
-            jetzt = self._stamp()
-            if jetzt == stamp:
-                return data, stamp
-            stamp = jetzt
-        return data, None
-
-    def _read(self):
-        """The file as ``{symbol: entry}`` - unreadable means empty, with a log line."""
-        if not self._path:
-            return {}
-        try:
-            with open(self._path, encoding="utf-8") as handle:
-                payload = json.load(handle)
-        except FileNotFoundError:
-            return {}
-        except (OSError, ValueError) as exc:
-            # A hand-edited file is not a broken scan: say so and run without it.
-            logger.warning("hand earnings unreadable (%s: %s)", type(exc).__name__, exc)
-            return {}
-        rows = payload.get("symbols") if isinstance(payload, dict) else None
-        entries = {}
-        for symbol, row in (rows or {}).items():
-            if not isinstance(row, dict) or parse_date(row.get("date")) is None:
-                continue
-            clean = str(symbol).strip().upper()
-            if not valid_symbol(clean):
-                continue
-            entries[clean] = {
-                "date": row["date"],
-                "source": str(row.get("source") or "").strip(),
-                "notiert_am": str(row.get("notiert_am") or "").strip(),
-            }
-        return entries
-
-    def reload(self):
-        """Re-read the file unconditionally and remember its new stamp."""
+    def __len__(self):
         with self._lock:
-            self._entries, self._file_stamp = self._load()
-        return self._entries
+            return len(self._entries)
 
     def entries(self):
-        """The loaded map - re-read whenever the file changed on disk.
-
-        A read costs one ``os.stat``; that is what keeps a second worker's write
-        (or a hand edit) visible to this one. The map is only rebuilt when the
-        stamp actually moved, so a scan of thirty titles pays thirty stats and
-        zero parses.
-        """
+        """A COPY of the store - callers may hold it while a save happens."""
         with self._lock:
-            if self._entries is None or self._file_changed():
-                self._entries, self._file_stamp = self._load()
-            return dict(self._entries)
+            return {symbol: dict(entry) for symbol, entry in self._entries.items()}
 
     def entry_for(self, symbol, day):
         """The curated fact for ``symbol`` at ``day``, or ``None``.
 
-        ``None`` means "this title has no curated date" - not "the file is
-        unreadable"; an unreadable file yields the same ``None`` because a
-        missing date is the state the funnel already handles.
+        ``None`` means "this title has no curated date" - the state the funnel
+        already handles, so nothing else has to know about this store.
         """
         clean = str(symbol or "").strip().upper()
-        entry = self.entries().get(clean)
+        with self._lock:
+            entry = self._entries.get(clean)
         if entry is None:
             return None
         status = classify(entry, day)
@@ -268,8 +167,8 @@ class HandCalendar:
         return {
             "status": status,
             "curated_date": entry["date"],
-            "source": entry["source"] or None,
-            "notiert_am": entry["notiert_am"] or None,
+            "source": entry.get("source") or None,
+            "notiert_am": entry.get("notiert_am") or None,
         }
 
     def curated_date(self, symbol, day):
@@ -286,44 +185,20 @@ class HandCalendar:
         stamp = self._now_fn()
         return stamp.date() if isinstance(stamp, datetime) else stamp
 
-    @contextlib.contextmanager
-    def _exclusive(self):
-        """Exclusive lock across PROCESSES - ``self._lock`` only orders threads.
+    def _pruned(self, entries, day):
+        """``entries`` without the reports that are already behind us.
 
-        Two workers of the same app each hold their own ``HandCalendar``; the
-        read-modify-write of ``save()`` would otherwise interleave across them and
-        one save would silently drop the other's entry. The sidecar file is only a
-        handle: the kernel releases the lock when the process dies, so a crash
-        cannot leave a stale lock behind.
+        Nothing else would ever remove them: an expired entry is not shown, not
+        needed and not wanted, and holding it would only keep a dead symbol
+        around until the next restart.
         """
-        parent = os.path.dirname(self._path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        with open(f"{self._path}.lock", "a+", encoding="utf-8") as handle:
-            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
-            try:
-                yield
-            finally:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-    def _write(self, entries):
-        """Write the whole map atomically - tmp file in the same directory first."""
-        body = {"version": FILE_VERSION, "symbols": dict(sorted(entries.items()))}
-        parent = os.path.dirname(self._path)
-        if parent:
-            os.makedirs(parent, exist_ok=True)
-        temporary = f"{self._path}.{os.getpid()}.{threading.get_ident()}.tmp"
-        with open(temporary, "w", encoding="utf-8") as handle:
-            json.dump(body, handle, ensure_ascii=False, indent=1, sort_keys=True)
-        # ``os.replace`` is the atomic step: a reader sees the old file or the
-        # new one, never a truncated one - the file is hand-edited, not backed
-        # by a database.
-        os.replace(temporary, self._path)
+        return {symbol: entry for symbol, entry in entries.items()
+                if classify(entry, day) == STATUS_CURATED}
 
     def save(self, symbol, date_text, *, source="", day=None):
         """Validate and store one entry -> ``{"status": "saved", "entry": ...}``.
 
-        Raises ``HandCalendarError`` with a stable code for anything the file
+        Raises ``HandCalendarError`` with a stable code for anything the store
         may not hold. ``day`` is the scan day the window is measured from; the
         clock answers it when it is not passed in.
         """
@@ -349,26 +224,39 @@ class HandCalendar:
             "source": str(source or "").strip()[:80],
             "notiert_am": heute.isoformat(),
         }
-        with self._lock, self._exclusive():
-            # Unter dem Prozess-Lock wird der Stand NEU gelesen, wenn ein anderer
-            # Worker ihn bewegt hat: sonst ueberschreibt jede Speicherung die
-            # Eintraege, die zwischen unseren Aufrufen dazugekommen sind.
-            if self._entries is None or self._file_changed():
-                self._entries = self._read()
-            entries = dict(self._entries)
+        with self._lock:
+            entries = self._pruned(self._entries, heute)
             # Die Obergrenze gilt nur fuer ein NEUES Symbol: ein bestehender
-            # Eintrag darf immer korrigiert werden, auch wenn die Datei voll ist.
+            # Eintrag darf immer korrigiert werden, auch wenn der Speicher voll ist.
             if clean not in entries and len(entries) >= MAX_STORED_SYMBOLS:
                 raise HandCalendarError(
                     CODE_TOO_MANY,
-                    f"the file already holds {MAX_STORED_SYMBOLS} entries")
+                    f"the calendar already holds {MAX_STORED_SYMBOLS} entries")
             entries[clean] = eintrag
-            self._write(entries)
-            # Nach dem Schreiben wird der Zwischenspeicher VERWORFEN statt
-            # gesetzt: zwischen unserem Schreiben und einem Stempel koennte ein
-            # anderer Prozess schreiben, und wir haetten dann unseren (aelteren)
-            # Stand mit dem neueren Stempel gepaart. Ein Lesevorgang mehr pro
-            # Speicherung ist billiger als ein Cache, der luegt.
-            self._entries = None
-            self._file_stamp = None
+            self._entries = entries
+        logger.info("hand earnings saved: %s -> %s", clean, eintrag["date"])
         return {"status": "saved", "symbol": clean, "entry": dict(eintrag)}
+
+    def delete(self, symbol):
+        """Forget one entry -> ``True`` when there was something to forget.
+
+        The page reaches this by clearing the date field: an entry that is being
+        corrected or is simply not wanted any more must be removable without a
+        restart and without a second button.
+        """
+        clean = str(symbol or "").strip().upper()
+        if not valid_symbol(clean):
+            raise HandCalendarError(CODE_INVALID_SYMBOL,
+                                    "a symbol is one to six capital letters")
+        with self._lock:
+            entries = dict(self._entries)
+            vorhanden = entries.pop(clean, None) is not None
+            self._entries = entries
+        if vorhanden:
+            logger.info("hand earnings deleted: %s", clean)
+        return vorhanden
+
+    def clear(self):
+        """Drop everything - used by tests and by a caller that wants a reset."""
+        with self._lock:
+            self._entries = {}

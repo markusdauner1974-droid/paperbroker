@@ -110,11 +110,16 @@ item) and the failures (chains that could not be read) — an empty result expla
 **A title without a report date can be handed back to a human.** Where Finnhub's 270-day window holds no
 date, an optionable title gets an announcement signal from Google News' RSS search (headline and link only —
 no article is fetched, no date is parsed out of a sentence) and a date field beside it. The date typed in
-is stored in `hand_earnings.json` (`POST /api/v1/hand-earnings`, atomic write, `>= scan day` and
-`<= 270 days`), and from the next run on it fills the gap — labelled "Termin manuell kuratiert" with its
-source and the day it was noted, never dressed as a source date. Finnhub keeps the first word, and an entry
-whose report day has passed reads "abgelaufen" and behaves exactly like no date at all. Without a loaded
-CBOE list the field is not offered; the scan itself never depends on this block.
+is kept **in the running process's memory** (`POST /api/v1/hand-earnings`, `>= scan day` and
+`<= 270 days`) — no file, no cache directory, so a save never depends on a writable volume. The button reads
+*Enter* (the Enter key in the field does the same), and the funnel re-runs by itself right after the save, so
+one typed date costs one run instead of two. From that run on the date fills the gap — labelled "Termin
+manuell kuratiert" with its source and the day it was noted, never dressed as a source date. Finnhub keeps
+the first word, and an entry whose report day has passed reads "abgelaufen" and behaves exactly like no date
+at all. **A restart empties the calendar** — a handful of dates per year, and the funnel works without them.
+Two ways to get rid of an entry: clear the date field and press Enter, or let it expire (expired entries are
+dropped on the next save). Without a loaded CBOE list the field is not offered; the scan itself never depends
+on this block.
 
 ## The funnel's JSON (`GET /api/v1/gap-spreads`)
 

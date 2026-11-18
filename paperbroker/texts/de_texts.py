@@ -234,13 +234,14 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.signal_label": "Ankündigung im Feed",
     "js.handcalendar.open_link": "Ankündigung öffnen",
     "js.handcalendar.hint": (
-        "Datum aus der Ankündigung eintragen (JJJJ-MM-TT) — es gilt nur, "
-        "solange die Quelle keinen eigenen Termin liefert."
+        "Datum aus der Ankündigung eintragen (JJJJ-MM-TT), dann Enter — der "
+        "Trichter läuft sofort neu. Feld leeren und Enter löscht den Eintrag."
     ),
     "js.handcalendar.date_label": "Berichtstermin",
-    "js.handcalendar.save": "Speichern",
+    "js.handcalendar.save": "Enter",
     "js.handcalendar.saving": "Speichert …",
-    "js.handcalendar.saved": "Gespeichert — greift beim nächsten Lauf.",
+    "js.handcalendar.saved": "Gespeichert — der Trichter läuft neu …",
+    "js.handcalendar.deleted": "Eintrag gelöscht — der Trichter läuft neu …",
     "js.handcalendar.curated_badge": (
         "Termin manuell kuratiert · Quelle: {source} · notiert {notiert_am}"
     ),
@@ -256,9 +257,9 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.code.invalid_date": "Kein gültiges Datum — bitte JJJJ-MM-TT.",
     "js.handcalendar.code.past_date": "Das Datum liegt vor dem Scandatum.",
     "js.handcalendar.code.too_far_out": "Das Datum liegt mehr als 270 Tage voraus.",
-    "js.handcalendar.code.not_saved": "Die Datei konnte nicht geschrieben werden.",
+    "js.handcalendar.code.failed": "Das hat nicht geklappt — bitte noch einmal.",
     "js.handcalendar.code.too_many_entries": (
-        "Der Handkalender ist voll — bitte zuerst abgelaufene Einträge entfernen."
+        "Der Handkalender ist voll — bitte zuerst einen Eintrag löschen."
     ),
     # Die drei Wächter des Schreibwegs: gesperrt, falscher Typ, zu schnell.
     "js.handcalendar.code.forbidden": "Dieser Schreibweg verlangt ein gültiges Token.",

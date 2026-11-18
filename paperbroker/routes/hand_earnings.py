@@ -1,7 +1,7 @@
 """The hand-calendar route: one typed report date in, one honest answer out.
 
-This is the ONLY writer of ``hand_earnings.json`` and the first POST of the app,
-so it carries three guards the read routes do not need:
+This is the ONLY writer of the in-memory hand calendar and the first POST of the
+app, so it carries three guards the read routes do not need:
 
 * **Content type.** A body has to arrive as ``application/json``; anything else
   is ``415``. A browser will not send that header cross-origin without a
@@ -35,7 +35,7 @@ from collections import deque
 
 from flask import current_app, jsonify, request
 
-from ..hand_calendar import HandCalendarError
+from ..hand_calendar import HandCalendarError, valid_symbol
 from ..view_support import _us_today
 from .context import context
 
@@ -151,8 +151,13 @@ def post_hand_earnings():
     # Konstantzeit-Vergleich: ein simples != verraet ueber die Laufzeit, wie
     # viele Zeichen stimmen - ein Orakel auf das Token. compare_digest kostet
     # nichts und schliesst das aus.
-    gegeben = request.headers.get(TOKEN_HEADER) or ""
-    if token is not None and not hmac.compare_digest(gegeben, token):
+    #
+    # Verglichen werden BYTES: compare_digest nimmt bei str nur ASCII an und
+    # wirft sonst TypeError - ein Header mit Umlauten (Werkzeug dekodiert
+    # latin-1) wuerde daraus einen 500er machen statt eines 403.
+    gegeben = (request.headers.get(TOKEN_HEADER) or "").encode("utf-8")
+    erwartet = token.encode("utf-8") if token is not None else b""
+    if token is not None and not hmac.compare_digest(gegeben, erwartet):
         current_app.logger.warning("hand earnings write refused: token missing or wrong")
         return _rejected("forbidden", "a valid write token is required", 403)
 
@@ -170,21 +175,37 @@ def post_hand_earnings():
     ctx = context()
     body = _body()
     symbol = str(body.get("symbol") or "").strip().upper()
-    date_text = str(body.get("date") or "").strip()
+    # "Kein Feld" ist ein Fehler, "leeres Feld" ist der Loeschauftrag: die Seite
+    # schickt beim Leeren ausdruecklich "", waehrend ein Aufruf ohne Datum
+    # einfach unvollstaendig ist. Beides zu verwechseln hiesse, dass ein
+    # vergessenes Feld einen Eintrag loescht.
+    if not valid_symbol(symbol):
+        return _rejected("invalid_symbol",
+                         "a symbol is one to six capital letters", 400)
+    if "date" not in body:
+        return _rejected("invalid_date", "the date is not YYYY-MM-DD", 400)
+    # Nur ein AUSDRUECKLICH leeres Feld loescht. Leerzeichen sind ein Tippfehler,
+    # kein Loeschauftrag.
+    roh = body.get("date")
+    date_text = "" if roh is None else str(roh).strip()
     source = " ".join(str(body.get("source") or "").split())[:MAX_SOURCE_CHARS]
     heute = _us_today(ctx.now_fn)
+
+    # Ein LEERES Datum loescht den Eintrag. Dieselbe Taste, dieselbe Anfrage:
+    # ein falsch eingetragenes Datum muss weggehen koennen, ohne Neustart und
+    # ohne zweiten Knopf.
+    if roh is None or roh == "":
+        try:
+            gab_es = ctx.hand_calendar.delete(symbol)
+        except HandCalendarError as exc:
+            return _rejected(exc.code, exc.message, 400)
+        return jsonify(status="deleted", symbol=symbol.upper(), existed=gab_es), 200
+
     try:
         ergebnis = ctx.hand_calendar.save(symbol, date_text, source=source, day=heute)
     except HandCalendarError as exc:
         current_app.logger.info("hand earnings rejected for %r: %s", symbol, exc.code)
         return _rejected(exc.code, exc.message, 400)
-    except OSError:
-        # The directory is mounted read-only or full: the caller must know that
-        # nothing was stored, instead of a success that a reload would deny.
-        current_app.logger.exception("hand earnings not written for %s", symbol)
-        return _rejected("not_saved", "the file could not be written", 500)
-    current_app.logger.info("hand earnings saved: %s -> %s", symbol,
-                            ergebnis["entry"]["date"])
     eintrag = ergebnis["entry"]
     return jsonify(status="saved", symbol=ergebnis["symbol"], date=eintrag["date"],
                    source=eintrag["source"] or None,
