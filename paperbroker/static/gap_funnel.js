@@ -930,6 +930,11 @@
   }
 
   function saveHandDate(symbol, dateText, statusEl, button) {
+    // Ein laufender Vorgang ist ein laufender Vorgang. Der Knopf allein reicht
+    // nicht: er schluckt nur KLICKS, waehrend die Enter-Taste im Feld diese
+    // Funktion direkt aufruft. Ohne diese Zeile wuerde jedes weitere Enter
+    // einen zweiten POST und einen zweiten Trichterlauf starten.
+    if (button.disabled) return;
     statusEl.className = 'hc-status';
     statusEl.textContent = T('js.handcalendar.saving');
     button.disabled = true;

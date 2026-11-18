@@ -427,6 +427,18 @@ async function main() {
         (n) => String(n.className || '').split(/\s+/).indexOf('hc-date') >= 0)[Number(parts[1])];
       if (feld) feld.value = parts.slice(2).join(':');
     }
+    if (parts[0] === 'hckey2') {
+      // Zwei Enter-Anschlaege in Folge: der zweite darf keinen zweiten
+      // Schreibvorgang ausloesen.
+      const feld = findAll(nodes['funnel-excluded'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('hc-date') >= 0)[Number(parts[1])];
+      if (feld) {
+        for (let i = 0; i < 2; i += 1) {
+          feld.dispatchEvent({ type: 'keydown', key: 'Enter', keyCode: 13,
+            preventDefault() {} });
+        }
+      }
+    }
     if (parts[0] === 'hckey') {
       // Enter im Datumsfeld - der Weg, den ein Mensch nimmt, wenn er das Datum
       // getippt hat und nicht zur Maus greifen will.
@@ -1881,6 +1893,16 @@ class TestTheHandCalendar(unittest.TestCase):
         self.assertEqual({"symbol": "ITG", "date": ""}, posts[0]["body"])
         scans = [u for u in panel["urls"] if "/api/v1/gap-spreads" in u]
         self.assertEqual(2, len(scans), "auch das Loeschen laesst den Trichter neu laufen")
+
+    def test_a_second_enter_while_saving_does_not_start_a_second_save(self):
+        # Kody-Befund: der deaktivierte Knopf schluckt nur Klicks, die
+        # Enter-Taste im Feld geht daran vorbei. Ohne Sperre wuerde jedes
+        # weitere Enter einen POST und einen vollen Trichterlauf nachziehen.
+        panel, _boxen = self._box(self.SIGNAL, actions=["hcdate:0:2026-12-10", "hckey2:0"])
+        self.assertEqual(1, len(panel["handCalendar"]["posts"]),
+                         "zwei Enter, ein Schreibvorgang")
+        scans = [u for u in panel["urls"] if "/api/v1/gap-spreads" in u]
+        self.assertEqual(2, len(scans), "und genau ein Nachlauf")
 
     def test_the_enter_key_in_the_field_saves(self):
         # Dieselbe Taste wie der Knopf: tippen, Enter, fertig.
