@@ -242,10 +242,11 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.saving": "Speichert …",
     "js.handcalendar.saved": "Gespeichert — der Trichter läuft neu …",
     "js.handcalendar.deleted": "Eintrag gelöscht — der Trichter läuft neu …",
-    "js.handcalendar.curated_badge": (
-        "Termin manuell kuratiert · Quelle: {source} · notiert {notiert_am}"
-    ),
-    "js.handcalendar.curated_badge_plain": "Termin manuell kuratiert",
+    # Drei eigene Zeilen unter dem Datum statt eines Satzes: was er ist, woher
+    # er kommt, wann er notiert wurde.
+    "js.handcalendar.curated_line": "Termin manuell kuratiert",
+    "js.handcalendar.source_line": "Quelle: {source}",
+    "js.handcalendar.noted_line": "notiert {date}",
     "js.handcalendar.expired_badge": "abgelaufen",
     "js.handcalendar.no_signal": "keine Ankündigung im Feed-Zeitraum",
     "js.handcalendar.source_manual": "manuell",
