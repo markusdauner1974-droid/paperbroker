@@ -331,6 +331,8 @@ TEXTS: dict[str, object] = {
     "js.detail.no_expiry": "No listed expiration lies after the next report.",
     "js.detail.no_next_earnings": "No next earnings date is known for this symbol.",
     "js.detail.scenarios_heading": "Scenarios",
+    "js.detail.chart_link": "Open the chart on TradingView",
+    "js.detail.site_link": "Open the company's website",
     "js.detail.subtitle": "{strategy} · Expiration {expiration}",
     "js.detail.summary": "Spread details",
     "js.detail.title": "Detail for {symbol}",

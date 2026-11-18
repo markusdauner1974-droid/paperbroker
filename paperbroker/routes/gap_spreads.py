@@ -485,6 +485,10 @@ def api_gap_spreads_detail():
     # listed but is neither says ``null``.
     detail["structure_label"] = structure_label
     detail["is_row_pick"] = is_row_pick
+    # Die Website des Unternehmens: eine Zusatzauskunft, die den Block nicht
+    # aufhalten darf. ``web_url`` liefert ``None`` statt zu werfen - ohne
+    # Schluessel, ohne Adresse oder bei einem Fehler bleibt der Name Text.
+    detail["company_url"] = ctx.company_profile.web_url(symbol)
     return jsonify(detail)
 
 

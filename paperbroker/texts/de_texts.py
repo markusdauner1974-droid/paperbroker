@@ -359,6 +359,10 @@ TEXTS: dict[str, object] = {
     "js.detail.chart_heading": "G&V über den Kurs — heute und bei Verfall",
     "js.detail.scenarios_heading": "Szenarien",
     "js.detail.method": "Methodik: {sentence}",
+    # Zwei Linkziele im Kopf: der Chart und die Firmenseite. Der `title` sagt
+    # dem, der mit der Maus zeigt, wohin es geht - der Text bleibt der Name.
+    "js.detail.chart_link": "Chart bei TradingView öffnen",
+    "js.detail.site_link": "Website des Unternehmens öffnen",
     "js.detail.subtitle": "{strategy} · Verfall {expiration}",
     "js.detail.expiry_label": "Verfall {expiration}",
     "js.empty.no_candidate": "Kein Kandidat — {parts}.",

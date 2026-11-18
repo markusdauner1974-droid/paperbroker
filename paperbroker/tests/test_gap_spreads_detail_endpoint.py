@@ -62,7 +62,7 @@ DETAIL_KEYS = {
     "expiration", "dte", "spot", "spot_source", "strikes", "legs", "net_debit",
     "net_debit_basis", "max_loss", "max_profit", "breakeven", "rr",
     "position_greeks", "greek_explain", "series", "scenarios", "notes",
-    "structure_label", "is_row_pick",
+    "structure_label", "company_url", "is_row_pick",
 }
 LEG_KEYS = {"side", "strike", "bid", "ask", "mid", "iv", "delta", "gamma", "vega",
             "theta", "open_interest", "volume"}
@@ -89,18 +89,38 @@ def _chains(chain=None):
     return _Chains({"AAA": ladder_chain("AAA") if chain is None else chain})
 
 
-def _client(chains=None, dates=None, calendar=None, history=None):
+class _CompanyProfile:
+    """Antwortet ohne Netz: die Website kommt aus einer Fremdquelle."""
+
+    def __init__(self, url=None):
+        self.url = url
+        self.calls = []
+
+    def web_url(self, symbol):
+        self.calls.append(symbol)
+        return self.url
+
+
+def _client(chains=None, dates=None, calendar=None, history=None, company_url=None):
     return create_app(
         quote_adapter=chains if chains is not None else _chains(),
         earnings_adapter=calendar or _calendar(),
         gap_adapter=history or _history(),
         next_earnings_adapter=dates or _dates(),
+        # Kein Netz in einem Test: der Detailblock fragt die Website ab.
+        company_profile_adapter=_CompanyProfile(company_url),
         now_fn=CLOCK,
     ).test_client()
 
 
-def _get(query=f"?symbol=AAA&day={DAY}", **kwargs):
-    antwort = _client(**kwargs).get(DETAIL + query)
+def _get(query=f"?symbol=AAA&day={DAY}", company_url="https://alpha.example/", **kwargs):
+    """One request of the detail route - with the company lookup pinned.
+
+    Die Website kommt aus einer Fremdquelle (Finnhub); ein Test, der sie wirklich
+    abriefe, haenge an Netz und Schluessel. Der Adapter wird deshalb ersetzt -
+    der Vertrag der Antwort bleibt derselbe.
+    """
+    antwort = _client(company_url=company_url, **kwargs).get(DETAIL + query)
     return antwort, antwort.get_json()
 
 

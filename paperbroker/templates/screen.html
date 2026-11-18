@@ -201,6 +201,12 @@
     .detail-title{font-family:var(--font-mono);font-size:13px;color:var(--ink);
       margin:0;display:flex;flex-wrap:wrap;align-items:baseline;gap:2px 9px;
       line-height:1.5}
+    /* Zwei Ziele im Titel: das Kuerzel fuehrt zum Chart, der Name auf die
+       Firmenseite. Beide tragen die Farbe des Titels - ein Link soll hier nicht
+       lauter sein als die Zeile, in der er steht; die gepunktete Kante und das
+       Hover sagen, dass er klickbar ist. */
+    .detail-title a{color:var(--ink);text-decoration:none;border-bottom:1px dotted var(--hair)}
+    .detail-title a:hover{color:var(--primary);border-bottom-color:var(--primary)}
     /* Der Charakter ist ein Etikett am Paar: Versalien, Akzentkante, klein -
        eine Beschriftung, keine zweite Aussage. */
     .detail-tag{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.08em;
