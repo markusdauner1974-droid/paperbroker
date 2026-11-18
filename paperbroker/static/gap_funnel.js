@@ -165,6 +165,12 @@
   // heisst "kein Overlay" - und genau dann sieht das Bild aus wie bisher.
   var overlayMetrik = null;
 
+  // Welche Strike-Linien im Bild stehen. Beim Oeffnen eines Details ist keine
+  // gesetzt; ein Klick auf die Zeile in "Beide Legs" schaltet ihre Linie ein
+  // oder aus. Der Zustand liegt HIER und nicht in der Zeile, damit er einen
+  // Wechsel der Griechen-Taste (die das Bild neu zeichnet) ueberlebt.
+  var legLinien = { long: false, short: false };
+
   // Die vier Metriken, in der Reihenfolge der Tasten. Der Name kommt aus dem
   // Katalog; Taste, rechte Achse und Legende lesen dieselbe Zeichenkette.
   var GREEKS = ['delta', 'gamma', 'vega', 'theta'];
@@ -1155,22 +1161,75 @@
     return tabelle;
   }
 
-  function legTable(legs) {
-    var rows = (Array.isArray(legs) ? legs : []).map(function (leg) {
-      return [
-        leg.side === 'short' ? T('js.legs.side.short') : T('js.legs.side.long'),
+  // "Beide Legs": die Zeile eines Beins ist klickbar und blendet seinen Strike
+  // im Diagramm ein. Sie sieht klickbar aus (Zeigerhand, wie die Zeilen der
+  // Liste), damit niemand die Linien suchen muss; `aria-pressed` sagt es auch
+  // einem Screenreader, und Enter/Leertaste tun dasselbe wie der Klick.
+  function legTable(legs, onToggle) {
+    var liste = Array.isArray(legs) ? legs : [];
+    var tabelle = document.createElement('table');
+    tabelle.className = 'detail-table';
+    var thead = document.createElement('thead');
+    var kopf = document.createElement('tr');
+    [T('js.legs.col.side'), T('js.legs.col.strike'), T('js.legs.col.bid'),
+      T('js.legs.col.ask'), T('js.legs.col.mid'), T('js.legs.col.iv'),
+      T('js.legs.col.oi'), T('js.legs.col.delta')].forEach(function (text) {
+      var th = document.createElement('th');
+      th.textContent = text;
+      kopf.appendChild(th);
+    });
+    thead.appendChild(kopf);
+    tabelle.appendChild(thead);
+
+    var zeilen = [];
+    var tbody = document.createElement('tbody');
+    liste.forEach(function (leg) {
+      var seite = leg.side === 'short' ? 'short' : 'long';
+      var tr = document.createElement('tr');
+      tr.className = 'leg-row';
+      tr.title = T('js.legs.hint.show');
+      tr.setAttribute('role', 'button');
+      tr.setAttribute('tabindex', '0');
+      tr.setAttribute('aria-pressed', 'false');
+      [seite === 'short' ? T('js.legs.side.short') : T('js.legs.side.long'),
         fmt(leg.strike, 2),
         fmt(leg.bid, 2),
         fmt(leg.ask, 2),
         fmt(leg.mid, 2),
         num(leg.iv) ? fmt(leg.iv, 2) + ' %' : '–',
         fmt(leg.open_interest, 0),
-        fmt(leg.delta, 2)
-      ];
+        fmt(leg.delta, 2)].forEach(function (wert) {
+        var td = document.createElement('td');
+        td.textContent = String(wert);
+        tr.appendChild(td);
+      });
+      function schalte() {
+        legLinien[seite] = !legLinien[seite];
+        sync();
+        if (onToggle) onToggle();
+      }
+      tr.addEventListener('click', schalte);
+      tr.addEventListener('keydown', function (ereignis) {
+        if (ereignis.key !== 'Enter' && ereignis.key !== ' ' && ereignis.key !== 'Spacebar') return;
+        // `preventDefault` unterdrueckt den Klick, den der Browser sonst
+        // zusaetzlich ausloest - sonst schaltet die Taste zweimal.
+        ereignis.preventDefault();
+        schalte();
+      });
+      tbody.appendChild(tr);
+      zeilen.push({ seite: seite, tr: tr });
     });
-    return table([T('js.legs.col.side'), T('js.legs.col.strike'), T('js.legs.col.bid'),
-      T('js.legs.col.ask'), T('js.legs.col.mid'), T('js.legs.col.iv'),
-      T('js.legs.col.oi'), T('js.legs.col.delta')], rows);
+    tabelle.appendChild(tbody);
+
+    function sync() {
+      zeilen.forEach(function (zeile) {
+        var an = legLinien[zeile.seite];
+        zeile.tr.setAttribute('aria-pressed', an ? 'true' : 'false');
+        zeile.tr.title = an ? T('js.legs.hint.hide') : T('js.legs.hint.show');
+      });
+    }
+    sync();
+    return tabelle;
   }
 
   function scenarioTable(scenarios) {
@@ -1533,6 +1592,76 @@
       box.appendChild(spotText);
     }
 
+    // Zwei Beschriftungsreihen ueber dem Bild: jede neue Beschriftung rueckt
+    // eine Zeile tiefer, wenn sie der vorigen in die Quere kaeme. So stehen
+    // Break-even und bis zu zwei Strikes nebeneinander, ohne sich zu decken.
+    var obenBelegt = [];
+    function labelOben(mx, text, cls, farbe) {
+      var halb = String(text).length * 3.4;      // 10-px-Monospace, je Zeichen
+      var y = plotY + 13;
+      function stoert(yy) {
+        return obenBelegt.some(function (b) {
+          return b.y === yy && !(mx + halb < b.von || mx - halb > b.bis);
+        });
+      }
+      for (var versuch = 0; versuch < 3 && stoert(y); versuch += 1) y += 13;
+      obenBelegt.push({ von: mx - halb, bis: mx + halb, y: y });
+      var knoten = svgNode('text', {
+        x: mx, y: y, fill: farbe, 'font-size': 10, 'font-family': 'monospace',
+        'text-anchor': 'middle', class: cls,
+        // dunkler Rand um die Schrift: die Kurven laufen sonst durch die Zahl
+        stroke: '#091217', 'stroke-width': 3, 'stroke-linejoin': 'round',
+        'paint-order': 'stroke'
+      });
+      knoten.textContent = text;
+      box.appendChild(knoten);
+    }
+
+    // Der Break-even steht IMMER im Bild: er beantwortet die eine Frage, die
+    // dieses Diagramm beantwortet. Durchgezogen - der Spot ist fein gepunktet
+    // (2 4), die Griechen-Kurve gestrichelt (6 4); eine dritte Strichart waere
+    // eine dritte Vokabel. Beschriftet mit der Zahl aus dem Kopf, damit niemand
+    // sie suchen muss.
+    if (num(detail.breakeven) && detail.breakeven >= xmin && detail.breakeven <= xmax) {
+      var xBe = x(detail.breakeven);
+      box.appendChild(svgNode('line', {
+        x1: xBe, y1: plotY, x2: xBe, y2: plotY + plotH,
+        stroke: 'rgba(250,250,250,.34)', 'stroke-width': 1,
+        class: 'chart-breakeven-line'
+      }));
+      var beText = T('js.chart.breakeven', { value: fmt(detail.breakeven, 2) });
+      if (num(detail.spot) && Math.abs(xBe - x(detail.spot)) < 96) {
+        // Zu nah am Spot-Label, das unten sitzt: der Break-even rueckt nach oben.
+        labelOben(xBe, beText, 'chart-breakeven', 'rgba(250,250,250,.72)');
+      } else {
+        var beLabel = svgNode('text', {
+          x: xBe + (xBe > plotX + plotW - 96 ? -5 : 5), y: plotY + plotH - 8,
+          fill: 'rgba(250,250,250,.72)', 'font-size': 10, 'font-family': 'monospace',
+          'text-anchor': xBe > plotX + plotW - 96 ? 'end' : 'start',
+          class: 'chart-breakeven', stroke: '#091217', 'stroke-width': 3,
+          'stroke-linejoin': 'round', 'paint-order': 'stroke'
+        });
+        beLabel.textContent = beText;
+        box.appendChild(beLabel);
+      }
+    }
+
+    // Die Strikes nur auf Klick (Zeile in "Beide Legs"): hoechstens zwei Linien,
+    // und nur die, die man gerade sehen will. Ein Strike ausserhalb des Bildes
+    // bekommt keine Linie am Rand - dann fehlt sie, statt zu luegen.
+    (Array.isArray(detail.legs) ? detail.legs : []).forEach(function (leg) {
+      var seite = leg.side === 'short' ? 'short' : 'long';
+      if (!legLinien[seite] || !num(leg.strike)) return;
+      if (leg.strike < xmin || leg.strike > xmax) return;
+      var xs = x(leg.strike);
+      box.appendChild(svgNode('line', {
+        x1: xs, y1: plotY, x2: xs, y2: plotY + plotH,
+        stroke: 'rgba(250,250,250,.22)', 'stroke-width': 1
+      }));
+      labelOben(xs, T('js.chart.strike.' + seite, { strike: fmt(leg.strike, 2) }),
+        'chart-strike chart-strike-' + seite, 'rgba(250,250,250,.62)');
+    });
+
     // Preisachse: 50 % bis 170 % des Spot als Ticks, damit auch die Mitte
     // einen Wert traegt und nicht nur der linke Rand. Beschriftet mit dem
     // Kurs, nicht mit dem Prozentwert - die Kurve laeuft ueber den Kurs.
@@ -1850,13 +1979,10 @@
     var zeile = structureFor(detail);
     el.detailBody.appendChild(detailHead(detail, zeile));
 
-    el.detailBody.appendChild(subtitle(T('js.detail.legs_heading')));
-    el.detailBody.appendChild(legTable(detail.legs));
-
-    el.detailBody.appendChild(subtitle(T('js.detail.chart_heading')));
-    // Beim Oeffnen KEIN Overlay: das Bild ist genau das von vorher, die
-    // Tasten stehen sichtbar und inaktiv darueber.
+    // Beim Oeffnen KEIN Overlay und KEINE Strike-Linie: das Bild ist genau das
+    // von vorher, die Tasten stehen sichtbar und inaktiv darueber.
     overlayMetrik = null;
+    legLinien = { long: false, short: false };
     var chartBox = document.createElement('div');
     chartBox.className = 'detail-chart';
 
@@ -1866,6 +1992,10 @@
       chartBox.appendChild(chartLegend(overlayMetrik, detail));
     }
 
+    el.detailBody.appendChild(subtitle(T('js.detail.legs_heading')));
+    el.detailBody.appendChild(legTable(detail.legs, zeichne));
+
+    el.detailBody.appendChild(subtitle(T('js.detail.chart_heading')));
     var tasten = greekButtons(zeichne);
     el.detailBody.appendChild(tasten.node);
     zeichne();

@@ -203,6 +203,21 @@ in light blue, dashed `6 4`, and carries the seven scenario values as small numb
 metric in words next to its stroke. No greek at expiration is drawn: at expiration gamma, vega and theta
 are zero and the line would be empty. The page computes nothing — the values come from `series`.
 
+### Break-even and the strikes
+
+The chart carries the break-even **always**, as a plain solid line — the spot is finely dotted (`2 4`) and
+the greek curve dashed (`6 4`), so a third stroke pattern would be a third vocabulary — labelled with the
+number from the header (`Break-even 8,65`). When that label would collide with the spot's, it moves to the top of the
+picture instead of on top of it.
+
+The two strikes are **off by default**: a click on a row of *Both legs* draws that leg's strike as a thin
+vertical line labelled `Long 100,00` / `Short 96,70`, a second click takes it away, and a different row
+adds its own — at most two lines, only the ones somebody asked for. The rows look clickable (pointer hand
+like the rows of the table above), carry a tooltip and `aria-pressed`, and Enter/Space do what the click
+does. The state lives beside the chart, not inside it, so switching the greek tab — which redraws the
+picture — leaves the lines standing; a new detail starts without them. A strike outside the drawn range
+(50 % to 170 % of the spot) gets no line at all, rather than one pressed against the edge.
+
 Next to the legend entries, on the same line and only while an overlay is active, one sentence explains
 the active greek in words. The numbers it names come from `greek_explain` in the answer
 (`delta_value`, `theta_value`, `theta_cents`) — delta in percent IS cents per dollar, so one number
