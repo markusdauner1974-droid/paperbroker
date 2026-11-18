@@ -111,13 +111,24 @@ def looks_like_schedule(title):
             and any(word in text for word in _REPORT_WORDS))
 
 
+def _safe_link(link):
+    """The link only if it is an ``http(s)`` address, else ``None``.
+
+    A feed is third-party text. ``rel="noopener"`` does not stop a
+    ``javascript:`` or ``data:`` URI from running in this page's origin, so the
+    scheme is checked HERE - on the server, once - and the page only ever
+    receives an address it may turn into a link.
+    """
+    text = str(link or "").strip()
+    return text if text[:7].lower() == "http://" or text[:8].lower() == "https://" else None
+
+
 def parse_feed(xml_text):
     """``{"title", "link"}`` of the first announcing item, or ``None``.
 
     Only ``channel/item`` is read; a feed without one (or without titles) is
-    "no signal". The publisher suffix Google appends (" - Reuters") is kept:
-    it is part of the headline the reader sees, and trimming it would be a
-    guess about a format we do not own.
+    "no signal". An item whose link is not ``http(s)`` is skipped like a
+    malformed one - the headline alone is not worth showing as a link.
     """
     if isinstance(xml_text, bytes):
         try:
@@ -132,7 +143,7 @@ def parse_feed(xml_text):
         return None
     for item in root.iter("item"):
         title = (item.findtext("title") or "").strip()
-        link = (item.findtext("link") or "").strip()
+        link = _safe_link(item.findtext("link"))
         if not title or not link:
             continue
         if looks_like_schedule(title):

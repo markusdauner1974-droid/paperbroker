@@ -18,7 +18,9 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from paperbroker import hand_calendar
 from paperbroker.hand_calendar import ENV_PATH
+from paperbroker.routes import hand_earnings
 from paperbroker.tests.test_gap_scan_endpoint import CLOCK, _client
 
 PATH = "/api/v1/hand-earnings"
@@ -106,6 +108,65 @@ class RejectionTest(_Base):
         self.assertEqual("saved", body["status"])
 
 
+class GuardTest(_Base):
+    """Der eine Schreibweg hat drei Waechter - jeder mit eigenem Code."""
+
+    def setUp(self):
+        super().setUp()
+        # Der Zaehler der Ratenbegrenzung ist prozessweit: jeder Test startet
+        # mit leerem Fenster, sonst raeumt einer dem anderen die Antwort weg.
+        hand_earnings._SAVES.clear()
+
+    def test_a_body_that_is_not_json_is_refused_before_anything_else(self):
+        antwort = self.client.post(PATH, data="symbol=ITG&date=2026-12-10",
+                                   content_type="application/x-www-form-urlencoded")
+        self.assertEqual(415, antwort.status_code)
+        self.assertEqual("unsupported_media_type", antwort.get_json()["code"])
+        self.assertFalse(Path(self.pfad).exists())
+
+    def test_a_configured_token_is_required(self):
+        with mock.patch.dict(os.environ, {hand_earnings.ENV_TOKEN: "geheim"}):
+            client = _client()
+            ohne = client.post(PATH, json={"symbol": "ITG", "date": "2026-12-10"})
+            self.assertEqual(403, ohne.status_code)
+            self.assertEqual("forbidden", ohne.get_json()["code"])
+            falsch = client.post(PATH, json={"symbol": "ITG", "date": "2026-12-10"},
+                                 headers={hand_earnings.TOKEN_HEADER: "daneben"})
+            self.assertEqual(403, falsch.status_code)
+            richtig = client.post(PATH, json={"symbol": "ITG", "date": "2026-12-10"},
+                                  headers={hand_earnings.TOKEN_HEADER: "geheim"})
+            self.assertEqual(200, richtig.status_code)
+            self.assertEqual("saved", richtig.get_json()["status"])
+        self.assertIn("ITG", self._datei()["symbols"])
+
+    def test_without_a_token_the_route_stays_open_like_the_rest_of_the_app(self):
+        with mock.patch.dict(os.environ, {hand_earnings.ENV_TOKEN: ""}):
+            antwort, body = self._post({"symbol": "ITG", "date": "2026-12-10"})
+        self.assertEqual(200, antwort.status_code)
+        self.assertEqual("saved", body["status"])
+
+    def test_after_the_rate_limit_the_write_is_refused(self):
+        with mock.patch.object(hand_earnings, "MAX_SAVES_PER_MINUTE", 2):
+            hand_earnings._SAVES.clear()
+            self.assertEqual(200, self.client.post(
+                PATH, json={"symbol": "ITG", "date": "2026-12-10"}).status_code)
+            self.assertEqual(200, self.client.post(
+                PATH, json={"symbol": "ACME", "date": "2027-01-15"}).status_code)
+            dritte = self.client.post(PATH, json={"symbol": "NEW", "date": "2027-02-01"})
+        self.assertEqual(429, dritte.status_code)
+        self.assertEqual("too_many_requests", dritte.get_json()["code"])
+        # Die beiden ersten sind geschrieben, die dritte nicht.
+        self.assertNotIn("NEW", self._datei()["symbols"])
+
+    def test_a_full_file_is_refused_with_its_own_code(self):
+        with mock.patch.object(hand_calendar, "MAX_STORED_SYMBOLS", 1):
+            self.assertEqual(200, self.client.post(
+                PATH, json={"symbol": "ITG", "date": "2026-12-10"}).status_code)
+            voll = self.client.post(PATH, json={"symbol": "NEW", "date": "2027-02-01"})
+        self.assertEqual(400, voll.status_code)
+        self.assertEqual("too_many_entries", voll.get_json()["code"])
+
+
 class ShapeTest(_Base):
     def test_only_post_is_allowed(self):
         self.assertEqual(405, self.client.get(PATH).status_code)
@@ -115,6 +176,15 @@ class ShapeTest(_Base):
                                    content_type="application/json")
         self.assertEqual(400, antwort.status_code)
         self.assertEqual("invalid_symbol", antwort.get_json()["code"])
+
+    def test_the_page_carries_the_token_only_when_one_is_configured(self):
+        # Ohne Token steht kein Attribut im HTML - die Seite soll nicht so tun,
+        # als gaebe es einen Schreibschutz.
+        seite = _client().get("/").get_data(as_text=True)
+        self.assertNotIn("data-hand-token", seite)
+        with mock.patch.dict(os.environ, {hand_earnings.ENV_TOKEN: "geheim"}):
+            mit = _client().get("/").get_data(as_text=True)
+        self.assertIn('data-hand-token="geheim"', mit)
 
     def test_the_answer_carries_no_text_for_the_page_to_render_blindly(self):
         # Der Satz kommt aus dem Katalog, nicht aus dem Server: die Antwort

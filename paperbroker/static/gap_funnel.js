@@ -64,6 +64,14 @@
   // prueft Format, Vergangenheit und die 270-Tage-Grenze.
   var HAND_API = '/api/v1/hand-earnings';
 
+  // Das Schreib-Token, wenn der Server eines verlangt (HAND_EARNINGS_TOKEN).
+  // Es steht am Block, weil die Seite es vom Server bekommt - keine zweite
+  // Quelle, kein festes Token im Skript.
+  var HAND_TOKEN = (function () {
+    var block = document.getElementById('gap-funnel');
+    return (block && block.getAttribute && block.getAttribute('data-hand-token')) || '';
+  })();
+
   // Die Texte kommen als EIN JSON-Block ins gerenderte HTML (id="i18n-js"):
   // eine Quelle, keine zweite Katalogdatei in JavaScript. Der Block nennt auch
   // die Mehrfach-Regel der Sprache - dieselbe, die der Server benutzt.
@@ -852,18 +860,26 @@
     var box = hcNode('div', 'detail-handcal');
     box.appendChild(hcNode('span', 'hc-label', T('js.handcalendar.signal_label')));
 
-    var titel = hcNode('a', 'hc-title', hc.title);
-    titel.href = hc.link;
-    titel.target = '_blank';
-    // noreferrer: the news site learns nothing about this page.
-    titel.rel = 'noopener noreferrer';
+    // Der Link kommt aus einem FREMDEN Feed. rel="noopener" hilft nicht gegen
+    // ein javascript:-Ziel, deshalb wird das Schema hier noch einmal geprueft
+    // (der Server tut dasselbe) - unbrauchbar heisst: Ueberschrift als Text.
+    var ziel = /^https?:\/\//i.test(String(hc.link || '')) ? hc.link : null;
+    var titel = hcNode(ziel ? 'a' : 'span', 'hc-title', hc.title);
+    if (ziel) {
+      titel.href = ziel;
+      titel.target = '_blank';
+      // noreferrer: the news site learns nothing about this page.
+      titel.rel = 'noopener noreferrer';
+    }
     box.appendChild(titel);
 
-    var oeffnen = hcNode('a', 'hc-open', T('js.handcalendar.open_link'));
-    oeffnen.href = hc.link;
-    oeffnen.target = '_blank';
-    oeffnen.rel = 'noopener noreferrer';
-    box.appendChild(oeffnen);
+    if (ziel) {
+      var oeffnen = hcNode('a', 'hc-open', T('js.handcalendar.open_link'));
+      oeffnen.href = ziel;
+      oeffnen.target = '_blank';
+      oeffnen.rel = 'noopener noreferrer';
+      box.appendChild(oeffnen);
+    }
 
     var feldId = 'hc-date-' + symbol;
     var zeile = hcNode('div', 'hc-entry');
@@ -901,9 +917,13 @@
     statusEl.className = 'hc-status';
     statusEl.textContent = T('js.handcalendar.saving');
     button.disabled = true;
+    var kopf = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    // Ist der Schreibweg mit einem Token gesperrt, schickt die Seite es mit -
+    // sie hat es vom Server bekommen, nicht aus einer zweiten Quelle.
+    if (HAND_TOKEN) kopf['X-Hand-Earnings-Token'] = HAND_TOKEN;
     fetch(HAND_API, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+      headers: kopf,
       body: JSON.stringify({ symbol: symbol, date: dateText })
     })
       .then(function (res) {

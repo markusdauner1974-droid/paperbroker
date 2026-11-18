@@ -15,6 +15,7 @@ Three properties are pinned here, because each of them has cost a scan once:
 import json
 import os
 import tempfile
+import time
 import unittest
 from datetime import date
 from pathlib import Path
@@ -96,6 +97,29 @@ class ReadingTest(unittest.TestCase):
             self.assertIsNone(store.curated_date("TODAY", DAY))
             self.assertIsNone(store.entry_for("MISSING", DAY))
 
+    def test_a_write_from_another_process_is_visible(self):
+        # Zwei Worker, eine Datei: der zweite darf nicht ewig seinen ersten
+        # Stand serve - genau das war der Befund "stale cross-process cache".
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "hand.json")
+            _write(pfad, {"ITG": {"date": "2026-12-10", "source": "IR"}})
+            store = hc.HandCalendar(path=pfad)
+            self.assertEqual("2026-12-10", store.entry_for("ITG", DAY)["curated_date"])
+            # "Ein anderer Prozess" schreibt: dieselbe Datei, neuer Inhalt.
+            time.sleep(0.01)
+            _write(pfad, {"ITG": {"date": "2027-01-15", "source": "Webcast"}})
+            self.assertEqual("2027-01-15", store.entry_for("ITG", DAY)["curated_date"])
+            self.assertEqual("Webcast", store.entry_for("ITG", DAY)["source"])
+
+    def test_a_deleted_file_is_no_entries_not_a_stale_map(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "hand.json")
+            _write(pfad, {"ITG": {"date": "2026-12-10"}})
+            store = hc.HandCalendar(path=pfad)
+            self.assertIsNotNone(store.entry_for("ITG", DAY))
+            os.remove(pfad)
+            self.assertIsNone(store.entry_for("ITG", DAY))
+
     def test_the_environment_names_the_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             pfad = os.path.join(tmp, "eigene.json")
@@ -159,6 +183,18 @@ class WritingTest(unittest.TestCase):
     def test_exactly_270_days_ahead_is_allowed(self):
         self.store.save("ITG", "2027-08-14")            # 270 Tage nach dem 17.11.
         self.assertEqual("curated", self.store.entry_for("ITG", DAY)["status"])
+
+    def test_the_cap_refuses_a_new_symbol_but_allows_a_correction(self):
+        # Jede Speicherung schreibt die GANZE Datei - die Obergrenze ist das,
+        # was den einen Schreibweg davon abhaelt, unbegrenzt zu wachsen.
+        with mock.patch.object(hc, "MAX_STORED_SYMBOLS", 2):
+            self.store.save("ITG", "2026-12-10")
+            self.store.save("ACME", "2027-01-15")
+            with self.assertRaises(hc.HandCalendarError) as fehler:
+                self.store.save("NEW", "2027-02-01")
+            self.assertEqual(hc.CODE_TOO_MANY, fehler.exception.code)
+            # Ein BESTEHENDER Eintrag bleibt korrigierbar, auch wenn voll ist.
+            self.store.save("ITG", "2026-12-17")
 
     def test_the_scan_day_can_be_passed_instead_of_read_from_the_clock(self):
         antwort = self.store.save("ITG", "2026-12-10", day=date(2026, 12, 1))

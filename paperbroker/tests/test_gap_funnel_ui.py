@@ -1811,6 +1811,18 @@ class TestTheHandCalendar(unittest.TestCase):
         self.assertEqual("Speichern", knoepfe[0]["text"])
         self.assertIn("Berichtstermin", box["text"])
 
+    def test_a_link_without_http_scheme_is_shown_as_text_only(self):
+        # Der Server laesst so etwas gar nicht erst durch; die Seite prueft es
+        # trotzdem - ein Link ist ein Link, egal woher die Zeile kommt.
+        panel, boxen = self._box({"status": "signal",
+                                  "title": "Acme schedules Q4 earnings",
+                                  "link": "javascript:alert(1)",
+                                  "curated_date": None, "source": None,
+                                  "notiert_am": None})
+        self.assertEqual(1, len(boxen))
+        self.assertEqual([], _by_tag(boxen[0], "a"))
+        self.assertIn("Acme schedules Q4 earnings", boxen[0]["text"])
+
     def test_without_a_signal_there_is_a_sentence_and_no_field(self):
         panel, boxen = self._box({"status": "no_signal", "title": None, "link": None,
                                   "curated_date": None, "source": None,

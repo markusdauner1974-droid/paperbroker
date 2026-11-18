@@ -1,8 +1,24 @@
 """The hand-calendar route: one typed report date in, one honest answer out.
 
-Only this route writes ``hand_earnings.json``. The body is small on purpose -
-``symbol`` and ``date`` - because everything else in the file (``source``,
-``notiert_am``) is either an optional short label or the server's own clock.
+This is the ONLY writer of ``hand_earnings.json`` and the first POST of the app,
+so it carries three guards the read routes do not need:
+
+* **Content type.** A body has to arrive as ``application/json``; anything else
+  is ``415``. A browser will not send that header cross-origin without a
+  successful CORS preflight, which this app never grants - so a foreign page
+  cannot post here by accident. (A form post is refused with a code, not with a
+  vague validation error.)
+* **A token, when the operator sets one.** ``HAND_EARNINGS_TOKEN`` in the
+  environment turns the route into a locked door: the header
+  ``X-Hand-Earnings-Token`` has to carry the same value, otherwise ``403``. The
+  page receives the token from the server (``data-hand-token`` on the funnel
+  block) and sends it along, so the dashboard keeps working. Without the
+  variable the route stays as open as every other route of this app - a private
+  LAN tool with one authenticated route and thirty open ones would be a lock on
+  the wrong door.
+* **A rate limit.** Thirty saves per minute per client, then ``429``. Each save
+  rewrites the whole document, so the limit is what keeps a runaway loop from
+  turning the disk into the bottleneck.
 
 Rejections carry a stable code, not a sentence: the page turns ``invalid_date``
 into its own language, and a code cannot drift into a different meaning by
@@ -10,6 +26,11 @@ being rephrased.
 """
 
 from __future__ import annotations
+
+import os
+import threading
+import time
+from collections import deque
 
 from flask import current_app, jsonify, request
 
@@ -20,6 +41,47 @@ from .context import context
 #: A source label is a short hint ("IR-Pressemitteilung"), not a citation. The
 #: field is echoed in a badge, so it is cut rather than stored unbounded.
 MAX_SOURCE_CHARS = 80
+
+#: The optional lock: set it and every write has to present it.
+ENV_TOKEN = "HAND_EARNINGS_TOKEN"
+TOKEN_HEADER = "X-Hand-Earnings-Token"
+
+#: Saves one client may make per minute. A human needs one; a loop would need
+#: the disk.
+MAX_SAVES_PER_MINUTE = 30
+_RATE_WINDOW_SECONDS = 60.0
+
+_SAVES: dict = {}
+_SAVES_LOCK = threading.Lock()
+
+
+def configured_token():
+    """The token from the environment, or ``None`` when the route is open."""
+    token = (os.environ.get(ENV_TOKEN) or "").strip()
+    return token or None
+
+
+def _client_key():
+    """Who is asking: the proxy's header first, then the socket address."""
+    weitergeleitet = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
+    return weitergeleitet or (request.remote_addr or "local")
+
+
+def _too_many(client):
+    """``True`` when this client has used up its minute of saves."""
+    jetzt = time.monotonic()
+    with _SAVES_LOCK:
+        zeiten = _SAVES.setdefault(client, deque())
+        while zeiten and jetzt - zeiten[0] > _RATE_WINDOW_SECONDS:
+            zeiten.popleft()
+        if len(zeiten) >= MAX_SAVES_PER_MINUTE:
+            return True
+        zeiten.append(jetzt)
+        return False
+
+
+def _rejected(code, message, status):
+    return jsonify(status="rejected", code=code, message=message), status
 
 
 def optionable_symbols(ctx):
@@ -52,9 +114,25 @@ def post_hand_earnings():
 
     ``symbol`` must be a US ticker, ``date`` a strict ISO day between the scan
     day and 270 days ahead. The answer is ``{"status": "saved", ...}`` or
-    ``{"status": "rejected", "code": ...}``; the HTTP status mirrors it (200/400)
-    so a caller that only reads the status code is not misled either.
+    ``{"status": "rejected", "code": ...}``; the HTTP status mirrors it so a
+    caller that only reads the status code is not misled either.
     """
+    token = configured_token()
+    if token is not None and request.headers.get(TOKEN_HEADER) != token:
+        current_app.logger.warning("hand earnings write refused: token missing or wrong")
+        return _rejected("forbidden", "a valid write token is required", 403)
+
+    # The one header a foreign page cannot send without a preflight this app
+    # never allows: a form post, an <img> or a plain link cannot fake it.
+    if not request.is_json:
+        return _rejected("unsupported_media_type",
+                         "the body has to be application/json", 415)
+
+    client = _client_key()
+    if _too_many(client):
+        current_app.logger.warning("hand earnings rate limit hit by %s", client)
+        return _rejected("too_many_requests", "too many saves; wait a minute", 429)
+
     ctx = context()
     body = _body()
     symbol = str(body.get("symbol") or "").strip().upper()
@@ -65,13 +143,12 @@ def post_hand_earnings():
         ergebnis = ctx.hand_calendar.save(symbol, date_text, source=source, day=heute)
     except HandCalendarError as exc:
         current_app.logger.info("hand earnings rejected for %r: %s", symbol, exc.code)
-        return jsonify(status="rejected", code=exc.code, message=exc.message), 400
+        return _rejected(exc.code, exc.message, 400)
     except OSError:
         # The directory is mounted read-only or full: the caller must know that
         # nothing was stored, instead of a success that a reload would deny.
         current_app.logger.exception("hand earnings not written for %s", symbol)
-        return jsonify(status="rejected", code="not_saved",
-                       message="the file could not be written"), 500
+        return _rejected("not_saved", "the file could not be written", 500)
     current_app.logger.info("hand earnings saved: %s -> %s", symbol,
                             ergebnis["entry"]["date"])
     eintrag = ergebnis["entry"]

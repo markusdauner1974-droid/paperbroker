@@ -452,6 +452,16 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.code.past_date": "The date lies before the scan day.",
     "js.handcalendar.code.too_far_out": "The date lies more than 270 days ahead.",
     "js.handcalendar.code.not_saved": "The file could not be written.",
+    "js.handcalendar.code.too_many_entries": (
+        "The hand calendar is full — please remove expired entries first."
+    ),
+    "js.handcalendar.code.forbidden": "This write path requires a valid token.",
+    "js.handcalendar.code.unsupported_media_type": (
+        "The request did not arrive as JSON — please reload the page."
+    ),
+    "js.handcalendar.code.too_many_requests": (
+        "Too many saves in a short time — please wait a minute."
+    ),
     "js.rr_hurdle.fallback": "1 : 2",
     "js.scenarios.col.change": "Change (%)",
     "js.scenarios.col.delta": "Delta",

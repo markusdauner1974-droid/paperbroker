@@ -58,6 +58,27 @@ class ParserTest(unittest.TestCase):
         for text in ("", "   ", "<rss><channel>", "kein xml", None, b"\xff\xfe\x00"):
             self.assertIsNone(feed.parse_feed(text), repr(text)[:40])
 
+    def test_a_link_without_http_scheme_is_not_a_signal(self):
+        # Ein Feed ist fremder Text: javascript: und data: duerfen nie als Link
+        # in die Seite gelangen - der Server prueft das Schema, nicht nur die
+        # Seite (rel="noopener" hilft dagegen nicht).
+        for ziel in ("javascript:alert(1)", "data:text/html,<script>x</script>",
+                     "file:///etc/passwd", "/relative/pfad", ""):
+            rss = ("<rss><channel><item>"
+                   "<title>Acme schedules Q4 earnings call</title>"
+                   f"<link>{ziel}</link></item></channel></rss>")
+            self.assertIsNone(feed.parse_feed(rss), ziel)
+
+    def test_a_bad_link_is_skipped_for_the_next_item(self):
+        rss = ("<rss><channel>"
+               "<item><title>Acme schedules Q4 earnings</title>"
+               "<link>javascript:alert(1)</link></item>"
+               "<item><title>Acme to report fiscal 2027 results</title>"
+               "<link>https://news.example.com/gut</link></item>"
+               "</channel></rss>")
+        signal = feed.parse_feed(rss)
+        self.assertEqual("https://news.example.com/gut", signal["link"])
+
     def test_bytes_are_decoded(self):
         self.assertIsNotNone(feed.parse_feed(RSS.encode("utf-8")))
 

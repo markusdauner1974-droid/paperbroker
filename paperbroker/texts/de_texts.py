@@ -257,6 +257,17 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.code.past_date": "Das Datum liegt vor dem Scandatum.",
     "js.handcalendar.code.too_far_out": "Das Datum liegt mehr als 270 Tage voraus.",
     "js.handcalendar.code.not_saved": "Die Datei konnte nicht geschrieben werden.",
+    "js.handcalendar.code.too_many_entries": (
+        "Der Handkalender ist voll — bitte zuerst abgelaufene Einträge entfernen."
+    ),
+    # Die drei Wächter des Schreibwegs: gesperrt, falscher Typ, zu schnell.
+    "js.handcalendar.code.forbidden": "Dieser Schreibweg verlangt ein gültiges Token.",
+    "js.handcalendar.code.unsupported_media_type": (
+        "Die Anfrage kam nicht als JSON — bitte die Seite neu laden."
+    ),
+    "js.handcalendar.code.too_many_requests": (
+        "Zu viele Speicherungen in kurzer Zeit — bitte eine Minute warten."
+    ),
     "js.list.excluded": "Ausschlüsse",
     "js.list.failures": "Fehlschläge",
     "js.list.summary": "{label} ({count})",

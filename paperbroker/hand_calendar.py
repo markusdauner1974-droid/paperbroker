@@ -50,6 +50,12 @@ ENV_PATH = "HAND_EARNINGS_PATH"
 
 FILE_VERSION = 1
 
+#: How many entries the file may hold. Hand calendar entries are a handful per
+#: year, so a cap is not a limit on the feature - it is the bound that keeps the
+#: ONE write path from being used to grow the file without end (each save
+#: rewrites the whole document).
+MAX_STORED_SYMBOLS = 500
+
 #: The window a curated date may live in. 270 days is Finnhub's own window: a
 #: date further out would be a promise the funnel cannot measure anyway.
 MAX_DAYS_AHEAD = 270
@@ -63,6 +69,7 @@ CODE_INVALID_SYMBOL = "invalid_symbol"
 CODE_INVALID_DATE = "invalid_date"
 CODE_PAST_DATE = "past_date"
 CODE_TOO_FAR_OUT = "too_far_out"
+CODE_TOO_MANY = "too_many_entries"
 
 #: A US ticker: one to six capital letters. Deliberately strict - this value
 #: becomes a key of a file and a filename-adjacent token, not a free-text field.
@@ -142,11 +149,28 @@ class HandCalendar:
         self._now_fn = now_fn
         self._lock = threading.Lock()
         self._entries = None
+        self._file_stamp = None
 
     # --- reading ------------------------------------------------------- #
     @property
     def path(self):
         return self._path
+
+    def _stamp(self):
+        """``(mtime_ns, size)`` of the file, or ``None`` when it does not exist.
+
+        The stamp is what makes the in-memory map safe: another PROCESS may have
+        written the file (a second worker's POST, or a human editing it by hand),
+        and a cache that never re-reads would serve the old dates until a restart.
+        """
+        try:
+            stat = os.stat(self._path)
+        except OSError:
+            return None
+        return (stat.st_mtime_ns, stat.st_size)
+
+    def _file_changed(self):
+        return self._stamp() != self._file_stamp
 
     def _read(self):
         """The file as ``{symbol: entry}`` - unreadable means empty, with a log line."""
@@ -177,16 +201,24 @@ class HandCalendar:
         return entries
 
     def reload(self):
-        """Re-read the file; a scan calls this once so its workers see one state."""
+        """Re-read the file unconditionally and remember its new stamp."""
         with self._lock:
             self._entries = self._read()
+            self._file_stamp = self._stamp()
         return self._entries
 
     def entries(self):
-        """The loaded map, reading the file on first use."""
+        """The loaded map - re-read whenever the file changed on disk.
+
+        A read costs one ``os.stat``; that is what keeps a second worker's write
+        (or a hand edit) visible to this one. The map is only rebuilt when the
+        stamp actually moved, so a scan of thirty titles pays thirty stats and
+        zero parses.
+        """
         with self._lock:
-            if self._entries is None:
+            if self._entries is None or self._file_changed():
                 self._entries = self._read()
+                self._file_stamp = self._stamp()
             return dict(self._entries)
 
     def entry_for(self, symbol, day):
@@ -270,7 +302,16 @@ class HandCalendar:
         with self._lock:
             entries = self._entries if self._entries is not None else self._read()
             entries = dict(entries)
+            # Die Obergrenze gilt nur fuer ein NEUES Symbol: ein bestehender
+            # Eintrag darf immer korrigiert werden, auch wenn die Datei voll ist.
+            if clean not in entries and len(entries) >= MAX_STORED_SYMBOLS:
+                raise HandCalendarError(
+                    CODE_TOO_MANY,
+                    f"the file already holds {MAX_STORED_SYMBOLS} entries")
             entries[clean] = eintrag
             self._write(entries)
             self._entries = entries
+            # Der eigene Schreiber setzt den Stempel selbst - sonst liest der
+            # naechste Aufruf die Datei, die er gerade geschrieben hat.
+            self._file_stamp = self._stamp()
         return {"status": "saved", "symbol": clean, "entry": dict(eintrag)}
