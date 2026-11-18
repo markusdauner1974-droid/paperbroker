@@ -126,6 +126,15 @@
        Zeile, kein Chevron. Cursor, Hover und Fokusring sagen, dass sie laedt;
        der geoeffnete Block und aria-expanded bestaetigen es. */
     tbody tr.row-detail{cursor:pointer}
+    /* Die Zeilen von "Beide Legs" sind klickbar: sie schalten die Strike-Linie
+       im Diagramm ein und aus. Sie sehen aus wie die Zeilen der Liste darueber
+       - Zeigerhand -, und die eingeschaltete Zeile ist an ihrer linken Kante
+       zu erkennen, nicht an einer neuen Farbe. */
+    tbody tr.leg-row{cursor:pointer}
+    tbody tr.leg-row:hover td{background:rgba(250,250,250,.04)}
+    tbody tr.leg-row:focus-visible{outline:1px solid var(--primary);outline-offset:-2px}
+    tbody tr.leg-row[aria-pressed="true"] td{background:rgba(250,250,250,.06)}
+    tbody tr.leg-row[aria-pressed="true"] td:first-child{box-shadow:inset 2px 0 0 var(--primary)}
     tbody tr.row-detail:hover{background:rgba(250,250,250,.06)}
     tbody tr.row-detail:focus-visible{outline:2px solid var(--primary);
       outline-offset:-2px}

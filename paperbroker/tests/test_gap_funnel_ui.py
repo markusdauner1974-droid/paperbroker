@@ -418,6 +418,23 @@ async function main() {
         prevented.push({ spec, prevented: ev.defaultPrevented });
       }
     }
+    if (parts[0] === 'leg') {
+      // Eine Zeile der Leg-Tabelle: ein echter Klick, wie im Browser.
+      const zeile = findAll(nodes['funnel-detail-body'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('leg-row') >= 0)[Number(parts[1])];
+      if (zeile) zeile.click();
+    }
+    if (parts[0] === 'legkey') {
+      const zeile = findAll(nodes['funnel-detail-body'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('leg-row') >= 0)[Number(parts[1])];
+      if (zeile) {
+        const taste = parts[2] === 'Space' ? ' ' : (parts[2] || 'Enter');
+        const ev = { type: 'keydown', key: taste, defaultPrevented: false,
+          preventDefault() { ev.defaultPrevented = true; } };
+        zeile.dispatchEvent(ev);
+        prevented.push({ spec, prevented: ev.defaultPrevented });
+      }
+    }
     if (parts[0] === 'sub') {
       const liste = subsOf(Number(parts[1]));
       const stelle = liste[Number(parts[2])];
@@ -1995,6 +2012,96 @@ class TestTheHandCalendar(unittest.TestCase):
             panel = _render(details=[{"status": 200, "body": detail}], actions=["click:0"])
             name = _by_class(_head(panel), "detail-name")[0]
             self.assertEqual("span", str(name["tag"]).lower(), fremd)
+
+    def test_the_breakeven_stands_in_the_chart_from_the_first_drawing(self):
+        # Der Break-even ist die Zahl, die das Bild beantwortet: er steht sofort
+        # da, durchgezogen und beschriftet.
+        panel = _render(details=[{"status": 200, "body": _detail()}], actions=["click:0"])
+        baum = panel["detail"]["tree"]
+        # Durchgezogen: der Spot ist fein gepunktet (2 4), die Griechen-Kurve
+        # gestrichelt (6 4) - eine dritte Strichart waere eine dritte Vokabel.
+        linien = _by_class(baum, "chart-breakeven-line")
+        self.assertEqual(1, len(linien), "genau eine Break-even-Linie")
+        self.assertIsNone(linien[0]["attrs"].get("stroke-dasharray"),
+                          "der Break-even ist eine durchgezogene Linie")
+        beschriftung = _by_class(baum, "chart-breakeven")
+        self.assertEqual(1, len(beschriftung))
+        self.assertEqual("Break-even 8,65", beschriftung[0]["text"])
+        # Der Spot behaelt sein eigenes, feineres Muster.
+        fein = _nodes(baum, lambda n: n.get("attrs", {}).get("stroke-dasharray") == "2 4")
+        self.assertEqual(1, len(fein))
+
+    def test_the_strike_lines_wait_for_a_click(self):
+        detail = _detail()
+        ohne = _render(details=[{"status": 200, "body": detail}], actions=["click:0"])
+        self.assertEqual([], _by_class(ohne["detail"]["tree"], "chart-strike"),
+                         "ohne Klick keine Strike-Linie")
+
+        mit = _render(details=[{"status": 200, "body": detail}], actions=["click:0", "leg:0"])
+        linien = _by_class(mit["detail"]["tree"], "chart-strike")
+        self.assertEqual(1, len(linien), "nur das angeklickte Bein")
+        self.assertIn("chart-strike-long", str(linien[0]["cls"]))
+        self.assertEqual("Long 10,00", linien[0]["text"])
+
+    def test_both_legs_can_stand_in_the_chart_at_once(self):
+        panel = _render(details=[{"status": 200, "body": _detail()}],
+                        actions=["click:0", "leg:0", "leg:1"])
+        linien = _by_class(panel["detail"]["tree"], "chart-strike")
+        self.assertEqual(2, len(linien))
+        self.assertEqual(["Long 10,00", "Short 7,50"], [n["text"] for n in linien])
+
+    def test_a_second_click_takes_the_line_away_again(self):
+        panel = _render(details=[{"status": 200, "body": _detail()}],
+                        actions=["click:0", "leg:0", "leg:0"])
+        self.assertEqual([], _by_class(panel["detail"]["tree"], "chart-strike"))
+
+    def test_the_line_survives_a_switch_of_the_greek_tab(self):
+        # Die Griechen-Taste zeichnet das Bild neu - der Klick-Zustand liegt
+        # deshalb nicht im Bild, sondern daneben.
+        panel = _render(details=[{"status": 200, "body": _detail()}],
+                        actions=["click:0", "leg:0", "greek:1"])
+        self.assertEqual(1, len(_by_class(panel["detail"]["tree"], "chart-strike")),
+                         "die Linie bleibt nach dem Tab-Wechsel stehen")
+        # Und ein NEUES Detail beginnt wieder ohne Linie.
+        neu = _render(details=[{"status": 200, "body": _detail()},
+                               {"status": 200, "body": _detail()}],
+                      actions=["click:0", "leg:0", "click:0"])
+        self.assertEqual([], _by_class(neu["detail"]["tree"], "chart-strike"))
+
+    def test_the_leg_row_is_a_switch_also_for_a_screenreader(self):
+        detail = _detail()
+        vorher = _render(details=[{"status": 200, "body": detail}], actions=["click:0"])
+        zeilen = _by_class(vorher["detail"]["tree"], "leg-row")
+        self.assertEqual(2, len(zeilen))
+        for zeile in zeilen:
+            self.assertEqual("button", zeile["attrs"].get("role"))
+            self.assertEqual("0", zeile["attrs"].get("tabindex"))
+            self.assertEqual("false", zeile["attrs"].get("aria-pressed"))
+
+        nachher = _render(details=[{"status": 200, "body": detail}],
+                          actions=["click:0", "legkey:1:Enter"])
+        zeilen = _by_class(nachher["detail"]["tree"], "leg-row")
+        self.assertEqual("false", zeilen[0]["attrs"].get("aria-pressed"))
+        self.assertEqual("true", zeilen[1]["attrs"].get("aria-pressed"),
+                         "die Taste tut dasselbe wie der Klick")
+        self.assertEqual(1, len(_by_class(nachher["detail"]["tree"], "chart-strike")))
+
+    def test_a_strike_outside_the_drawn_range_gets_no_line(self):
+        # Gezeichnet wird 50 % bis 170 % des Spots; ein Strike ausserhalb bekommt
+        # keine Linie am Rand - dann fehlt sie, statt zu luegen.
+        detail = _detail()
+        detail["legs"] = [dict(detail["legs"][0], strike=400.0),
+                          dict(detail["legs"][1], strike=0.5)]
+        panel = _render(details=[{"status": 200, "body": detail}],
+                        actions=["click:0", "leg:0", "leg:1"])
+        self.assertEqual([], _by_class(panel["detail"]["tree"], "chart-strike"))
+        # Der Break-even bleibt davon unberuehrt.
+        self.assertEqual(1, len(_by_class(panel["detail"]["tree"], "chart-breakeven")))
+
+    def test_the_leg_row_shows_the_pointer_hand(self):
+        seite = _page()
+        self.assertIn("tbody tr.leg-row{cursor:pointer}", seite,
+                      "die Zeile muss klickbar aussehen")
 
     def test_the_curated_lines_are_grey_and_stacked(self):
         # Die drei Zeilen sind klein und grau und stehen untereinander - das

@@ -303,6 +303,9 @@ TEXTS: dict[str, object] = {
     "js.chart.legend.expiry": "at expiration",
     "js.chart.legend.greek": "{greek} (model)",
     "js.chart.legend.today": "today (model)",
+    "js.chart.breakeven": "Break-even {value}",
+    "js.chart.strike.long": "Long {strike}",
+    "js.chart.strike.short": "Short {strike}",
     "js.chart.spot": "Spot {value}",
     "js.chart.title": "P&L per spread against the price — today and at expiration",
     "js.counts.candidates": {
@@ -325,6 +328,8 @@ TEXTS: dict[str, object] = {
     "js.detail.failed": "Detail for {symbol} failed: {message}",
     "js.detail.leg_not_listed": "One leg of this spread is not in the chain.",
     "js.detail.legs_heading": "Both legs",
+    "js.legs.hint.show": "Show the strike in the chart",
+    "js.legs.hint.hide": "Hide the strike from the chart",
     "js.detail.loading": "Detail for {symbol} — loading …",
     "js.detail.method": "Method: {sentence}",
     "js.detail.no_candidate": "This symbol is not a candidate of the funnel on this day.",

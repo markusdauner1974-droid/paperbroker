@@ -54,7 +54,7 @@ class TheEnglishPageDraftTest(unittest.TestCase):
         # vier Achsentitel, der Legendeneintrag und der Satz fuer den
         # Screenreader) kommen mit dem Overlay hinzu, die vier Erklaersaetze
         # mit der Erklaerzeile: 196 + 11 + 4.
-        self.assertEqual(len(self.de), 236)
+        self.assertEqual(len(self.de), 241)
         self.assertEqual(set(self.en), set(self.de), "kein Schluessel darf fehlen")
 
     def test_every_placeholder_is_unchanged(self):

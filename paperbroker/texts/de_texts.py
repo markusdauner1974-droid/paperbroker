@@ -343,6 +343,10 @@ TEXTS: dict[str, object] = {
     "js.chart.axis.greek.gamma": "Gamma",
     "js.chart.axis.greek.vega": "Vega",
     "js.chart.axis.greek.theta": "Theta",
+    # Die Linie, um die es im Bild geht: ab hier verdient der Spread.
+    "js.chart.breakeven": "Break-even {value}",
+    "js.chart.strike.long": "Long {strike}",
+    "js.chart.strike.short": "Short {strike}",
     "js.chart.spot": "Spot {value}",
     "js.chart.legend.today": "heute (Modell)",
     "js.chart.legend.expiry": "bei Verfall",
@@ -356,6 +360,10 @@ TEXTS: dict[str, object] = {
     "js.figures.volatility": "Schwankung",
     "js.figures.hit_rate": "Treffer",
     "js.detail.legs_heading": "Beide Legs",
+    # Die Zeile eines Beins ist klickbar: sie blendet ihren Strike im Diagramm
+    # ein. Der Hinweis steht als Tooltip an der Zeile.
+    "js.legs.hint.show": "Strike im Diagramm einblenden",
+    "js.legs.hint.hide": "Strike im Diagramm ausblenden",
     "js.detail.chart_heading": "G&V über den Kurs — heute und bei Verfall",
     "js.detail.scenarios_heading": "Szenarien",
     "js.detail.method": "Methodik: {sentence}",
