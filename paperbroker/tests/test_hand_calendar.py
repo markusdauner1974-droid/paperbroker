@@ -26,6 +26,14 @@ from paperbroker import hand_calendar as hc
 DAY = date(2026, 11, 17)
 
 
+def _replace(path, symbols):
+    """Write like the production writer: tmp file + os.replace (new inode)."""
+    temporary = f"{path}.tmp"
+    Path(temporary).write_text(json.dumps({"version": 1, "symbols": symbols}),
+                               encoding="utf-8")
+    os.replace(temporary, path)
+
+
 def _write(path, symbols):
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     Path(path).write_text(json.dumps({"version": 1, "symbols": symbols}), encoding="utf-8")
@@ -111,6 +119,41 @@ class ReadingTest(unittest.TestCase):
             self.assertEqual("2027-01-15", store.entry_for("ITG", DAY)["curated_date"])
             self.assertEqual("Webcast", store.entry_for("ITG", DAY)["source"])
 
+    def test_a_replace_during_the_read_does_not_pin_a_stale_map(self):
+        # Der TOCTOU-Fall: lesen, DANN schreibt ein anderer Prozess, DANN wird
+        # gestempelt. Ohne Gegenmassnahme haelt der Cache die alten Daten mit dem
+        # Stempel der neuen Datei - und bleibt fuer immer "frisch".
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "hand.json")
+            _write(pfad, {"ITG": {"date": "2026-12-10", "source": "alt"}})
+            store = hc.HandCalendar(path=pfad)
+            original = store._read
+            zustand = {"n": 0}
+
+            def lesend_ueberholt():
+                inhalt = original()
+                if zustand["n"] == 0:
+                    zustand["n"] += 1
+                    # Genau zwischen Lesen und Stempeln schreibt "Prozess B" -
+                    # atomar, wie der echte Schreiber.
+                    _replace(pfad, {"ITG": {"date": "2027-03-01", "source": "neu"}})
+                return inhalt
+
+            store._read = lesend_ueberholt
+            store.entries()
+            # Der Stempel darf nicht zur neuen Datei gehoeren, waehrend alte
+            # Daten im Speicher liegen: der zweite Aufruf liest die neue Datei.
+            self.assertEqual("2027-03-01", store.entry_for("ITG", DAY)["curated_date"])
+
+    def test_a_save_does_not_pin_its_own_map_over_a_newer_file(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "hand.json")
+            store = hc.HandCalendar(path=pfad, now_fn=lambda: _stamp())
+            store.save("ITG", "2026-12-10")
+            # Nach dem eigenen Schreiben schreibt ein anderer Prozess.
+            _replace(pfad, {"ITG": {"date": "2027-03-01", "source": "neu"}})
+            self.assertEqual("2027-03-01", store.entry_for("ITG", DAY)["curated_date"])
+
     def test_a_deleted_file_is_no_entries_not_a_stale_map(self):
         with tempfile.TemporaryDirectory() as tmp:
             pfad = os.path.join(tmp, "hand.json")
@@ -151,7 +194,9 @@ class WritingTest(unittest.TestCase):
         self.store.save("ITG", "2026-12-10")
         self.store.save("ACME", "2027-01-15")
         dateien = sorted(p.name for p in Path(os.path.dirname(self.pfad)).iterdir())
-        self.assertEqual(["hand.json"], dateien)
+        # Die .lock-Datei ist die prozessuebergreifende Sperre und bleibt; ein
+        # .tmp-Rest waere ein Fehler und steht deshalb nicht in dieser Liste.
+        self.assertEqual(["hand.json", "hand.json.lock"], dateien)
         self.assertEqual(2, len(json.loads(Path(self.pfad).read_text())["symbols"]))
 
     def test_a_second_entry_keeps_the_first(self):
@@ -183,6 +228,22 @@ class WritingTest(unittest.TestCase):
     def test_exactly_270_days_ahead_is_allowed(self):
         self.store.save("ITG", "2027-08-14")            # 270 Tage nach dem 17.11.
         self.assertEqual("curated", self.store.entry_for("ITG", DAY)["status"])
+
+    def test_two_workers_do_not_lose_each_others_entries(self):
+        # Zwei Prozesse, eine Datei, je ein eigener Zwischenspeicher. Ohne
+        # Prozess-Lock und Re-Read schreibt der zweite {sein Symbol} und der
+        # erste Eintrag ist weg - der klassische Lost Update.
+        with tempfile.TemporaryDirectory() as tmp:
+            pfad = os.path.join(tmp, "hand.json")
+            a = hc.HandCalendar(path=pfad)
+            b = hc.HandCalendar(path=pfad)
+            self.assertEqual({}, b.entries())        # b hat den leeren Stand gesehen
+            a.save("ITG", "2026-12-10")
+            b.save("ACME", "2027-01-15")
+            gespeichert = json.loads(open(pfad, encoding="utf-8").read())["symbols"]
+            self.assertEqual({"ACME", "ITG"}, set(gespeichert))
+            self.assertEqual("2026-12-10", a.entry_for("ITG", DAY)["curated_date"])
+            self.assertEqual("2026-12-10", b.entry_for("ITG", DAY)["curated_date"])
 
     def test_the_cap_refuses_a_new_symbol_but_allows_a_correction(self):
         # Jede Speicherung schreibt die GANZE Datei - die Obergrenze ist das,

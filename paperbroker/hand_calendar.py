@@ -31,6 +31,8 @@ request.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -157,7 +159,7 @@ class HandCalendar:
         return self._path
 
     def _stamp(self):
-        """``(mtime_ns, size)`` of the file, or ``None`` when it does not exist.
+        """``(inode, mtime_ns, size)`` of the file, or ``None`` when it is absent.
 
         The stamp is what makes the in-memory map safe: another PROCESS may have
         written the file (a second worker's POST, or a human editing it by hand),
@@ -167,10 +169,40 @@ class HandCalendar:
             stat = os.stat(self._path)
         except OSError:
             return None
-        return (stat.st_mtime_ns, stat.st_size)
+        # Der INODE ist der wichtige Teil: geschrieben wird per os.replace, jede
+        # neue Fassung ist also ein neuer Inode. mtime allein kollidiert, wenn
+        # zwei Fassungen innerhalb der Zeitgranularitaet entstehen UND gleich
+        # lang sind - genau dieser Fall ist hier aufgetreten.
+        return (stat.st_ino, stat.st_mtime_ns, stat.st_size)
 
     def _file_changed(self):
         return self._stamp() != self._file_stamp
+
+    #: How often a read is retried when a writer interleaves.
+    READ_ATTEMPTS = 3
+
+    def _load(self):
+        """Read the file and its stamp as ONE pair -> ``(entries, stamp)``.
+
+        ``_read`` and ``_stamp`` are two syscalls, so another process can replace
+        the file between them. Recording a stamp that belongs to the NEWER file
+        while holding the OLDER content would make the cache look fresh forever -
+        the one failure a stat-based cache must never have. The pair is therefore
+        only accepted when the stamp is identical before and after the read.
+
+        If a writer keeps interleaving, the data comes back with ``None`` as its
+        stamp: the next call re-reads instead of pinning a pair nobody can vouch
+        for. A stale read for THIS call is unavoidable; a stale cache is not.
+        """
+        stamp = self._stamp()
+        data = {}
+        for _versuch in range(self.READ_ATTEMPTS):
+            data = self._read()
+            jetzt = self._stamp()
+            if jetzt == stamp:
+                return data, stamp
+            stamp = jetzt
+        return data, None
 
     def _read(self):
         """The file as ``{symbol: entry}`` - unreadable means empty, with a log line."""
@@ -203,8 +235,7 @@ class HandCalendar:
     def reload(self):
         """Re-read the file unconditionally and remember its new stamp."""
         with self._lock:
-            self._entries = self._read()
-            self._file_stamp = self._stamp()
+            self._entries, self._file_stamp = self._load()
         return self._entries
 
     def entries(self):
@@ -217,8 +248,7 @@ class HandCalendar:
         """
         with self._lock:
             if self._entries is None or self._file_changed():
-                self._entries = self._read()
-                self._file_stamp = self._stamp()
+                self._entries, self._file_stamp = self._load()
             return dict(self._entries)
 
     def entry_for(self, symbol, day):
@@ -255,6 +285,26 @@ class HandCalendar:
             return datetime.now().date()
         stamp = self._now_fn()
         return stamp.date() if isinstance(stamp, datetime) else stamp
+
+    @contextlib.contextmanager
+    def _exclusive(self):
+        """Exclusive lock across PROCESSES - ``self._lock`` only orders threads.
+
+        Two workers of the same app each hold their own ``HandCalendar``; the
+        read-modify-write of ``save()`` would otherwise interleave across them and
+        one save would silently drop the other's entry. The sidecar file is only a
+        handle: the kernel releases the lock when the process dies, so a crash
+        cannot leave a stale lock behind.
+        """
+        parent = os.path.dirname(self._path)
+        if parent:
+            os.makedirs(parent, exist_ok=True)
+        with open(f"{self._path}.lock", "a+", encoding="utf-8") as handle:
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
 
     def _write(self, entries):
         """Write the whole map atomically - tmp file in the same directory first."""
@@ -299,9 +349,13 @@ class HandCalendar:
             "source": str(source or "").strip()[:80],
             "notiert_am": heute.isoformat(),
         }
-        with self._lock:
-            entries = self._entries if self._entries is not None else self._read()
-            entries = dict(entries)
+        with self._lock, self._exclusive():
+            # Unter dem Prozess-Lock wird der Stand NEU gelesen, wenn ein anderer
+            # Worker ihn bewegt hat: sonst ueberschreibt jede Speicherung die
+            # Eintraege, die zwischen unseren Aufrufen dazugekommen sind.
+            if self._entries is None or self._file_changed():
+                self._entries = self._read()
+            entries = dict(self._entries)
             # Die Obergrenze gilt nur fuer ein NEUES Symbol: ein bestehender
             # Eintrag darf immer korrigiert werden, auch wenn die Datei voll ist.
             if clean not in entries and len(entries) >= MAX_STORED_SYMBOLS:
@@ -310,8 +364,11 @@ class HandCalendar:
                     f"the file already holds {MAX_STORED_SYMBOLS} entries")
             entries[clean] = eintrag
             self._write(entries)
-            self._entries = entries
-            # Der eigene Schreiber setzt den Stempel selbst - sonst liest der
-            # naechste Aufruf die Datei, die er gerade geschrieben hat.
-            self._file_stamp = self._stamp()
+            # Nach dem Schreiben wird der Zwischenspeicher VERWORFEN statt
+            # gesetzt: zwischen unserem Schreiben und einem Stempel koennte ein
+            # anderer Prozess schreiben, und wir haetten dann unseren (aelteren)
+            # Stand mit dem neueren Stempel gepaart. Ein Lesevorgang mehr pro
+            # Speicherung ist billiger als ein Cache, der luegt.
+            self._entries = None
+            self._file_stamp = None
         return {"status": "saved", "symbol": clean, "entry": dict(eintrag)}

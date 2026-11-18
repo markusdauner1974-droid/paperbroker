@@ -69,7 +69,7 @@ class SaveTest(_Base):
         self._post({"symbol": "ACME", "date": "2027-01-15", "source": "Webcast"})
         self.assertEqual({"ITG", "ACME"}, set(self._datei()["symbols"]))
         liegen = sorted(p.name for p in Path(os.path.dirname(self.pfad)).iterdir())
-        self.assertEqual(["hand.json"], liegen)
+        self.assertEqual(["hand.json", "hand.json.lock"], liegen)
 
     def test_a_second_save_replaces_the_same_symbol(self):
         self._post({"symbol": "ITG", "date": "2026-12-10"})

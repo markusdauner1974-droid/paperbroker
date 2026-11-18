@@ -27,6 +27,7 @@ being rephrased.
 
 from __future__ import annotations
 
+import hmac
 import os
 import threading
 import time
@@ -118,7 +119,11 @@ def post_hand_earnings():
     caller that only reads the status code is not misled either.
     """
     token = configured_token()
-    if token is not None and request.headers.get(TOKEN_HEADER) != token:
+    # Konstantzeit-Vergleich: ein simples != verraet ueber die Laufzeit, wie
+    # viele Zeichen stimmen - ein Orakel auf das Token. compare_digest kostet
+    # nichts und schliesst das aus.
+    gegeben = request.headers.get(TOKEN_HEADER) or ""
+    if token is not None and not hmac.compare_digest(gegeben, token):
         current_app.logger.warning("hand earnings write refused: token missing or wrong")
         return _rejected("forbidden", "a valid write token is required", 403)
 
