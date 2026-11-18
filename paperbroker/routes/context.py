@@ -32,6 +32,10 @@ class FactoryContext:
     #: funnel then behaves exactly as before this feature.
     hand_calendar: Any = None
     earnings_feed: Any = None
+    #: Die Website-Auskunft zu einem Kuerzel (``company_profile.web_url``). Sie
+    #: steht hier, damit ein Test sie ersetzen kann - ein Detailblock darf nicht
+    #: am Netz haengen.
+    company_profile: Any = None
 
 
 def context() -> FactoryContext:

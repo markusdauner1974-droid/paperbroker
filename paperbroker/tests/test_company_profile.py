@@ -41,8 +41,10 @@ class _Session:
         self.answer = answer
         self.calls = []
 
-    def get(self, url, params=None, timeout=None):
-        self.calls.append((url, dict(params or {})))
+    def get(self, url, params=None, timeout=None, verify=None):
+        # ``verify`` wird mitgeschrieben: die Zusage "Zertifikat wird geprueft"
+        # gehoert geprueft, nicht geglaubt.
+        self.calls.append((url, dict(params or {}), verify))
         if isinstance(self.answer, Exception):
             raise self.answer
         return self.answer
@@ -82,10 +84,11 @@ class LookupTest(Base):
         session = _Session(_Answer(payload={"weburl": "https://www.corteva.com/"}))
         self.assertEqual("https://www.corteva.com/",
                          cp.web_url("ctva", token="k", session=session, now_fn=_clock))
-        url, params = session.calls[0]
+        url, params, verify = session.calls[0]
         self.assertEqual(cp.PROFILE_URL, url)
         self.assertEqual({"symbol": "CTVA", "token": "k"}, params,
                          "das Symbol geht in Grossbuchstaben hinaus")
+        self.assertIs(True, verify, "das Zertifikat wird ausdruecklich geprueft")
 
     def test_a_second_call_is_answered_from_the_cache(self):
         session = _Session(_Answer(payload={"weburl": "https://a.example/"}))
@@ -110,6 +113,22 @@ class LookupTest(Base):
 
 
 class FailureTest(Base):
+    def test_a_failed_lookup_is_cached_briefly_and_then_retried(self):
+        # Kody-Befund: ohne Zwischenspeicher fragt jeder Klick den Dienst erneut
+        # (4 s im Handler). Der Fehlschlag wird deshalb gemerkt - aber kurz:
+        # nach FAILURE_TTL_SECONDS darf ein zweiter Versuch wieder hinaus.
+        session = _Session(_Answer(status_code=429, payload={}))
+        with self.assertLogs(cp.logger, level="WARNING"):
+            cp.web_url("CTVA", token="k", session=session, now_fn=_clock)
+            cp.web_url("CTVA", token="k", session=session, now_fn=_clock)
+        self.assertEqual(1, len(session.calls), "ein Fehlschlag, ein Aufruf")
+
+        NOW[0] += cp.FAILURE_TTL_SECONDS + 1
+        session.answer = _Answer(payload={"weburl": "https://a.example/"})
+        self.assertEqual("https://a.example/",
+                         cp.web_url("CTVA", token="k", session=session, now_fn=_clock))
+        self.assertEqual(2, len(session.calls), "nach der kurzen Frist neu gefragt")
+
     def test_a_refused_answer_is_none(self):
         session = _Session(_Answer(status_code=403, payload={}))
         with self.assertLogs(cp.logger, level="WARNING"):

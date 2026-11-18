@@ -27,7 +27,7 @@ import arrow
 from flask import Flask, g, jsonify, render_template, request, url_for
 from markupsafe import escape
 
-from . import exclusions, gap_funnel, quote_age, spread_detail, texts
+from . import company_profile, exclusions, gap_funnel, quote_age, spread_detail, texts
 from .adapters.earnings.NasdaqEarningsAdapter import NasdaqEarningsAdapter, NullEarningsAdapter
 from .adapters.quotes.CBOEQuoteAdapter import CBOEQuoteAdapter
 from .assets import calendar_days_between
@@ -251,7 +251,8 @@ def _earnings_source_from_env():
 
 
 def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=None,
-               gap_adapter=None, next_earnings_adapter=None):
+               gap_adapter=None, next_earnings_adapter=None,
+               company_profile_adapter=None):
     """now_fn: injectable clock for tests (default: real arrow.get).
 
     The screener's 30-min-stale guard compares quote_timestamp against
@@ -273,6 +274,11 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     ``/app/.cache``; an injected one wins (tests, another vendor). The key is
     read from ``FINNHUB_API_KEY`` at query time, never at import time, and a run
     without it answers ``no_next_earnings`` instead of guessing a date.
+
+    ``company_profile_adapter`` is the website lookup beside it (same key, same
+    vendor, one call per detail block). ``None`` uses ``company_profile.py``
+    itself. It is injectable for the same reason as the others: a test that
+    opens a detail block must not depend on the network or on a key.
     """
     app = Flask(__name__, template_folder="templates")
     # The templates look their text up by key. The catalogue answers in whatever
@@ -369,6 +375,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         earnings_adapter=earnings_adapter,
         gap_adapter=gap_adapter,
         next_earnings_adapter=next_earnings_adapter,
+        # Default ist das Modul selbst (es hat ``web_url``): ein injizierter
+        # Adapter gewinnt, damit ein Test ohne Netz und ohne Schluessel laeuft.
+        company_profile=company_profile_adapter or company_profile,
         now_fn=now_fn,
         trend_for_screener=_trend_for_screener,
         trend_display=_trend_display,

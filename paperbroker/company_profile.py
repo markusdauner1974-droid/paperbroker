@@ -26,6 +26,10 @@ PROFILE_URL = "https://finnhub.io/api/v1/stock/profile2"
 ENV_API_KEY = "FINNHUB_API_KEY"
 #: A company's site changes about never; a day is short enough for a rebrand.
 DEFAULT_TTL_SECONDS = 12 * 60 * 60
+#: A FAILED lookup is cached too, but only this long: a throttled or briefly
+#: unreachable source must not be asked again on every click, and must not hide
+#: the link for the rest of the day either.
+FAILURE_TTL_SECONDS = 5 * 60
 #: Short: this call runs while somebody waits for a detail block.
 DEFAULT_TIMEOUT_SECONDS = 4.0
 
@@ -81,40 +85,47 @@ def web_url(symbol, *, token=None, session=None, timeout=DEFAULT_TIMEOUT_SECONDS
     jetzt = now_fn()
     zwischengespeichert = _CACHE.get(schluessel)
     if zwischengespeichert is not None:
-        geholt_am, wert = zwischengespeichert
-        if jetzt - geholt_am < ttl_seconds:
+        geholt_am, wert, gueltig = zwischengespeichert
+        if jetzt - geholt_am < gueltig:
             return wert
 
     key = _token(token)
     if not key:
         # No key is a state, not an error: the link is simply not offered.
-        _CACHE[schluessel] = (jetzt, None)
+        _CACHE[schluessel] = (jetzt, None, ttl_seconds)
         return None
 
     sitzung = session or requests
     try:
+        # ``verify=True`` steht ausdruecklich da, obwohl es die Vorgabe von
+        # requests ist: hier geht ein API-Schluessel ueber die Leitung, und eine
+        # Zeile weiter unten soll niemand raten muessen, ob geprueft wird.
         antwort = sitzung.get(PROFILE_URL,
                               params={"symbol": schluessel, "token": key},
-                              timeout=timeout)
+                              timeout=timeout, verify=True)
     except Exception as exc:                      # noqa: BLE001 - never a 500
         logger.warning("company profile: %s could not be read (%s)",
                        schluessel, type(exc).__name__)
+        _CACHE[schluessel] = (jetzt, None, FAILURE_TTL_SECONDS)
         return None
 
     if antwort.status_code != 200:
         logger.warning("company profile: %s answered HTTP %s", schluessel,
                        antwort.status_code)
+        _CACHE[schluessel] = (jetzt, None, FAILURE_TTL_SECONDS)
         return None
     try:
         daten = antwort.json()
     except Exception:                             # noqa: BLE001 - unreadable body
         logger.warning("company profile: %s answered unreadable JSON", schluessel)
+        _CACHE[schluessel] = (jetzt, None, FAILURE_TTL_SECONDS)
         return None
     if not isinstance(daten, dict):
+        _CACHE[schluessel] = (jetzt, None, FAILURE_TTL_SECONDS)
         return None
 
     url = usable_url(daten.get("weburl"))
     if url is None:
         logger.info("company profile: %s names no usable website", schluessel)
-    _CACHE[schluessel] = (jetzt, url)
+    _CACHE[schluessel] = (jetzt, url, ttl_seconds)
     return url
