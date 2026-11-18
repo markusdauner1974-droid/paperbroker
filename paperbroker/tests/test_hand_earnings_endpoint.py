@@ -158,6 +158,26 @@ class GuardTest(_Base):
         # Die beiden ersten sind geschrieben, die dritte nicht.
         self.assertNotIn("NEW", self._datei()["symbols"])
 
+    def test_a_forwarded_header_does_not_buy_a_fresh_bucket(self):
+        # X-Forwarded-For setzt der Client selbst: daraus einen Zaehler-Schluessel
+        # zu bauen hiesse, sich beliebig viele frische Kontingente auszustellen.
+        with mock.patch.object(hand_earnings, "MAX_SAVES_PER_MINUTE", 1):
+            hand_earnings._SAVES.clear()
+            erste = self.client.post(PATH, json={"symbol": "ITG", "date": "2026-12-10"},
+                                     headers={"X-Forwarded-For": "10.0.0.1"})
+            zweite = self.client.post(PATH, json={"symbol": "ACME", "date": "2027-01-15"},
+                                      headers={"X-Forwarded-For": "10.0.0.2"})
+        self.assertEqual(200, erste.status_code)
+        self.assertEqual(429, zweite.status_code)
+
+    def test_the_tracking_table_stays_bounded(self):
+        with mock.patch.object(hand_earnings, "MAX_TRACKED_CLIENTS", 10):
+            hand_earnings._SAVES.clear()
+            for nummer in range(500):
+                hand_earnings._too_many(f"client-{nummer}")
+            self.assertLessEqual(len(hand_earnings._SAVES), 10)
+        hand_earnings._SAVES.clear()
+
     def test_a_full_file_is_refused_with_its_own_code(self):
         with mock.patch.object(hand_calendar, "MAX_STORED_SYMBOLS", 1):
             self.assertEqual(200, self.client.post(

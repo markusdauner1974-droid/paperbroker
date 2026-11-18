@@ -52,6 +52,10 @@ TOKEN_HEADER = "X-Hand-Earnings-Token"
 MAX_SAVES_PER_MINUTE = 30
 _RATE_WINDOW_SECONDS = 60.0
 
+#: How many clients the limiter may remember. Bounded because the table would
+#: otherwise be a place an unauthenticated caller can allocate in.
+MAX_TRACKED_CLIENTS = 512
+
 _SAVES: dict = {}
 _SAVES_LOCK = threading.Lock()
 
@@ -63,22 +67,47 @@ def configured_token():
 
 
 def _client_key():
-    """Who is asking: the proxy's header first, then the socket address."""
-    weitergeleitet = (request.headers.get("X-Forwarded-For") or "").split(",")[0].strip()
-    return weitergeleitet or (request.remote_addr or "local")
+    """Who is asking: the SOCKET address - never a header the caller controls.
+
+    ``X-Forwarded-For`` is written by the client. Keying on it would let anyone
+    mint unlimited fresh buckets by sending a new value per request - a limiter
+    that the limited party can reset is not a limiter. Behind a reverse proxy all
+    clients then share one bucket: the stricter direction, and for a human-driven
+    save (one per quarter at most) the right one.
+    """
+    return request.remote_addr or "local"
 
 
 def _too_many(client):
     """``True`` when this client has used up its minute of saves."""
     jetzt = time.monotonic()
     with _SAVES_LOCK:
-        zeiten = _SAVES.setdefault(client, deque())
+        zeiten = _SAVES.get(client)
+        if zeiten is None:
+            _make_room(jetzt)
+            zeiten = _SAVES[client] = deque()
         while zeiten and jetzt - zeiten[0] > _RATE_WINDOW_SECONDS:
             zeiten.popleft()
         if len(zeiten) >= MAX_SAVES_PER_MINUTE:
             return True
         zeiten.append(jetzt)
         return False
+
+
+def _make_room(jetzt):
+    """Keep the tracking table bounded - called with ``_SAVES_LOCK`` held.
+
+    First the buckets that are already dead, then - if a caller kept inventing
+    clients - the whole table. Forgetting a used-up counter can cost one extra
+    save per client; an unbounded table would be a place to allocate in.
+    """
+    if len(_SAVES) < MAX_TRACKED_CLIENTS:
+        return
+    for schluessel in [k for k, v in _SAVES.items()
+                       if not v or jetzt - v[-1] > _RATE_WINDOW_SECONDS]:
+        del _SAVES[schluessel]
+    if len(_SAVES) >= MAX_TRACKED_CLIENTS:
+        _SAVES.clear()
 
 
 def _rejected(code, message, status):
