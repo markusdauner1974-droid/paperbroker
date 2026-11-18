@@ -1926,11 +1926,14 @@ class TestTheHandCalendar(unittest.TestCase):
             "status": "curated", "curated_date": "2027-02-01",
             "source": "IR-Pressemitteilung", "notiert_am": "2026-11-17"}
         panel = _render(list_body=body)
-        self.assertIn("Termin manuell kuratiert", " ".join(panel["cells"][0]))
-        # Quelle und Notizdatum stehen DA - das Datum ist nicht als Quellentermin
-        # getarnt, und die Zeile sagt selbst, wer es eingetragen hat.
-        self.assertIn("IR-Pressemitteilung", " ".join(panel["cells"][0]))
-        self.assertIn("2026-11-17", " ".join(panel["cells"][0]))
+        zelle = [c for c in panel["cells"][0] if c.startswith("2027-02-01")]
+        self.assertEqual(1, len(zelle), panel["cells"][0])
+        zelle = zelle[0]
+        # Vier Zeilen: das Datum, dann drei graue - Herkunft, Quelle, Notizdatum.
+        # Der Baum meldet textContent, die Zeilen entstehen im CSS (display:block);
+        # geprueft wird hier die Reihenfolge der drei Texte.
+        self.assertEqual("2027-02-01Termin manuell kuratiert"
+                         "Quelle: IR-Pressemitteilungnotiert 2026-11-17", zelle)
         # Die gewoehnliche Zeile traegt das Abzeichen NICHT.
         self.assertNotIn("Termin manuell kuratiert", " ".join(panel["cells"][1]))
 
@@ -1942,9 +1945,19 @@ class TestTheHandCalendar(unittest.TestCase):
                                                "curated_date": "2027-02-01",
                                                "source": None, "notiert_am": None}
         panel = _render(list_body=body)
-        # Ohne Quelle und Datum bleibt der kurze Satz - keine Luecke im Text.
-        self.assertIn("Termin manuell kuratiert", " ".join(panel["cells"][0]))
-        self.assertNotIn("Quelle:", " ".join(panel["cells"][0]))
+        zelle = [c for c in panel["cells"][0] if c.startswith("2027-02-01")][0]
+        # Ohne getippte Quelle steht "manuell" - keine Luecke, keine leere Zeile.
+        # Ohne Notizdatum entfaellt dessen Zeile statt leer dazustehen.
+        self.assertEqual("2027-02-01Termin manuell kuratiertQuelle: manuell", zelle)
+
+    def test_the_curated_lines_are_grey_and_stacked(self):
+        # Die drei Zeilen sind klein und grau und stehen untereinander - das
+        # CSS allein entscheidet das, also wird es geprueft und nicht geraten.
+        css = (Path(__file__).resolve().parents[1] / "templates" / "screen.html").read_text(encoding="utf-8")
+        self.assertIn("td.hc-curated .sub{color:#9aa0a6;display:block", css)
+        # Das Hellblau bleibt der Handkalender-Box und dem Griechen-Overlay -
+        # aus der Spalte ist es verschwunden.
+        self.assertNotIn("td.hc-curated .sub{color:#4dc3ff}", css)
 
 
 if __name__ == "__main__":

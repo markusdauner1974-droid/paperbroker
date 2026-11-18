@@ -488,15 +488,19 @@
 
   // Eine Zelle mit Unterzeile: der Hauptwert steht gross, die Einordnung
   // darunter (Name, Richtungswort, Legs). Kein Markup, nur Text.
+  // ``sub`` ist eine Zeile oder eine Liste von Zeilen: der kuratierte Termin
+  // braucht drei (Herkunft, Quelle, Notizdatum), jede in eigener Zeile.
   function stacked(main, sub, cls, title) {
     var td = document.createElement('td');
     if (cls) td.className = cls;
     if (title) td.title = title;
     td.textContent = main;
-    if (sub) {
+    var unterzeilen = Array.isArray(sub) ? sub : (sub ? [sub] : []);
+    for (var i = 0; i < unterzeilen.length; i += 1) {
+      if (!unterzeilen[i]) continue;
       var klein = document.createElement('span');
       klein.className = 'sub';
-      klein.textContent = sub;
+      klein.textContent = unterzeilen[i];
       td.appendChild(klein);
     }
     return td;
@@ -594,7 +598,7 @@
     // das Abzeichen unter dem Datum, das sagt, woher es kommt.
     if (entry.next_earnings_source === 'manual_curated') {
       zellen.push(stacked(entry.next_earnings_date || '–',
-        curatedBadge(entry), 'hc-curated', T('js.cell.report.title_next')));
+        curatedLines(entry), 'hc-curated', T('js.cell.report.title_next')));
     } else {
       zellen.push(cell(entry.next_earnings_date || '–',
         entry.earnings_date
@@ -794,14 +798,19 @@
     el.expandAll.setAttribute('aria-expanded', offen ? 'true' : 'false');
   }
 
-  // Das Abzeichen eines kuratierten Termins nennt Quelle und Notizdatum - die
-  // Zeile sagt damit selbst, woher ihr Datum kommt. Fehlt eines von beiden,
-  // bleibt es beim kurzen Satz statt bei einer Luecke im Text.
-  function curatedBadge(entry) {
+  // Die drei Zeilen unter einem kuratierten Termin: was er ist, woher er kommt
+  // und wann er notiert wurde. Jede steht fuer sich, damit keine Zeile zu einem
+  // Satz zusammenlaeuft, den niemand mehr als Herkunft liest. Fehlt das
+  // Notizdatum, entfaellt seine Zeile statt leer dazustehen.
+  function curatedLines(entry) {
     var hc = (entry && entry.hand_calendar) || {};
     var quelle = hc.source || T('js.handcalendar.source_manual');
-    if (!hc.notiert_am) return T('js.handcalendar.curated_badge_plain');
-    return T('js.handcalendar.curated_badge', { source: quelle, notiert_am: hc.notiert_am });
+    var zeilen = [T('js.handcalendar.curated_line'),
+                  T('js.handcalendar.source_line', { source: quelle })];
+    if (hc.notiert_am) {
+      zeilen.push(T('js.handcalendar.noted_line', { date: hc.notiert_am }));
+    }
+    return zeilen;
   }
 
   function reasonText(entry, body) {

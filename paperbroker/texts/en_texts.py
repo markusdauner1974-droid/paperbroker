@@ -439,10 +439,9 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.saving": "Saving …",
     "js.handcalendar.saved": "Saved — the funnel is running again …",
     "js.handcalendar.deleted": "Entry deleted — the funnel is running again …",
-    "js.handcalendar.curated_badge": (
-        "Date curated by hand · source: {source} · noted {notiert_am}"
-    ),
-    "js.handcalendar.curated_badge_plain": "Date curated by hand",
+    "js.handcalendar.curated_line": "Date curated by hand",
+    "js.handcalendar.source_line": "Source: {source}",
+    "js.handcalendar.noted_line": "noted {date}",
     "js.handcalendar.expired_badge": "expired",
     "js.handcalendar.no_signal": "no announcement in the feed window",
     "js.handcalendar.source_manual": "manual",
