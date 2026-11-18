@@ -34,6 +34,7 @@ import arrow
 
 from paperbroker import gap_funnel
 from paperbroker.gap_scan import GapSourceError
+from paperbroker.routes import gap_spreads
 from paperbroker.server import _same_strike, create_app
 from paperbroker.tests.test_gap_funnel import (
     DAY,
@@ -62,7 +63,7 @@ DETAIL_KEYS = {
     "expiration", "dte", "spot", "spot_source", "strikes", "legs", "net_debit",
     "net_debit_basis", "max_loss", "max_profit", "breakeven", "rr",
     "position_greeks", "greek_explain", "series", "scenarios", "notes",
-    "structure_label", "is_row_pick",
+    "structure_label", "company_url", "is_row_pick",
 }
 LEG_KEYS = {"side", "strike", "bid", "ask", "mid", "iv", "delta", "gamma", "vega",
             "theta", "open_interest", "volume"}
@@ -99,8 +100,16 @@ def _client(chains=None, dates=None, calendar=None, history=None):
     ).test_client()
 
 
-def _get(query=f"?symbol=AAA&day={DAY}", **kwargs):
-    antwort = _client(**kwargs).get(DETAIL + query)
+def _get(query=f"?symbol=AAA&day={DAY}", company_url="https://alpha.example/", **kwargs):
+    """One request of the detail route - with the company lookup pinned.
+
+    Die Website kommt aus einer Fremdquelle (Finnhub); ein Test, der sie wirklich
+    abriefe, haenge an Netz und Schluessel. Der Aufruf wird deshalb ersetzt -
+    der Vertrag der Antwort bleibt derselbe.
+    """
+    with mock.patch.object(gap_spreads.company_profile, "web_url",
+                           return_value=company_url):
+        antwort = _client(**kwargs).get(DETAIL + query)
     return antwort, antwort.get_json()
 
 

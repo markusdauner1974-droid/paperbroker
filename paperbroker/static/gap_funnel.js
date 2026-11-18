@@ -1727,6 +1727,37 @@
   // (Strategie und Verfall) und das Raster der acht Zahlen. In einem Absatz
   // gingen die Zuordnungen in den Trennpunkten verloren - "1 : 2,2 · Break-even
   // 25,90 · Debit 1,90" liest niemand als Tabelle.
+  // Ein Kuerzel darf nur aus Buchstaben, Ziffern, Punkt und Bindestrich bestehen,
+  // bevor es in eine URL wandert; alles andere bleibt Text.
+  function chartUrl(symbol) {
+    var wert = String(symbol || '').trim();
+    if (!/^[A-Za-z0-9.\-]{1,12}$/.test(wert)) return null;
+    return 'https://www.tradingview.com/chart/?symbol=' + encodeURIComponent(wert);
+  }
+
+  // Die Firmenseite nur als https: ein http-Ziel ginge im Klartext hinaus, und
+  // ein `javascript:`-Wert waere Skript in dieser Seite.
+  function siteUrl(url) {
+    var wert = String(url || '').trim();
+    return /^https:\/\/[^\s]+$/i.test(wert) ? wert : null;
+  }
+
+  // Ein Link, wenn es ein Ziel gibt - sonst derselbe Text als `<span>`. Nie ein
+  // leerer href und nie ein Link ins Nichts; `noopener noreferrer`, damit die
+  // fremde Seite nichts ueber diese hier erfaehrt.
+  function linkOrText(cls, text, url, title) {
+    var knoten = document.createElement(url ? 'a' : 'span');
+    knoten.className = cls;
+    if (url) {
+      knoten.href = url;
+      knoten.target = '_blank';
+      knoten.rel = 'noopener noreferrer';
+      if (title) knoten.title = title;
+    }
+    knoten.textContent = text;
+    return knoten;
+  }
+
   function detailHead(detail, zeile) {
     var strikes = detail.strikes || {};
     var kopf = document.createElement('div');
@@ -1736,7 +1767,12 @@
     titel.className = 'detail-title';
     var paar = num(strikes.long) && num(strikes.short)
       ? strikeText(strikes.long) + '/' + strikeText(strikes.short) : null;
-    titel.textContent = String(detail.symbol || '–') + (paar ? ' · ' + paar : '');
+    // Das Kuerzel fuehrt zum Chart, das Paar daneben bleibt Text: TradingView
+    // loest ein nacktes Kuerzel selbst auf - ein Boersenkuerzel davor waere eine
+    // Behauptung ueber die Listung, die diese Antwort nicht kennt.
+    titel.appendChild(linkOrText('detail-symbol', String(detail.symbol || '–'),
+      chartUrl(detail.symbol), T('js.detail.chart_link')));
+    if (paar) titel.appendChild(document.createTextNode(' · ' + paar));
     // Der Charakter ist ein Etikett NEBEN dem Paar, kein Satzglied: er
     // beschreibt das Paar, nicht den Titel.
     if (detail.structure_label) {
@@ -1746,10 +1782,10 @@
       titel.appendChild(etikett);
     }
     if (detail.name) {
-      var namenszug = document.createElement('span');
-      namenszug.className = 'detail-name';
-      namenszug.textContent = ' · ' + detail.name;
-      titel.appendChild(namenszug);
+      // Der Name fuehrt auf die Firmenseite - aber nur, wenn die Antwort eine
+      // geprueft-https-Adresse mitbringt. Fehlt sie, bleibt der Name Text.
+      titel.appendChild(linkOrText('detail-name', ' · ' + detail.name,
+        siteUrl(detail.company_url), T('js.detail.site_link')));
     }
     kopf.appendChild(titel);
 

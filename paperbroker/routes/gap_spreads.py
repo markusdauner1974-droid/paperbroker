@@ -12,7 +12,7 @@ from datetime import datetime
 
 from flask import current_app, jsonify, request
 
-from .. import gap_funnel, spread_detail
+from .. import company_profile, gap_funnel, spread_detail
 from ..earnings_day_calendar import DAY_PREV, DAY_TODAY
 from ..gap_scan import (
     DEFAULT_MAX_CANDIDATES,
@@ -485,6 +485,10 @@ def api_gap_spreads_detail():
     # listed but is neither says ``null``.
     detail["structure_label"] = structure_label
     detail["is_row_pick"] = is_row_pick
+    # Die Website des Unternehmens: eine Zusatzauskunft, die den Block nicht
+    # aufhalten darf. ``web_url`` liefert ``None`` statt zu werfen - ohne
+    # Schluessel, ohne Adresse oder bei einem Fehler bleibt der Name Text.
+    detail["company_url"] = company_profile.web_url(symbol)
     return jsonify(detail)
 
 

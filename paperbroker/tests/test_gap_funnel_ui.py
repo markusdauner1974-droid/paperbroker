@@ -168,6 +168,9 @@ const document = {
     return nodes[id] || null;
   },
   createElement(tag) { return new El(tag); },
+  // Ein Textknoten ist kein Element: er traegt Text, keinen Tag - genau wie im
+  // Browser. Ohne ihn scheitert jedes `appendChild(document.createTextNode(...))`.
+  createTextNode(text) { return new Text(text); },
   // SVG nodes come through this path - the chart is built with the SVG
   // namespace, exactly as a browser needs it.
   createElementNS(namespace, tag) { const node = new El(tag); node.namespace = namespace; return node; }
@@ -497,6 +500,7 @@ def _detail(symbol="CTVA", label="Bear Put"):
         "day": DAY, "strategy": "bear_put_debit", "strategy_label": label,
         "expiration": "2027-03-19", "dte": 126, "spot": 9.19,
         "spot_source": "chain_underlying",
+        "company_url": "https://www.corteva.com/",
         "structure_label": "Hebel (Zeile)", "is_row_pick": True,
         "strikes": {"long": 10.0, "short": 7.5},
         "legs": [
@@ -1761,11 +1765,15 @@ class TestThePanelStaysFreeOfForeignCode(unittest.TestCase):
         self.assertNotIn("onclick=", seite)
         self.assertNotIn("onkeydown=", seite)
         quelle = PANEL_JS.read_text(encoding="utf-8")
-        for verboten in ("https://", "cdn.", "unpkg", "jsdelivr"):
+        for verboten in ("cdn.", "unpkg", "jsdelivr", "<script", "import "):
             self.assertNotIn(verboten, quelle)
-        # Die einzige Adresse im Skript ist der SVG-Namensraum - keine Ressource.
-        self.assertEqual(["http://www.w3.org/2000/svg"],
-                         re.findall(r"https?://[^'\"]+", quelle))
+        # Genau zwei Adressen stehen im Skript: der SVG-Namensraum und das Ziel
+        # des Chart-Links. KEINE davon wird geladen - die eine ist ein
+        # Namensraum, die andere ein Link, den ein Mensch anklickt. Die
+        # Firmenseite kommt aus der Antwort und steht deshalb nicht hier.
+        self.assertEqual(sorted(["http://www.w3.org/2000/svg",
+                                  "https://www.tradingview.com/chart/?symbol="]),
+                         sorted(re.findall(r"https?://[^'\"]+", quelle)))
         # gezeichnet wird mit createElementNS im SVG-Namensraum, nicht per Markup
         self.assertIn("createElementNS", quelle)
         self.assertNotIn("innerHTML = '<svg", quelle)
@@ -1949,6 +1957,44 @@ class TestTheHandCalendar(unittest.TestCase):
         # Ohne getippte Quelle steht "manuell" - keine Luecke, keine leere Zeile.
         # Ohne Notizdatum entfaellt dessen Zeile statt leer dazustehen.
         self.assertEqual("2027-02-01Termin manuell kuratiertQuelle: manuell", zelle)
+
+    def test_the_symbol_opens_the_chart_and_the_name_opens_the_company_site(self):
+        # Zwei Ziele im Kopf: das Kuerzel fuehrt zu TradingView, der Name auf die
+        # Firmenseite - beide in einem neuen Tab, ohne Referrer.
+        panel = _render(details=[{"status": 200, "body": _detail()}], actions=["click:0"])
+        kopf = _head(panel)
+        kuerzel = _by_class(kopf, "detail-symbol")
+        self.assertEqual(1, len(kuerzel))
+        self.assertEqual("https://www.tradingview.com/chart/?symbol=CTVA", kuerzel[0]["href"])
+        self.assertEqual("_blank", kuerzel[0]["target"])
+        self.assertEqual("noopener noreferrer", kuerzel[0]["rel"])
+        self.assertEqual("CTVA", kuerzel[0]["text"])
+
+        name = _by_class(kopf, "detail-name")
+        self.assertEqual(1, len(name))
+        self.assertEqual("https://www.corteva.com/", name[0]["href"])
+        self.assertEqual("_blank", name[0]["target"])
+        self.assertEqual("noopener noreferrer", name[0]["rel"])
+
+    def test_without_a_company_url_the_name_stays_text(self):
+        detail = _detail()
+        detail["company_url"] = None
+        panel = _render(details=[{"status": 200, "body": detail}], actions=["click:0"])
+        name = _by_class(_head(panel), "detail-name")
+        self.assertEqual(1, len(name))
+        self.assertEqual("span", str(name[0]["tag"]).lower(), "kein Link ins Nichts")
+        self.assertIsNone(name[0]["href"])
+        # Das Kuerzel bleibt ein Link - der Chart braucht keine Zusatzquelle.
+        self.assertEqual(1, len(_by_class(_head(panel), "detail-symbol")))
+
+    def test_a_script_url_in_the_answer_is_not_a_link(self):
+        # Die Adresse kommt von einer fremden Quelle: nur https darf in ein href.
+        for fremd in ("javascript:alert(1)", "http://example.com/", "data:text/html,x", ""):
+            detail = _detail()
+            detail["company_url"] = fremd
+            panel = _render(details=[{"status": 200, "body": detail}], actions=["click:0"])
+            name = _by_class(_head(panel), "detail-name")[0]
+            self.assertEqual("span", str(name["tag"]).lower(), fremd)
 
     def test_the_curated_lines_are_grey_and_stacked(self):
         # Die drei Zeilen sind klein und grau und stehen untereinander - das
