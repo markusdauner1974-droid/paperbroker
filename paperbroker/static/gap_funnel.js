@@ -907,13 +907,34 @@
     knopf.addEventListener('click', function () {
       saveHandDate(symbol, feld.value, stand, knopf);
     });
+    // Die Enter-Taste im Feld tut dasselbe wie der Knopf: Datum tippen,
+    // Enter, fertig. Ein leeres Feld ist kein Fehler, sondern "loeschen".
+    feld.addEventListener('keydown', function (ereignis) {
+      if (ereignis && (ereignis.key === 'Enter' || ereignis.keyCode === 13)) {
+        ereignis.preventDefault();
+        saveHandDate(symbol, feld.value, stand, knopf);
+      }
+    });
     return box;
   }
 
   // Ein Datum speichern: der Wert geht unveraendert an den Server, die Pruefung
   // (ISO, nicht vergangen, hoechstens 270 Tage) macht er - eine zweite Meiung
   // im Browser waere eine zweite Wahrheit.
+  // Nach einem gespeicherten (oder geloeschten) Datum laeuft der Scan erneut -
+  // mit genau dem Tag, der gerade angezeigt wird. Ohne vorherigen Lauf gibt es
+  // nichts zu wiederholen; dann bleibt es beim Speichern allein.
+  function rescan() {
+    if (!current || !current.day) return;
+    run(current.day);
+  }
+
   function saveHandDate(symbol, dateText, statusEl, button) {
+    // Ein laufender Vorgang ist ein laufender Vorgang. Der Knopf allein reicht
+    // nicht: er schluckt nur KLICKS, waehrend die Enter-Taste im Feld diese
+    // Funktion direkt aufruft. Ohne diese Zeile wuerde jedes weitere Enter
+    // einen zweiten POST und einen zweiten Trichterlauf starten.
+    if (button.disabled) return;
     statusEl.className = 'hc-status';
     statusEl.textContent = T('js.handcalendar.saving');
     button.disabled = true;
@@ -934,20 +955,25 @@
         });
       })
       .then(function (answer) {
-        if (answer && answer.status === 'saved') {
+        if (answer && (answer.status === 'saved' || answer.status === 'deleted')) {
           statusEl.className = 'hc-status ok';
-          statusEl.textContent = T('js.handcalendar.saved');
+          statusEl.textContent = T(answer.status === 'deleted'
+            ? 'js.handcalendar.deleted' : 'js.handcalendar.saved');
+          // Der Trichter laeuft SOFORT noch einmal: der Titel, der eben noch
+          // ausgeschlossen war, soll im selben Blick als Kandidat erscheinen -
+          // nicht erst nach einem zweiten Klick. Ein Lauf, nicht zwei.
+          rescan();
           return;
         }
-        var code = (answer && answer.code) || 'not_saved';
+        var code = (answer && answer.code) || 'failed';
         var satz = T('js.handcalendar.code.' + code);
         statusEl.className = 'hc-status bad';
         statusEl.textContent = satz === 'js.handcalendar.code.' + code
-          ? T('js.handcalendar.code.not_saved') : satz;
+          ? T('js.handcalendar.code.failed') : satz;
       })
       .catch(function () {
         statusEl.className = 'hc-status bad';
-        statusEl.textContent = T('js.handcalendar.code.not_saved');
+        statusEl.textContent = T('js.handcalendar.code.failed');
       })
       .then(function () {
         button.disabled = false;

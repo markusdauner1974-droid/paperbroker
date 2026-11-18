@@ -431,13 +431,14 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.signal_label": "Announcement in the feed",
     "js.handcalendar.open_link": "Open the announcement",
     "js.handcalendar.hint": (
-        "Enter the date from the announcement (YYYY-MM-DD) — it is used only "
-        "while the source has no date of its own."
+        "Enter the date from the announcement (YYYY-MM-DD), then Enter — the "
+        "funnel runs again right away. Clear the field and press Enter to delete."
     ),
     "js.handcalendar.date_label": "Report date",
-    "js.handcalendar.save": "Save",
+    "js.handcalendar.save": "Enter",
     "js.handcalendar.saving": "Saving …",
-    "js.handcalendar.saved": "Saved — takes effect on the next run.",
+    "js.handcalendar.saved": "Saved — the funnel is running again …",
+    "js.handcalendar.deleted": "Entry deleted — the funnel is running again …",
     "js.handcalendar.curated_badge": (
         "Date curated by hand · source: {source} · noted {notiert_am}"
     ),
@@ -451,7 +452,7 @@ TEXTS: dict[str, object] = {
     "js.handcalendar.code.invalid_date": "Not a valid date — please use YYYY-MM-DD.",
     "js.handcalendar.code.past_date": "The date lies before the scan day.",
     "js.handcalendar.code.too_far_out": "The date lies more than 270 days ahead.",
-    "js.handcalendar.code.not_saved": "The file could not be written.",
+    "js.handcalendar.code.failed": "That did not work — please try again.",
     "js.handcalendar.code.too_many_entries": (
         "The hand calendar is full — please remove expired entries first."
     ),

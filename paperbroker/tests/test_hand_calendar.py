@@ -1,24 +1,21 @@
-"""The curated report dates: strict on the way in, tolerant on the way out.
+"""The curated dates: validation, the one store, and nothing on disk.
 
-Three properties are pinned here, because each of them has cost a scan once:
+Pinned here:
 
-* **Strict input.** A date is ``YYYY-MM-DD`` or nothing. A timestamp, a German
-  date or a mistyped month is rejected with its own code - never guessed into
-  the nearest day, because the funnel picks an expiry from it.
-* **Tolerant reading.** The file is hand-edited and lives in a mounted cache
-  directory: a broken file is an EMPTY file (plus a log line), not a failed
-  scan. Rows whose symbol or date is unusable are dropped, not "repaired".
-* **Atomic writing.** Tmp file in the same directory, then ``os.replace``: a
-  reader sees the old file or the new one, and a crash leaves no half pair.
+* every rule that decides whether a typed date is accepted or refused, each with
+  its own stable code,
+* the two states an entry can have - ``curated`` and ``expired`` - and the fact
+  that an expired entry is never handed out as a date,
+* the in-memory store: the cap, the copy handed to readers, the delete path and
+  the pruning of expired entries on the next save,
+* and the promise this module makes above all others: **a save touches no
+  file**. ``builtins.open`` is made to explode for that test, so a future edit
+  that reintroduces a path fails loudly instead of silently writing somewhere.
 """
 
-import json
-import os
-import tempfile
-import time
+import threading
 import unittest
-from datetime import date
-from pathlib import Path
+from datetime import date, datetime, timedelta
 from unittest import mock
 
 from paperbroker import hand_calendar as hc
@@ -26,242 +23,225 @@ from paperbroker import hand_calendar as hc
 DAY = date(2026, 11, 17)
 
 
-def _replace(path, symbols):
-    """Write like the production writer: tmp file + os.replace (new inode)."""
-    temporary = f"{path}.tmp"
-    Path(temporary).write_text(json.dumps({"version": 1, "symbols": symbols}),
-                               encoding="utf-8")
-    os.replace(temporary, path)
+def _clock(day=DAY):
+    """A ``now_fn`` for the store and the endpoint: frozen, never the wall clock."""
+    return lambda: datetime(day.year, day.month, day.day, 14, 0)
 
 
-def _write(path, symbols):
-    Path(path).parent.mkdir(parents=True, exist_ok=True)
-    Path(path).write_text(json.dumps({"version": 1, "symbols": symbols}), encoding="utf-8")
+class EmptyStoreTest(unittest.TestCase):
+    def test_an_untouched_store_holds_nothing(self):
+        store = hc.HandCalendar(now_fn=_clock())
+        self.assertEqual({}, store.entries())
+        self.assertEqual(0, len(store))
+        self.assertIsNone(store.entry_for("ITG", DAY))
+        self.assertIsNone(store.curated_date("ITG", DAY))
 
 
-class ParsingTest(unittest.TestCase):
-    def test_a_date_is_a_date_only_in_the_exact_form(self):
-        self.assertEqual(hc.parse_date("2026-12-10"), date(2026, 12, 10))
-        for bad in ("2026-12-10T08:00", "10.12.2026", "2026-2-3", "2026-13-01",
-                    "2026-12-32", "", None, 20261210):
-            self.assertIsNone(hc.parse_date(bad), bad)
-
-    def test_a_symbol_is_one_to_six_capital_letters(self):
-        for good in ("A", "ITG", "ABCDEF"):
-            self.assertTrue(hc.valid_symbol(good), good)
-        for bad in ("", "ITG1", "itg", "ABCDEFG", "IT-G", None):
-            self.assertFalse(hc.valid_symbol(bad), bad)
-
-
-class ReadingTest(unittest.TestCase):
-    def test_a_missing_file_is_an_empty_calendar(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            store = hc.HandCalendar(path=os.path.join(tmp, "none.json"))
-            self.assertEqual({}, store.entries())
-            self.assertIsNone(store.entry_for("ITG", DAY))
-
-    def test_a_broken_file_is_an_empty_calendar_with_a_log_line(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            Path(pfad).write_text("{not json", encoding="utf-8")
-            store = hc.HandCalendar(path=pfad)
-            with self.assertLogs("paperbroker.hand_calendar", level="WARNING") as log:
-                self.assertEqual({}, store.entries())
-            self.assertIn("unreadable", log.output[0])
-
-    def test_rows_without_a_usable_date_or_symbol_are_dropped(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            _write(pfad, {
-                "ITG": {"date": "2026-12-10", "source": "IR", "notiert_am": "2026-11-17"},
-                "BAD": {"date": "10.12.2026"},
-                "TOOLONG": {"date": "2026-12-10"},
-                "NOTE": "kein Objekt",
-                # Handgetippt klein: der Schluessel wird gross geschrieben, weil
-                # ein Ticker keine Kleinschreibung kennt - das ist keine Reparatur
-                # an einer kaputten Zeile, sondern dieselbe Zeile anders getippt.
-                "lower": {"date": "2026-12-10"},
-            })
-            store = hc.HandCalendar(path=pfad)
-            self.assertEqual(["ITG", "LOWER"], list(store.entries()))
-
-    def test_a_future_date_is_curated_and_a_past_one_is_expired(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            _write(pfad, {
-                "NEW": {"date": "2026-12-10", "source": "IR", "notiert_am": "2026-11-17"},
-                "OLD": {"date": "2026-11-16", "source": "IR", "notiert_am": "2026-10-02"},
-                "TODAY": {"date": "2026-11-17", "source": "IR", "notiert_am": "2026-11-01"},
-            })
-            store = hc.HandCalendar(path=pfad)
-            neu = store.entry_for("NEW", DAY)
-            self.assertEqual("curated", neu["status"])
-            self.assertEqual("2026-12-10", neu["curated_date"])
-            self.assertEqual("IR", neu["source"])
-            self.assertEqual("expired", store.entry_for("OLD", DAY)["status"])
-            # Der Berichtstag selbst ist vorbei: der Trichter braucht einen
-            # Verfall STRIKT nach dem Bericht, also gilt auch heute als expired.
-            self.assertEqual("expired", store.entry_for("TODAY", DAY)["status"])
-            self.assertIsNone(store.curated_date("TODAY", DAY))
-            self.assertIsNone(store.entry_for("MISSING", DAY))
-
-    def test_a_write_from_another_process_is_visible(self):
-        # Zwei Worker, eine Datei: der zweite darf nicht ewig seinen ersten
-        # Stand serve - genau das war der Befund "stale cross-process cache".
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            _write(pfad, {"ITG": {"date": "2026-12-10", "source": "IR"}})
-            store = hc.HandCalendar(path=pfad)
-            self.assertEqual("2026-12-10", store.entry_for("ITG", DAY)["curated_date"])
-            # "Ein anderer Prozess" schreibt: dieselbe Datei, neuer Inhalt.
-            time.sleep(0.01)
-            _write(pfad, {"ITG": {"date": "2027-01-15", "source": "Webcast"}})
-            self.assertEqual("2027-01-15", store.entry_for("ITG", DAY)["curated_date"])
-            self.assertEqual("Webcast", store.entry_for("ITG", DAY)["source"])
-
-    def test_a_replace_during_the_read_does_not_pin_a_stale_map(self):
-        # Der TOCTOU-Fall: lesen, DANN schreibt ein anderer Prozess, DANN wird
-        # gestempelt. Ohne Gegenmassnahme haelt der Cache die alten Daten mit dem
-        # Stempel der neuen Datei - und bleibt fuer immer "frisch".
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            _write(pfad, {"ITG": {"date": "2026-12-10", "source": "alt"}})
-            store = hc.HandCalendar(path=pfad)
-            original = store._read
-            zustand = {"n": 0}
-
-            def lesend_ueberholt():
-                inhalt = original()
-                if zustand["n"] == 0:
-                    zustand["n"] += 1
-                    # Genau zwischen Lesen und Stempeln schreibt "Prozess B" -
-                    # atomar, wie der echte Schreiber.
-                    _replace(pfad, {"ITG": {"date": "2027-03-01", "source": "neu"}})
-                return inhalt
-
-            store._read = lesend_ueberholt
-            store.entries()
-            # Der Stempel darf nicht zur neuen Datei gehoeren, waehrend alte
-            # Daten im Speicher liegen: der zweite Aufruf liest die neue Datei.
-            self.assertEqual("2027-03-01", store.entry_for("ITG", DAY)["curated_date"])
-
-    def test_a_save_does_not_pin_its_own_map_over_a_newer_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            store = hc.HandCalendar(path=pfad, now_fn=lambda: _stamp())
-            store.save("ITG", "2026-12-10")
-            # Nach dem eigenen Schreiben schreibt ein anderer Prozess.
-            _replace(pfad, {"ITG": {"date": "2027-03-01", "source": "neu"}})
-            self.assertEqual("2027-03-01", store.entry_for("ITG", DAY)["curated_date"])
-
-    def test_a_deleted_file_is_no_entries_not_a_stale_map(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            _write(pfad, {"ITG": {"date": "2026-12-10"}})
-            store = hc.HandCalendar(path=pfad)
-            self.assertIsNotNone(store.entry_for("ITG", DAY))
-            os.remove(pfad)
-            self.assertIsNone(store.entry_for("ITG", DAY))
-
-    def test_the_environment_names_the_file(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "eigene.json")
-            with mock.patch.dict(os.environ, {hc.ENV_PATH: pfad}):
-                self.assertEqual(pfad, hc.default_path())
-                self.assertEqual(pfad, hc.HandCalendar().path)
-
-
-class WritingTest(unittest.TestCase):
+class SaveTest(unittest.TestCase):
     def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.pfad = os.path.join(self._tmp.name, "cache", "hand.json")
-        self.store = hc.HandCalendar(path=self.pfad, now_fn=lambda: _stamp())
+        self.store = hc.HandCalendar(now_fn=_clock())
 
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def test_a_valid_date_is_stored_and_read_back(self):
-        antwort = self.store.save("itg", "2026-12-10", source="IR-Pressemitteilung")
-        self.assertEqual("saved", antwort["status"])
-        self.assertEqual("ITG", antwort["symbol"])
+    def test_a_valid_date_is_stored_with_the_server_day(self):
+        ergebnis = self.store.save("ITG", "2026-12-10", source="IR-Pressemitteilung")
+        self.assertEqual("saved", ergebnis["status"])
+        self.assertEqual("ITG", ergebnis["symbol"])
         self.assertEqual({"date": "2026-12-10", "source": "IR-Pressemitteilung",
-                          "notiert_am": "2026-11-17"}, antwort["entry"])
-        gespeichert = json.loads(Path(self.pfad).read_text(encoding="utf-8"))
-        self.assertEqual(1, gespeichert["version"])
-        self.assertEqual("2026-12-10", gespeichert["symbols"]["ITG"]["date"])
+                          "notiert_am": "2026-11-17"}, ergebnis["entry"])
+        eintrag = self.store.entry_for("ITG", DAY)
+        self.assertEqual("curated", eintrag["status"])
+        self.assertEqual("2026-12-10", eintrag["curated_date"])
+        self.assertEqual(date(2026, 12, 10), self.store.curated_date("ITG", DAY))
 
-    def test_the_file_is_written_atomically_and_leaves_no_tmp(self):
+    def test_a_lowercase_symbol_is_normalised(self):
+        self.store.save("itg", "2026-12-10")
+        self.assertIn("ITG", self.store.entries())
+        self.assertNotIn("itg", self.store.entries())
+
+    def test_the_source_is_cut_and_trimmed(self):
+        self.store.save("ITG", "2026-12-10", source="  " + "x" * 200 + "  ")
+        self.assertEqual(80, len(self.store.entry_for("ITG", DAY)["source"]))
+
+    def test_a_second_save_replaces_the_same_symbol(self):
+        self.store.save("ITG", "2026-12-10", source="IR")
+        self.store.save("ITG", "2026-12-17", source="Webcast")
+        self.assertEqual(1, len(self.store))
+        self.assertEqual("2026-12-17", self.store.entry_for("ITG", DAY)["curated_date"])
+        self.assertEqual("Webcast", self.store.entry_for("ITG", DAY)["source"])
+
+    def test_two_symbols_live_side_by_side(self):
         self.store.save("ITG", "2026-12-10")
         self.store.save("ACME", "2027-01-15")
-        dateien = sorted(p.name for p in Path(os.path.dirname(self.pfad)).iterdir())
-        # Die .lock-Datei ist die prozessuebergreifende Sperre und bleibt; ein
-        # .tmp-Rest waere ein Fehler und steht deshalb nicht in dieser Liste.
-        self.assertEqual(["hand.json", "hand.json.lock"], dateien)
-        self.assertEqual(2, len(json.loads(Path(self.pfad).read_text())["symbols"]))
+        self.assertEqual({"ITG", "ACME"}, set(self.store.entries()))
 
-    def test_a_second_entry_keeps_the_first(self):
-        self.store.save("ITG", "2026-12-10", source="IR")
-        self.store.save("ACME", "2027-01-15", source="Webcast")
-        self.assertEqual("2026-12-10", self.store.entry_for("ITG", DAY)["curated_date"])
-        self.assertEqual("Webcast", self.store.entry_for("ACME", DAY)["source"])
-
-    def test_a_bad_date_is_rejected_with_its_code(self):
-        for text, code in (("10.12.2026", hc.CODE_INVALID_DATE),
-                           ("2026-12-10T08:00", hc.CODE_INVALID_DATE),
-                           ("", hc.CODE_INVALID_DATE),
-                           ("2026-11-16", hc.CODE_PAST_DATE),
-                           ("2027-08-15", hc.CODE_TOO_FAR_OUT)):
-            with self.subTest(text=text):
-                with self.assertRaises(hc.HandCalendarError) as fehler:
-                    self.store.save("ITG", text)
-                self.assertEqual(code, fehler.exception.code)
-        self.assertFalse(Path(self.pfad).exists())
-
-    def test_a_bad_symbol_is_rejected_before_anything_is_written(self):
-        for symbol in ("", "ITG1", "ABCDEFG", "it g"):
-            with self.subTest(symbol=symbol):
-                with self.assertRaises(hc.HandCalendarError) as fehler:
-                    self.store.save(symbol, "2026-12-10")
-                self.assertEqual(hc.CODE_INVALID_SYMBOL, fehler.exception.code)
-        self.assertFalse(Path(self.pfad).exists())
-
-    def test_exactly_270_days_ahead_is_allowed(self):
-        self.store.save("ITG", "2027-08-14")            # 270 Tage nach dem 17.11.
+    def test_the_boundary_of_the_window_is_inclusive(self):
+        # 270 Tage nach dem 17.11. ist der 14.08.2027 - der letzte erlaubte Tag.
+        self.store.save("ITG", (DAY + timedelta(days=270)).isoformat())
         self.assertEqual("curated", self.store.entry_for("ITG", DAY)["status"])
 
-    def test_two_workers_do_not_lose_each_others_entries(self):
-        # Zwei Prozesse, eine Datei, je ein eigener Zwischenspeicher. Ohne
-        # Prozess-Lock und Re-Read schreibt der zweite {sein Symbol} und der
-        # erste Eintrag ist weg - der klassische Lost Update.
-        with tempfile.TemporaryDirectory() as tmp:
-            pfad = os.path.join(tmp, "hand.json")
-            a = hc.HandCalendar(path=pfad)
-            b = hc.HandCalendar(path=pfad)
-            self.assertEqual({}, b.entries())        # b hat den leeren Stand gesehen
-            a.save("ITG", "2026-12-10")
-            b.save("ACME", "2027-01-15")
-            gespeichert = json.loads(open(pfad, encoding="utf-8").read())["symbols"]
-            self.assertEqual({"ACME", "ITG"}, set(gespeichert))
-            self.assertEqual("2026-12-10", a.entry_for("ITG", DAY)["curated_date"])
-            self.assertEqual("2026-12-10", b.entry_for("ITG", DAY)["curated_date"])
 
+class RejectionTest(unittest.TestCase):
+    def setUp(self):
+        self.store = hc.HandCalendar(now_fn=_clock())
+
+    def _code(self, symbol, date_text):
+        with self.assertRaises(hc.HandCalendarError) as fehler:
+            self.store.save(symbol, date_text)
+        return fehler.exception.code
+
+    def test_a_symbol_has_to_be_one_to_six_capital_letters(self):
+        for falsch in ("", "TOOLONG", "IT-G", "1TG", None):
+            self.assertEqual(hc.CODE_INVALID_SYMBOL, self._code(falsch, "2026-12-10"))
+
+    def test_only_an_iso_day_is_a_date(self):
+        for falsch in ("", "10.12.2026", "2026-12-10T08:00", "2026-13-01",
+                       "2026-02-30", "2026-1-1", None, 20261210):
+            self.assertEqual(hc.CODE_INVALID_DATE, self._code("ITG", falsch), falsch)
+
+    def test_the_scan_day_itself_is_accepted_but_reads_expired(self):
+        # Der Tag selbst ist erlaubt einzutragen - er ist aber kein Termin mehr:
+        # der Bericht liegt hinter dem Schluss, den der Gap misst.
+        self.store.save("ITG", DAY.isoformat())
+        self.assertEqual("expired", self.store.entry_for("ITG", DAY)["status"])
+
+    def test_a_date_before_the_scan_day_is_refused(self):
+        self.assertEqual(hc.CODE_PAST_DATE, self._code("ITG", "2026-11-16"))
+
+    def test_a_date_further_out_than_the_source_window_is_refused(self):
+        self.assertEqual(hc.CODE_TOO_FAR_OUT,
+                         self._code("ITG", (DAY + timedelta(days=271)).isoformat()))
+
+    def test_a_rejection_leaves_the_store_untouched(self):
+        with self.assertRaises(hc.HandCalendarError):
+            self.store.save("ITG", "2026-11-01")
+        self.assertEqual({}, self.store.entries())
+
+
+class ExpiredTest(unittest.TestCase):
+    def test_an_entry_past_its_date_is_expired_and_never_a_date(self):
+        store = hc.HandCalendar(now_fn=_clock())
+        store.save("ITG", "2026-12-10")
+        spaeter = date(2026, 12, 10)
+        self.assertEqual("expired", store.entry_for("ITG", spaeter)["status"])
+        self.assertIsNone(store.curated_date("ITG", spaeter),
+                          "ein abgelaufener Termin ist kein Termin")
+
+    def test_one_day_before_the_report_the_entry_is_still_curated(self):
+        store = hc.HandCalendar(now_fn=_clock())
+        store.save("ITG", "2026-12-10")
+        self.assertEqual("curated", store.entry_for("ITG", date(2026, 12, 9))["status"])
+
+    def test_the_next_save_drops_the_expired_entries(self):
+        # Niemand traegt sie je aus: ohne diese Auskehr wuerde der Speicher mit
+        # jedem Quartal weiter wachsen.
+        store = hc.HandCalendar(now_fn=_clock())
+        store.save("ITG", "2026-12-10", day=date(2026, 11, 17))
+        self.assertIn("ITG", store.entries())
+        # Ein Vorgang im Januar raeumt den abgelaufenen Eintrag weg.
+        store.save("ACME", "2027-02-01", day=date(2027, 1, 10))
+        self.assertEqual({"ACME"}, set(store.entries()))
+
+
+class CapTest(unittest.TestCase):
     def test_the_cap_refuses_a_new_symbol_but_allows_a_correction(self):
-        # Jede Speicherung schreibt die GANZE Datei - die Obergrenze ist das,
-        # was den einen Schreibweg davon abhaelt, unbegrenzt zu wachsen.
+        store = hc.HandCalendar(now_fn=_clock())
         with mock.patch.object(hc, "MAX_STORED_SYMBOLS", 2):
-            self.store.save("ITG", "2026-12-10")
-            self.store.save("ACME", "2027-01-15")
+            store.save("ITG", "2026-12-10")
+            store.save("ACME", "2027-01-15")
             with self.assertRaises(hc.HandCalendarError) as fehler:
-                self.store.save("NEW", "2027-02-01")
+                store.save("NEW", "2027-02-01")
             self.assertEqual(hc.CODE_TOO_MANY, fehler.exception.code)
             # Ein BESTEHENDER Eintrag bleibt korrigierbar, auch wenn voll ist.
-            self.store.save("ITG", "2026-12-17")
+            store.save("ITG", "2026-12-17")
 
-    def test_the_scan_day_can_be_passed_instead_of_read_from_the_clock(self):
-        antwort = self.store.save("ITG", "2026-12-10", day=date(2026, 12, 1))
-        self.assertEqual("2026-12-01", antwort["entry"]["notiert_am"])
+    def test_an_expired_entry_makes_room_for_a_new_one(self):
+        store = hc.HandCalendar(now_fn=_clock(day=date(2027, 3, 1)))
+        with mock.patch.object(hc, "MAX_STORED_SYMBOLS", 1):
+            store.save("ITG", "2026-12-10", day=date(2026, 11, 17))
+            # Der alte Eintrag ist abgelaufen und wird beim Speichern entfernt.
+            store.save("NEW", "2027-04-01")
+        self.assertEqual({"NEW"}, set(store.entries()))
 
 
-def _stamp():
-    from datetime import datetime
-    return datetime(2026, 11, 17, 15, 0)
+class DeleteTest(unittest.TestCase):
+    def setUp(self):
+        self.store = hc.HandCalendar(now_fn=_clock())
+
+    def test_a_known_symbol_is_forgotten(self):
+        self.store.save("ITG", "2026-12-10")
+        self.assertTrue(self.store.delete("ITG"))
+        self.assertEqual({}, self.store.entries())
+
+    def test_an_unknown_symbol_is_no_error(self):
+        self.assertFalse(self.store.delete("ITG"))
+        self.assertEqual({}, self.store.entries())
+
+    def test_the_symbol_is_normalised_like_on_save(self):
+        self.store.save("ITG", "2026-12-10")
+        self.assertTrue(self.store.delete("itg"))
+
+    def test_a_broken_symbol_is_refused(self):
+        with self.assertRaises(hc.HandCalendarError) as fehler:
+            self.store.delete("IT-G")
+        self.assertEqual(hc.CODE_INVALID_SYMBOL, fehler.exception.code)
+
+    def test_delete_does_not_touch_the_other_entries(self):
+        self.store.save("ITG", "2026-12-10")
+        self.store.save("ACME", "2027-01-15")
+        self.store.delete("ITG")
+        self.assertEqual({"ACME"}, set(self.store.entries()))
+
+
+class ReadersGetACopyTest(unittest.TestCase):
+    def test_a_reader_cannot_change_the_store(self):
+        store = hc.HandCalendar(now_fn=_clock())
+        store.save("ITG", "2026-12-10")
+        kopie = store.entries()
+        kopie["ITG"]["date"] = "1999-01-01"
+        kopie["NEU"] = {"date": "2027-01-01"}
+        self.assertEqual("2026-12-10", store.entry_for("ITG", DAY)["curated_date"])
+        self.assertNotIn("NEU", store.entries())
+
+
+class ConcurrencyTest(unittest.TestCase):
+    def test_parallel_saves_do_not_lose_each_other(self):
+        # Der Scan liest in Arbeitern, gespeichert wird aus Anfragen: der eine
+        # Speicher muss beides aushalten, ohne dass ein Eintrag verschwindet.
+        store = hc.HandCalendar(now_fn=_clock())
+        # Zwei Buchstaben: das Symbol-Regex laesst nur A-Z zu, keine Ziffern.
+        symbole = ["A" + buchstabe for buchstabe in "ABCDEFGHIJKLMNOPQRST"]
+
+        def speichern(symbol):
+            store.save(symbol, "2026-12-10")
+
+        faeden = [threading.Thread(target=speichern, args=(s,)) for s in symbole]
+        for faden in faeden:
+            faden.start()
+        for faden in faeden:
+            faden.join()
+        self.assertEqual(set(symbole), set(store.entries()))
+
+
+class NoDiskTest(unittest.TestCase):
+    """Der Speicher haelt seine Zusage: kein Schreibvorgang, nirgends."""
+
+    def test_saving_open_close_never_touches_the_file_system(self):
+        store = hc.HandCalendar(now_fn=_clock())
+        with mock.patch("builtins.open", side_effect=AssertionError("kein Dateizugriff")):
+            store.save("ITG", "2026-12-10", source="IR")
+            self.assertEqual("2026-12-10", store.entry_for("ITG", DAY)["curated_date"])
+            self.assertEqual(1, len(store.entries()))
+            store.delete("ITG")
+            self.assertEqual({}, store.entries())
+
+    def test_the_module_has_no_path_to_a_file(self):
+        # Auch die Konstanten sind weg: es gibt keinen Pfad, den jemand
+        # versehentlich wieder benutzen koennte.
+        for name in ("DEFAULT_PATH", "FALLBACK_PATH", "ENV_PATH", "FILE_VERSION"):
+            self.assertFalse(hasattr(hc, name), f"{name} sollte es nicht mehr geben")
+        self.assertFalse(hasattr(hc.HandCalendar, "path"))
+        self.assertFalse(hasattr(hc.HandCalendar, "_write"))
+        self.assertFalse(hasattr(hc.HandCalendar, "_read"))
+
+
+if __name__ == "__main__":
+    unittest.main()

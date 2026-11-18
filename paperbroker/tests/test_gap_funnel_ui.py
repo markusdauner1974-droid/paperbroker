@@ -427,6 +427,26 @@ async function main() {
         (n) => String(n.className || '').split(/\s+/).indexOf('hc-date') >= 0)[Number(parts[1])];
       if (feld) feld.value = parts.slice(2).join(':');
     }
+    if (parts[0] === 'hckey2') {
+      // Zwei Enter-Anschlaege in Folge: der zweite darf keinen zweiten
+      // Schreibvorgang ausloesen.
+      const feld = findAll(nodes['funnel-excluded'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('hc-date') >= 0)[Number(parts[1])];
+      if (feld) {
+        for (let i = 0; i < 2; i += 1) {
+          feld.dispatchEvent({ type: 'keydown', key: 'Enter', keyCode: 13,
+            preventDefault() {} });
+        }
+      }
+    }
+    if (parts[0] === 'hckey') {
+      // Enter im Datumsfeld - der Weg, den ein Mensch nimmt, wenn er das Datum
+      // getippt hat und nicht zur Maus greifen will.
+      const feld = findAll(nodes['funnel-excluded'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('hc-date') >= 0)[Number(parts[1])];
+      if (feld) feld.dispatchEvent({ type: 'keydown', key: 'Enter', keyCode: 13,
+        preventDefault() {} });
+    }
     if (parts[0] === 'hcsave') {
       const knopf = findAll(nodes['funnel-excluded'],
         (n) => String(n.className || '').split(/\s+/).indexOf('hc-save') >= 0)[Number(parts[1])];
@@ -1808,7 +1828,7 @@ class TestTheHandCalendar(unittest.TestCase):
         self.assertTrue(felder[0]["attrs"].get("aria-describedby"))
         knoepfe = _by_tag(box, "button")
         self.assertEqual(1, len(knoepfe))
-        self.assertEqual("Speichern", knoepfe[0]["text"])
+        self.assertEqual("Enter", knoepfe[0]["text"])
         self.assertIn("Berichtstermin", box["text"])
 
     def test_a_link_without_http_scheme_is_shown_as_text_only(self):
@@ -1854,7 +1874,42 @@ class TestTheHandCalendar(unittest.TestCase):
         self.assertEqual(1, len(posts))
         self.assertIn("/api/v1/hand-earnings", posts[0]["url"])
         self.assertEqual({"symbol": "ITG", "date": "2026-12-10"}, posts[0]["body"])
-        self.assertIn("Gespeichert", panel["handCalendar"]["text"])
+
+    def test_a_saved_date_starts_the_scan_again_by_itself(self):
+        # Der Kern des Ablaufs: EIN Lauf statt zwei. Nach dem Speichern fragt
+        # die Seite den Trichter sofort neu ab - mit demselben Tag.
+        panel, _boxen = self._box(self.SIGNAL, actions=["hcdate:0:2026-12-10", "hcsave:0"])
+        scans = [u for u in panel["urls"] if "/api/v1/gap-spreads" in u]
+        self.assertEqual(2, len(scans), f"erster Lauf + Nachlauf, gesehen: {panel['urls']}")
+        # Derselbe Tag wie beim ersten Lauf - der Nachlauf erfindet keinen.
+        self.assertEqual(scans[0], scans[1])
+
+    def test_a_cleared_field_deletes_the_entry(self):
+        panel, _boxen = self._box(
+            self.SIGNAL, actions=["hcdate:0:", "hcsave:0"],
+            hand={"status": 200, "body": {"status": "deleted", "existed": True}})
+        posts = panel["handCalendar"]["posts"]
+        self.assertEqual(1, len(posts))
+        self.assertEqual({"symbol": "ITG", "date": ""}, posts[0]["body"])
+        scans = [u for u in panel["urls"] if "/api/v1/gap-spreads" in u]
+        self.assertEqual(2, len(scans), "auch das Loeschen laesst den Trichter neu laufen")
+
+    def test_a_second_enter_while_saving_does_not_start_a_second_save(self):
+        # Kody-Befund: der deaktivierte Knopf schluckt nur Klicks, die
+        # Enter-Taste im Feld geht daran vorbei. Ohne Sperre wuerde jedes
+        # weitere Enter einen POST und einen vollen Trichterlauf nachziehen.
+        panel, _boxen = self._box(self.SIGNAL, actions=["hcdate:0:2026-12-10", "hckey2:0"])
+        self.assertEqual(1, len(panel["handCalendar"]["posts"]),
+                         "zwei Enter, ein Schreibvorgang")
+        scans = [u for u in panel["urls"] if "/api/v1/gap-spreads" in u]
+        self.assertEqual(2, len(scans), "und genau ein Nachlauf")
+
+    def test_the_enter_key_in_the_field_saves(self):
+        # Dieselbe Taste wie der Knopf: tippen, Enter, fertig.
+        panel, _boxen = self._box(self.SIGNAL, actions=["hcdate:0:2026-12-10", "hckey:0"])
+        posts = panel["handCalendar"]["posts"]
+        self.assertEqual(1, len(posts))
+        self.assertEqual({"symbol": "ITG", "date": "2026-12-10"}, posts[0]["body"])
 
     def test_a_rejection_is_written_into_the_box_with_its_own_sentence(self):
         panel, _boxen = self._box(

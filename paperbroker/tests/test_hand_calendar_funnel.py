@@ -12,12 +12,8 @@ The rules are strict and this file pins each of them with its own test:
 * a title with a source date never costs a feed request.
 """
 
-import json
-import os
-import tempfile
 import unittest
 from datetime import date
-from pathlib import Path
 
 from paperbroker import hand_calendar as hc
 from paperbroker.gap_funnel import REASON_NO_NEXT_EARNINGS, run_funnel
@@ -43,11 +39,17 @@ SIGNAL = {"title": "Acme Inc. to Report Q4 Earnings on February 1 - Reuters",
 
 
 def _store(entries=None, day=REACTION):
-    tmp = tempfile.mkdtemp()
-    pfad = os.path.join(tmp, "hand.json")
-    Path(pfad).write_text(json.dumps({"version": 1, "symbols": entries or {}}),
-                          encoding="utf-8")
-    return hc.HandCalendar(path=pfad)
+    """Ein Speicher im RAM, mit den Eintraegen der Fixture gefuellt.
+
+    Die Eintraege gehen direkt in die Map: ``save()`` prueft gegen das Scandatum,
+    und manche Fixtures liegen bewusst davor (abgelaufene Termine).
+    """
+    store = hc.HandCalendar()
+    for symbol, row in (entries or {}).items():
+        store._entries[symbol] = {"date": row["date"],
+                                  "source": row.get("source") or "",
+                                  "notiert_am": row.get("notiert_am") or ""}
+    return store
 
 
 def _run(*, next_earnings=None, entries=None, feed=None, optionable=frozenset({"AAA"}),
