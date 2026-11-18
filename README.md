@@ -107,6 +107,15 @@ replaces the content and the mark.
 **What was thrown away is shown.** Two collapsed blocks list the exclusions (per unit, with one reason per
 item) and the failures (chains that could not be read) — an empty result explains itself.
 
+**A title without a report date can be handed back to a human.** Where Finnhub's 270-day window holds no
+date, an optionable title gets an announcement signal from Google News' RSS search (headline and link only —
+no article is fetched, no date is parsed out of a sentence) and a date field beside it. The date typed in
+is stored in `hand_earnings.json` (`POST /api/v1/hand-earnings`, atomic write, `>= scan day` and
+`<= 270 days`), and from the next run on it fills the gap — labelled "Termin manuell kuratiert" with its
+source and the day it was noted, never dressed as a source date. Finnhub keeps the first word, and an entry
+whose report day has passed reads "abgelaufen" and behaves exactly like no date at all. Without a loaded
+CBOE list the field is not offered; the scan itself never depends on this block.
+
 ## The funnel's JSON (`GET /api/v1/gap-spreads`)
 
 ```

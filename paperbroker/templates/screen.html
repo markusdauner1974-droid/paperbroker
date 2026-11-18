@@ -146,8 +146,48 @@
     .dropped-summary ul{margin:0 0 10px;padding-left:0;list-style:none;
       font-family:var(--font-mono);font-size:11px;color:var(--muted)}
     .dropped-summary li{padding:5px 0;border-bottom:1px dotted var(--hair-soft);
-      display:flex;justify-content:space-between;gap:16px}
+      display:flex;justify-content:space-between;gap:16px;flex-wrap:wrap}
     .dropped-summary li b{color:var(--ink);font-weight:600}
+
+    /* Der Handkalender haengt an der Ausschlusszeile eines Titels ohne
+       Berichtstermin: Feed-Signal (hellblau abgesetzt), das Datumsfeld und die
+       beiden Abzeichen. Die Zeile bleibt eine Reihe - die Box nimmt die volle
+       Breite darunter ein, damit Symbol und Begruendung nicht gequetscht werden. */
+    .dropped-summary .detail-handcal{flex:1 1 100%;margin:6px 0 2px;padding:8px 10px;
+      border:1px solid rgba(77,195,255,.45);border-radius:6px;
+      display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;
+      font-size:10px;color:var(--muted)}
+    .detail-handcal .hc-label{color:#4dc3ff;text-transform:uppercase;
+      letter-spacing:.08em;font-size:9px}
+    .detail-handcal .hc-title{flex:1 1 100%;color:var(--ink);text-decoration:none;
+      line-height:1.45}
+    .detail-handcal .hc-title:hover{text-decoration:underline}
+    .detail-handcal .hc-open{color:#4dc3ff;text-decoration:none}
+    .detail-handcal .hc-open:hover{text-decoration:underline}
+    .detail-handcal .hc-entry{flex:1 1 100%;display:flex;flex-wrap:wrap;
+      align-items:center;gap:6px 8px}
+    .detail-handcal .hc-date-label{color:var(--muted)}
+    .detail-handcal .hc-date,#funnel-excluded .hc-date{font-family:var(--font-mono);
+      font-size:11px;padding:3px 6px;border:1px solid var(--hair);border-radius:4px;
+      background:transparent;color:var(--ink);color-scheme:dark}
+    .detail-handcal .hc-save,#funnel-excluded .hc-save{font-family:var(--font-mono);
+      font-size:10px;padding:4px 9px;border:1px solid var(--hair);border-radius:4px;
+      background:transparent;color:var(--ink);cursor:pointer}
+    .detail-handcal .hc-save:hover{border-color:var(--primary);color:var(--primary)}
+    .detail-handcal .hc-save[disabled]{opacity:.5;cursor:progress}
+    .detail-handcal .hc-status{font-size:10px;color:var(--faint)}
+    .detail-handcal .hc-status.ok{color:#4dc3ff}
+    .detail-handcal .hc-status.bad{color:#e05534}
+    .detail-handcal .hc-hint{flex:1 1 100%;margin:2px 0 0;font-size:9px;
+      color:var(--faint);line-height:1.5}
+    /* Zwei Abzeichen, zwei Aussagen: "kuratiert" ist ein Stand, "abgelaufen"
+       ein Ereignis - die Farben folgen der Linie, die sie meinen. */
+    .hc-badge{display:inline-block;padding:1px 7px;border-radius:999px;
+      border:1px solid rgba(224,85,52,.55);color:#e05534;font-size:9px;
+      text-transform:uppercase;letter-spacing:.06em;flex:0 0 auto}
+    .hc-badge.curated,td.hc-curated .sub{color:#4dc3ff}
+    td.hc-curated .sub{border-bottom:1px dotted currentColor;display:inline-block}
+    .hc-nosignal{font-size:10px;color:var(--faint);flex:1 1 100%}
 
     /* Das Detail eines Spreads: Kopfzeile, Leg-Tabelle, eine gezeichnete
        G&V-Kurve (SVG aus dem Skript, keine Fremdbibliothek), Szenarien. */

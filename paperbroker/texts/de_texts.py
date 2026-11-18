@@ -226,6 +226,37 @@ TEXTS: dict[str, object] = {
     "js.expand.close": "alle zuklappen",
     "js.reason.no_spread_ge_rr": "kein Spread mit R/R mindestens {rr}",
     "js.reason.unknown": "Grund unbekannt",
+    # --- js.handcalendar.* ----------------------------------------------- #
+    # Der Handkalender neben einem Titel ohne Berichtstermin: das Feed-Signal,
+    # das Feld fuer das Datum und die beiden Abzeichen. Das Datum tippt ein
+    # Mensch ein - hier steht deshalb ueberall "aus der Ankuendigung", nie
+    # "erkannt" oder "gelesen".
+    "js.handcalendar.signal_label": "Ankündigung im Feed",
+    "js.handcalendar.open_link": "Ankündigung öffnen",
+    "js.handcalendar.hint": (
+        "Datum aus der Ankündigung eintragen (JJJJ-MM-TT) — es gilt nur, "
+        "solange die Quelle keinen eigenen Termin liefert."
+    ),
+    "js.handcalendar.date_label": "Berichtstermin",
+    "js.handcalendar.save": "Speichern",
+    "js.handcalendar.saving": "Speichert …",
+    "js.handcalendar.saved": "Gespeichert — greift beim nächsten Lauf.",
+    "js.handcalendar.curated_badge": (
+        "Termin manuell kuratiert · Quelle: {source} · notiert {notiert_am}"
+    ),
+    "js.handcalendar.curated_badge_plain": "Termin manuell kuratiert",
+    "js.handcalendar.expired_badge": "abgelaufen",
+    "js.handcalendar.no_signal": "keine Ankündigung im Feed-Zeitraum",
+    "js.handcalendar.source_manual": "manuell",
+    # Die Ablehnungscodes des Endpunkts als Saetze: der Code ist der Vertrag,
+    # der Satz ist das, was der Mensch liest.
+    "js.handcalendar.code.invalid_symbol": (
+        "Kein gültiges Symbol — ein bis sechs Großbuchstaben."
+    ),
+    "js.handcalendar.code.invalid_date": "Kein gültiges Datum — bitte JJJJ-MM-TT.",
+    "js.handcalendar.code.past_date": "Das Datum liegt vor dem Scandatum.",
+    "js.handcalendar.code.too_far_out": "Das Datum liegt mehr als 270 Tage voraus.",
+    "js.handcalendar.code.not_saved": "Die Datei konnte nicht geschrieben werden.",
     "js.list.excluded": "Ausschlüsse",
     "js.list.failures": "Fehlschläge",
     "js.list.summary": "{label} ({count})",

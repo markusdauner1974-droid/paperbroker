@@ -47,6 +47,7 @@ from .earnings_day_calendar import (
     DAY_TODAY,
     build_calendar,
 )
+from .earnings_feed import EarningsFeedAdapter
 from .earnings_scan import (
     CONCURRENCY_CEILING,
     DEFAULT_CONCURRENCY,
@@ -86,6 +87,7 @@ from .gap_support import (
     _gap_scan_error,
     _required_move_cap,
 )
+from .hand_calendar import HandCalendar
 from .next_earnings import NextEarningsAdapter
 from .PaperBroker import PaperBroker
 from .quote_age import AGE_MODES, MODE_FRESHNESS, MODE_LAST_AVAILABLE
@@ -94,6 +96,7 @@ from .routes import chain as chain_routes
 from .routes import earnings as earnings_routes
 from .routes import gap_scan as gap_scan_routes
 from .routes import gap_spreads as gap_spreads_routes
+from .routes import hand_earnings as hand_earnings_routes
 from .routes import health as health_routes
 from .routes import page as page_routes
 from .routes.context import CONTEXT_KEY, FactoryContext
@@ -352,6 +355,12 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         next_earnings_adapter = NextEarningsAdapter(now_fn=now_fn)
     broker = PaperBroker(quote_adapter=quote_adapter)
 
+    # The hand calendar: one file (mounted cache directory) and one feed adapter
+    # for the lifetime of the app. Both are optional by design - if either is
+    # missing, the funnel simply keeps its old answer.
+    hand_calendar = HandCalendar(now_fn=now_fn)
+    earnings_feed = EarningsFeedAdapter(now_fn=now_fn)
+
     # One context for the route modules: the state that used to live in the
     # closures of this factory. A route reads it instead of closing over it.
     app.extensions[CONTEXT_KEY] = FactoryContext(
@@ -363,6 +372,8 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
         now_fn=now_fn,
         trend_for_screener=_trend_for_screener,
         trend_display=_trend_display,
+        hand_calendar=hand_calendar,
+        earnings_feed=earnings_feed,
     )
 
     health_routes.register(app)
@@ -370,6 +381,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     earnings_routes.register(app)
     gap_scan_routes.register(app)
     gap_spreads_routes.register(app)
+    hand_earnings_routes.register(app)
     page_routes.register(app)
 
 
