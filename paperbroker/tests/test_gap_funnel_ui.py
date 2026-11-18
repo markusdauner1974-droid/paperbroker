@@ -1954,10 +1954,11 @@ class TestTheHandCalendar(unittest.TestCase):
         # Die drei Zeilen sind klein und grau und stehen untereinander - das
         # CSS allein entscheidet das, also wird es geprueft und nicht geraten.
         css = (Path(__file__).resolve().parents[1] / "templates" / "screen.html").read_text(encoding="utf-8")
-        self.assertIn("td.hc-curated .sub{color:#9aa0a6;display:block", css)
-        # Das Hellblau bleibt der Handkalender-Box und dem Griechen-Overlay -
-        # aus der Spalte ist es verschwunden.
-        self.assertNotIn("td.hc-curated .sub{color:#4dc3ff}", css)
+        # Keine eigene Groesse und keine eigene Farbe: die drei Zeilen erben die
+        # Unterzeilen-Regel der Tabelle (.sub: 9.5px, gedaempft, display:block) -
+        # so klein wie jede andere graue Info in einer Zelle.
+        self.assertIn(".sub{display:block;font-size:9.5px;color:var(--faint)", css)
+        self.assertNotIn("td.hc-curated .sub", css)
 
 
 if __name__ == "__main__":
