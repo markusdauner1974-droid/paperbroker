@@ -91,6 +91,7 @@ from concurrent.futures import ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import date, datetime
 
+from . import hand_calendar as hand_calendar_source
 from . import reachability, texts
 from .gap_scan import GAP_DOWN, GAP_UP, STRATEGY_BEAR_PUT_DEBIT, STRATEGY_BULL_CALL_DEBIT
 from .next_earnings import CODE_NO_API_KEY, NextEarningsError
@@ -1027,6 +1028,11 @@ class Exclusion:
     pairs_possible: int | None = None
     required_move_pct: float | None = None
     max_required_move_pct: float | None = None
+    #: The hand-calendar part of a ``no_next_earnings`` exclusion: the feed
+    #: signal a human may read, or the state of an expired curated date. ``None``
+    #: on every other reason AND on a title that fails the pre-selection (no
+    #: options list, not optionable) - there is nothing to type in then.
+    hand_calendar: dict | None = None
 
     def as_dict(self):
         return {"symbol": self.symbol, "reason": self.reason, "message": self.message,
@@ -1034,7 +1040,8 @@ class Exclusion:
                 "pairs_enumerated": self.pairs_enumerated,
                 "pairs_possible": self.pairs_possible,
                 "required_move_pct": self.required_move_pct,
-                "max_required_move_pct": self.max_required_move_pct}
+                "max_required_move_pct": self.max_required_move_pct,
+                "hand_calendar": self.hand_calendar}
 
 
 @dataclass(frozen=True)
@@ -1083,8 +1090,42 @@ def _classify_chain_error(exc):
     return None, _CODE_CHAIN_FAILED, t("funnel.chain.unreadable", detail=detail)
 
 
+def _hand_calendar_block(candidate, curated, *, feed, optionable, day):
+    """The hand-calendar part of one ``no_next_earnings`` exclusion, or ``None``.
+
+    The pre-selection is the first word: without a loaded options list nothing
+    is shown (an unloaded list must not look like "no options"), and a title
+    that is not optionable gets the old text unchanged - a report date typed in
+    by hand would only lead to the next stage failing.
+
+    ``status`` is one of ``signal`` (the feed names an announcement), ``no_signal``
+    (it does not) or ``expired`` (a curated date is behind us). The feed is read
+    ONLY here, beside the curated lookup: a title the layer rejects costs no
+    request.
+    """
+    if optionable is None:
+        return None
+    symbol = str(candidate.get("symbol") or "").strip().upper()
+    if symbol not in optionable:
+        return None
+    signal = feed.signal(candidate.get("name")) if feed is not None else None
+    block = {
+        "status": ("expired" if curated is not None else
+                   ("signal" if signal else "no_signal")),
+        "title": (signal or {}).get("title"),
+        "link": (signal or {}).get("link"),
+        "curated_date": (curated or {}).get("curated_date"),
+        "source": (curated or {}).get("source"),
+        "notiert_am": (curated or {}).get("notiert_am"),
+    }
+    # An expired date without a signal is still worth showing: the badge says
+    # what happened, the (missing) field says the feed cannot help this time.
+    return block
+
+
 def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
-            rr_min, min_oi, min_long_delta, min_net_debit, max_required_move_pct):
+            rr_min, min_oi, min_long_delta, min_net_debit, max_required_move_pct,
+            hand_calendar=None, feed=None, optionable=None):
     """One candidate through the funnel -> ``(row, exclusion, failure, stages, context)``.
 
     Runs inside a worker, so it never raises: every failure that leaves it is a
@@ -1110,6 +1151,7 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
                                t("funnel.gap.no_direction")), None, stages, None
 
     # 1) the next report date
+    earnings_source = "finnhub"
     try:
         next_earnings = fetch_next_earnings(symbol)
     except NextEarningsError as exc:
@@ -1122,9 +1164,26 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
         return None, None, Failure(symbol, "next_earnings_failed",
                                    t("funnel.earnings.unreadable",
                                      error=type(exc).__name__)), stages, None
+    curated = None
     if next_earnings is None:
-        return None, Exclusion(symbol, REASON_NO_NEXT_EARNINGS,
-                               t("funnel.earnings.none_in_window")), None, stages, None
+        # The gap the funnel cannot fill from the calendar: a human may have
+        # filled it. Finnhub keeps the first word - a curated date is read ONLY
+        # here, where the source answered "no date in the window".
+        curated = (hand_calendar.entry_for(symbol, day)
+                   if hand_calendar is not None else None)
+        kuratiert = (hand_calendar_source.parse_date(curated["curated_date"])
+                     if curated is not None
+                     and curated["status"] == hand_calendar_source.STATUS_CURATED
+                     else None)
+        if kuratiert is None:
+            return None, Exclusion(
+                symbol, REASON_NO_NEXT_EARNINGS,
+                t("funnel.earnings.none_in_window"),
+                hand_calendar=_hand_calendar_block(
+                    candidate, curated, feed=feed, optionable=optionable, day=day),
+            ), None, stages, None
+        next_earnings = kuratiert
+        earnings_source = "manual_curated"
     stages["next_earnings"] = True
 
     # 2) the chain - one request per symbol, all expiries in it
@@ -1178,6 +1237,16 @@ def _assess(candidate, *, fetch_next_earnings, fetch_chain, day, now_fn,
     row = spread_row(candidate, pair, criteria, expiration, day, coverage=coverage,
                      section=section)
     row["next_earnings_date"] = next_earnings.isoformat()
+    # Where the date came from, said out loud: a curated date is never dressed
+    # as a source date. ``finnhub`` is the default and every other row keeps it.
+    row["next_earnings_source"] = earnings_source
+    if earnings_source == "manual_curated" and curated is not None:
+        row["hand_calendar"] = {
+            "status": hand_calendar_source.STATUS_CURATED,
+            "curated_date": next_earnings.isoformat(),
+            "source": curated.get("source"),
+            "notiert_am": curated.get("notiert_am"),
+        }
 
     # 5) can the underlying even get there? The spread is a fact now, so the
     # distance to its break-even can be measured - and a row that needs more
@@ -1382,7 +1451,8 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
                min_net_debit=DEFAULT_MIN_NET_DEBIT,
                max_required_move_pct=DEFAULT_MAX_REQUIRED_MOVE_PCT,
                fetch_daily=None,
-               history_deadline_seconds=DEFAULT_HISTORY_DEADLINE_SECONDS):
+               history_deadline_seconds=DEFAULT_HISTORY_DEADLINE_SECONDS,
+               hand_calendar=None, feed=None, optionable=None):
     """Run every candidate through the funnel - in parallel, bounded, explained.
 
     ``fetch_next_earnings(symbol)`` answers a ``date`` or ``None`` and may raise
@@ -1428,7 +1498,8 @@ def run_funnel(candidates, *, fetch_next_earnings, fetch_chain, day, now_fn=None
             fetch_next_earnings=fetch_next_earnings, fetch_chain=fetch_chain,
             day=day, now_fn=now_fn, rr_min=rr_min, min_oi=min_oi,
             min_long_delta=min_long_delta, min_net_debit=min_net_debit,
-            max_required_move_pct=max_required_move_pct))
+            max_required_move_pct=max_required_move_pct,
+            hand_calendar=hand_calendar, feed=feed, optionable=optionable))
             for row in rows]
         finished, open_futures = wait([future for _row, future in pairs], timeout=budget)
         # Cancelling BEFORE the shutdown is the deadline: a worker that never

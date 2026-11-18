@@ -60,6 +60,18 @@
   // koennte.
   var DETAIL_API = '/api/v1/gap-spreads/detail';
 
+  // Ein kuratiertes Datum: der EINE Schreibweg neben dem Scan. Der Server
+  // prueft Format, Vergangenheit und die 270-Tage-Grenze.
+  var HAND_API = '/api/v1/hand-earnings';
+
+  // Das Schreib-Token, wenn der Server eines verlangt (HAND_EARNINGS_TOKEN).
+  // Es steht am Block, weil die Seite es vom Server bekommt - keine zweite
+  // Quelle, kein festes Token im Skript.
+  var HAND_TOKEN = (function () {
+    var block = document.getElementById('gap-funnel');
+    return (block && block.getAttribute && block.getAttribute('data-hand-token')) || '';
+  })();
+
   // Die Texte kommen als EIN JSON-Block ins gerenderte HTML (id="i18n-js"):
   // eine Quelle, keine zweite Katalogdatei in JavaScript. Der Block nennt auch
   // die Mehrfach-Regel der Sprache - dieselbe, die der Server benutzt.
@@ -578,10 +590,17 @@
     zellen.push(cell(entry.expiration || '–', '', T('js.cell.expiration.title')));
     zellen.push(cell(num(entry.dte) ? String(entry.dte) : '–', '',
       T('js.cell.dte.title')));
-    zellen.push(cell(entry.next_earnings_date || '–',
-      entry.earnings_date
-        ? T('js.cell.report.title_earnings_day', { date: entry.earnings_date })
-        : T('js.cell.report.title_next')));
+    // Ein kuratiertes Datum steht nie wie ein Quellentermin da: die Zeile traegt
+    // das Abzeichen unter dem Datum, das sagt, woher es kommt.
+    if (entry.next_earnings_source === 'manual_curated') {
+      zellen.push(stacked(entry.next_earnings_date || '–',
+        curatedBadge(entry), 'hc-curated', T('js.cell.report.title_next')));
+    } else {
+      zellen.push(cell(entry.next_earnings_date || '–',
+        entry.earnings_date
+          ? T('js.cell.report.title_earnings_day', { date: entry.earnings_date })
+          : T('js.cell.report.title_next')));
+    }
     zellen.push(optionsCell(entry));
     return zellen;
   }
@@ -775,6 +794,16 @@
     el.expandAll.setAttribute('aria-expanded', offen ? 'true' : 'false');
   }
 
+  // Das Abzeichen eines kuratierten Termins nennt Quelle und Notizdatum - die
+  // Zeile sagt damit selbst, woher ihr Datum kommt. Fehlt eines von beiden,
+  // bleibt es beim kurzen Satz statt bei einer Luecke im Text.
+  function curatedBadge(entry) {
+    var hc = (entry && entry.hand_calendar) || {};
+    var quelle = hc.source || T('js.handcalendar.source_manual');
+    if (!hc.notiert_am) return T('js.handcalendar.curated_badge_plain');
+    return T('js.handcalendar.curated_badge', { source: quelle, notiert_am: hc.notiert_am });
+  }
+
   function reasonText(entry, body) {
     if (entry && entry.reason === 'no_spread_ge_rr') {
       return T('js.reason.no_spread_ge_rr', { rr: rrHurdleText(body) });
@@ -782,7 +811,7 @@
     return REASONS[entry.reason] || entry.message || entry.reason || T('js.reason.unknown');
   }
 
-  function fillList(details, summary, list, entries, label, textOf) {
+  function fillList(details, summary, list, entries, label, textOf, extraOf) {
     if (!details || !list) return;
     list.innerHTML = '';
     if (!Array.isArray(entries) || !entries.length) {
@@ -800,6 +829,9 @@
       li.appendChild(span);
       li.title = [entry.reason || entry.code || '', entry.message || '']
         .filter(Boolean).join(' · ');
+      // Was die Zeile ZUSAETZLICH traegt (Handkalender), haengt der Aufrufer an
+      // - die Liste selbst kennt nur Symbol und Satz.
+      if (extraOf) extraOf(entry, li);
       list.appendChild(li);
     });
     if (summary) summary.textContent = T('js.list.summary', { label: label, count: entries.length });
@@ -809,6 +841,133 @@
   function failureText(entry) {
     if (entry.code && entry.message) return entry.code + ' — ' + entry.message;
     return entry.message || entry.code || T('js.reason.unknown');
+  }
+
+  // --- Handkalender -------------------------------------------------------- //
+  // Neben einem Titel ohne Berichtstermin: das Feed-Signal (Ueberschrift + Link,
+  // den ein MENSCH im Browser oeffnet) und daneben das Feld, in das er das Datum
+  // aus der Ankuendigung tippt. Hier wird nichts aus einem Artikel gelesen und
+  // nichts gerechnet - der Server liefert Titel, Link und die Pruefung.
+
+  function hcNode(tag, className, text) {
+    var node = document.createElement(tag);
+    if (className) node.className = className;
+    if (text !== undefined && text !== null) node.textContent = text;
+    return node;
+  }
+
+  function feedBox(symbol, hc) {
+    var box = hcNode('div', 'detail-handcal');
+    box.appendChild(hcNode('span', 'hc-label', T('js.handcalendar.signal_label')));
+
+    // Der Link kommt aus einem FREMDEN Feed. rel="noopener" hilft nicht gegen
+    // ein javascript:-Ziel, deshalb wird das Schema hier noch einmal geprueft
+    // (der Server tut dasselbe) - unbrauchbar heisst: Ueberschrift als Text.
+    var ziel = /^https?:\/\//i.test(String(hc.link || '')) ? hc.link : null;
+    var titel = hcNode(ziel ? 'a' : 'span', 'hc-title', hc.title);
+    if (ziel) {
+      titel.href = ziel;
+      titel.target = '_blank';
+      // noreferrer: the news site learns nothing about this page.
+      titel.rel = 'noopener noreferrer';
+    }
+    box.appendChild(titel);
+
+    if (ziel) {
+      var oeffnen = hcNode('a', 'hc-open', T('js.handcalendar.open_link'));
+      oeffnen.href = ziel;
+      oeffnen.target = '_blank';
+      oeffnen.rel = 'noopener noreferrer';
+      box.appendChild(oeffnen);
+    }
+
+    var feldId = 'hc-date-' + symbol;
+    var zeile = hcNode('div', 'hc-entry');
+    var label = hcNode('label', 'hc-date-label', T('js.handcalendar.date_label'));
+    label.htmlFor = feldId;
+    zeile.appendChild(label);
+    var feld = document.createElement('input');
+    feld.type = 'date';
+    feld.id = feldId;
+    feld.className = 'hc-date';
+    feld.setAttribute('aria-describedby', feldId + '-hint');
+    zeile.appendChild(feld);
+    var knopf = hcNode('button', 'hc-save', T('js.handcalendar.save'));
+    knopf.type = 'button';
+    zeile.appendChild(knopf);
+    var stand = hcNode('span', 'hc-status', '');
+    stand.setAttribute('aria-live', 'polite');
+    zeile.appendChild(stand);
+    box.appendChild(zeile);
+
+    var hinweis = hcNode('p', 'hc-hint', T('js.handcalendar.hint'));
+    hinweis.id = feldId + '-hint';
+    box.appendChild(hinweis);
+
+    knopf.addEventListener('click', function () {
+      saveHandDate(symbol, feld.value, stand, knopf);
+    });
+    return box;
+  }
+
+  // Ein Datum speichern: der Wert geht unveraendert an den Server, die Pruefung
+  // (ISO, nicht vergangen, hoechstens 270 Tage) macht er - eine zweite Meiung
+  // im Browser waere eine zweite Wahrheit.
+  function saveHandDate(symbol, dateText, statusEl, button) {
+    statusEl.className = 'hc-status';
+    statusEl.textContent = T('js.handcalendar.saving');
+    button.disabled = true;
+    var kopf = { 'Content-Type': 'application/json', Accept: 'application/json' };
+    // Ist der Schreibweg mit einem Token gesperrt, schickt die Seite es mit -
+    // sie hat es vom Server bekommen, nicht aus einer zweiten Quelle.
+    if (HAND_TOKEN) kopf['X-Hand-Earnings-Token'] = HAND_TOKEN;
+    fetch(HAND_API, {
+      method: 'POST',
+      headers: kopf,
+      body: JSON.stringify({ symbol: symbol, date: dateText })
+    })
+      .then(function (res) {
+        return res.text().then(function (text) {
+          var body = null;
+          try { body = JSON.parse(text); } catch (err) { body = null; }
+          return body;
+        });
+      })
+      .then(function (answer) {
+        if (answer && answer.status === 'saved') {
+          statusEl.className = 'hc-status ok';
+          statusEl.textContent = T('js.handcalendar.saved');
+          return;
+        }
+        var code = (answer && answer.code) || 'not_saved';
+        var satz = T('js.handcalendar.code.' + code);
+        statusEl.className = 'hc-status bad';
+        statusEl.textContent = satz === 'js.handcalendar.code.' + code
+          ? T('js.handcalendar.code.not_saved') : satz;
+      })
+      .catch(function () {
+        statusEl.className = 'hc-status bad';
+        statusEl.textContent = T('js.handcalendar.code.not_saved');
+      })
+      .then(function () {
+        button.disabled = false;
+      });
+  }
+
+  // Was eine Ausschlusszeile zusaetzlich traegt: das Abzeichen "abgelaufen",
+  // das Feed-Signal mit Feld ODER nur der Satz, dass der Feed nichts hergibt.
+  function handCalendarExtra(entry, li) {
+    var hc = entry && entry.hand_calendar;
+    if (!hc) return;
+    if (hc.status === 'expired') {
+      li.appendChild(hcNode('span', 'hc-badge expired',
+        T('js.handcalendar.expired_badge')));
+    }
+    if (hc.title && hc.link) {
+      li.appendChild(feedBox(entry.symbol, hc));
+      return;
+    }
+    li.appendChild(hcNode('span', 'hc-nosignal', T('js.handcalendar.no_signal')));
   }
 
   // --- Detail eines Spreads ------------------------------------------------ //
@@ -1748,7 +1907,8 @@
     }
 
     fillList(el.excludedBlock, el.excludedSummary, el.excluded, ausschluesse,
-      T('js.list.excluded'), function (entry) { return reasonText(entry, body); });
+      T('js.list.excluded'), function (entry) { return reasonText(entry, body); },
+      handCalendarExtra);
     fillList(el.failuresBlock, el.failuresSummary, el.failures, fehlschlaege,
       T('js.list.failures'), failureText);
 

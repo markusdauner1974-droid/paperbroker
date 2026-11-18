@@ -57,6 +57,7 @@ from ..view_support import (
     _us_today,
     _vertical_sort_key,
 )
+from . import hand_earnings as hand_earnings_routes
 from .context import context
 
 
@@ -194,6 +195,9 @@ def index():
     return render_template(
         "screen.html", ticker=ticker, expiration=expiration,
         feed_time=feed_time,
+        # Ist der Schreibweg des Handkalenders gesperrt, bekommt die Seite das
+        # Token von hier - die eine Quelle, die auch der Server liest.
+        hand_token=hand_earnings_routes.configured_token(),
         dates=offered, dates_loaded=dates is not None,
         results=results, dropped_count=len(dropped) if dropped else 0,
         dropped_reasons=_drop_reason_groups(dropped),

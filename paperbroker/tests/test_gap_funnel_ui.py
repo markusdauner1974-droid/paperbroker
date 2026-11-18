@@ -174,6 +174,7 @@ const document = {
 };
 
 let urls = [];
+let posts = [];
 let detailCalls = 0;
 function nextAnswer(url) {
   if (url.indexOf('/detail') >= 0) {
@@ -182,10 +183,18 @@ function nextAnswer(url) {
     detailCalls += 1;
     return answer;
   }
+  if (url.indexOf('/hand-earnings') >= 0) {
+    // Der EINE Schreibweg des Handkalenders: die Antwort kommt aus der Fixture,
+    // der gesendete Rumpf wird mitgeschrieben statt nur geglaubt.
+    return answers.hand || { status: 200, body: { status: 'saved' } };
+  }
   return answers.list;
 }
-function fetch(url) {
+function fetch(url, options) {
   urls.push(url);
+  if (options && options.method === 'POST') {
+    posts.push({ url, body: options.body ? JSON.parse(options.body) : null });
+  }
   const answer = nextAnswer(url);
   return Promise.resolve({
     ok: answer.status >= 200 && answer.status < 300,
@@ -229,6 +238,14 @@ function tree(node) {
     tag: String(node.tagName || ''),
     attrs: node.attrs || {},
     cls: node.className || (node.attrs || {}).class || '',
+    // Was im Browser ein reflektiertes Attribut ist, steht hier als Eigenschaft:
+    // der Typ eines Eingabefelds, das Ziel eines Links. Genau diese Werte
+    // entscheiden, ob ein Datumswaehler aufgeht und ob ein Link in einem neuen
+    // Tab landet - sie gehoeren deshalb in den Baum.
+    type: node.type || (node.attrs || {}).type || null,
+    href: node.href || (node.attrs || {}).href || null,
+    target: node.target || (node.attrs || {}).target || null,
+    rel: node.rel || (node.attrs || {}).rel || null,
     text: node.textContent,
     children: (node.childNodes || []).filter((c) => c.tagName).map(tree)
   };
@@ -307,6 +324,13 @@ function report(prevented) {
     cells: rows().map(cells),
     counts: nodes['funnel-counts'].textContent,
     excluded: nodes['funnel-excluded'].textContent,
+    // Die Ausschlussliste als BAUM: der Handkalender haengt dort als eigene Box
+    // mit Link, Feld und Knopf - Text allein wuerde das Feld nicht belegen.
+    handCalendar: {
+      tree: tree(nodes['funnel-excluded']),
+      text: nodes['funnel-excluded'].textContent,
+      posts: posts.slice()
+    },
     foot: nodes['funnel-foot'].textContent,
     footHidden: nodes['funnel-foot'].hidden,
     cap: nodes['funnel-cap'].textContent,
@@ -395,6 +419,18 @@ async function main() {
       const liste = subsOf(Number(parts[1]));
       const stelle = liste[Number(parts[2])];
       if (stelle) stelle.click();
+    }
+    if (parts[0] === 'hcdate') {
+      // Das Datumsfeld in der Handkalender-Box: ein echter Wert, wie ihn ein
+      // Mensch tippt - getippt wird in DIESES Feld, nicht in eine Variable.
+      const feld = findAll(nodes['funnel-excluded'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('hc-date') >= 0)[Number(parts[1])];
+      if (feld) feld.value = parts.slice(2).join(':');
+    }
+    if (parts[0] === 'hcsave') {
+      const knopf = findAll(nodes['funnel-excluded'],
+        (n) => String(n.className || '').split(/\s+/).indexOf('hc-save') >= 0)[Number(parts[1])];
+      if (knopf) knopf.click();
     }
     if (parts[0] === 'all') nodes['funnel-expand-all'].click();
     if (parts[0] === 'key') {
@@ -545,12 +581,13 @@ def _list():
     }
 
 
-def _render(*, list_body=None, details=None, actions=None, scan=True):
+def _render(*, list_body=None, details=None, actions=None, scan=True, hand=None):
     """Run the real panel and return what it drew.
 
     ``details`` is a list of answers for successive detail requests (the last
     one repeats), so a retry can be measured. ``actions`` is the harness's small
-    script - ``click:0``, ``key:1:Enter``, ``key:0:Space``.
+    script - ``click:0``, ``key:1:Enter``, ``key:0:Space``, ``hcdate:0:2026-12-10``,
+    ``hcsave:0``. ``hand`` is the answer of the hand-earnings POST.
     """
     if NODE is None:
         raise unittest.SkipTest("node is required to render the panel offline")
@@ -558,6 +595,8 @@ def _render(*, list_body=None, details=None, actions=None, scan=True):
         "list": {"status": 200, "body": list_body if list_body is not None else _list()},
         "details": details if details is not None else [{"status": 200, "body": _detail()}],
     }
+    if hand is not None:
+        antworten["hand"] = hand
     with tempfile.TemporaryDirectory(prefix="gap-detail-ui-") as tmp:
         tmp = Path(tmp)
         (tmp / "answers.json").write_text(json.dumps(antworten), encoding="utf-8")
@@ -1720,6 +1759,137 @@ class TestThePanelStaysFreeOfForeignCode(unittest.TestCase):
         # der Antwort und kein Filter.
         self.assertEqual({"symbol", "day", "lang"},
                          set(re.findall(r"[?&]([a-z_]+)=", detail_url)))
+
+
+class TestTheHandCalendar(unittest.TestCase):
+    """Die Box neben einem Titel ohne Berichtstermin - im echten Skript gerendert.
+
+    Geprueft wird die STRUKTUR: die Box erscheint nur mit Signal, das Feld nur
+    mit Signal, die beiden Abzeichen in ihren Zustaenden, und der Knopf schickt
+    Symbol und Datum an den einen Schreibweg. Kein Test fasst einen Socket an.
+    """
+
+    SIGNAL = {"status": "signal",
+              "title": "ITG Inc. to Report Q4 Earnings on December 10 - Reuters",
+              "link": "https://news.example.com/itg",
+              "curated_date": None, "source": None, "notiert_am": None}
+
+    def _list(self, hand):
+        body = _list()
+        body["excluded"] = [{
+            "symbol": "ITG", "reason": "no_next_earnings",
+            "message": "kein Termin im Fenster",
+            "pairs_capped": False, "pairs_enumerated": None, "pairs_possible": None,
+            "required_move_pct": None, "max_required_move_pct": None,
+            "hand_calendar": hand,
+        }]
+        return body
+
+    def _box(self, block, **kwargs):
+        panel = _render(list_body=self._list(block), **kwargs)
+        return panel, _by_class(panel["handCalendar"]["tree"], "detail-handcal")
+
+    def test_a_signal_offers_the_announcement_and_the_field(self):
+        panel, boxen = self._box(self.SIGNAL)
+        self.assertEqual(1, len(boxen))
+        box = boxen[0]
+        # Der Link oeffnet die Ankuendigung in einem neuen Tab - ohne Referrer.
+        links = [n for n in _by_tag(box, "a") if n["href"] == self.SIGNAL["link"]]
+        self.assertEqual(2, len(links), "Titel und 'Ankuendigung oeffnen'")
+        for link in links:
+            self.assertEqual("_blank", link["target"])
+            self.assertIn("noopener", link["rel"])
+        self.assertIn(self.SIGNAL["title"], box["text"])
+        # Das Feld ist ein echter input mit Typ date und einer Beschriftung.
+        felder = _by_tag(box, "input")
+        self.assertEqual(1, len(felder))
+        self.assertEqual("date", felder[0]["type"])
+        self.assertIn("hc-date", felder[0]["cls"])
+        self.assertTrue(felder[0]["attrs"].get("aria-describedby"))
+        knoepfe = _by_tag(box, "button")
+        self.assertEqual(1, len(knoepfe))
+        self.assertEqual("Speichern", knoepfe[0]["text"])
+        self.assertIn("Berichtstermin", box["text"])
+
+    def test_a_link_without_http_scheme_is_shown_as_text_only(self):
+        # Der Server laesst so etwas gar nicht erst durch; die Seite prueft es
+        # trotzdem - ein Link ist ein Link, egal woher die Zeile kommt.
+        panel, boxen = self._box({"status": "signal",
+                                  "title": "Acme schedules Q4 earnings",
+                                  "link": "javascript:alert(1)",
+                                  "curated_date": None, "source": None,
+                                  "notiert_am": None})
+        self.assertEqual(1, len(boxen))
+        self.assertEqual([], _by_tag(boxen[0], "a"))
+        self.assertIn("Acme schedules Q4 earnings", boxen[0]["text"])
+
+    def test_without_a_signal_there_is_a_sentence_and_no_field(self):
+        panel, boxen = self._box({"status": "no_signal", "title": None, "link": None,
+                                  "curated_date": None, "source": None,
+                                  "notiert_am": None})
+        self.assertEqual([], boxen)
+        self.assertIn("keine Ankündigung im Feed-Zeitraum", panel["handCalendar"]["text"])
+        self.assertEqual([], _by_tag(panel["handCalendar"]["tree"], "input"))
+
+    def test_an_expired_entry_carries_the_badge(self):
+        panel, _boxen = self._box({"status": "expired", "title": None, "link": None,
+                                   "curated_date": "2026-11-10", "source": "IR",
+                                   "notiert_am": "2026-10-01"})
+        abzeichen = _by_class(panel["handCalendar"]["tree"], "hc-badge")
+        self.assertEqual(1, len(abzeichen))
+        self.assertIn("expired", abzeichen[0]["cls"])
+        self.assertEqual("abgelaufen", abzeichen[0]["text"])
+        # Ohne Signal bleibt es beim Satz - kein Feld ohne Ankuendigung.
+        self.assertEqual([], _by_tag(panel["handCalendar"]["tree"], "input"))
+
+    def test_without_a_hand_calendar_block_the_row_stays_as_before(self):
+        panel = _render(list_body=self._list(None))
+        self.assertEqual([], _by_class(panel["handCalendar"]["tree"], "detail-handcal"))
+        self.assertEqual([], _by_tag(panel["handCalendar"]["tree"], "input"))
+        self.assertNotIn("abgelaufen", panel["handCalendar"]["text"])
+
+    def test_saving_posts_the_symbol_and_the_typed_date(self):
+        panel, _boxen = self._box(self.SIGNAL, actions=["hcdate:0:2026-12-10", "hcsave:0"])
+        posts = panel["handCalendar"]["posts"]
+        self.assertEqual(1, len(posts))
+        self.assertIn("/api/v1/hand-earnings", posts[0]["url"])
+        self.assertEqual({"symbol": "ITG", "date": "2026-12-10"}, posts[0]["body"])
+        self.assertIn("Gespeichert", panel["handCalendar"]["text"])
+
+    def test_a_rejection_is_written_into_the_box_with_its_own_sentence(self):
+        panel, _boxen = self._box(
+            self.SIGNAL, actions=["hcdate:0:2026-11-01", "hcsave:0"],
+            hand={"status": 400, "body": {"status": "rejected", "code": "past_date",
+                                          "message": "the date lies before the scan day"}})
+        self.assertIn("Das Datum liegt vor dem Scandatum.", panel["handCalendar"]["text"])
+
+    def test_the_row_of_a_curated_title_says_where_the_date_comes_from(self):
+        body = _list()
+        body["results"][0]["next_earnings_date"] = "2027-02-01"
+        body["results"][0]["next_earnings_source"] = "manual_curated"
+        body["results"][0]["hand_calendar"] = {
+            "status": "curated", "curated_date": "2027-02-01",
+            "source": "IR-Pressemitteilung", "notiert_am": "2026-11-17"}
+        panel = _render(list_body=body)
+        self.assertIn("Termin manuell kuratiert", " ".join(panel["cells"][0]))
+        # Quelle und Notizdatum stehen DA - das Datum ist nicht als Quellentermin
+        # getarnt, und die Zeile sagt selbst, wer es eingetragen hat.
+        self.assertIn("IR-Pressemitteilung", " ".join(panel["cells"][0]))
+        self.assertIn("2026-11-17", " ".join(panel["cells"][0]))
+        # Die gewoehnliche Zeile traegt das Abzeichen NICHT.
+        self.assertNotIn("Termin manuell kuratiert", " ".join(panel["cells"][1]))
+
+    def test_a_curated_row_without_a_source_still_names_the_day(self):
+        body = _list()
+        body["results"][0]["next_earnings_date"] = "2027-02-01"
+        body["results"][0]["next_earnings_source"] = "manual_curated"
+        body["results"][0]["hand_calendar"] = {"status": "curated",
+                                               "curated_date": "2027-02-01",
+                                               "source": None, "notiert_am": None}
+        panel = _render(list_body=body)
+        # Ohne Quelle und Datum bleibt der kurze Satz - keine Luecke im Text.
+        self.assertIn("Termin manuell kuratiert", " ".join(panel["cells"][0]))
+        self.assertNotIn("Quelle:", " ".join(panel["cells"][0]))
 
 
 if __name__ == "__main__":

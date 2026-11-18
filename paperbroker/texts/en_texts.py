@@ -425,6 +425,43 @@ TEXTS: dict[str, object] = {
     "js.reason.no_spread_ge_rr": "no spread with R/R at least {rr}",
     "js.reason.not_optionable": "no listed options",
     "js.reason.unknown": "reason unknown",
+    # The hand calendar beside a title without a report date: the feed signal,
+    # the field for the date and the two badges. A human types the date - so
+    # nothing here says "detected" or "read".
+    "js.handcalendar.signal_label": "Announcement in the feed",
+    "js.handcalendar.open_link": "Open the announcement",
+    "js.handcalendar.hint": (
+        "Enter the date from the announcement (YYYY-MM-DD) — it is used only "
+        "while the source has no date of its own."
+    ),
+    "js.handcalendar.date_label": "Report date",
+    "js.handcalendar.save": "Save",
+    "js.handcalendar.saving": "Saving …",
+    "js.handcalendar.saved": "Saved — takes effect on the next run.",
+    "js.handcalendar.curated_badge": (
+        "Date curated by hand · source: {source} · noted {notiert_am}"
+    ),
+    "js.handcalendar.curated_badge_plain": "Date curated by hand",
+    "js.handcalendar.expired_badge": "expired",
+    "js.handcalendar.no_signal": "no announcement in the feed window",
+    "js.handcalendar.source_manual": "manual",
+    "js.handcalendar.code.invalid_symbol": (
+        "Not a valid symbol — one to six capital letters."
+    ),
+    "js.handcalendar.code.invalid_date": "Not a valid date — please use YYYY-MM-DD.",
+    "js.handcalendar.code.past_date": "The date lies before the scan day.",
+    "js.handcalendar.code.too_far_out": "The date lies more than 270 days ahead.",
+    "js.handcalendar.code.not_saved": "The file could not be written.",
+    "js.handcalendar.code.too_many_entries": (
+        "The hand calendar is full — please remove expired entries first."
+    ),
+    "js.handcalendar.code.forbidden": "This write path requires a valid token.",
+    "js.handcalendar.code.unsupported_media_type": (
+        "The request did not arrive as JSON — please reload the page."
+    ),
+    "js.handcalendar.code.too_many_requests": (
+        "Too many saves in a short time — please wait a minute."
+    ),
     "js.rr_hurdle.fallback": "1 : 2",
     "js.scenarios.col.change": "Change (%)",
     "js.scenarios.col.delta": "Delta",

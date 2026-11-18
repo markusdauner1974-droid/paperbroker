@@ -40,6 +40,7 @@ from ..gap_support import (
 )
 from ..texts import t
 from ..view_support import _same_strike
+from . import hand_earnings as hand_earnings_routes
 from .context import context
 
 
@@ -178,6 +179,13 @@ def api_gap_spreads():
             # reachability numbers need about two years of sessions, so the
             # window is opened wide and closed by the count.
             fetch_daily=ctx.gap_adapter.fetch_daily,
+            # Hand calendar: curated dates fill the gap where the source has
+            # none, and the feed offers a signal beside it. The pre-selection
+            # comes from the CBOE list the calendar already uses - a missing
+            # list turns the field off, it never fails the scan.
+            hand_calendar=ctx.hand_calendar,
+            feed=ctx.earnings_feed,
+            optionable=hand_earnings_routes.optionable_symbols(ctx),
         )
     except Exception:                                    # noqa: BLE001 - classified here
         current_app.logger.exception("gap spreads funnel failed for %s", day)
@@ -368,6 +376,13 @@ def api_gap_spreads_detail():
             # come from this one history). A failing source is a state, not
             # an error - ``measure_reachability`` reports it per row.
             fetch_daily=ctx.gap_adapter.fetch_daily,
+            # Hand calendar: curated dates fill the gap where the source has
+            # none, and the feed offers a signal beside it. The pre-selection
+            # comes from the CBOE list the calendar already uses - a missing
+            # list turns the field off, it never fails the scan.
+            hand_calendar=ctx.hand_calendar,
+            feed=ctx.earnings_feed,
+            optionable=hand_earnings_routes.optionable_symbols(ctx),
         )
     except Exception:                                    # noqa: BLE001 - classified here
         current_app.logger.exception("spread detail: funnel failed for %s", symbol)

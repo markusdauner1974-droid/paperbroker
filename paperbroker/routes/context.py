@@ -26,6 +26,12 @@ class FactoryContext:
     trend_display: Any
     now_fn: Callable[[], Any]
     trend_for_screener: Callable[[str], Any]
+    #: The hand-curated report dates (``hand_calendar.py``) and the announcement
+    #: feed beside them (``earnings_feed.py``). Both default to ``None`` so a
+    #: context built by an old test keeps working: no store, no signal - the
+    #: funnel then behaves exactly as before this feature.
+    hand_calendar: Any = None
+    earnings_feed: Any = None
 
 
 def context() -> FactoryContext:
