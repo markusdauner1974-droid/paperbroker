@@ -49,22 +49,24 @@ fair value, statements, news) and reads its data from Yahoo Finance, SEC EDGAR a
 the NAS scanner. It comes from Markus as a ZIP and is committed as a base state of its own; the
 integration is deliberately kept apart from it in the history.
 
-The two applications stay independent. The analysis runs on its own with `python3
-aktienanalyse/app.py` (port 8766, root path, exactly as before) and, when embedded, under the path
-prefix `/qualitaet` (`--base-path`). The dashboard knows nothing about its content: `GET|POST
-/qualitaet/*` is forwarded unchanged to `AKTIENANALYSE_BACKEND_URL` (default
-`http://aktienanalyse:8766`), status, `content-type`, `content-length` and `cache-control` come
-back untouched, and the body is streamed. A block that is down answers 503 with one readable
-sentence in the language of the request and a log line — the funnel keeps working. The button
-"Aktien-Qualität" stands in the funnel's button row unconditionally: a missing button would hide
-exactly the state the user needs to know about, and the target page names it itself. Two ways in,
-one block: the button and the address `/qualitaet/` are the same thing.
+The analysis is not a second service. `paperbroker/routes/quality.py` loads the delivered program
+and serves it under `/qualitaet/` **in the same process**: one container, one port, one source tree,
+no image of its own and no proxy hop. `api()` is the dispatcher the delivered `app.py` used to carry
+— the addresses (`/qualitaet/api/stock`, `…/statements`, `…/stock-batch`, `…/compare`, `…/xang`)
+stay the same, the arithmetic stays where it was delivered. The page is delivered the path prefix
+it runs under (`window.AKT_BASE_PATH`), so its own requests find the right place. The delivered
+program still starts on its own (`python3 aktienanalyse/app.py`, port 8766, exactly as before) —
+the same files, a different entry point.
 
-Two environment variables carry the deployment: `AKTIENANALYSE_BACKEND_URL` (dashboard side) and
-`AKTIENANALYSE_NAS_URL` / `AKTIENANALYSE_NAS_PASSWORD` (block side; the password is also read from
-`/run/secrets/nas_password`, and it never appears in a log line, an output or a start message).
-`docker-compose.yml` builds the block from `aktienanalyse/Dockerfile` into the same stack, with no
-published port; the healthcheck calls the page itself, not the port.
+The button "Aktien-Qualität" stands in the funnel's button row unconditionally: a missing button
+would hide exactly the state the user needs to know about. Two ways in, one thing: the button and
+the address `/qualitaet/`.
+
+One optional source: `AKTIENANALYSE_NAS_URL` / `AKTIENANALYSE_NAS_PASSWORD` (the password is also
+read from `/run/secrets/nas_password` and never appears in a log line, an output or a start
+message). Without them the analysis answers from Yahoo Finance and says so in the source line; the
+page itself never depends on them. `yfinance` and `beautifulsoup4` therefore became dependencies of
+this program (`requirements.txt`, `setup.py`) — the price of one process instead of two.
 
 The analysis logic is unchanged: criteria, formulas, thresholds and structure are byte-identical to
 the delivered stand. Evidence: `check_nas.py` (15 tests) is green, and `check_parity.py --port 8766`
