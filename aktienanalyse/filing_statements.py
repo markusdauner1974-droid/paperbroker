@@ -4,7 +4,9 @@ import json
 import math
 import os
 import re
+import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
@@ -14,6 +16,8 @@ from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile, is_zipfile
+
+import store
 
 API = "https://api.financialreports.eu"
 CDN = "cdn.financialreports.eu"
@@ -33,9 +37,18 @@ INCOME = {
     "ProfitLossAttributableToOwnersOfParent": "netincome",
     "ProfitLossBeforeTax": "pretaxincome",
     "IncomeTaxExpenseContinuingOperations": "taxprovision",
+    # Earnings per share belong here: the report tags them per share class, so the
+    # basic and the diluted figure stay apart instead of being mixed.
+    "BasicEarningsLossPerShare": "basiceps",
+    "DilutedEarningsLossPerShare": "dilutedeps",
+    # Some issuers report one figure for both classes when no dilutive instruments
+    # exist. It is then the same number for basic and diluted, so it may fill the
+    # diluted line; the label on the page stays the diluted one.
+    "BasicAndDilutedEarningsLossPerShare": "dilutedeps",
 }
 BALANCE = {
     "Assets": "totalassets", "EquityAttributableToOwnersOfParent": "stockholdersequity",
+    "NumberOfSharesOutstanding": "sharesoutstanding",
     "CurrentAssets": "currentassets", "CurrentLiabilities": "currentliabilities",
     "CashAndCashEquivalents": "cashandcashequivalents",
 }
@@ -139,6 +152,17 @@ def report_facts(payload, entity, cutoff):
                 prefix, _, currency = (unit[0].text or "").strip().partition(":")
                 if namespaces.get(prefix) == {"http://www.xbrl.org/2003/iso4217"} and re.fullmatch("[A-Z]{3}", currency):
                     units[unit.get("id")] = currency
+                continue
+            # Amounts per share are divided units: currency over shares. Without this
+            # the earnings per share of European reports never arrive, because the
+            # figure is tagged per share class and the unit is not plain currency.
+            numerator = unit.findtext(f"{INSTANCE}divide/{INSTANCE}unitNumerator/{INSTANCE}measure", "")
+            denominator = unit.findtext(f"{INSTANCE}divide/{INSTANCE}unitDenominator/{INSTANCE}measure", "")
+            prefix, _, currency = numerator.strip().partition(":")
+            if (namespaces.get(prefix) == {"http://www.xbrl.org/2003/iso4217"}
+                    and re.fullmatch("[A-Z]{3}", currency)
+                    and (denominator or "").strip().rpartition(":")[2] == "shares"):
+                units[unit.get("id")] = currency
         contexts = {}
         for context in root.iter(INSTANCE + "context"):
             identifier = context.findtext(f"{INSTANCE}entity/{INSTANCE}identifier", "").strip()
@@ -246,11 +270,54 @@ def valid_link(url, hostname):
     return parsed.scheme == "https" and parsed.netloc == hostname and not parsed.fragment
 
 
+def stored_statements(symbol, currency):
+    """What the store already knows about this symbol, while it is fresh enough.
+
+    Fetching costs credits, so a second look at the same company must not look
+    anything up again.
+    """
+    try:
+        with closing(store.verbindung()) as conn:
+            sections = store.werte_lesen(conn, symbol)
+            if not (sections.get("income") or sections.get("balance")):
+                return {}, None
+            identity = store.firma(conn, symbol)
+            provenance = {section: {day: {key: {"source": "ixbrl_original", "stored": True}
+                                          for key in row}
+                                    for day, row in block.items()}
+                          for section, block in sections.items()}
+            return {**sections, "provenance": provenance}, identity.get("waehrung") or currency
+    except (sqlite3.Error, OSError):
+        return {}, None
+
+
+def remember_statements(symbol, isin, currency, tagged):
+    """Write what the collector learned, so the next look costs nothing."""
+    try:
+        with closing(store.verbindung()) as conn:
+            store.firma_merken(conn, symbol, isin=isin, waehrung=currency)
+            store.werte_schreiben(conn, symbol, tagged, quelle="ixbrl_original", waehrung=currency)
+            berichte = []
+            for block in (tagged.get("provenance") or {}).values():
+                for day, row in block.items():
+                    for entry in row.values():
+                        url = entry.get("url") if isinstance(entry, dict) else None
+                        if url:
+                            berichte.append((int(str(day)[:4]), "IXBRL", url))
+            if berichte:
+                store.berichte_merken(conn, symbol, berichte)
+    except (sqlite3.Error, OSError, ValueError, TypeError):
+        pass
+
+
 @lru_cache(maxsize=24)
 def filing_statements(symbol, cutoff, currency, bucket, isin=None):
     """Look up a unique issuer; load only its published, tagged original files."""
     if not os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip():
         return {}, None
+    cached, cached_currency = stored_statements(symbol, currency)
+    if cached:
+        return cached, cached_currency
     ticker, _, market = symbol.rpartition(".")
     country = EU_MARKETS.get(market)
     if not country:
@@ -294,9 +361,12 @@ def filing_statements(symbol, cutoff, currency, bucket, isin=None):
         except (OSError, ValueError, TypeError, KeyError, AttributeError):
             continue
     try:
-        return tagged_statements(documents, lei, date.fromisoformat(cutoff), currency)
+        tagged, report_currency = tagged_statements(documents, lei, date.fromisoformat(cutoff), currency)
     except (BadZipFile, OSError, RuntimeError, ValueError):
         return {}, None
+    if tagged:
+        remember_statements(symbol, isin, report_currency, tagged)
+    return tagged, report_currency
 
 
 def merge_filings(symbol, cutoff, statements, currency, isin=None):
