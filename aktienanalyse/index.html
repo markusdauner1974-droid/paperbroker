@@ -1234,9 +1234,17 @@ function render(){
   $("foot").textContent=data.reference?"SAP-Referenzaufnahme · Abweichende Kennzahlen können verschiedene Stichtage haben.":
     "Kurse, aktuelle Kennzahlen und Geschäftsabschlüsse können unterschiedliche Stichtage haben.";
 }
+// Der Pfadanfang, unter dem die Seite laeuft. Der Server spielt ihn in den
+// <head> ein (window.AKT_BASE_PATH); direkt geoeffnet - SAP-Archiv per file:// -
+// fehlt er, und dann gilt die Wurzel wie bisher. JEDE Datenabfrage der Seite
+// laeuft ueber diese eine Funktion, deshalb steht der Basispfad an genau einer
+// Stelle statt an jeder Aufrufstelle.
+function basePath(){
+  return typeof window!=="undefined"&&typeof window.AKT_BASE_PATH==="string"?window.AKT_BASE_PATH:"";
+}
 async function api(path,q,options={}){
   if(location.protocol==="file:")throw new Error("Für die Aktiensuche bitte den lokalen Server starten. Die SAP-Referenz lässt sich direkt öffnen.");
-  const response=await fetch("/api/"+path+"?"+new URLSearchParams({q,...options}));
+  const response=await fetch(basePath()+"/api/"+path+"?"+new URLSearchParams({q,...options}));
   const json=await response.json();
   if(!response.ok)throw new Error(json.error||"Datenabruf fehlgeschlagen.");
   return json;

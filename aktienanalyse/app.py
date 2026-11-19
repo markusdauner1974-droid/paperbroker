@@ -369,6 +369,45 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
 class Handler(BaseHTTPRequestHandler):
     nas = None
 
+    # Der Pfadanfang, unter dem die Seite laeuft: "" im Handbetrieb (Port 8766,
+    # Wurzel), "/qualitaet" wenn sie hinter dem Dashboard haengt. Alle Pfade
+    # werden EINMAL am Anfang abgeschnitten, danach gilt ueberall derselbe
+    # Routenvergleich wie bisher.
+    base_path = ""
+
+    def inner_path(self, path):
+        """Der Pfad ohne Basispfad, oder ``None`` wenn er daneben liegt."""
+        if not self.base_path:
+            return path
+        prefix = self.base_path
+        if path == prefix:
+            return "/"
+        if path.startswith(prefix + "/"):
+            return path[len(prefix):]
+        return None
+
+    def page(self):
+        """index.html mit eingespieltem Basispfad.
+
+        Die Seite bleibt sonst byte-gleich: genau ein Block kommt direkt hinter
+        das oeffnende ``<html>``-Tag (der Browser legt ihn in den Kopf), damit
+        das Skript seine Datenabfragen unter demselben Pfadanfang baut, unter dem
+        die Seite geladen wurde. Ohne Basispfad ist der Wert leer - und damit
+        verhaelt sich alles wie vorher.
+
+        Gesucht wird das Tag, nicht ``<head>``: die Datei hat keinen eigenen
+        Kopf-Block, und ein Suchwort aus dem Fliesstext traefe die falsche
+        Stelle (genau das ist beim ersten Anlauf passiert - der Block landete in
+        einem Kommentar des Skripts).
+        """
+        html = (ROOT / "index.html").read_bytes()
+        start = html.find(b"<html")
+        ende = html.find(b">", start) if start >= 0 else -1
+        if start < 0 or ende < 0:
+            return html
+        einspiel = ("<script>window.AKT_BASE_PATH=%s</script>" % json.dumps(self.base_path)).encode()
+        return html[:ende + 1] + einspiel + html[ende + 1:]
+
     def reply(self, status, content, content_type):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -386,18 +425,19 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self):
         target = urlsplit(self.path)
-        if target.path in ("/", "/index.html"):
-            self.reply(200, (ROOT / "index.html").read_bytes(), "text/html; charset=utf-8")
+        path = self.inner_path(target.path)
+        if path in ("/", "/index.html"):
+            self.reply(200, self.page(), "text/html; charset=utf-8")
             return
-        if target.path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",
-                               "/api/compare", "/api/xang"):
+        if path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",
+                        "/api/compare", "/api/xang"):
             self.json(404, {"error": "Adresse nicht gefunden."})
             return
         params = parse_qs(target.query)
         bucket = int(time() // 900)
         query = params.get("q", [""])[0].strip()
         try:
-            if target.path == "/api/xang":
+            if path == "/api/xang":
                 if not SYMBOL.fullmatch(query.upper()):
                     raise ValueError("Bitte einen gültigen Börsenticker eingeben.")
                 if self.nas is None:
@@ -408,21 +448,21 @@ class Handler(BaseHTTPRequestHandler):
                 except (URLError, ValueError, OSError):
                     self.json(502, {"error": "NAS-Snapshot momentan nicht abrufbar."})
                 return
-            if target.path == "/api/search":
+            if path == "/api/search":
                 if not 1 <= len(query) <= 100:
                     raise ValueError("Bitte einen Namen, Ticker oder eine ISIN eingeben.")
                 self.json(200, search(query, self.nas))
                 return
             symbols = list(dict.fromkeys(query.upper().split(",")))
-            maximum = 15 if target.path == "/api/stock-batch" else 5
+            maximum = 15 if path == "/api/stock-batch" else 5
             if len(symbols) > maximum or any(not SYMBOL.fullmatch(s) for s in symbols):
                 raise ValueError(f"Bitte bis zu {maximum} gültige Börsenticker eingeben.")
-            if target.path == "/api/statements":
+            if path == "/api/statements":
                 if len(symbols) != 1:
                     raise ValueError("Bitte genau einen Ticker auswählen.")
                 cutoff = date.fromisoformat(params.get("cutoff", [""])[0]).isoformat()
                 self.json(200, statement_profile(symbols[0], cutoff, int(time() // 600)))
-            elif target.path == "/api/stock-extra":
+            elif path == "/api/stock-extra":
                 if len(symbols) != 1:
                     raise ValueError("Bitte genau eine Aktie auswählen.")
                 if self.nas is None:
@@ -433,7 +473,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Die Notierungswährung ist ungültig.")
                 self.json(200, stock_extra(symbols[0], bucket, cutoff, currency,
                                            params.get("history_only") == ["1"]))
-            elif target.path == "/api/stock":
+            elif path == "/api/stock":
                 if len(symbols) != 1:
                     raise ValueError("Bitte genau eine Aktie auswählen.")
                 cached = nas_stocks(self.nas, symbols, identify=True, bucket=bucket) if self.nas is not None else []
@@ -449,7 +489,7 @@ class Handler(BaseHTTPRequestHandler):
                     if self.nas is not None:
                         result = {**result, "issues": ["Keine NAS-Tageskurse für diesen Ticker.", *result["issues"]]}
                     self.json(200, result)
-            elif target.path == "/api/stock-batch":
+            elif path == "/api/stock-batch":
                 if self.nas is not None:
                     results = nas_stocks(self.nas, symbols, bucket=bucket)
                     if results and params.get("statements") == ["1"]:
@@ -515,9 +555,18 @@ def main():
     parser = argparse.ArgumentParser(description="Lokale Aktienanalyse starten.")
     parser.add_argument("--port", type=int, default=8765)
     parser.add_argument("--nas", metavar="URL", help="Stock-Scanner-Adresse im Heimnetz")
+    parser.add_argument("--base-path", default="", metavar="PFAD",
+                        help="Pfadanfang, unter dem die Seite laeuft, z. B. /qualitaet "
+                             "(leer = Wurzel, wie im Handbetrieb)")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port muss zwischen 1 und 65535 liegen.")
+    base_path = args.base_path.strip()
+    if base_path:
+        if not base_path.startswith("/") or base_path.startswith("//") or ".." in base_path:
+            parser.error("--base-path muss mit genau einem / beginnen und darf kein .. enthalten.")
+        base_path = base_path.rstrip("/")
+    Handler.base_path = base_path
 
     if args.nas:
         from nas_scanner import NasScanner
