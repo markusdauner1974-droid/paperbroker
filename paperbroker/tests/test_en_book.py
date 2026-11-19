@@ -53,8 +53,11 @@ class TheEnglishPageDraftTest(unittest.TestCase):
         # Einstellungs-Panels. Die elf Texte der Griechen-Tasten (fuenf Namen,
         # vier Achsentitel, der Legendeneintrag und der Satz fuer den
         # Screenreader) kommen mit dem Overlay hinzu, die vier Erklaersaetze
-        # mit der Erklaerzeile: 196 + 11 + 4.
-        self.assertEqual(len(self.de), 241)
+        # mit der Erklaerzeile: 196 + 11 + 4. Der Knopf zum Baustein
+        # "Aktien-Qualitaet" zaehlt hier mit (er steht auf der Seite); die zwei
+        # Saetze des Bausteins selbst liegen im eigenen Abschnitt "quality" und
+        # werden von test_fallback_matrix geprueft, nicht als Seitentext.
+        self.assertEqual(len(self.de), 242)
         self.assertEqual(set(self.en), set(self.de), "kein Schluessel darf fehlen")
 
     def test_every_placeholder_is_unchanged(self):

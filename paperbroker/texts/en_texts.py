@@ -328,6 +328,10 @@ TEXTS: dict[str, object] = {
     "js.detail.failed": "Detail for {symbol} failed: {message}",
     "js.detail.leg_not_listed": "One leg of this spread is not in the chain.",
     "js.detail.legs_heading": "Both legs",
+    "js.button.stock_quality": "Stock quality",
+    "quality.unavailable.title": "Stock analysis unavailable",
+    "quality.unavailable.text": "The stock analysis is not reachable right now. "
+                                "The rest of the funnel keeps working; please try again later.",
     "js.legs.hint.show": "Show the strike in the chart",
     "js.legs.hint.hide": "Hide the strike from the chart",
     "js.detail.loading": "Detail for {symbol} — loading …",
@@ -599,6 +603,7 @@ SECTIONS: tuple[str, ...] = (
     "js",
     "page",
     "page_route",
+    "quality",
     "scan",
     "sort",
     "support",

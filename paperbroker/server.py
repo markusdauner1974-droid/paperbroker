@@ -99,6 +99,7 @@ from .routes import gap_spreads as gap_spreads_routes
 from .routes import hand_earnings as hand_earnings_routes
 from .routes import health as health_routes
 from .routes import page as page_routes
+from .routes import quality as quality_routes
 from .routes.context import CONTEXT_KEY, FactoryContext
 from .screener import (
     DEFAULT_STRATEGY,
@@ -392,6 +393,9 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     gap_spreads_routes.register(app)
     hand_earnings_routes.register(app)
     page_routes.register(app)
+    # Der eigene Baustein hinter demselben Host: /qualitaet/* geht unveraendert
+    # an aktienanalyse (eigener Prozess, eigenes --base-path).
+    quality_routes.register(app)
 
 
     # Unfiltered, read-only option-chain view for Hermes. Deliberately NOT a
