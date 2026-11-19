@@ -378,15 +378,28 @@ function buildChecks(stock,benchmark=[],only=selected){
   const duration=(label,x,a,b,c)=>rowCheck(label,x,v=>isNum(v)?f(v)+" Jahre":"—","Ziel ≥ "+b+" Jahre",a,b,c);
   switch(only){
     case 0: {
-      const long=salesOrEps=>{
-        const values=Array.from({length:6},(_,i)=>annualMetric(i,salesOrEps)).reverse();
+      // The provider hands over five fiscal years, so the fifth step back never
+      // exists and the old fixed six-year demand left all four lines open. The
+      // span is whatever the data holds; the label says how many years it covers,
+      // and a span of zero keeps the line open instead of inventing one.
+      const spanOf=series=>{
+        for(let back=5;back>=1;back--) if(isNum(annualMetric(back,series))) return back;
+        return 0;
+      };
+      const long=(series,span)=>{
+        if(!span)return null;
+        const values=Array.from({length:span+1},(_,i)=>annualMetric(i,series)).reverse();
         return values.every(x=>isNum(x)&&x>0)?trendFit(values.map(Math.log)):null;
       };
+      const years=span=>span?" "+span+" Jahre":"";
+      const salesSpan=spanOf(sales),epsSpan=spanOf(eps);
       return [["Wachstum und Beständigkeit",[
-        p("Umsatzwachstum 5 Jahre (CAGR)",cagr(rev,annualMetric(5,sales),5),-.10,.05,.23),
-        p("Umsatzstabilität 5 Jahre (R²)",long(sales),0,.60,1),
-        p("EPS-Wachstum 5 Jahre (CAGR)",cagr(eps(a),annualMetric(5,eps),5),-.15,.08,.35),
-        p("EPS-Stabilität 5 Jahre (R²)",long(eps),0,.60,1)]],
+        p("Umsatzwachstum"+years(salesSpan)+" (CAGR)",
+          salesSpan?cagr(rev,annualMetric(salesSpan,sales),salesSpan):null,-.10,.05,.23),
+        p("Umsatzstabilität"+years(salesSpan)+" (R²)",long(sales,salesSpan),0,.60,1),
+        p("EPS-Wachstum"+years(epsSpan)+" (CAGR)",
+          epsSpan?cagr(eps(a),annualMetric(epsSpan,eps),epsSpan):null,-.15,.08,.35),
+        p("EPS-Stabilität"+years(epsSpan)+" (R²)",long(eps,epsSpan),0,.60,1)]],
       ["Rentabilität",[
         p("Eigenkapitalrendite (TTM, Anbieter)",i.returnOnEquity,-.12,.10,.34),
         p("ROIC (EBIT nach Steuern / eingesetztes Kapital)",roic,-.12,.10,.28),

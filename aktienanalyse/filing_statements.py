@@ -4,16 +4,21 @@ import json
 import math
 import os
 import re
+import sqlite3
 from collections import defaultdict
+from contextlib import closing
 from datetime import date, timedelta
 from decimal import Decimal, InvalidOperation
 from functools import lru_cache
 from io import BytesIO
+from threading import Lock
 from time import time
 from urllib.parse import urlencode, urlsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile, is_zipfile
+
+import store
 
 API = "https://api.financialreports.eu"
 CDN = "cdn.financialreports.eu"
@@ -33,9 +38,18 @@ INCOME = {
     "ProfitLossAttributableToOwnersOfParent": "netincome",
     "ProfitLossBeforeTax": "pretaxincome",
     "IncomeTaxExpenseContinuingOperations": "taxprovision",
+    # Earnings per share belong here: the report tags them per share class, so the
+    # basic and the diluted figure stay apart instead of being mixed.
+    "BasicEarningsLossPerShare": "basiceps",
+    "DilutedEarningsLossPerShare": "dilutedeps",
+    # Some issuers report one figure for both classes when no dilutive instruments
+    # exist. It is then the same number for basic and diluted, so it may fill the
+    # diluted line; the label on the page stays the diluted one.
+    "BasicAndDilutedEarningsLossPerShare": "dilutedeps",
 }
 BALANCE = {
     "Assets": "totalassets", "EquityAttributableToOwnersOfParent": "stockholdersequity",
+    "NumberOfSharesOutstanding": "sharesoutstanding",
     "CurrentAssets": "currentassets", "CurrentLiabilities": "currentliabilities",
     "CashAndCashEquivalents": "cashandcashequivalents",
 }
@@ -139,6 +153,17 @@ def report_facts(payload, entity, cutoff):
                 prefix, _, currency = (unit[0].text or "").strip().partition(":")
                 if namespaces.get(prefix) == {"http://www.xbrl.org/2003/iso4217"} and re.fullmatch("[A-Z]{3}", currency):
                     units[unit.get("id")] = currency
+                continue
+            # Amounts per share are divided units: currency over shares. Without this
+            # the earnings per share of European reports never arrive, because the
+            # figure is tagged per share class and the unit is not plain currency.
+            numerator = unit.findtext(f"{INSTANCE}divide/{INSTANCE}unitNumerator/{INSTANCE}measure", "")
+            denominator = unit.findtext(f"{INSTANCE}divide/{INSTANCE}unitDenominator/{INSTANCE}measure", "")
+            prefix, _, currency = numerator.strip().partition(":")
+            if (namespaces.get(prefix) == {"http://www.xbrl.org/2003/iso4217"}
+                    and re.fullmatch("[A-Z]{3}", currency)
+                    and (denominator or "").strip().rpartition(":")[2] == "shares"):
+                units[unit.get("id")] = currency
         contexts = {}
         for context in root.iter(INSTANCE + "context"):
             identifier = context.findtext(f"{INSTANCE}entity/{INSTANCE}identifier", "").strip()
@@ -246,57 +271,202 @@ def valid_link(url, hostname):
     return parsed.scheme == "https" and parsed.netloc == hostname and not parsed.fragment
 
 
-@lru_cache(maxsize=24)
-def filing_statements(symbol, cutoff, currency, bucket, isin=None):
-    """Look up a unique issuer; load only its published, tagged original files."""
-    if not os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip():
+def stored_statements(symbol, currency):
+    """What the store already knows about this symbol, while it is fresh enough.
+
+    Fetching costs credits, so a second look at the same company must not look
+    anything up again.
+    """
+    try:
+        with closing(store.verbindung()) as conn:
+            sections = store.werte_lesen(conn, symbol)
+            if not (sections.get("income") or sections.get("balance")):
+                return {}, None
+            identity = store.firma(conn, symbol)
+            provenance = {section: {day: {key: {"source": "ixbrl_original", "stored": True}
+                                          for key in row}
+                                    for day, row in block.items()}
+                          for section, block in sections.items()}
+            return {**sections, "provenance": provenance}, identity.get("waehrung") or currency
+    except (sqlite3.Error, OSError):
         return {}, None
+
+
+def remember_statements(symbol, isin, currency, tagged):
+    """Write what the collector learned, so the next look costs nothing."""
+    try:
+        with closing(store.verbindung()) as conn:
+            store.firma_merken(conn, symbol, isin=isin, waehrung=currency)
+            store.werte_schreiben(conn, symbol, tagged, quelle="ixbrl_original", waehrung=currency)
+            berichte = []
+            for block in (tagged.get("provenance") or {}).values():
+                for day, row in block.items():
+                    for entry in row.values():
+                        if not isinstance(entry, dict) or not entry.get("url"):
+                            continue
+                        veroeffentlicht = entry.get("filed") or ""
+                        berichte.append((int(str(day)[:4]), "IXBRL", entry["url"], str(veroeffentlicht)))
+            if berichte:
+                store.berichte_merken(conn, symbol, berichte)
+    except (sqlite3.Error, OSError, ValueError, TypeError):
+        pass
+
+
+_LOCKS = {}
+_LOCKS_GUARD = Lock()
+_LOCKS_MAX = 256
+
+
+def symbol_lock(symbol):
+    """One lock per symbol, so two page views of the same share never both pay.
+
+    The map is bounded, because the symbol comes from the request. Only locks that
+    nobody holds are dropped: evicting a lock that is in use would hand the next
+    caller a different object and two threads would enter the paid path together.
+    """
+    with _LOCKS_GUARD:
+        if symbol in _LOCKS:
+            return _LOCKS[symbol]
+        _LOCKS[symbol] = Lock()
+        while len(_LOCKS) > _LOCKS_MAX:
+            frei = next((key for key, lock in _LOCKS.items()
+                         if key != symbol and not lock.locked()), None)
+            if frei is None:
+                break
+            del _LOCKS[frei]
+        return _LOCKS[symbol]
+
+
+def issuer_identifier(payload):
+    """The identifier the report carries itself - the LEI for European issuers.
+
+    It is inside the file, so a stored filing list can be read again without
+    asking the provider who the issuer is (and paying for the answer).
+    """
+    for document in document_files(payload):
+        found = re.search(rb"<[\w.-]*:identifier[^>]*>\s*([^<\s]{1,64})\s*<", document)
+        if found:
+            return found.group(1).decode("ascii", "replace")
+        # Another archive member may carry the identifier; keep looking instead of
+        # giving up on the first file that has none.
+    return ""
+
+
+def stored_filings(symbol):
+    """The filing list that was already paid for, while it is young enough."""
+    try:
+        with closing(store.verbindung()) as conn:
+            return store.berichte(conn, symbol)
+    except (sqlite3.Error, OSError):
+        return []
+
+
+def filing_entries(symbol, cutoff, isin):
+    """Where the reports are: the stored list when it exists, the paid one otherwise."""
+    stored = stored_filings(symbol)
+    if stored:
+        grenze = date.fromisoformat(cutoff)
+        entries = []
+        for eintrag in stored:
+            jahr, adresse = eintrag[0], eintrag[2]
+            veroeffentlicht = eintrag[3] if len(eintrag) > 3 else ""
+            if veroeffentlicht:
+                try:
+                    # A report released after the cut-off must not be read: it would
+                    # carry knowledge the price series cannot have. The paid branch
+                    # has always refused these; the stored branch has to as well.
+                    if date.fromisoformat(veroeffentlicht[:10]) > grenze:
+                        continue
+                except ValueError:
+                    continue
+            entries.append((adresse, str(jahr), veroeffentlicht or ""))
+        return "", entries
     ticker, _, market = symbol.rpartition(".")
     country = EU_MARKETS.get(market)
     if not country:
-        return {}, None
+        return "", []
+    identity = {"isin": isin} if isin and re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", isin) else {
+        "ticker": f"{ticker}.{country}"}
+    companies = listing("companies", **identity, page_size=2)
+    if len(companies) != 1:
+        return "", []
+    company = companies[0]
+    company_id, lei = company.get("id"), company.get("lei", "")
+    if type(company_id) is not int or not re.fullmatch(r"[A-Z0-9]{20}", lei or ""):
+        return "", []
+    if "isin" in identity and isin not in company.get("isins", ()):
+        return "", []
+    filings = listing("filings", company=company_id, extensions="ZIP,XBRI,XHTML",
+                      ordering="-release_datetime",
+                      release_datetime_to=cutoff + "T23:59:59Z", page_size=30, view="full")
+    entries = []
+    for item in filings:
+        try:
+            filed = date.fromisoformat(item["release_datetime"][:10])
+            url = item.get("document") or item.get("document_url")
+            if (filed > date.fromisoformat(cutoff) or item.get("company", {}).get("id") != company_id
+                    or not valid_link(url, CDN)
+                    or not urlsplit(url).path.startswith("/financialreports/media/filings/")):
+                continue
+            entries.append((url, item.get("period_ending_date") or url, filed.isoformat()))
+        except (ValueError, TypeError, KeyError, AttributeError):
+            continue
+    return lei, entries
+
+
+def collect_statements(symbol, cutoff, currency, isin):
+    """Download the original packages and read the tags the issuers set themselves."""
     try:
-        identity = {"isin": isin} if isin and re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", isin) else {
-            "ticker": f"{ticker}.{country}"}
-        companies = listing("companies", **identity, page_size=2)
-        if len(companies) != 1:
-            return {}, None
-        company = companies[0]
-        company_id, lei = company.get("id"), company.get("lei", "")
-        if type(company_id) is not int or not re.fullmatch(r"[A-Z0-9]{20}", lei or ""):
-            return {}, None
-        if "isin" in identity and isin not in company.get("isins", ()):
-            return {}, None
-        filings = listing("filings", company=company_id, extensions="ZIP,XBRI,XHTML",
-                          ordering="-release_datetime",
-                          release_datetime_to=cutoff + "T23:59:59Z", page_size=30, view="full")
+        lei, entries = filing_entries(symbol, cutoff, isin)
     except (OSError, ValueError, TypeError, AttributeError):
         return {}, None
     documents = []
     seen = set()
     attempts = 0
-    for item in filings:
+    for url, tag, filed in entries:
         if len(documents) >= 5 or attempts >= 7:
             break
-        try:
-            filed = date.fromisoformat(item["release_datetime"][:10])
-            url = item.get("document") or item.get("document_url")
-            issuer = item.get("company", {}).get("id")
-            if (filed > date.fromisoformat(cutoff) or issuer != company_id
-                    or not valid_link(url, CDN) or not urlsplit(url).path.startswith("/financialreports/media/filings/")):
-                continue
-            tag = item.get("period_ending_date") or url
-            if tag in seen:
-                continue
-            attempts += 1
-            documents.append((filed.isoformat(), url, read_bytes(url)))
-            seen.add(tag)
-        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+        if tag in seen or not valid_link(url, CDN):
             continue
+        seen.add(tag)
+        attempts += 1
+        try:
+            payload = read_bytes(url)
+        except (OSError, ValueError):
+            continue
+        if not lei:
+            # No company lookup was needed, so the report names its issuer itself.
+            lei = issuer_identifier(payload)
+        if not re.fullmatch(r"[A-Z0-9]{20}", lei or ""):
+            return {}, None
+        documents.append((filed, url, payload))
+    if not documents:
+        return {}, None
     try:
-        return tagged_statements(documents, lei, date.fromisoformat(cutoff), currency)
+        tagged, report_currency = tagged_statements(documents, lei, date.fromisoformat(cutoff), currency)
     except (BadZipFile, OSError, RuntimeError, ValueError):
         return {}, None
+    if tagged:
+        remember_statements(symbol, isin, report_currency, tagged)
+    return tagged, report_currency
+
+
+@lru_cache(maxsize=24)
+def filing_statements(symbol, cutoff, currency, bucket, isin=None):
+    """Look up a unique issuer; load only its published, tagged original files."""
+    if not os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip():
+        return {}, None
+    cached, cached_currency = stored_statements(symbol, currency)
+    if cached:
+        return cached, cached_currency
+    # lru_cache does not merge two cold callers: without this lock two page views at
+    # the same moment would both pay for the same listing. The store is checked
+    # again inside the lock, so only the first caller pays and the rest read.
+    with symbol_lock(symbol):
+        cached, cached_currency = stored_statements(symbol, currency)
+        if cached:
+            return cached, cached_currency
+        return collect_statements(symbol, cutoff, currency, isin)
 
 
 def merge_filings(symbol, cutoff, statements, currency, isin=None):

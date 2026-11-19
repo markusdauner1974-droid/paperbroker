@@ -41,6 +41,24 @@ merge only when both check sources - check runs and commit statuses - were green
 | D13 | the spread table shows what the position costs | #54 |
 | D14 | the page can show put spreads, not only calls | #55 |
 
+### What the analysis costs, and what it keeps (2026-11-19)
+
+The original reports are the authority, not a summary: the collector asks the provider for the
+list of annual reports — **one credit per company**, the only paid call — and then downloads the
+original ESEF packages from the provider's open CDN, which costs nothing. From those packages it
+reads the values the issuer tagged itself (`ifrs-full:Revenue`, `…:DilutedEarningsLossPerShare`),
+with period, currency and share class. Amounts per share are divided units (currency over shares)
+and are read as such; without that the earnings per share of European reports never arrive.
+
+Because the list costs money, it is paid once: `aktienanalyse/store.py` keeps what the collector
+learned in one SQLite file (`AKTIENANALYSE_DB`, default `/app/.cache/aktienanalyse.db` on the
+cache volume) with four tables — company, report, value, price. Measured on Evonik: the first look
+takes 9 s and 2 credits, the second takes 0.0 s and none, and the analysis carries six fiscal years
+(2020–2025) from original reports instead of the five Yahoo offers.
+
+Two boundaries stay: a position the report does not carry is **absent**, never zero, and is shown
+as open; and prices are not stored, they stay live, because a cached price would be a wrong price.
+
 ### The stock analysis as an embedded block (2026-11-19)
 
 `aktienanalyse/` is a second, self-contained application in the repository: a plain `http.server`

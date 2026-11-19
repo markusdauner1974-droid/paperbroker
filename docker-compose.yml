@@ -62,6 +62,13 @@ services:
       # Yahoo Finance and says so in the source line.
       - AKTIENANALYSE_NAS_URL=${AKTIENANALYSE_NAS_URL:-}
       - AKTIENANALYSE_NAS_PASSWORD=${AKTIENANALYSE_NAS_PASSWORD:-}
+      # The filing list of the analysis costs credits at the provider, so it is
+      # paid once per company and stored. Empty means "no original reports" -
+      # the analysis then answers from Yahoo Finance and says so.
+      - AKTIENANALYSE_FILINGS_KEY=${AKTIENANALYSE_FILINGS_KEY:-}
+      # One SQLite file on the cache volume: what the collector learned survives
+      # a restart, so the next page view of the same company costs nothing.
+      - AKTIENANALYSE_DB=${AKTIENANALYSE_DB:-/app/.cache/aktienanalyse.db}
 
 volumes:
   cboe_cache:
