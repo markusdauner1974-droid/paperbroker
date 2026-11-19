@@ -39,6 +39,7 @@ CREATE TABLE IF NOT EXISTS bericht (
     geschaeftsjahr INTEGER,
     typ          TEXT,
     adresse      TEXT,
+    veroeffentlicht TEXT,
     abgerufen_am TEXT,
     PRIMARY KEY (symbol, geschaeftsjahr, typ)
 );
@@ -76,7 +77,16 @@ def verbindung(path=None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(SCHEMA)
+    _spalte_ergaenzen(conn, "bericht", "veroeffentlicht", "TEXT")
     return conn
+
+
+def _spalte_ergaenzen(conn, tabelle: str, spalte: str, typ: str):
+    """Add a column to a database that was created by an older version."""
+    vorhanden = {row[1] for row in conn.execute(f"PRAGMA table_info({tabelle})")}
+    if spalte not in vorhanden:
+        conn.execute(f"ALTER TABLE {tabelle} ADD COLUMN {spalte} {typ}")
+        conn.commit()
 
 
 def _jetzt() -> str:
@@ -115,26 +125,30 @@ def firma(conn, symbol):
 
 
 def berichte_merken(conn, symbol, berichte):
-    """Store the filing list: (fiscal year, type, address) triples."""
+    """Store the filing list: (fiscal year, type, address[, released]) per report."""
     jetzt = _jetzt()
-    for jahr, typ, adresse in berichte:
+    for eintrag in berichte:
+        jahr, typ, adresse = eintrag[:3]
+        veroeffentlicht = eintrag[3] if len(eintrag) > 3 else ""
         conn.execute(
-            """INSERT INTO bericht (symbol, geschaeftsjahr, typ, adresse, abgerufen_am)
-               VALUES (?, ?, ?, ?, ?)
+            """INSERT INTO bericht (symbol, geschaeftsjahr, typ, adresse, veroeffentlicht, abgerufen_am)
+               VALUES (?, ?, ?, ?, ?, ?)
                ON CONFLICT(symbol, geschaeftsjahr, typ) DO UPDATE SET
-                 adresse=excluded.adresse, abgerufen_am=excluded.abgerufen_am""",
-            (symbol, jahr, typ, adresse, jetzt))
+                 adresse=excluded.adresse, abgerufen_am=excluded.abgerufen_am,
+                 veroeffentlicht=COALESCE(NULLIF(excluded.veroeffentlicht, ''), bericht.veroeffentlicht)""",
+            (symbol, jahr, typ, adresse, veroeffentlicht, jetzt))
     conn.commit()
 
 
 def berichte(conn, symbol, max_alter_h=30 * 24):
     """The stored filing list, but only while it is young enough to trust."""
     rows = conn.execute(
-        "SELECT geschaeftsjahr, typ, adresse, abgerufen_am FROM bericht WHERE symbol = ?",
+        "SELECT geschaeftsjahr, typ, adresse, veroeffentlicht, abgerufen_am FROM bericht WHERE symbol = ?",
         (symbol,)).fetchall()
     if not rows or any(_alter(row["abgerufen_am"]) > max_alter_h for row in rows):
         return []
-    return [(row["geschaeftsjahr"], row["typ"], row["adresse"]) for row in rows]
+    return [(row["geschaeftsjahr"], row["typ"], row["adresse"], row["veroeffentlicht"] or "")
+            for row in rows]
 
 
 def werte_schreiben(conn, symbol, abschnitte, quelle=None, waehrung=None):
