@@ -8,8 +8,8 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from time import time
-from urllib.parse import parse_qs, urlsplit
 from urllib.error import HTTPError, URLError
+from urllib.parse import parse_qs, urlsplit
 
 import yfinance as yf
 from filing_statements import merge_filings
@@ -34,10 +34,10 @@ def finite(value):
 
 def history_rows(frame):
     rows = []
-    for date, row in frame.iterrows():
+    for tag, row in frame.iterrows():
         close = finite(row.get("Close"))
         if close is not None and close > 0:
-            rows.append([date.strftime("%Y-%m-%d"), close, finite(row.get("Adj Close")),
+            rows.append([tag.strftime("%Y-%m-%d"), close, finite(row.get("Adj Close")),
                          finite(row.get("Dividends"))])
     return rows
 
@@ -48,11 +48,11 @@ def statement_key(key):
 
 def statement_rows(frame):
     result = {}
-    for date in sorted(frame.columns):
-        values = {statement_key(key): finite(value) for key, value in frame[date].items()}
+    for tag in sorted(frame.columns):
+        values = {statement_key(key): finite(value) for key, value in frame[tag].items()}
         present = {key: value for key, value in values.items() if value is not None}
         if present:
-            result[date.strftime("%Y-%m-%d")] = present
+            result[tag.strftime("%Y-%m-%d")] = present
     return result
 
 
@@ -190,7 +190,7 @@ def nas_rows(entries):
 def price_jumps(rows):
     # Flag large moves between nearby observations for verification. The
     # magnitude alone cannot distinguish a split from a genuine market move.
-    return [(previous, current) for previous, current in zip(rows, rows[1:])
+    return [(previous, current) for previous, current in zip(rows, rows[1:], strict=False)
             if not 1 / 1.4 < current[1] / previous[1] < 1.4
             and date.fromisoformat(current[0]) - date.fromisoformat(previous[0]) <= timedelta(days=7)]
 
@@ -406,7 +406,7 @@ class Handler(BaseHTTPRequestHandler):
         ende = html.find(b">", start) if start >= 0 else -1
         if start < 0 or ende < 0:
             return html
-        einspiel = ("<script>window.AKT_BASE_PATH=%s</script>" % json.dumps(self.base_path)).encode()
+        einspiel = (f"<script>window.AKT_BASE_PATH={json.dumps(self.base_path)}</script>").encode()
         return html[:ende + 1] + einspiel + html[ende + 1:]
 
     def reply(self, status, content, content_type):

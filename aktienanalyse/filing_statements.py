@@ -173,9 +173,9 @@ def add_cumulative_quarters(candidates):
         if tag in INCOME and 70 <= days <= 385:
             cumulative[start, currency, tag].append((end, days, result))
     derived = {}
-    for (start, currency, tag), entries in cumulative.items():
+    for (_start, currency, tag), entries in cumulative.items():
         entries.sort()
-        for (before_end, before_days, before), (end, days, after) in zip(entries, entries[1:]):
+        for (before_end, before_days, before), (end, days, after) in zip(entries, entries[1:], strict=False):
             if not 70 <= days - before_days <= 110:
                 continue
             quarter_start = (date.fromisoformat(before_end) + timedelta(days=1)).isoformat()

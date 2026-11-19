@@ -1,10 +1,10 @@
 """Test the NAS HTTP contract and provider selection without network access."""
 
+import json
+import unittest
 from contextlib import contextmanager
 from datetime import date
 from io import BytesIO
-import json
-import unittest
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit

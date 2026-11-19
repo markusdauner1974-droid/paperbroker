@@ -151,7 +151,7 @@ def observed_split_bases(facts, cutoff):
         comparable = sorted((filed, accession, count, rows[(filed, accession, EPS_TAG)])
                             for (filed, accession, tag), count in rows.items()
                             if tag == SHARES_TAG and count > 0 and (filed, accession, EPS_TAG) in rows)
-        for before, after in zip(comparable, comparable[1:]):
+        for before, after in zip(comparable, comparable[1:], strict=False):
             old_date, _, old_shares, old_eps = before
             new_date, _, new_shares, new_eps = after
             if old_date == new_date or min(abs(old_eps), abs(new_eps)) < .05:
@@ -210,7 +210,7 @@ def parse_statements(payload, cutoff, q4_release=None):
             last_end = first_three[-1][0]
             if (start == first_start and 72 <= (end - last_end).days <= 110 and
                     all(s == prev + timedelta(days=1)
-                        for (prev, _, _), (_, s, _) in zip(first_three, first_three[1:]))):
+                        for (prev, _, _), (_, s, _) in zip(first_three, first_three[1:], strict=False))):
                 quarterly[key][end] = (last_end + timedelta(days=1),
                                        amount - sum(v for _, _, v in first_three))
     quarter_dates = set(quarterly["totalrevenue"]) | set(quarterly["netincome"])
@@ -269,7 +269,7 @@ def release_eps(html, end):
                            for label in labels)):
             continue
         eps_section = False
-        for row, label in zip((r for r in rows if r), labels):
+        for row, label in zip((r for r in rows if r), labels, strict=False):
             if label not in ("basic", "diluted"):
                 eps_section = label in ("earnings per share", "earnings per common share",
                                         "net income per share", "net loss per share")
@@ -301,7 +301,8 @@ def find_q4_release(cik, end, cutoff, day):
         return None
     candidates = []
     for accession, form, day_filed, items in zip(*(recent.get(key, ()) for key in
-                                                  ("accessionNumber", "form", "filingDate", "items"))):
+                                                  ("accessionNumber", "form", "filingDate", "items")),
+                                                  strict=False):
         if form not in ("8-K", "8-K/A") or "2.02" not in re.split(r"\s*,\s*", (items or "").strip()):
             continue
         try:

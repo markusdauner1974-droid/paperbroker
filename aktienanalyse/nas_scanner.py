@@ -1,5 +1,6 @@
 """Read the NAS scanner's published stock snapshots."""
 
+import json
 import os
 import sys
 from getpass import getpass
@@ -8,10 +9,12 @@ from threading import Lock
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlsplit
 from urllib.request import (
-    HTTPCookieProcessor, HTTPRedirectHandler, ProxyHandler, Request, build_opener,
+    HTTPCookieProcessor,
+    HTTPRedirectHandler,
+    ProxyHandler,
+    Request,
+    build_opener,
 )
-import json
-
 
 SECRET_FILE = "/run/secrets/nas_password"
 PASSWORD_ENV = "AKTIENANALYSE_NAS_PASSWORD"
@@ -173,7 +176,9 @@ class NasScanner:
             if error.code in (401, 403):
                 return {"status": "signed_out", "message": "NAS-Sitzung abgelaufen. Aktienanalyse neu starten und erneut anmelden."}
             if error.code == 404:
-                return {"status": "missing", "message": "Für diesen Ticker fehlt ein NAS-Snapshot oder die NAS-Version unterstützt diese API nicht."}
+                return {"status": "missing",
+                        "message": "Für diesen Ticker fehlt ein NAS-Snapshot oder die NAS-Version "
+                                   "unterstützt diese API nicht."}
             raise
         if payload.get("symbol") != symbol:
             raise ValueError("Der Snapshot gehört zu einem anderen Ticker.")

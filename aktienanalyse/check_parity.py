@@ -3,15 +3,14 @@
 
 import argparse
 import json
-from pathlib import Path
 import re
 import subprocess
+from pathlib import Path
 from tempfile import TemporaryDirectory
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
-
 
 ROOT = Path(__file__).resolve().parent
 REFERENCE = "https://aktie.traderfox.com/visualizations/US0378331005/DI/apple"

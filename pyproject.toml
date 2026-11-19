@@ -7,14 +7,6 @@ build-backend = "setuptools.build_meta"
 [tool.ruff]
 line-length = 140
 target-version = "py313"
-# aktienanalyse/ ist gelieferter Fremdcode (ZIP von Markus, Stand 18.11.2026) und
-# wird unveraendert betrieben, weil die Vereinbarung "Fachlogik unveraendert"
-# lautet. Die 15 Befunde dort sind Stil: Importreihenfolge, zip() ohne strict=,
-# eine zu lange Zeile, ein ungenutzter Schleifenzaehler. Sie zu "beheben" waere
-# eine Verhaltensaenderung - zip(strict=True) wirft bei ungleichen Laengen,
-# wo bisher still abgeschnitten wurde. Der Ordner bleibt deshalb aussen vor;
-# eigener Code (paperbroker/) wird weiter voll geprueft.
-extend-exclude = ["aktienanalyse"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B"]
