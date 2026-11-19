@@ -82,7 +82,13 @@ def document_files(payload):
         if not members or len(members) > 12 or sum(item.file_size for item in members) > 2 * SIZE_LIMIT:
             return
         for member in members:
-            yield z.read(member)
+            # The declared file_size is a claim made by the archive. Read with a cap
+            # so a member that lies cannot expand into memory unbounded.
+            with z.open(member) as handle:
+                data = handle.read(SIZE_LIMIT + 1)
+            if len(data) > SIZE_LIMIT:
+                return
+            yield data
 
 
 def number(element):

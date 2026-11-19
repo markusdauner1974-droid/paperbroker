@@ -62,9 +62,11 @@ The button "Aktien-Qualität" stands in the funnel's button row unconditionally:
 would hide exactly the state the user needs to know about. Two ways in, one thing: the button and
 the address `/qualitaet/`.
 
-One optional source: `AKTIENANALYSE_NAS_URL` / `AKTIENANALYSE_NAS_PASSWORD` (the password is also
-read from `/run/secrets/nas_password` and never appears in a log line, an output or a start
-message). Without them the analysis answers from Yahoo Finance and says so in the source line; the
+One optional source: `AKTIENANALYSE_NAS_URL` / `AKTIENANALYSE_NAS_PASSWORD`, both as environment
+variables of this service — that is the only channel this stack offers for them, and it means the
+password is readable in `docker inspect` and in the stack file. The delivered code still reads
+`/run/secrets/nas_password` first if a deployment mounts it, but nothing mounts it here. The
+password never appears in a log line, an output or a start message. Without them the analysis answers from Yahoo Finance and says so in the source line; the
 page itself never depends on them. `yfinance` and `beautifulsoup4` therefore became dependencies of
 this program (`requirements.txt`, `setup.py`) — the price of one process instead of two.
 

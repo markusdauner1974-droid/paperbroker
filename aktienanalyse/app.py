@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from threading import Lock
 from time import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
@@ -64,9 +65,35 @@ def load_history(ticker, period):
     return rows
 
 
-@lru_cache(maxsize=96)
+_HISTORY_GUARD = Lock()
+_HISTORY_LOCKS = {}
+_HISTORY = {}
+HISTORY_PLACES = 96
+
+
 def prices(symbol, bucket):
-    return load_history(yf.Ticker(symbol), "max")
+    """The whole price series of one ticker, computed once per bucket.
+
+    lru_cache alone does not coalesce concurrent cold calls: eight requests for the
+    same ticker would each start their own download. A lock per ticker means the
+    first one fetches and the rest wait for its result.
+    """
+    key = (symbol, bucket)
+    with _HISTORY_GUARD:
+        if key in _HISTORY:
+            return _HISTORY[key]
+        lock = _HISTORY_LOCKS.setdefault(key, Lock())
+    with lock:
+        with _HISTORY_GUARD:
+            if key in _HISTORY:
+                return _HISTORY[key]
+        rows = load_history(yf.Ticker(symbol), "max")
+        with _HISTORY_GUARD:
+            if len(_HISTORY) >= HISTORY_PLACES:
+                _HISTORY.pop(next(iter(_HISTORY)))
+            _HISTORY[key] = rows
+            _HISTORY_LOCKS.pop(key, None)
+        return rows
 
 
 def load_statements(ticker):
@@ -142,7 +169,12 @@ def search(query, nas=None):
         matches = []
         seen = set()
         nas_query = SAP["symbol"] if fallback else query
-        for row in nas.search(nas_query):
+        try:
+            rows = nas.search(nas_query)
+        except (URLError, OSError, ValueError, EOFError):
+            # A failing scanner must not take the search down: fall through to Yahoo.
+            rows = []
+        for row in rows:
             symbol = row.get("symbol", "") if isinstance(row, dict) else ""
             if (not isinstance(symbol, str) or not SYMBOL.fullmatch(symbol) or symbol in seen
                     or row.get("industry") == "Exchange Traded Fund"):
@@ -406,8 +438,11 @@ class Handler(BaseHTTPRequestHandler):
         ende = html.find(b">", start) if start >= 0 else -1
         if start < 0 or ende < 0:
             return html
-        einspiel = (f"<script>window.AKT_BASE_PATH={json.dumps(self.base_path)}</script>").encode()
-        return html[:ende + 1] + einspiel + html[ende + 1:]
+        # json.dumps leaves "</" alone, so a base path carrying "</script>" would end
+        # the block early. Escaping "<" as \u003c is the same string to JavaScript.
+        escaped = json.dumps(self.base_path).replace("<", "\\u003c")
+        injection = (f"<script>window.AKT_BASE_PATH={escaped}</script>").encode()
+        return html[:ende + 1] + injection + html[ende + 1:]
 
     def reply(self, status, content, content_type):
         self.send_response(status)
@@ -554,7 +589,7 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser(description="Lokale Aktienanalyse starten.")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--port", type=int, default=8766)
     parser.add_argument("--nas", metavar="URL",
                         help="Stock-Scanner-Adresse im Heimnetz "
                              "(Standard: AKTIENANALYSE_NAS_URL oder http://192.168.178.10:8089)")
@@ -586,7 +621,9 @@ def main():
             nas.connect()
             print("NAS-Datenquelle verbunden.", flush=True)
         except (URLError, ValueError, OSError, EOFError) as error:
-            parser.exit(1, f"NAS-Verbindung fehlgeschlagen: {error}\n")
+            # The scanner is optional: a failed sign-in must not stop the service.
+            print(f"NAS-Verbindung fehlgeschlagen ({error}). Es geht ohne NAS weiter.",
+                  flush=True)
 
     with ThreadingHTTPServer((args.host, args.port), Handler) as server:
         print(f"Aktienanalyse öffnen unter http://{args.host}:{args.port}{base_path}/", flush=True)

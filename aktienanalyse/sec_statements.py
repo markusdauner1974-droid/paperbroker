@@ -73,7 +73,10 @@ def request_json(url):
     return json.loads(request_bytes(url, "application/json"))
 
 
-@lru_cache(maxsize=128)
+# A filing page can be several megabytes, and this cache keeps the bodies, not their
+# size. 128 places would mean hundreds of megabytes at rest; a handful is enough for
+# the pages one analysis touches twice.
+@lru_cache(maxsize=12)
 def request_html(url):
     return request_bytes(url, "text/html")
 

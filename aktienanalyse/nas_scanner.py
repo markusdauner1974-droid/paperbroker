@@ -70,7 +70,12 @@ class NasScanner:
         data = json.dumps(body).encode() if body is not None else None
         req = Request(self.origin + "/api/v1/" + path, data=data,
                       headers={"Content-Type": "application/json"} if data else {})
-        with self.lock, self.opener.open(req, timeout=8) as response:
+        # The lock guards the opener and its cookie jar, not the body: holding it
+        # across the read would queue every scanner request behind the slowest
+        # response in flight.
+        with self.lock:
+            opened = self.opener.open(req, timeout=8)
+        with opened as response:
             raw = response.read(3_000_001)
         if len(raw) > 3_000_000:
             raise ValueError("Die NAS-Antwort ist zu groß.")

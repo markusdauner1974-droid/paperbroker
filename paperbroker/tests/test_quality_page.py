@@ -147,6 +147,39 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual({"status": "disabled"}, response.get_json())
 
+    def test_a_broken_installation_answers_502_not_a_stack_trace(self):
+        # The page reads json.error; an escaping exception must not become a 500 page.
+        with mock.patch.object(quality, "_akt", side_effect=RuntimeError("broken")):
+            with mock.patch.object(quality, "nas", lambda: None):
+                response = self.client.get("/qualitaet/api/search?q=apple")
+        self.assertEqual(502, response.status_code)
+        self.assertIn("error", response.get_json())
+
+    def test_a_ticker_of_up_to_24_signs_is_accepted(self):
+        # The delivered program allows 24 signs; a narrower rule here would reject
+        # what the standalone entry point serves.
+        akt, scanner, calls = self._with_fakes()
+        with akt, scanner:
+            response = self.client.get(
+                "/qualitaet/api/stock?q=" + "ABCDEFGHIJKLMNOPQRSTUVWX")
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("ABCDEFGHIJKLMNOPQRSTUVWX", calls[0][1][0])
+
+    def test_a_scanner_hit_without_closes_gets_the_yahoo_series(self):
+        # nas_stocks admits tickers with fundamentals but no daily closes; the
+        # delivered dispatcher fills in the Yahoo series, so this one must too.
+        module, _ = _fake(nas_stocks=lambda *a, **k: [{"symbol": "AAPL",
+                                                      "prices": [],
+                                                      "issues": []}])
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: object()):
+            response = self.client.get("/qualitaet/api/stock?q=AAPL")
+        self.assertEqual(200, response.status_code)
+        data = response.get_json()
+        self.assertEqual([[1, 2, 3, 4]], data["prices"], "Yahoo series fills the gap")
+        self.assertEqual("Yahoo Finance", data["price_source"])
+        self.assertEqual(["Keine NAS-Tageskurse für diesen Ticker."], data["issues"])
+
     def test_the_extension_needs_the_nas(self):
         akt, scanner, _ = self._with_fakes()
         with akt, scanner:

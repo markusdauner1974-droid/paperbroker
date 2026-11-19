@@ -28,6 +28,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date
+from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 
@@ -38,7 +39,9 @@ AKT_DIR = Path(__file__).resolve().parents[2] / "aktienanalyse"
 NAS_URL_ENV = "AKTIENANALYSE_NAS_URL"
 PAGE_PATH = "/qualitaet"
 
-SYMBOL = re.compile(r"[A-Z0-9^][A-Z0-9.\-=^]{0,14}")
+# The same pattern the delivered program uses (aktienanalyse/app.py): a narrower
+# one here would reject tickers the standalone entry point happily serves.
+SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
 
 _lock = threading.Lock()
 _module = None
@@ -74,25 +77,34 @@ def nas():
 
     A failed sign-in stops nothing here: the analysis then answers from Yahoo
     Finance, and the source line on the page says so.
+
+    The address is claimed under the lock and the connection is made outside it:
+    a network round trip behind a process-wide mutex would queue every request of
+    the cold start behind the slowest thing in the process. Whoever loses the race
+    answers from Yahoo Finance for that one request and finds the scanner in place
+    on the next.
     """
     global _nas, _nas_tried
     with _lock:
-        if not _nas_tried:
-            _nas_tried = True
-            address = (os.environ.get(NAS_URL_ENV) or "").strip()
-            if address:
-                if str(AKT_DIR) not in sys.path:
-                    sys.path.insert(0, str(AKT_DIR))
-                try:
-                    from nas_scanner import NasScanner
+        if _nas_tried:
+            return _nas
+        _nas_tried = True
+    address = (os.environ.get(NAS_URL_ENV) or "").strip()
+    if not address:
+        return None
+    if str(AKT_DIR) not in sys.path:
+        sys.path.insert(0, str(AKT_DIR))
+    try:
+        from nas_scanner import NasScanner
 
-                    scanner = NasScanner(address)
-                    scanner.connect()
-                    _nas = scanner
-                except (URLError, OSError, ValueError, EOFError) as error:
-                    print(f"NAS source unavailable ({error}). Continuing without NAS.",
-                          flush=True)
-        return _nas
+        scanner = NasScanner(address)
+        scanner.connect()
+    except (URLError, OSError, ValueError, EOFError, HTTPException) as error:
+        print(f"NAS source unavailable ({error}). Continuing without NAS.", flush=True)
+        return None
+    with _lock:
+        _nas = scanner
+    return scanner
 
 
 def page() -> Response:
@@ -138,10 +150,11 @@ def api(name: str):
     Every answer is a complete JSON body built before it is handed to Flask, so
     there is no streaming here and a failure can still become a clean status code.
     """
-    akt = _akt()
-    scanner = nas()
-    bucket = _bucket()
     try:
+        akt = _akt()
+        scanner = nas()
+        bucket = _bucket()
+
         if name == "search":
             text = _query()
             if not 1 <= len(text) <= 100:
@@ -179,7 +192,17 @@ def api(name: str):
             if scanner is not None:
                 cached = akt.nas_stocks(scanner, [symbol], identify=True, bucket=bucket)
                 if cached:
-                    return jsonify(cached[0])
+                    # A ticker can be in the scanner with fundamentals but without
+                    # daily closes. The delivered dispatcher fills in the Yahoo
+                    # series then; without that, the embedded answer would carry an
+                    # empty price list where the standalone one carries a chart.
+                    result = cached[0]
+                    if not result["prices"]:
+                        result.update(prices=akt.prices(symbol, bucket),
+                                      price_source="Yahoo Finance",
+                                      quote_source="Yahoo Finance",
+                                      issues=["Keine NAS-Tageskurse für diesen Ticker."])
+                    return jsonify(result)
                 result = akt.stock(symbol, bucket)
                 return jsonify({**result,
                                 "issues": ["Keine NAS-Tageskurse für diesen Ticker.",
@@ -255,6 +278,11 @@ def api(name: str):
         error.close()
         return _error(message, 502)
     except (URLError, OSError):
+        return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
+                      "Ticker derzeit keine Daten.", 502)
+    except Exception:
+        # The delivered dispatcher caught everything and answered 502 JSON; the page
+        # reads json.error, so an escaping exception must not become a Flask 500 page.
         return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
                       "Ticker derzeit keine Daten.", 502)
 
