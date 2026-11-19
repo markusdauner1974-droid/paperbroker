@@ -17,6 +17,11 @@
 #                  and the app behaves exactly as if the variables were
 #                  absent (no badge, no exception). The provider is only
 #                  created when URL AND token are both set.
+#   AKTIENANALYSE_NAS_URL / AKTIENANALYSE_NAS_PASSWORD
+#                  NAS scanner (xang), optional. Set = the stock analysis takes
+#                  prices and statements from there; empty = Yahoo Finance.
+#                  The page does not depend on it: /qualitaet/ and the button on
+#                  the funnel page work either way.
 #   FINNHUB_API_KEY
 #                  key for Finnhub's earnings calendar, used by
 #                  GET /api/v1/gap-spreads to find each title's NEXT report
@@ -51,6 +56,12 @@ services:
       # Next earnings date for /api/v1/gap-spreads. Empty by default: without a
       # key that endpoint still answers, with no_next_earnings for each title.
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      # The stock analysis runs IN THE SAME process (paperbroker/routes/quality.py)
+      # and is reachable under /qualitaet/. No second service, no image of its own.
+      # The NAS scanner (xang) is optional; without it the analysis answers from
+      # Yahoo Finance and says so in the source line.
+      - AKTIENANALYSE_NAS_URL=${AKTIENANALYSE_NAS_URL:-}
+      - AKTIENANALYSE_NAS_PASSWORD=${AKTIENANALYSE_NAS_PASSWORD:-}
 
 volumes:
   cboe_cache:

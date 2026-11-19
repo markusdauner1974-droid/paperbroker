@@ -1,3 +1,7 @@
 arrow>=0.10.0
 requests
 flask>=3.1
+# Die Aktienanalyse laeuft im selben Prozess (paperbroker/routes/quality.py):
+# ihre Abhaengigkeiten gehoeren deshalb hierher, nicht in ein eigenes Abbild.
+yfinance>=1.4.1,<2
+beautifulsoup4>=4.11,<5

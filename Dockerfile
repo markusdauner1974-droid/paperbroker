@@ -1,6 +1,7 @@
 # paperbroker options screener - QNAP deployment (Phase 5)
-# python:3.13-slim + pip (3 deps: arrow, requests, flask - judge decision:
-# no uv second tooling path, no multi-stage complexity for a LAN service)
+# python:3.13-slim + pip (judge decision: no uv second tooling path, no
+# multi-stage complexity for a LAN service). arrow, requests, flask, and since the
+# stock analysis runs in this process: yfinance and beautifulsoup4.
 FROM python:3.13-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -13,6 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY paperbroker ./paperbroker
 COPY setup.py ./
+# The stock analysis lives in aktienanalyse/ and runs in this same process
+# (paperbroker/routes/quality.py resolves it next to the package). Without this
+# line the image builds, the healthcheck stays green, and /qualitaet/ answers 500
+# with FileNotFoundError.
+COPY aktienanalyse ./aktienanalyse
 
 # non-root (CWE-250): app user owns /app/.cache so the named volume
 # mounted there inherits usable ownership

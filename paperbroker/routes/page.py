@@ -234,6 +234,12 @@ def index():
         # what its table is called come from one server-side table.
         scan=scan_view_data(),
         feed_note=t("page_route.feed_note.cboe"),
+        # Der eingebettete Baustein "Aktienanalyse" (/qualitaet/): der Knopf steht
+        # immer auf der Seite. Ist der Baustein nicht erreichbar, sagt das die
+        # Seite dort selbst (503 mit einem Satz) - ein fehlender Knopf haette
+        # denselben Zustand nur verschwiegen, und der Mensch sucht dann den Fehler
+        # bei sich statt beim Dienst.
+        stock_quality_url="/qualitaet/",
         # The script's texts travel as one JSON block: one source, no second
         # catalogue file in JavaScript. The block also names the plural rule.
         js_i18n=texts.block("js"),

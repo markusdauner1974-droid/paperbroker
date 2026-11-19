@@ -41,6 +41,49 @@ merge only when both check sources - check runs and commit statuses - were green
 | D13 | the spread table shows what the position costs | #54 |
 | D14 | the page can show put spreads, not only calls | #55 |
 
+### The stock analysis as an embedded block (2026-11-19)
+
+`aktienanalyse/` is a second, self-contained application in the repository: a plain `http.server`
+on port 8766 that shows one share (quote, four checks with fifteen criteria each, seasonality,
+fair value, statements, news) and reads its data from Yahoo Finance, SEC EDGAR and — optional —
+the NAS scanner. It comes from Markus as a ZIP and is committed as a base state of its own; the
+integration is deliberately kept apart from it in the history.
+
+The analysis is not a second service. `paperbroker/routes/quality.py` loads the delivered program
+and serves it under `/qualitaet/` **in the same process**: one container, one port, one source tree,
+no image of its own and no proxy hop. `api()` is the dispatcher the delivered `app.py` used to carry
+— the addresses (`/qualitaet/api/stock`, `…/statements`, `…/stock-batch`, `…/compare`, `…/xang`)
+stay the same, the arithmetic stays where it was delivered. The page is delivered the path prefix
+it runs under (`window.AKT_BASE_PATH`), so its own requests find the right place. The delivered
+program still starts on its own (`python3 aktienanalyse/app.py`, port 8766, exactly as before) —
+the same files, a different entry point.
+
+The button "Aktien-Qualität" stands in the funnel's button row unconditionally: a missing button
+would hide exactly the state the user needs to know about. Two ways in, one thing: the button and
+the address `/qualitaet/`.
+
+One optional source: `AKTIENANALYSE_NAS_URL` / `AKTIENANALYSE_NAS_PASSWORD`, both as environment
+variables of this service — that is the only channel this stack offers for them, and it means the
+password is readable in `docker inspect` and in the stack file. The delivered code still reads
+`/run/secrets/nas_password` first if a deployment mounts it, but nothing mounts it here. The
+password never appears in a log line, an output or a start message. Without them the analysis answers from Yahoo Finance and says so in the source line; the
+page itself never depends on them. `yfinance` and `beautifulsoup4` therefore became dependencies of
+this program (`requirements.txt`, `setup.py`) — the price of one process instead of two.
+
+The price of one process instead of two: the analysis shares this process. There is no isolation any
+more — memory is shared, and a slow external source (Yahoo Finance, SEC EDGAR, the Xang scanner)
+occupies a request thread for as long as its download takes, because no deadline is imposed. The
+server is the threaded development server, so other routes are not blocked by that, but nothing caps
+how many such calls run at once. Accepted for a single-user LAN dashboard; a bounded worker pool was
+rejected because a pool that fills with stuck downloads starves even the fast paths. `prices()` is
+single-flight per ticker, so N concurrent requests for one symbol trigger one download.
+
+The analysis logic is unchanged: criteria, formulas, thresholds and structure are byte-identical to
+the delivered stand. Evidence: `check_nas.py` (15 tests) is green, and `check_parity.py --port 8766`
+reports the same comparison as before the integration (quality 8–13/15, dividends suspended,
+growth 10–14/15, robustness 14/15) with the four balance-sheet figures matching the original filing
+exactly.
+
 ### Open after D14
 
 * **No mobile view yet.** The spread table carries twelve columns and has no overflow

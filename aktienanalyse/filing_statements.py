@@ -1,0 +1,312 @@
+"""Discover filings by identifier and read their original Inline XBRL tags."""
+
+import json
+import math
+import os
+import re
+from collections import defaultdict
+from datetime import date, timedelta
+from decimal import Decimal, InvalidOperation
+from functools import lru_cache
+from io import BytesIO
+from time import time
+from urllib.parse import urlencode, urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener
+from xml.etree import ElementTree as ET
+from zipfile import BadZipFile, ZipFile, is_zipfile
+
+API = "https://api.financialreports.eu"
+CDN = "cdn.financialreports.eu"
+SIZE_LIMIT = 24 * 1024 * 1024
+IX = "{http://www.xbrl.org/2013/inlineXBRL}"
+INSTANCE = "{http://www.xbrl.org/2003/instance}"
+EU_MARKETS = {
+    "DE": "DE", "F": "DE", "BE": "DE", "DU": "DE", "HM": "DE", "MU": "DE",
+    "PA": "FR", "AS": "NL", "BR": "BE", "MC": "ES", "MI": "IT", "VI": "AT",
+    "HE": "FI", "ST": "SE", "CO": "DK", "OL": "NO", "LS": "PT", "IR": "IE",
+    "L": "GB", "SW": "CH", "WA": "PL", "PR": "CZ", "BD": "HU", "AT": "GR",
+}
+INCOME = {
+    "Revenue": "totalrevenue",
+    "GrossProfit": "grossprofit",
+    "ProfitLossFromOperatingActivities": "operatingincome",
+    "ProfitLossAttributableToOwnersOfParent": "netincome",
+    "ProfitLossBeforeTax": "pretaxincome",
+    "IncomeTaxExpenseContinuingOperations": "taxprovision",
+}
+BALANCE = {
+    "Assets": "totalassets", "EquityAttributableToOwnersOfParent": "stockholdersequity",
+    "CurrentAssets": "currentassets", "CurrentLiabilities": "currentliabilities",
+    "CashAndCashEquivalents": "cashandcashequivalents",
+}
+CASH = {"CashFlowsFromUsedInOperatingActivities": "operatingcashflow"}
+
+
+class NoRedirect(HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+OPENER = build_opener(NoRedirect())
+
+
+def read_bytes(url, key=None):
+    headers = {"User-Agent": "Aktienanalyse/12", "Accept": "application/json" if key else "*/*"}
+    if key:
+        headers["X-API-Key"] = key
+    with OPENER.open(Request(url, headers=headers), timeout=6) as response:
+        payload = response.read(SIZE_LIMIT + 1)
+    if len(payload) > SIZE_LIMIT:
+        raise ValueError("Datei zu groß")
+    return payload
+
+
+def listing(path, **query):
+    key = os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip()
+    url = f"{API}/{path}/?{urlencode(query)}"
+    result = json.loads(read_bytes(url, key))
+    if isinstance(result, dict):
+        result = result.get("results")
+    return result if isinstance(result, list) else []
+
+
+def document_files(payload):
+    archive = BytesIO(payload)
+    if not is_zipfile(archive):
+        yield payload
+        return
+    with ZipFile(archive) as z:
+        members = [item for item in z.infolist()
+                   if item.filename.lower().endswith((".xhtml", ".html", ".htm"))
+                   and item.file_size <= SIZE_LIMIT]
+        if not members or len(members) > 12 or sum(item.file_size for item in members) > 2 * SIZE_LIMIT:
+            return
+        for member in members:
+            # The declared file_size is a claim made by the archive. Read with a cap
+            # so a member that lies cannot expand into memory unbounded.
+            with z.open(member) as handle:
+                data = handle.read(SIZE_LIMIT + 1)
+            if len(data) > SIZE_LIMIT:
+                return
+            yield data
+
+
+def number(element):
+    fmt = element.get("format", "").split(":")[-1]
+    text = "".join(element.itertext()).strip().replace("−", "-")
+    text = re.sub(r"[\s\u00a0\u202f]", "", text)
+    if fmt in ("numcommadecimal", "num-comma-decimal"):
+        text = text.replace(".", "").replace(",", ".")
+    elif fmt in ("numdotdecimal", "num-dot-decimal"):
+        text = text.replace(",", "")
+    elif fmt == "fixed-zero":
+        text = "0"
+    elif fmt or "," in text:
+        return None
+    if not re.fullmatch(r"-?[0-9]+(?:\.[0-9]+)?", text):
+        return None
+    try:
+        scale = int(element.get("scale", "0"))
+        if not -12 <= scale <= 12:
+            return None
+        value = Decimal(text).scaleb(scale)
+        return -value if element.get("sign") == "-" else value
+    except (ValueError, InvalidOperation):
+        return None
+
+
+def report_facts(payload, entity, cutoff):
+    # Dimensions are intentionally excluded. They may describe a segment or share class.
+    facts = defaultdict(set)
+    for document in document_files(payload):
+        if re.search(rb"<!ENTITY\b", document, re.I):
+            continue
+        try:
+            parser = ET.iterparse(BytesIO(document), events=("start-ns", "end"))
+            namespaces = defaultdict(set)
+            for event, value in parser:
+                if event == "start-ns":
+                    namespaces[value[0]].add(value[1])
+            root = parser.root
+        except ET.ParseError:
+            continue
+        ifrs = {prefix for prefix, urls in namespaces.items() if len(urls) == 1
+                and re.fullmatch(r"https?://(?:xbrl\.ifrs\.org|xbrl\.iasb\.org)/.*/ifrs-full",
+                                 next(iter(urls)))}
+        units = {}
+        for unit in root.iter(INSTANCE + "unit"):
+            if len(unit) == 1 and unit[0].tag == INSTANCE + "measure":
+                prefix, _, currency = (unit[0].text or "").strip().partition(":")
+                if namespaces.get(prefix) == {"http://www.xbrl.org/2003/iso4217"} and re.fullmatch("[A-Z]{3}", currency):
+                    units[unit.get("id")] = currency
+        contexts = {}
+        for context in root.iter(INSTANCE + "context"):
+            identifier = context.findtext(f"{INSTANCE}entity/{INSTANCE}identifier", "").strip()
+            if identifier != entity or any(node.tag in (INSTANCE + "segment", INSTANCE + "scenario")
+                                           for node in context.iter()):
+                continue
+            period = context.find(INSTANCE + "period")
+            if period is None:
+                continue
+            start = period.findtext(INSTANCE + "startDate")
+            end = period.findtext(INSTANCE + "endDate") or period.findtext(INSTANCE + "instant")
+            try:
+                days = (date.fromisoformat(end) - date.fromisoformat(start)).days + 1 if start else 0
+                if date.fromisoformat(end) > cutoff or days < 0:
+                    continue
+            except (TypeError, ValueError):
+                continue
+            contexts[context.get("id")] = (start, end, days)
+        for item in root.iter(IX + "nonFraction"):
+            prefix, _, tag = item.get("name", "").partition(":")
+            ctx = contexts.get(item.get("contextRef"))
+            currency = units.get(item.get("unitRef"))
+            if (prefix not in ifrs or not ctx or not currency or item.get("continuedAt")
+                    or item.get("{http://www.w3.org/2001/XMLSchema-instance}nil") in ("true", "1")):
+                continue
+            start, end, days = ctx
+            if (days == 0 and tag not in BALANCE) or (days and tag not in (INCOME | CASH)):
+                continue
+            value = number(item)
+            if value is not None:
+                facts[(start, end, days, currency, tag)].add(value)
+    return {key: values.pop() for key, values in facts.items() if len(values) == 1}
+
+
+def add_cumulative_quarters(candidates):
+    cumulative = defaultdict(list)
+    for (start, end, days, currency, tag), result in candidates.items():
+        if tag in INCOME and 70 <= days <= 385:
+            cumulative[start, currency, tag].append((end, days, result))
+    derived = {}
+    for (_start, currency, tag), entries in cumulative.items():
+        entries.sort()
+        for (before_end, before_days, before), (end, days, after) in zip(entries, entries[1:], strict=False):
+            if not 70 <= days - before_days <= 110:
+                continue
+            quarter_start = (date.fromisoformat(before_end) + timedelta(days=1)).isoformat()
+            key = (quarter_start, end, days - before_days, currency, tag)
+            if key in candidates:
+                continue
+            filed = max(before[0], after[0])
+            derived[key] = (filed, after[1], after[2] - before[2], before[1])
+    return derived
+
+
+def tagged_statements(documents, entity, cutoff, expected_currency):
+    candidates = {}
+    for filed, url, payload in documents:
+        for fact, value in report_facts(payload, entity, cutoff).items():
+            if fact not in candidates:
+                candidates[fact] = (filed, url, value, None)
+    candidates.update(add_cumulative_quarters(candidates))
+    currencies = {fact[3] for fact in candidates}
+    currency = expected_currency if expected_currency else (next(iter(currencies)) if len(currencies) == 1 else None)
+    if not currency:
+        return {}, None
+
+    rows = {"income": {}, "quarterly": {}, "balance": {}, "cash": {}, "provenance": {}}
+    periods = defaultdict(set)
+    for start, end, days, unit, tag in candidates:
+        if unit == currency and tag == "Revenue" and (70 <= days <= 110 or 345 <= days <= 385):
+            periods[end, "income" if days >= 345 else "quarterly"].add(start)
+    annual_ends = {end for (end, section), starts in periods.items() if section == "income" and len(starts) == 1}
+    for (start, end, days, unit, tag), (filed, url, value, previous_url) in candidates.items():
+        if unit != currency:
+            continue
+        section = "income" if 345 <= days <= 385 else "quarterly" if 70 <= days <= 110 else None
+        if tag in BALANCE and not start and end in annual_ends:
+            section, key = "balance", BALANCE[tag]
+        elif section and periods[end, section] == {start}:
+            if tag in CASH and section == "income":
+                section, key = "cash", CASH[tag]
+            elif tag in INCOME:
+                key = INCOME[tag]
+            else:
+                continue
+        else:
+            continue
+        amount = float(value)
+        if not math.isfinite(amount):
+            continue
+        rows[section].setdefault(end, {})[key] = amount
+        rows["provenance"].setdefault(section, {}).setdefault(end, {})[key] = {
+            "source": "ixbrl_original", "url": url, "filed": filed,
+            "unit": unit, "period_start": start, "period_end": end,
+        }
+        if previous_url:
+            rows["provenance"][section][end][key]["previous_url"] = previous_url
+    return ({key: value for key, value in rows.items() if value}, currency) if rows["provenance"] else ({}, None)
+
+
+def valid_link(url, hostname):
+    if not isinstance(url, str):
+        return False
+    parsed = urlsplit(url)
+    return parsed.scheme == "https" and parsed.netloc == hostname and not parsed.fragment
+
+
+@lru_cache(maxsize=24)
+def filing_statements(symbol, cutoff, currency, bucket, isin=None):
+    """Look up a unique issuer; load only its published, tagged original files."""
+    if not os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip():
+        return {}, None
+    ticker, _, market = symbol.rpartition(".")
+    country = EU_MARKETS.get(market)
+    if not country:
+        return {}, None
+    try:
+        identity = {"isin": isin} if isin and re.fullmatch(r"[A-Z]{2}[A-Z0-9]{9}[0-9]", isin) else {
+            "ticker": f"{ticker}.{country}"}
+        companies = listing("companies", **identity, page_size=2)
+        if len(companies) != 1:
+            return {}, None
+        company = companies[0]
+        company_id, lei = company.get("id"), company.get("lei", "")
+        if type(company_id) is not int or not re.fullmatch(r"[A-Z0-9]{20}", lei or ""):
+            return {}, None
+        if "isin" in identity and isin not in company.get("isins", ()):
+            return {}, None
+        filings = listing("filings", company=company_id, extensions="ZIP,XBRI,XHTML",
+                          ordering="-release_datetime",
+                          release_datetime_to=cutoff + "T23:59:59Z", page_size=30, view="full")
+    except (OSError, ValueError, TypeError, AttributeError):
+        return {}, None
+    documents = []
+    seen = set()
+    attempts = 0
+    for item in filings:
+        if len(documents) >= 5 or attempts >= 7:
+            break
+        try:
+            filed = date.fromisoformat(item["release_datetime"][:10])
+            url = item.get("document") or item.get("document_url")
+            issuer = item.get("company", {}).get("id")
+            if (filed > date.fromisoformat(cutoff) or issuer != company_id
+                    or not valid_link(url, CDN) or not urlsplit(url).path.startswith("/financialreports/media/filings/")):
+                continue
+            tag = item.get("period_ending_date") or url
+            if tag in seen:
+                continue
+            attempts += 1
+            documents.append((filed.isoformat(), url, read_bytes(url)))
+            seen.add(tag)
+        except (OSError, ValueError, TypeError, KeyError, AttributeError):
+            continue
+    try:
+        return tagged_statements(documents, lei, date.fromisoformat(cutoff), currency)
+    except (BadZipFile, OSError, RuntimeError, ValueError):
+        return {}, None
+
+
+def merge_filings(symbol, cutoff, statements, currency, isin=None):
+    tagged, report_currency = filing_statements(symbol, cutoff, currency, int(time() // 600), isin)
+    if not tagged:
+        return statements, currency, False
+    result = dict(statements) if currency == report_currency else {}
+    for section in ("income", "quarterly", "balance", "cash"):
+        result[section] = dict(result.get(section, {}))
+        for day, row in tagged.get(section, {}).items():
+            result[section][day] = {**result[section].get(day, {}), **row}
+    result["provenance"] = tagged["provenance"]
+    return result, report_currency, True

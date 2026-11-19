@@ -360,6 +360,12 @@ TEXTS: dict[str, object] = {
     "js.figures.volatility": "Schwankung",
     "js.figures.hit_rate": "Treffer",
     "js.detail.legs_heading": "Beide Legs",
+    # Der Baustein "Aktienanalyse" hinter /qualitaet: Knopf auf der Trichterseite
+    # und die Antwort, wenn der Dienst nicht laeuft.
+    "js.button.stock_quality": "Aktien-Qualität",
+    "quality.unavailable.title": "Aktienanalyse nicht erreichbar",
+    "quality.unavailable.text": "Die Aktienanalyse ist momentan nicht erreichbar. "
+                                "Der Rest des Trichters arbeitet weiter; bitte später erneut versuchen.",
     # Die Zeile eines Beins ist klickbar: sie blendet ihren Strike im Diagramm
     # ein. Der Hinweis steht als Tooltip an der Zeile.
     "js.legs.hint.show": "Strike im Diagramm einblenden",

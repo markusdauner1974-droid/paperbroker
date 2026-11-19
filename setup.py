@@ -17,7 +17,11 @@ setup(name='paperbroker',
             'arrow',
             'requests',
             # B-13: the server imports flask; requirements.txt already had it
-            'flask>=3.1'
+            'flask>=3.1',
+            # Die Aktienanalyse laeuft im selben Prozess (routes/quality.py):
+            # ihre beiden Abhaengigkeiten gehoeren damit hierher.
+            'yfinance>=1.4.1,<2',
+            'beautifulsoup4>=4.11,<5',
         ],
         # B-13: templates/ holds screen.html but is not a python package
         # (no __init__.py), so it needs an explicit data declaration.
