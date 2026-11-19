@@ -1440,6 +1440,12 @@
     var plotH = hoehe - padT - padB;
 
     function x(price) { return plotX + (price - xmin) / (xmax - xmin) * plotW; }
+
+    // Eine senkrechte Haarlinie auf einer krummen Koordinate verteilt der
+    // Browser auf zwei Spalten: sie wird breiter, blasser und wirkt schief.
+    // Auf "ganze Zahl + 0,5" gelegt deckt ein 1-px-Strich genau eine Spalte -
+    // und `crispEdges` schaltet das Glaetten fuer diese Linie ab.
+    function haarX(px) { return Math.round(px) + 0.5; }
     function y(pl) { return plotY + (yhi - pl) / (yhi - ylo) * plotH; }
     function yg(value) { return plotY + (ghi - value) / (ghi - glo) * plotH; }
 
@@ -1573,9 +1579,11 @@
     }
 
     if (detail.spot >= xmin && detail.spot <= xmax) {
+      var xSpot = haarX(x(detail.spot));
       box.appendChild(svgNode('line', {
-        x1: x(detail.spot), y1: plotY, x2: x(detail.spot), y2: plotY + plotH,
-        stroke: 'rgba(250,250,250,.46)', 'stroke-dasharray': '2 4'
+        x1: xSpot, y1: plotY, x2: xSpot, y2: plotY + plotH,
+        stroke: 'rgba(250,250,250,.46)', 'stroke-dasharray': '2 4',
+        'stroke-width': 1, 'shape-rendering': 'crispEdges', class: 'chart-spot-line'
       }));
       var naheRand = x(detail.spot) > plotX + plotW - 78;
       var spotText = svgNode('text', {
@@ -1623,11 +1631,11 @@
     // eine dritte Vokabel. Beschriftet mit der Zahl aus dem Kopf, damit niemand
     // sie suchen muss.
     if (num(detail.breakeven) && detail.breakeven >= xmin && detail.breakeven <= xmax) {
-      var xBe = x(detail.breakeven);
+      var xBe = haarX(x(detail.breakeven));
       box.appendChild(svgNode('line', {
         x1: xBe, y1: plotY, x2: xBe, y2: plotY + plotH,
         stroke: 'rgba(250,250,250,.34)', 'stroke-width': 1,
-        class: 'chart-breakeven-line'
+        'shape-rendering': 'crispEdges', class: 'chart-breakeven-line'
       }));
       var beText = T('js.chart.breakeven', { value: fmt(detail.breakeven, 2) });
       if (num(detail.spot) && Math.abs(xBe - x(detail.spot)) < 96) {
@@ -1653,10 +1661,11 @@
       var seite = leg.side === 'short' ? 'short' : 'long';
       if (!legLinien[seite] || !num(leg.strike)) return;
       if (leg.strike < xmin || leg.strike > xmax) return;
-      var xs = x(leg.strike);
+      var xs = haarX(x(leg.strike));
       box.appendChild(svgNode('line', {
         x1: xs, y1: plotY, x2: xs, y2: plotY + plotH,
-        stroke: 'rgba(250,250,250,.22)', 'stroke-width': 1
+        stroke: 'rgba(250,250,250,.22)', 'stroke-width': 1,
+        'shape-rendering': 'crispEdges'
       }));
       labelOben(xs, T('js.chart.strike.' + seite, { strike: fmt(leg.strike, 2) }),
         'chart-strike chart-strike-' + seite, 'rgba(250,250,250,.62)');
