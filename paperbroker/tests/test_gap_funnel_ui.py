@@ -2024,6 +2024,15 @@ class TestTheHandCalendar(unittest.TestCase):
         self.assertEqual(1, len(linien), "genau eine Break-even-Linie")
         self.assertIsNone(linien[0]["attrs"].get("stroke-dasharray"),
                           "der Break-even ist eine durchgezogene Linie")
+        # Haarlinien stehen auf halben Pixeln und ohne Glaettung: sonst verteilt
+        # der Browser den 1-px-Strich auf zwei Spalten und die Linie wirkt schief.
+        for name in ("chart-breakeven-line", "chart-spot-line"):
+            haarlinie = _by_class(baum, name)
+            self.assertEqual(1, len(haarlinie), name)
+            self.assertEqual(haarlinie[0]["attrs"]["x1"], haarlinie[0]["attrs"]["x2"])
+            self.assertEqual(0.5, round(float(haarlinie[0]["attrs"]["x1"]) % 1, 1),
+                             "x liegt auf einer halben Pixelspalte: " + name)
+            self.assertEqual("crispEdges", haarlinie[0]["attrs"].get("shape-rendering"))
         beschriftung = _by_class(baum, "chart-breakeven")
         self.assertEqual(1, len(beschriftung))
         self.assertEqual("Break-even 8,65", beschriftung[0]["text"])
@@ -2042,6 +2051,12 @@ class TestTheHandCalendar(unittest.TestCase):
         self.assertEqual(1, len(linien), "nur das angeklickte Bein")
         self.assertIn("chart-strike-long", str(linien[0]["cls"]))
         self.assertEqual("Long 10,00", linien[0]["text"])
+        # Die Linie selbst: senkrecht, auf einer halben Pixelspalte, ohne Glaettung.
+        striche = [n for n in _by_tag(mit["detail"]["tree"], "line")
+                   if n["attrs"].get("shape-rendering") == "crispEdges"]
+        self.assertTrue(striche, "die Strike-Linie wird mit crispEdges gezeichnet")
+        for strich in striche:
+            self.assertEqual(strich["attrs"]["x1"], strich["attrs"]["x2"])
 
     def test_both_legs_can_stand_in_the_chart_at_once(self):
         panel = _render(details=[{"status": 200, "body": _detail()}],
