@@ -70,6 +70,14 @@ password never appears in a log line, an output or a start message. Without them
 page itself never depends on them. `yfinance` and `beautifulsoup4` therefore became dependencies of
 this program (`requirements.txt`, `setup.py`) — the price of one process instead of two.
 
+The price of one process instead of two: the analysis shares this process. There is no isolation any
+more — memory is shared, and a slow external source (Yahoo Finance, SEC EDGAR, the Xang scanner)
+occupies a request thread for as long as its download takes, because no deadline is imposed. The
+server is the threaded development server, so other routes are not blocked by that, but nothing caps
+how many such calls run at once. Accepted for a single-user LAN dashboard; a bounded worker pool was
+rejected because a pool that fills with stuck downloads starves even the fast paths. `prices()` is
+single-flight per ticker, so N concurrent requests for one symbol trigger one download.
+
 The analysis logic is unchanged: criteria, formulas, thresholds and structure are byte-identical to
 the delivered stand. Evidence: `check_nas.py` (15 tests) is green, and `check_parity.py --port 8766`
 reports the same comparison as before the integration (quality 8–13/15, dividends suspended,

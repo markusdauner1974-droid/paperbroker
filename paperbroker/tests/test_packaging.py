@@ -79,3 +79,15 @@ def test_every_shipped_asset_is_covered_by_package_data():
     uncovered = [rel for rel in shipped
                  if not any(fnmatch.fnmatch(rel, pat) for pat in patterns)]
     assert uncovered == [], f"shipped but not covered by package_data: {uncovered}"
+
+
+# The image is what actually runs on the QNAP, and a build that succeeds proves
+# nothing about the files inside it: the stock analysis is loaded from
+# aktienanalyse/ at request time, so a missing COPY yields a green build, a green
+# healthcheck and a 500 on /qualitaet/. Pin the line.
+def test_the_image_carries_the_stock_analysis():
+    dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    lines = [line.strip() for line in dockerfile.splitlines()]
+    assert "COPY aktienanalyse ./aktienanalyse" in lines, (
+        "the image must carry aktienanalyse/ - without it /qualitaet/ answers 500 "
+        "while the healthcheck stays green")
