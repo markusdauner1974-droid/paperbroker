@@ -336,11 +336,11 @@
       <label for="funnel-day">{{ t('page.form.day_label') }}</label>
       <input type="date" id="funnel-day" autocomplete="off">
       <button type="button" class="funnel-btn" id="funnel-run">{{ t('page.form.run') }}</button>
-      {# Der zweite Rufweg zum eingebetteten Baustein: dieselbe Adresse, die auch
-         direkt aufrufbar ist (/qualitaet/). Der Knopf steht immer da; laeuft der
-         Baustein nicht, sagt die Zielseite das mit einem Satz, statt dass der
-         Knopf stillschweigend fehlt. Gleicher Tab wie die Sprachumschaltung: die
-         Seite hat kein Muster fuer neue Fenster. #}
+      {# The second way into the embedded block: the same address that can be
+         opened directly (/qualitaet/). The button is always there; if the block is
+         not running, the target page says so in one sentence instead of the button
+         quietly disappearing. Same tab as the language switch: this page has no
+         pattern for new windows. #}
       <a class="funnel-btn" id="funnel-quality" href="{{ stock_quality_url }}">{{ t('js.button.stock_quality') }}</a>
       <span class="stale" id="funnel-stale" role="status" hidden></span>
     </form>

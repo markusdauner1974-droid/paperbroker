@@ -370,14 +370,14 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
 class Handler(BaseHTTPRequestHandler):
     nas = None
 
-    # Der Pfadanfang, unter dem die Seite laeuft: "" im Handbetrieb (Port 8766,
-    # Wurzel), "/qualitaet" wenn sie hinter dem Dashboard haengt. Alle Pfade
-    # werden EINMAL am Anfang abgeschnitten, danach gilt ueberall derselbe
-    # Routenvergleich wie bisher.
+    # The path prefix the page runs under: "" when started by hand (port 8766,
+    # root), "/qualitaet" when it hangs behind the dashboard. Every path is
+    # stripped once at the top, so the same route comparison as before applies
+    # everywhere after that.
     base_path = ""
 
     def inner_path(self, path):
-        """Der Pfad ohne Basispfad, oder ``None`` wenn er daneben liegt."""
+        """The path without the base path, or ``None`` if it does not match."""
         if not self.base_path:
             return path
         prefix = self.base_path
@@ -559,18 +559,18 @@ def main():
                         help="Stock-Scanner-Adresse im Heimnetz "
                              "(Standard: AKTIENANALYSE_NAS_URL oder http://192.168.178.10:8089)")
     parser.add_argument("--host", default="127.0.0.1",
-                        help="Adresse, auf der gelauscht wird (Standard 127.0.0.1; "
-                             "im Container 0.0.0.0, sonst ist der Dienst von aussen nicht erreichbar)")
-    parser.add_argument("--base-path", default="", metavar="PFAD",
-                        help="Pfadanfang, unter dem die Seite laeuft, z. B. /qualitaet "
-                             "(leer = Wurzel, wie im Handbetrieb)")
+                        help="Address to listen on (default 127.0.0.1; inside a container "
+                             "0.0.0.0, otherwise the service is unreachable from outside)")
+    parser.add_argument("--base-path", default="", metavar="PATH",
+                        help="Path prefix the page runs under, e.g. /qualitaet "
+                             "(empty = root, as when started by hand)")
     args = parser.parse_args()
     if not 1 <= args.port <= 65535:
         parser.error("--port muss zwischen 1 und 65535 liegen.")
     base_path = args.base_path.strip()
     if base_path:
         if not base_path.startswith("/") or base_path.startswith("//") or ".." in base_path:
-            parser.error("--base-path muss mit genau einem / beginnen und darf kein .. enthalten.")
+            parser.error("--base-path must start with exactly one / and must not contain ..")
         base_path = base_path.rstrip("/")
     Handler.base_path = base_path
 

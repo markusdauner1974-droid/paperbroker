@@ -1,22 +1,21 @@
-"""Die Aktienanalyse als Seite **in** diesem Programm — kein zweiter Dienst.
+"""The stock analysis as a page **inside** this program — not a second service.
 
-Die Analyse (Ordner ``aktienanalyse/``) ist Python-Code wie der uebrige: hier
-wird sie geladen und unter ``/qualitaet/`` ausgeliefert. Kein Proxy, kein zweiter
-Container, kein Abbild — ein Prozess, ein Port, ein Quelltext.
+The analysis (folder ``aktienanalyse/``) is Python code like the rest: it is loaded
+here and served under ``/qualitaet/``. No proxy, no second container, no image of
+its own — one process, one port, one source tree.
 
-Der Baustein bleibt trotzdem eigenstaendig startbar (``python3
-aktienanalyse/app.py``, Port 8766): dieselben Dateien, derselbe Code, nur ein
-anderer Einstiegspunkt.
+It still starts on its own (``python3 aktienanalyse/app.py``, port 8766): the same
+files, the same code, just a different entry point.
 
-Aufbau:
+Layout:
 
-* ``page()`` liefert die Oberflaeche (``aktienanalyse/index.html``) und spielt den
-  Pfadanfang ein, unter dem sie laeuft.
-* ``api(name)`` bildet die frueheren ``/api/...``-Pfade des Bausteins auf seine
-  Funktionen ab. Die Rechenwege bleiben dort, wo sie sind; hier steht nur der
-  Verteiler, den vorher ``app.py`` hatte.
-* Der NAS-Scanner (xang) ist optional: ``AKTIENANALYSE_NAS_URL`` gesetzt = er wird
-  benutzt, sonst antwortet die Analyse aus Yahoo Finance und sagt es auch.
+* ``page()`` serves the interface (``aktienanalyse/index.html``) and injects the
+  path prefix it runs under.
+* ``api(name)`` maps the former ``/api/...`` paths of the block onto its
+  functions. The arithmetic stays wherever it was delivered; only the dispatcher
+  that ``app.py`` used to carry lives here.
+* The NAS scanner (xang) is optional: ``AKTIENANALYSE_NAS_URL`` set means it is
+  used, otherwise the analysis answers from Yahoo Finance and says so.
 """
 
 from __future__ import annotations
@@ -34,7 +33,7 @@ from urllib.error import HTTPError, URLError
 
 from flask import Response, jsonify, request
 
-# Der Ordner mit dem gelieferten Code, neben diesem Paket.
+# The folder holding the delivered code, next to this package.
 AKT_DIR = Path(__file__).resolve().parents[2] / "aktienanalyse"
 NAS_URL_ENV = "AKTIENANALYSE_NAS_URL"
 PAGE_PATH = "/qualitaet"
@@ -48,12 +47,12 @@ _nas_tried = False
 
 
 def _akt():
-    """Das gelieferte Programm als Modul, einmal geladen.
+    """The delivered program as a module, loaded once.
 
-    Es heisst ``app`` und wuerde mit allem kollidieren, was ebenfalls so heisst -
-    deshalb ein eigener Modulname. Sein Ordner kommt in den Suchpfad, weil es
-    seine Nachbarn mit blossen Namen importiert (``from nas_scanner import ...``);
-    das ist der Zustand, in dem es geliefert wurde, und daran wird nichts gedreht.
+    It is called ``app`` and would collide with anything else of that name, hence a
+    module name of its own. Its folder goes onto the import path because it imports
+    its neighbours by bare name (``from nas_scanner import ...``); that is the state
+    it was delivered in, and nothing about that is changed.
     """
     global _module
     with _lock:
@@ -62,48 +61,48 @@ def _akt():
                 sys.path.insert(0, str(AKT_DIR))
             spec = importlib.util.spec_from_file_location("aktienanalyse_app", AKT_DIR / "app.py")
             if spec is None or spec.loader is None:
-                raise RuntimeError(f"Aktienanalyse nicht lesbar: {AKT_DIR}")
-            modul = importlib.util.module_from_spec(spec)
-            sys.modules["aktienanalyse_app"] = modul
-            spec.loader.exec_module(modul)
-            _module = modul
+                raise RuntimeError(f"aktienanalyse is not readable: {AKT_DIR}")
+            module = importlib.util.module_from_spec(spec)
+            sys.modules["aktienanalyse_app"] = module
+            spec.loader.exec_module(module)
+            _module = module
     return _module
 
 
 def nas():
-    """Der NAS-Scanner, wenn eine Adresse gesetzt ist — einmal verbunden.
+    """The NAS scanner, if an address is configured — connected once.
 
-    Eine gescheiterte Anmeldung beendet hier nichts: die Analyse antwortet dann
-    aus Yahoo Finance, und die Quellenzeile auf der Seite sagt es.
+    A failed sign-in stops nothing here: the analysis then answers from Yahoo
+    Finance, and the source line on the page says so.
     """
     global _nas, _nas_tried
     with _lock:
         if not _nas_tried:
             _nas_tried = True
-            adresse = (os.environ.get(NAS_URL_ENV) or "").strip()
-            if adresse:
+            address = (os.environ.get(NAS_URL_ENV) or "").strip()
+            if address:
                 if str(AKT_DIR) not in sys.path:
                     sys.path.insert(0, str(AKT_DIR))
                 try:
                     from nas_scanner import NasScanner
 
-                    scanner = NasScanner(adresse)
+                    scanner = NasScanner(address)
                     scanner.connect()
                     _nas = scanner
-                except (URLError, OSError, ValueError, EOFError) as fehler:
-                    print(f"NAS-Quelle nicht verfügbar ({fehler}). Es geht ohne NAS weiter.",
+                except (URLError, OSError, ValueError, EOFError) as error:
+                    print(f"NAS source unavailable ({error}). Continuing without NAS.",
                           flush=True)
         return _nas
 
 
 def page() -> Response:
-    """Die Oberflaeche, mit eingespieltem Pfadanfang."""
+    """The interface, with the path prefix injected."""
     html = (AKT_DIR / "index.html").read_text(encoding="utf-8")
     start = html.find("<html")
-    ende = html.find(">", start) if start >= 0 else -1
-    if start >= 0 and ende >= 0:
-        einspiel = f'<script>window.AKT_BASE_PATH="{PAGE_PATH}"</script>'
-        html = html[:ende + 1] + einspiel + html[ende + 1:]
+    end = html.find(">", start) if start >= 0 else -1
+    if start >= 0 and end >= 0:
+        injection = f'<script>window.AKT_BASE_PATH="{PAGE_PATH}"</script>'
+        html = html[:end + 1] + injection + html[end + 1:]
     return Response(html, content_type="text/html; charset=utf-8")
 
 
@@ -116,17 +115,17 @@ def _query() -> str:
 
 
 def _symbols(maximum: int) -> list[str]:
-    symbole = list(dict.fromkeys(_query().upper().split(",")))
-    if len(symbole) > maximum or any(not SYMBOL.fullmatch(s) for s in symbole):
+    symbols = list(dict.fromkeys(_query().upper().split(",")))
+    if len(symbols) > maximum or any(not SYMBOL.fullmatch(symbol) for symbol in symbols):
         raise ValueError(f"Bitte bis zu {maximum} gültige Börsenticker eingeben.")
-    return symbole
+    return symbols
 
 
 def _one() -> str:
-    symbole = _symbols(5)
-    if len(symbole) != 1:
+    symbols = _symbols(5)
+    if len(symbols) != 1:
         raise ValueError("Bitte genau einen Ticker auswählen.")
-    return symbole[0]
+    return symbols[0]
 
 
 def _bucket() -> int:
@@ -134,7 +133,11 @@ def _bucket() -> int:
 
 
 def api(name: str):
-    """Ein Datenendpunkt des Bausteins, unter demselben Namen wie bisher."""
+    """One data endpoint of the block, under the same name as before.
+
+    Every answer is a complete JSON body built before it is handed to Flask, so
+    there is no streaming here and a failure can still become a clean status code.
+    """
     akt = _akt()
     scanner = nas()
     bucket = _bucket()
@@ -177,80 +180,80 @@ def api(name: str):
                 cached = akt.nas_stocks(scanner, [symbol], identify=True, bucket=bucket)
                 if cached:
                     return jsonify(cached[0])
-                ergebnis = akt.stock(symbol, bucket)
-                return jsonify({**ergebnis,
+                result = akt.stock(symbol, bucket)
+                return jsonify({**result,
                                 "issues": ["Keine NAS-Tageskurse für diesen Ticker.",
-                                           *ergebnis["issues"]]})
+                                           *result["issues"]]})
             return jsonify(akt.stock(symbol, bucket))
 
         if name == "stock-batch":
-            symbole = _symbols(15)
+            symbols = _symbols(15)
             if scanner is not None:
-                ergebnisse = akt.nas_stocks(scanner, symbole, bucket=bucket)
-                if ergebnisse and (request.args.get("statements") or "") == "1":
-                    bucket_statements = int(time.time() // 600)
+                results = akt.nas_stocks(scanner, symbols, bucket=bucket)
+                if results and (request.args.get("statements") or "") == "1":
+                    statements_bucket = int(time.time() // 600)
 
-                    def ergaenze(item):
+                    def enrich(item):
                         try:
-                            return akt.with_statements(item, bucket_statements)
+                            return akt.with_statements(item, statements_bucket)
                         except (URLError, OSError, ValueError):
                             return item
 
-                    with ThreadPoolExecutor(max_workers=min(3, len(ergebnisse))) as pool:
-                        ergebnisse = list(pool.map(ergaenze, ergebnisse))
-                return jsonify(stocks=ergebnisse)
+                    with ThreadPoolExecutor(max_workers=min(3, len(results))) as pool:
+                        results = list(pool.map(enrich, results))
+                return jsonify(stocks=results)
 
-            def hole(symbol):
+            def fetch(symbol):
                 try:
                     return akt.stock(symbol, bucket)
                 except Exception:
                     return None
 
-            with ThreadPoolExecutor(max_workers=min(3, len(symbole))) as pool:
-                return jsonify(stocks=[item for item in pool.map(hole, symbole) if item])
+            with ThreadPoolExecutor(max_workers=min(3, len(symbols))) as pool:
+                return jsonify(stocks=[item for item in pool.map(fetch, symbols) if item])
 
         if name == "compare":
-            symbole = _symbols(5)
-            verläufe = scanner.histories(symbole) if scanner is not None else None
-            reihen = ({symbol: akt.nas_rows(verläufe.get(symbol)) for symbol in symbole}
-                      if verläufe is not None else {})
-            auffaellig = [symbol for symbol, rows in reihen.items() if akt.price_jumps(rows)]
-            kennzahlen = {}
-            if auffaellig and scanner is not None:
+            symbols = _symbols(5)
+            series = scanner.histories(symbols) if scanner is not None else None
+            rows = ({symbol: akt.nas_rows(series.get(symbol)) for symbol in symbols}
+                    if series is not None else {})
+            jumpy = [symbol for symbol, values in rows.items() if akt.price_jumps(values)]
+            fundamentals = {}
+            if jumpy and scanner is not None:
                 try:
-                    kennzahlen = scanner.fundamentals(auffaellig)
+                    fundamentals = scanner.fundamentals(jumpy)
                 except (URLError, OSError, ValueError):
                     pass
 
-            def kursreihe(symbol):
+            def price_series(symbol):
                 try:
-                    if verläufe is not None:
-                        rows = reihen[symbol]
-                        if not rows:
+                    if series is not None:
+                        values = rows[symbol]
+                        if not values:
                             return {"symbol": symbol, "error": "Kursreihe fehlt im NAS-Bestand."}
-                        raw = kennzahlen.get(symbol)
+                        raw = fundamentals.get(symbol)
                         info = akt.nas_info(raw, {}) if isinstance(raw, dict) else {}
                         return {"symbol": symbol,
-                                **akt.nas_price_series(symbol, rows, info.get("currency"),
+                                **akt.nas_price_series(symbol, values, info.get("currency"),
                                                        bucket)}
                     return {"symbol": symbol, "prices": akt.prices(symbol, bucket),
                             "price_source": "Yahoo Finance"}
                 except Exception:
                     return {"symbol": symbol, "error": "Kursreihe fehlt."}
 
-            with ThreadPoolExecutor(max_workers=len(symbole)) as pool:
-                # ``series`` ist der Name, den die Seite erwartet.
-                return jsonify({"series": list(pool.map(kursreihe, symbole))})
+            with ThreadPoolExecutor(max_workers=len(symbols)) as pool:
+                # "series" is the name the page expects.
+                return jsonify({"series": list(pool.map(price_series, symbols))})
 
         return _error("Datenweg unbekannt.", 404)
-    except ValueError as fehler:
-        return _error(str(fehler))
-    except HTTPError as fehler:
-        nachricht = ("Die NAS-Sitzung ist abgelaufen. Bitte die Aktienanalyse neu starten "
-                     "und erneut anmelden." if fehler.code in (401, 403)
-                     else "Der NAS-Scanner konnte die Anfrage nicht beantworten.")
-        fehler.close()
-        return _error(nachricht, 502)
+    except ValueError as error:
+        return _error(str(error))
+    except HTTPError as error:
+        message = ("Die NAS-Sitzung ist abgelaufen. Bitte die Aktienanalyse neu starten "
+                   "und erneut anmelden." if error.code in (401, 403)
+                   else "Der NAS-Scanner konnte die Anfrage nicht beantworten.")
+        error.close()
+        return _error(message, 502)
     except (URLError, OSError):
         return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
                       "Ticker derzeit keine Daten.", 502)
