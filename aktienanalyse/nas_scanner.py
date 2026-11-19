@@ -1,5 +1,7 @@
 """Read the NAS scanner's published stock snapshots."""
 
+import os
+import sys
 from getpass import getpass
 from http.cookiejar import CookieJar
 from threading import Lock
@@ -9,6 +11,34 @@ from urllib.request import (
     HTTPCookieProcessor, HTTPRedirectHandler, ProxyHandler, Request, build_opener,
 )
 import json
+
+
+SECRET_FILE = "/run/secrets/nas_password"
+PASSWORD_ENV = "AKTIENANALYSE_NAS_PASSWORD"
+# Die Adresse des Scanners: im Handbetrieb die bekannte im Heimnetz, im Betrieb
+# ueber AKTIENANALYSE_NAS_URL. Beides dieselbe Zeichenkette, nur eine Quelle.
+DEFAULT_ORIGIN = "http://192.168.178.10:8089"
+
+
+def configured_password():
+    """Das Passwort fuer den Automatikbetrieb, oder ``None``.
+
+    Reihenfolge: zuerst der Datei-Mount, dann die Umgebungsvariable. Beide Wege
+    sind fuer Container gedacht, in denen niemand tippen kann; die Eingabe am
+    Terminal bleibt der dritte Weg (siehe ``connect``).
+
+    Der Wert wird NICHT protokolliert, nicht ausgegeben und nicht in eine
+    Fehlermeldung eingesetzt - ein Passwort in einer Logzeile ist ein
+    abgeschriebenes Passwort.
+    """
+    try:
+        with open(SECRET_FILE, encoding="utf-8") as datei:
+            wert = datei.read().strip()
+    except OSError:
+        wert = ""
+    if not wert:
+        wert = (os.environ.get(PASSWORD_ENV) or "").strip()
+    return wert or None
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -101,7 +131,14 @@ class NasScanner:
             return
         if not status.get("configured"):
             raise ValueError("Die NAS-Anmeldung ist noch nicht eingerichtet.")
-        password = getpass("Stock-Scanner-Passwort für " + self.origin + " (Eingabe verborgen): ")
+        # Erst der Mount, dann die Umgebungsvariable, zuletzt die Tastatur: in
+        # einem Container gibt es niemanden, der tippen koennte.
+        password = configured_password()
+        if password is None:
+            if not sys.stdin or not sys.stdin.isatty():
+                raise ValueError("NAS-Anmeldung ohne Passwort-Quelle: weder "
+                                 + SECRET_FILE + " noch " + PASSWORD_ENV + " gesetzt.")
+            password = getpass("Stock-Scanner-Passwort für " + self.origin + " (Eingabe verborgen): ")
         if not password:
             raise ValueError("NAS-Anmeldung übersprungen.")
         result = self.request_json("auth/login", {"password": password})

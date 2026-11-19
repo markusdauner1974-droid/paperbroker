@@ -17,6 +17,16 @@
 #                  and the app behaves exactly as if the variables were
 #                  absent (no badge, no exception). The provider is only
 #                  created when URL AND token are both set.
+#   AKTIENANALYSE_BACKEND_URL
+#                  Adresse des Bausteins "Aktienanalyse" (eigener Dienst unten).
+#                  Gesetzt = der Knopf "Aktien-Qualitaet" erscheint auf der
+#                  Trichterseite und /qualitaet/* wird weitergeleitet. Leer =
+#                  kein Knopf, kein Baustein - das Dashboard ist wie bisher.
+#   AKTIENANALYSE_NAS_URL / AKTIENANALYSE_NAS_PASSWORD
+#                  NAS-Scanner fuer den Baustein. Das Passwort gehoert NICHT
+#                  hierher in die Datei: es kommt aus einem Datei-Mount
+#                  (/run/secrets/nas_password) oder aus der Umgebung der
+#                  Arcane-Oberflaeche.
 #   FINNHUB_API_KEY
 #                  key for Finnhub's earnings calendar, used by
 #                  GET /api/v1/gap-spreads to find each title's NEXT report
@@ -51,6 +61,34 @@ services:
       # Next earnings date for /api/v1/gap-spreads. Empty by default: without a
       # key that endpoint still answers, with no_next_earnings for each title.
       - FINNHUB_API_KEY=${FINNHUB_API_KEY:-}
+      # Der Baustein "Aktienanalyse". Leer heisst: nicht eingeschaltet - dann
+      # fehlt der Knopf "Aktien-Qualitaet" und die Weiterleitung bleibt ungenutzt.
+      - AKTIENANALYSE_BACKEND_URL=${AKTIENANALYSE_BACKEND_URL:-}
+
+  # Der Baustein selbst: eigenes Abbild, eigenes Netz, KEIN Port nach aussen.
+  # Erreichbar nur unter http://aktienanalyse:8766 im Stapel - genau so, wie das
+  # Dashboard ihn anspricht. Die Gesundheitspruefung steht im Dockerfile
+  # (sie ruft die Seite selbst ab, nicht nur den Port).
+  aktienanalyse:
+    build:
+      context: ./aktienanalyse
+      dockerfile: Dockerfile
+    image: ${AKTIENANALYSE_IMAGE:-paperbroker-aktienanalyse:latest}
+    container_name: ${AKTIENANALYSE_CONTAINER_NAME:-aktienanalyse}
+    restart: unless-stopped
+    expose:
+      - "8766"
+    environment:
+      # NAS-Scanner im Heimnetz; leer = ohne NAS, dann fragt der Baustein Yahoo.
+      - AKTIENANALYSE_NAS_URL=${AKTIENANALYSE_NAS_URL:-}
+      # Das Passwort gehoert NICHT in diese Datei. Bevorzugt der Mount unten,
+      # ersatzweise die Umgebung der Oberflaeche - der Baustein liest beides,
+      # zuerst den Mount.
+      - AKTIENANALYSE_NAS_PASSWORD=${AKTIENANALYSE_NAS_PASSWORD:-}
+    volumes:
+      # Fehlt die Datei, legt Docker ein leeres Verzeichnis an; der Baustein
+      # bemerkt das (OSError), nimmt die Umgebungsvariable und laeuft weiter.
+      - ${NAS_PASSWORD_FILE:-./secrets/nas_password}:/run/secrets/nas_password:ro
 
 volumes:
   cboe_cache:

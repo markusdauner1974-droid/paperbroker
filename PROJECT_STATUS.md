@@ -41,6 +41,37 @@ merge only when both check sources - check runs and commit statuses - were green
 | D13 | the spread table shows what the position costs | #54 |
 | D14 | the page can show put spreads, not only calls | #55 |
 
+### The stock analysis as an embedded block (2026-11-19)
+
+`aktienanalyse/` is a second, self-contained application in the repository: a plain `http.server`
+on port 8766 that shows one share (quote, four checks with fifteen criteria each, seasonality,
+fair value, statements, news) and reads its data from Yahoo Finance, SEC EDGAR and — optional —
+the NAS scanner. It comes from Markus as a ZIP and is committed as a base state of its own; the
+integration is deliberately kept apart from it in the history.
+
+The two applications stay independent. The analysis runs on its own with `python3
+aktienanalyse/app.py` (port 8766, root path, exactly as before) and, when embedded, under the path
+prefix `/qualitaet` (`--base-path`). The dashboard knows nothing about its content: `GET|POST
+/qualitaet/*` is forwarded unchanged to `AKTIENANALYSE_BACKEND_URL` (default
+`http://aktienanalyse:8766`), status, `content-type`, `content-length` and `cache-control` come
+back untouched, and the body is streamed. A block that is down answers 503 with one readable
+sentence in the language of the request and a log line — the funnel keeps working. The button
+"Aktien-Qualität" appears in the funnel's button row only when that address is set, so the page
+never offers a link it knows to be dead. Two ways in, one block: the button and the address
+`/qualitaet/` are the same thing.
+
+Two environment variables carry the deployment: `AKTIENANALYSE_BACKEND_URL` (dashboard side) and
+`AKTIENANALYSE_NAS_URL` / `AKTIENANALYSE_NAS_PASSWORD` (block side; the password is also read from
+`/run/secrets/nas_password`, and it never appears in a log line, an output or a start message).
+`docker-compose.yml` builds the block from `aktienanalyse/Dockerfile` into the same stack, with no
+published port; the healthcheck calls the page itself, not the port.
+
+The analysis logic is unchanged: criteria, formulas, thresholds and structure are byte-identical to
+the delivered stand. Evidence: `check_nas.py` (15 tests) is green, and `check_parity.py --port 8766`
+reports the same comparison as before the integration (quality 8–13/15, dividends suspended,
+growth 10–14/15, robustness 14/15) with the four balance-sheet figures matching the original filing
+exactly.
+
 ### Open after D14
 
 * **No mobile view yet.** The spread table carries twelve columns and has no overflow

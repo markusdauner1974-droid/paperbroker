@@ -1,5 +1,6 @@
 import json
 import math
+import os
 import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
@@ -554,7 +555,12 @@ def main():
 
     parser = argparse.ArgumentParser(description="Lokale Aktienanalyse starten.")
     parser.add_argument("--port", type=int, default=8765)
-    parser.add_argument("--nas", metavar="URL", help="Stock-Scanner-Adresse im Heimnetz")
+    parser.add_argument("--nas", metavar="URL",
+                        help="Stock-Scanner-Adresse im Heimnetz "
+                             "(Standard: AKTIENANALYSE_NAS_URL oder http://192.168.178.10:8089)")
+    parser.add_argument("--host", default="127.0.0.1",
+                        help="Adresse, auf der gelauscht wird (Standard 127.0.0.1; "
+                             "im Container 0.0.0.0, sonst ist der Dienst von aussen nicht erreichbar)")
     parser.add_argument("--base-path", default="", metavar="PFAD",
                         help="Pfadanfang, unter dem die Seite laeuft, z. B. /qualitaet "
                              "(leer = Wurzel, wie im Handbetrieb)")
@@ -568,19 +574,22 @@ def main():
         base_path = base_path.rstrip("/")
     Handler.base_path = base_path
 
-    if args.nas:
+    # Ohne --nas gilt die Umgebungsvariable; ist auch die leer, laeuft die App
+    # wie bisher ohne NAS. Der Standard steht EINMAL, in nas_scanner.py.
+    nas_url = args.nas or os.environ.get("AKTIENANALYSE_NAS_URL") or None
+    if nas_url:
         from nas_scanner import NasScanner
 
         try:
-            nas = NasScanner(args.nas)
+            nas = NasScanner(nas_url)
             Handler.nas = nas
             nas.connect()
             print("NAS-Datenquelle verbunden.", flush=True)
         except (URLError, ValueError, OSError, EOFError) as error:
             parser.exit(1, f"NAS-Verbindung fehlgeschlagen: {error}\n")
 
-    with ThreadingHTTPServer(("127.0.0.1", args.port), Handler) as server:
-        print(f"Aktienanalyse öffnen unter http://127.0.0.1:{args.port}", flush=True)
+    with ThreadingHTTPServer((args.host, args.port), Handler) as server:
+        print(f"Aktienanalyse öffnen unter http://{args.host}:{args.port}{base_path}/", flush=True)
         try:
             server.serve_forever()
         except KeyboardInterrupt:
