@@ -19,9 +19,9 @@
 #                  created when URL AND token are both set.
 #   AKTIENANALYSE_BACKEND_URL
 #                  Adresse des Bausteins "Aktienanalyse" (eigener Dienst unten).
-#                  Gesetzt = der Knopf "Aktien-Qualitaet" erscheint auf der
-#                  Trichterseite und /qualitaet/* wird weitergeleitet. Leer =
-#                  kein Knopf, kein Baustein - das Dashboard ist wie bisher.
+#                  Der Knopf "Aktien-Qualitaet" steht immer auf der Trichterseite;
+#                  diese Adresse bestimmt nur, WOHIN /qualitaet/* weitergeleitet
+#                  wird. Leer = Standard http://aktienanalyse:8766.
 #   AKTIENANALYSE_NAS_URL / AKTIENANALYSE_NAS_PASSWORD
 #                  NAS-Scanner fuer den Baustein. Das Passwort gehoert NICHT
 #                  hierher in die Datei: es kommt aus einem Datei-Mount

@@ -8,7 +8,6 @@ instead of importing it. Its own display helpers moved with it.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime
 from urllib.parse import urlencode
 
@@ -60,17 +59,6 @@ from ..view_support import (
 )
 from . import hand_earnings as hand_earnings_routes
 from .context import context
-from .quality import BACKEND_ENV
-
-
-def stock_quality_enabled() -> bool:
-    """Ist der Baustein eingeschaltet?
-
-    Eine gesetzte Adresse ist die Zusage des Betreibers, dass der Dienst laeuft.
-    Ohne sie bleibt der Knopf weg - ein Knopf, der garantiert auf eine 503
-    fuehrt, ist schlimmer als kein Knopf.
-    """
-    return bool(os.environ.get(BACKEND_ENV))
 
 
 def _switch_links() -> list[dict[str, object]]:
@@ -247,9 +235,11 @@ def index():
         scan=scan_view_data(),
         feed_note=t("page_route.feed_note.cboe"),
         # Der eingebettete Baustein "Aktienanalyse" (/qualitaet/): der Knopf steht
-        # nur dann auf der Seite, wenn der Betreiber die Adresse gesetzt hat. Das
-        # Anzeigefeld kommt von hier - die Seite raet nichts.
-        stock_quality_url="/qualitaet/" if stock_quality_enabled() else None,
+        # immer auf der Seite. Ist der Baustein nicht erreichbar, sagt das die
+        # Seite dort selbst (503 mit einem Satz) - ein fehlender Knopf haette
+        # denselben Zustand nur verschwiegen, und der Mensch sucht dann den Fehler
+        # bei sich statt beim Dienst.
+        stock_quality_url="/qualitaet/",
         # The script's texts travel as one JSON block: one source, no second
         # catalogue file in JavaScript. The block also names the plural rule.
         js_i18n=texts.block("js"),

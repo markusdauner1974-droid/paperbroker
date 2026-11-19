@@ -184,21 +184,23 @@ class ProxyTest(unittest.TestCase):
 
     # --- der Knopf auf der Trichterseite --------------------------------- #
 
-    def test_the_button_appears_only_when_the_address_is_set(self):
+    def test_the_button_is_always_there(self):
+        # Bewusste Entscheidung: der Knopf haengt nicht an der Umgebungsvariable.
+        # Fehlt sie, zeigt er auf dieselbe Adresse - und die Zielseite sagt dann
+        # mit einem Satz, dass der Baustein nicht laeuft. Ein verschwundener Knopf
+        # haette denselben Zustand nur verschwiegen.
         with mock.patch.dict("os.environ", {}, clear=True):
-            ohne = self.client.get("/")
-        self.assertNotIn('id="funnel-quality"', ohne.get_data(as_text=True),
-                         "ohne Adresse kein Knopf - er fuehrte garantiert auf eine 503")
+            ohne = self.client.get("/").get_data(as_text=True)
+        self.assertIn('id="funnel-quality"', ohne)
+        self.assertIn('href="/qualitaet/"', ohne)
         with self._mit_adresse():
-            mit = self.client.get("/")
-        seite = mit.get_data(as_text=True)
-        self.assertIn('id="funnel-quality"', seite)
-        self.assertIn('href="/qualitaet/"', seite)
-        self.assertIn("Aktien-Qualität", seite)
+            mit = self.client.get("/").get_data(as_text=True)
+        self.assertIn('id="funnel-quality"', mit)
+        self.assertIn('href="/qualitaet/"', mit)
+        self.assertIn("Aktien-Qualität", mit)
 
     def test_the_button_speaks_the_language_of_the_page(self):
-        with self._mit_adresse():
-            englisch = self.client.get("/?lang=en").get_data(as_text=True)
+        englisch = self.client.get("/?lang=en").get_data(as_text=True)
         self.assertIn("Stock quality", englisch)
         self.assertNotIn("Aktien-Qualität", englisch)
 

@@ -56,9 +56,9 @@ prefix `/qualitaet` (`--base-path`). The dashboard knows nothing about its conte
 `http://aktienanalyse:8766`), status, `content-type`, `content-length` and `cache-control` come
 back untouched, and the body is streamed. A block that is down answers 503 with one readable
 sentence in the language of the request and a log line — the funnel keeps working. The button
-"Aktien-Qualität" appears in the funnel's button row only when that address is set, so the page
-never offers a link it knows to be dead. Two ways in, one block: the button and the address
-`/qualitaet/` are the same thing.
+"Aktien-Qualität" stands in the funnel's button row unconditionally: a missing button would hide
+exactly the state the user needs to know about, and the target page names it itself. Two ways in,
+one block: the button and the address `/qualitaet/` are the same thing.
 
 Two environment variables carry the deployment: `AKTIENANALYSE_BACKEND_URL` (dashboard side) and
 `AKTIENANALYSE_NAS_URL` / `AKTIENANALYSE_NAS_PASSWORD` (block side; the password is also read from
