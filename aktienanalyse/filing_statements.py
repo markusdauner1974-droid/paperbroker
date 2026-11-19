@@ -314,12 +314,27 @@ def remember_statements(symbol, isin, currency, tagged):
 
 _LOCKS = {}
 _LOCKS_GUARD = Lock()
+_LOCKS_MAX = 256
 
 
 def symbol_lock(symbol):
-    """One lock per symbol, so two page views of the same share never both pay."""
+    """One lock per symbol, so two page views of the same share never both pay.
+
+    The map is bounded, because the symbol comes from the request. Only locks that
+    nobody holds are dropped: evicting a lock that is in use would hand the next
+    caller a different object and two threads would enter the paid path together.
+    """
     with _LOCKS_GUARD:
-        return _LOCKS.setdefault(symbol, Lock())
+        if symbol in _LOCKS:
+            return _LOCKS[symbol]
+        _LOCKS[symbol] = Lock()
+        while len(_LOCKS) > _LOCKS_MAX:
+            frei = next((key for key, lock in _LOCKS.items()
+                         if key != symbol and not lock.locked()), None)
+            if frei is None:
+                break
+            del _LOCKS[frei]
+        return _LOCKS[symbol]
 
 
 def issuer_identifier(payload):
@@ -330,7 +345,10 @@ def issuer_identifier(payload):
     """
     for document in document_files(payload):
         found = re.search(rb"<[\w.-]*:identifier[^>]*>\s*([^<\s]{1,64})\s*<", document)
-        return found.group(1).decode("ascii", "replace") if found else ""
+        if found:
+            return found.group(1).decode("ascii", "replace")
+        # Another archive member may carry the identifier; keep looking instead of
+        # giving up on the first file that has none.
     return ""
 
 
@@ -347,10 +365,20 @@ def filing_entries(symbol, cutoff, isin):
     """Where the reports are: the stored list when it exists, the paid one otherwise."""
     stored = stored_filings(symbol)
     if stored:
+        grenze = date.fromisoformat(cutoff)
         entries = []
         for eintrag in stored:
             jahr, adresse = eintrag[0], eintrag[2]
             veroeffentlicht = eintrag[3] if len(eintrag) > 3 else ""
+            if veroeffentlicht:
+                try:
+                    # A report released after the cut-off must not be read: it would
+                    # carry knowledge the price series cannot have. The paid branch
+                    # has always refused these; the stored branch has to as well.
+                    if date.fromisoformat(veroeffentlicht[:10]) > grenze:
+                        continue
+                except ValueError:
+                    continue
             entries.append((adresse, str(jahr), veroeffentlicht or ""))
         return "", entries
     ticker, _, market = symbol.rpartition(".")

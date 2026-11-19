@@ -7,6 +7,7 @@ stale.
 """
 
 import importlib
+import io
 import os
 import sqlite3
 import sys
@@ -15,6 +16,7 @@ import unittest
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import mock
+from zipfile import ZipFile
 
 AKT_DIR = Path(__file__).resolve().parent
 
@@ -40,6 +42,7 @@ class CollectorTest(unittest.TestCase):
             ])
 
     def tearDown(self):
+        self.fs._LOCKS.clear()
         self.env.stop()
         self.tmp.cleanup()
 
@@ -98,6 +101,41 @@ class CollectorTest(unittest.TestCase):
         self.assertFalse(sperre.locked())
         with sperre:
             self.assertTrue(sperre.locked())
+
+    def test_a_report_released_after_the_cut_off_is_not_used(self):
+        """The stored list may hold younger reports than the price series knows."""
+        _lei, entries = self.fs.filing_entries("EVK.DE", "2025-06-30", None)
+        # 2024-03-19 and 2025-03-17 are both before that date, so both stay.
+        self.assertEqual(len(entries), 2)
+        _lei, entries = self.fs.filing_entries("EVK.DE", "2024-06-30", None)
+        self.assertEqual([e[0][-5:] for e in entries], ["a.zip"])
+
+    def test_a_stored_entry_without_a_release_date_stays_usable(self):
+        with self.store.verbindung(self.db) as conn:
+            self.store.berichte_merken(conn, "OHNE.DE", [(2023, "IXBRL", "https://cdn/x.zip", "")])
+        _lei, entries = self.fs.filing_entries("OHNE.DE", "2024-06-30", None)
+        self.assertEqual(len(entries), 1)
+
+    def test_the_lock_map_stays_bounded(self):
+        for nummer in range(self.fs._LOCKS_MAX + 40):
+            self.fs.symbol_lock(f"TEST{nummer}.DE")
+        self.assertLessEqual(len(self.fs._LOCKS), self.fs._LOCKS_MAX)
+
+    def test_a_lock_that_is_in_use_is_never_evicted(self):
+        festgehalten = self.fs.symbol_lock("HALT.DE")
+        with festgehalten:
+            for nummer in range(self.fs._LOCKS_MAX + 10):
+                self.fs.symbol_lock(f"FUELL{nummer}.DE")
+            self.assertIs(self.fs.symbol_lock("HALT.DE"), festgehalten)
+
+    def test_the_issuer_is_read_from_a_later_member_when_the_first_has_none(self):
+        puffer = io.BytesIO()
+        with ZipFile(puffer, "w") as archiv:
+            archiv.writestr("leer.xhtml", "<html><body>ohne Kennung</body></html>")
+            archiv.writestr("voll.xhtml",
+                            '<html><body><xbrli:identifier>41GUOJQTALQHLF39XJ34</xbrli:identifier>'
+                            '</body></html>')
+        self.assertEqual(self.fs.issuer_identifier(puffer.getvalue()), "41GUOJQTALQHLF39XJ34")
 
     def test_the_issuer_is_read_from_the_report_when_no_lookup_was_made(self):
         bericht = (b'<?xml version="1.0"?><html><body>'
