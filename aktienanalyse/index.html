@@ -221,11 +221,12 @@ function renderQuote(){
         reset.onclick=()=>replaceData(data.nasBaseline);
         actions.append(reset);
       }else{
-        const button=element("button",data.statements_source?"Längere Kurshistorie und Dividenden ergänzen":
+        const button=element("button",data.history_loading?"Yahoo-Ergänzung wird geladen …":
+          data.statements_source?"Längere Kurshistorie und Dividenden ergänzen":
           "Abschlüsse und längere Kurshistorie aus Yahoo Finance ergänzen");
         button.type="button";
-        button.disabled=Boolean(data.statements_loading);
-        button.onclick=()=>extendStock(button);
+        button.disabled=Boolean(data.statements_loading||data.history_loading);
+        button.onclick=()=>extendStock();
         actions.append(button);
       }
     }
@@ -242,6 +243,19 @@ function renderQuote(){
   $("quote").replaceChildren(...rows.map(([label,value])=>{
     const card=element("div");card.append(element("small",label),element("strong",value));return card;
   }));
+}
+function consecutiveQuarters(entries,count){
+  // Quarters are newest first; a growth window needs them without a hole, so the
+  // distance between two neighbours must stay near a quarter.
+  if(!Array.isArray(entries)||entries.length<count)return false;
+  for(let index=1;index<count;index++){
+    const a=Date.parse(entries[index-1]?.[0]),b=Date.parse(entries[index]?.[0]);
+    // An unreadable date is not a quarter; refuse the window instead of accepting it.
+    if(!Number.isFinite(a)||!Number.isFinite(b))return false;
+    const gap=(a-b)/86400000;
+    if(gap<65||gap>120)return false;
+  }
+  return true;
 }
 function lastYearDividends(){
   return periodDividends(data.prices,data.prices.at(-1)?.[0]);
@@ -524,7 +538,7 @@ function liveChecks(){
 }
 const usUniverse="AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,KO,XOM,WMT";
 const deUniverse="SAP.DE,SIE.DE,ALV.DE,DTE.DE,ADS.DE,MBG.DE,IFX.DE,BAS.DE,DB1.DE,RWE.DE";
-const checkBenchmark={symbol:"",rows:[],message:"",request:0};
+const checkBenchmark={symbol:"",rows:[],message:"",loading:false,request:0};
 let activeRanking=null;
 function defaultBenchmark(stock){
   if(stock.symbol.endsWith(".DE"))return "^GDAXI";
@@ -536,6 +550,7 @@ async function loadCheckBenchmark(symbol){
   const current=data, request=++checkBenchmark.request;
   checkBenchmark.symbol=symbol;
   checkBenchmark.rows=[];
+  checkBenchmark.loading=Boolean(symbol);
   checkBenchmark.message=symbol?"Index wird geladen …":"Vergleichsindex eingeben, z. B. ^GSPC.";
   activeRanking=null;
   renderChecks();
@@ -543,6 +558,7 @@ async function loadCheckBenchmark(symbol){
   try{
     const response=await api("compare",symbol);
     if(request!==checkBenchmark.request||current!==data)return;
+    checkBenchmark.loading=false;
     checkBenchmark.rows=response.series[0]?.prices||[];
     const series=response.series[0];
     const label=symbol==="SPY"?"SPY (S&P-500-ETF)":symbol;
@@ -551,6 +567,7 @@ async function loadCheckBenchmark(symbol){
       "Für "+symbol+" fehlen Benchmarkkurse.";
   }catch(error){
     if(request!==checkBenchmark.request||current!==data)return;
+    checkBenchmark.loading=false;
     checkBenchmark.message=error.message;
   }
   if(selected===3)renderChecks();
@@ -726,7 +743,9 @@ function appendCriteria(parent,title,rows,referenceStatuses,offset){
     const tr=tbody.insertRow();
     const label=element("th",(status===true?"✓ ":status===false?"✕ ":"")+name,status===true?"ok":status===false?"bad":"");
     label.scope="row";
-    const reading=element("td",value,"criterion-value"),cell=element("td",undefined,"criterion-meter");
+    const benchmarkPending=selected===3&&checkBenchmark.loading&&ordinal>=11;
+    const reading=element("td",benchmarkPending?"Wird geladen …":value,"criterion-value");
+    const cell=element("td",undefined,"criterion-meter");
     if(isNum(meterValue)){
       const track=element("span",undefined,"meter-track"),fill=element("span",undefined,"meter-fill");
       track.setAttribute("role","meter");
@@ -1107,6 +1126,18 @@ function renderFinance(){
   if(data.statements_source)fund.append(element("p",data.statements_source+" · "+
     Math.min(income.length,6)+" von 6 Jahresperioden · "+Math.min(quarter.length,8)+" von 8 Quartalen sichtbar. "+
     (data.statements_source==="SEC EDGAR"?"Fehlende Q4-Beträge werden bei additiven Größen aus dem Geschäftsjahr und den ersten drei Quartalen ermittelt. EPS wird nur aus gemeldeten Werten übernommen.":""),"sub"));
+  const growthQuarters=quarter.slice(0,8);
+  if(data.statements_source&&!consecutiveQuarters(growthQuarters,8)){
+    fund.append(element("p","Für das TTM-Wachstum fehlen acht aufeinanderfolgende Quartale mit vergleichbaren Werten.","sub"));
+  }
+  if(growthQuarters.length){
+    const missing=growthQuarters.flatMap(([date,row])=>{
+      const fields=[["Umsatz",v(row,"TotalRevenue")],["Betriebsergebnis",v(row,"OperatingIncome")],
+        ["verwässertes EPS",v(row,"DilutedEPS")]].filter(([,value])=>!isNum(value)).map(([label])=>label);
+      return fields.length?[date+": "+fields.join(", ")]:[];
+    });
+    if(missing.length)fund.append(element("p","Fehlende Quartalswerte · "+missing.join(" · "),"sub"));
+  }
   const epsSources=data.statements?.provenance?.quarterly;
   for(const [period] of quarter.slice(0,8)){
     const source=epsSources?.[period]?.dilutedeps;
@@ -1270,16 +1301,18 @@ function replaceData(next,{reset=false}={}){
     selected=0;peers=[];benchmarkSeries=null;benchmarkSymbol="";
     $("peer-note").textContent="";$("season-mode").value="normal";
   }
-  Object.assign(checkBenchmark,{symbol:"",rows:[],message:"",request:checkBenchmark.request+1});
+  Object.assign(checkBenchmark,{symbol:"",rows:[],message:"",loading:false,request:checkBenchmark.request+1});
   rankingGeneration++;activeRanking=null;
   render();
   const symbol=previousBenchmark||defaultBenchmark(data);
   if(selected===3&&symbol)loadCheckBenchmark(symbol);
 }
-async function extendStock(button){
+async function extendStock(){
   const active=data,request=generation;
+  if(active.history_loading)return;
   const baseline=active.nasBaseline||active;
-  button.disabled=true;
+  active.history_loading=true;
+  renderQuote();
   status("Fehlende Daten für "+active.symbol+" werden bei Yahoo Finance abgefragt …");
   try{
     const detail=await api("stock-extra",active.symbol,{
@@ -1287,16 +1320,27 @@ async function extendStock(button){
       history_only:baseline.statements_source?"1":"0"
     });
     if(data!==active||request!==generation)return;
-    replaceData({...baseline,nasBaseline:baseline,
-      prices:detail.prices.length?detail.prices:baseline.prices,
-      price_source:detail.price_source||baseline.price_source,
-      statements:baseline.statements_source?baseline.statements:detail.statements,
-      statements_source:baseline.statements_source||detail.statements_source,
-      info:{...baseline.info,...detail.info},
-      issues:[...baseline.issues,...detail.issues]});
+    active.history_loading=false;
+    // A late answer must not overwrite the ticker that is open now: the check above
+    // already left, and the data object is only replaced when it is still the one
+    // this call started with.
+    if(detail.price_source||detail.statements_source){
+      replaceData({...baseline,nasBaseline:baseline,
+        prices:detail.prices.length?detail.prices:baseline.prices,
+        price_source:detail.price_source||baseline.price_source,
+        statements:baseline.statements_source?baseline.statements:detail.statements,
+        statements_source:baseline.statements_source||detail.statements_source,
+        info:{...baseline.info,...detail.info},
+        issues:[...baseline.issues,...detail.issues]});
+    }
     status(detail.price_source||detail.statements_source?"Yahoo-Ergänzung geladen.":"Yahoo Finance hat keine passende Ergänzung geliefert.");
   }catch(error){if(data===active&&request===generation)status(error.message);}
-  finally{button.disabled=false;}
+  finally{
+    if(data===active&&request===generation){
+      active.history_loading=false;
+      renderQuote();
+    }
+  }
 }
 async function loadStock(symbol){
   const request=++generation;
@@ -1308,6 +1352,11 @@ async function loadStock(symbol){
     replaceData(next,{reset:true});
     status(symbol+" geladen.");
     if(next.statements_loading)await completeStatements(data,request);
+    // A NAS quote carries the day's price but neither a long history nor dividends.
+    // Both are needed for the return and the dividend yield, so they are fetched
+    // without asking: no second click.
+    if(request===generation&&data.nas_primary&&data.prices.length&&
+       (!isNum(periodReturn(data.prices,120))||!isNum(lastYearDividends())))await extendStock();
   }catch(error){if(request===generation)status(error.message);}
 }
 async function completeStatements(active,request){

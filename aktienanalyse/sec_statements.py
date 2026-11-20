@@ -34,7 +34,9 @@ BALANCE = {
     "stockholdersequity": ("StockholdersEquity",),
     "currentassets": ("AssetsCurrent",),
     "currentliabilities": ("LiabilitiesCurrent",),
-    "longtermdebt": ("LongTermDebtNoncurrent",),
+    "longtermdebt": ("LongTermDebtAndCapitalLeaseObligationsNoncurrent", "LongTermDebtNoncurrent"),
+    "currentlongtermdebt": ("LongTermDebtAndCapitalLeaseObligationsCurrent", "LongTermDebtCurrent"),
+    "shorttermborrowings": ("ShortTermBorrowings", "ShortTermDebtCurrent", "CommercialPaper"),
     "totaldebt": ("DebtAndCapitalLeaseObligations",),
     "cashandcashequivalents": ("CashAndCashEquivalentsAtCarryingValue",),
 }
@@ -235,6 +237,13 @@ def parse_statements(payload, cutoff, q4_release=None):
                 }
     quarter_dates = sorted(quarter_dates | set(quarterly["dilutedeps"]))[-12:]
     balance = pack_rows(series(BALANCE, "instant"), annual_dates)
+    for row in balance.values():
+        if "totaldebt" not in row and {"longtermdebt", "currentlongtermdebt"} <= row.keys():
+            row["totaldebt"] = (row["longtermdebt"] + row["currentlongtermdebt"]
+                                + row.get("shorttermborrowings", 0))
+        # Use closing equity and financial debt, less cash, for this ROIC basis.
+        if {"stockholdersequity", "totaldebt", "cashandcashequivalents"} <= row.keys():
+            row["investedcapital"] = row["stockholdersequity"] + row["totaldebt"] - row["cashandcashequivalents"]
     cash = pack_rows(series(CASH, "annual"), annual_dates)
     result = {"income": pack_rows(annual, annual_dates), "quarterly": pack_rows(quarterly, quarter_dates),
             "balance": {d: row for d, row in balance.items() if row},

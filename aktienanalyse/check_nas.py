@@ -5,6 +5,8 @@ import unittest
 from contextlib import contextmanager
 from datetime import date
 from io import BytesIO
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest.mock import Mock, patch
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
@@ -242,6 +244,18 @@ class NasTests(unittest.TestCase):
 
 
 class FilingStatementTests(unittest.TestCase):
+    def setUp(self):
+        # The collector writes what it learns into a SQLite store. These tests must
+        # not write into the store the application uses: a second run would then be
+        # served from it and never reach the provider at all.
+        self.store_dir = TemporaryDirectory()
+        self.addCleanup(self.store_dir.cleanup)
+        self.store_env = patch.dict(filing_statements.os.environ,
+                                    {"AKTIENANALYSE_DB": str(Path(self.store_dir.name) / "test.db")})
+        self.store_env.start()
+        self.addCleanup(self.store_env.stop)
+        self.addCleanup(filing_statements.filing_statements.cache_clear)
+
     def test_unknown_european_ticker_retrieves_original_report_by_identifier(self):
         company = {"id": 638, "lei": "ABCD123456ABCDEFGH12", "isins": ["DE000TEST012"]}
         base = "https://cdn.financialreports.eu/financialreports/media/filings/"
@@ -293,7 +307,10 @@ class FilingStatementTests(unittest.TestCase):
             self.assertEqual([call.args[0] for call in fetch.call_args_list], [annual, interim, half])
         result = first["statements"]
         self.assertIn("XBRL", first["statements_source"])
-        self.assertEqual(result["income"]["2025-12-31"], {"totalrevenue": 800000, "pretaxincome": 120000})
+        # The report tags one figure per share class, so the earnings per share of the
+        # original filing now arrive as well (3.50 in the fixture document).
+        self.assertEqual(result["income"]["2025-12-31"],
+                         {"totalrevenue": 800_000, "pretaxincome": 120_000, "basiceps": 3.5})
         self.assertEqual(result["quarterly"]["2025-09-30"]["totalrevenue"], 215000)
         source = result["provenance"]["quarterly"]["2025-09-30"]["totalrevenue"]
         self.assertEqual(source["url"], interim)
