@@ -94,13 +94,26 @@ results.tableUsesSelectedCutoffs =
   /const cutoffs=cutoffsFor\(selected\)/.test(script) &&
   /relativeQuality=rank!==null/.test(script);
 
-// Waiting for the index must retry a failed load, keep the button shut and tell the truth.
-results.benchmarkWaitRetries = /if\(!checkBenchmark\.loading\)loadCheckBenchmark\(index\)/.test(script);
-results.benchmarkWaitLocksButton =
-  /button\.disabled=true;\s*output\.replaceChildren\(element\("p","Vergleichsindex "/.test(script);
-results.benchmarkWaitDistinguishes =
-  /Der Vergleichsindex lädt noch; bitte erneut auswerten\./.test(script) &&
-  /Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt\./.test(script);
+// Waiting for the index: retry a failed load, hold the live button, tell pending from
+// unavailable - and never write into the nodes this handler captured, because
+// loadCheckBenchmark renders the section again and detaches them.
+const waitStart = script.indexOf("if(mode===3&&!checkBenchmark.rows.length){");
+const waitEnd = script.indexOf("const request=++rankingGeneration;", waitStart);
+const waitBlock = waitStart >= 0 && waitEnd > waitStart ? script.slice(waitStart, waitEnd) : "";
+const loadAt = waitBlock.indexOf("loadCheckBenchmark(index)");
+results.benchmarkWait = {
+  found: Boolean(waitBlock),
+  rerunsLiveControls: /const live=\(\)=>\{\s*const form=document\.querySelector\("\.rank-controls"\)/.test(waitBlock),
+  retriesLoad: /if\(!checkBenchmark\.loading\)loadCheckBenchmark\(index\)/.test(waitBlock),
+  lockedBeforeLoad: waitBlock.indexOf("lock(true);") > -1 && waitBlock.indexOf("lock(true);") < loadAt,
+  lockedAgainAfterLoad: waitBlock.lastIndexOf("lock(true);") > loadAt,
+  unlockedAfterWait: waitBlock.indexOf("lock(false);") > waitBlock.indexOf("while(checkBenchmark.loading"),
+  // The lock helper touches a freshly looked-up button; a direct write to the captured
+  // button or output would go into the detached tree.
+  noStaleNodes: !/button\.disabled=(true|false)/.test(waitBlock) && !/output\.replaceChildren/.test(waitBlock),
+  distinguishes: /melden\("Der Vergleichsindex lädt noch; bitte erneut auswerten\."/.test(waitBlock) &&
+    /melden\("Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt\."/.test(waitBlock),
+};
 
 process.stdout.write(JSON.stringify(results));
 """
@@ -142,11 +155,18 @@ class PageScriptTest(unittest.TestCase):
                         "nur der Qualitäts-Check wird gegen die Gruppe gerankt")
         self.assertTrue(ergebnis["tableUsesSelectedCutoffs"],
                         "die Tabelle bewertet nicht gegen die Schwelle des gewählten Checks")
-        self.assertTrue(ergebnis["benchmarkWaitRetries"],
-                        "ein altes Index-Symbol ohne Kurse wird nicht neu geladen")
-        self.assertTrue(ergebnis["benchmarkWaitLocksButton"],
-                        "während des Wartens auf den Index bleibt der Knopf offen")
-        self.assertTrue(ergebnis["benchmarkWaitDistinguishes"],
+        warten = ergebnis["benchmarkWait"]
+        self.assertTrue(warten["found"], "der Warteblock auf den Index fehlt")
+        self.assertTrue(warten["rerunsLiveControls"],
+                        "die Bedienelemente werden nicht neu gesucht, sondern aus der alten Closure benutzt")
+        self.assertTrue(warten["retriesLoad"], "ein altes Index-Symbol ohne Kurse wird nicht neu geladen")
+        self.assertTrue(warten["lockedBeforeLoad"], "der Knopf ist vor dem Laden nicht gesperrt")
+        self.assertTrue(warten["lockedAgainAfterLoad"],
+                        "der neu gezeichnete Knopf wird nicht erneut gesperrt")
+        self.assertTrue(warten["unlockedAfterWait"], "der Knopf bleibt nach dem Warten gesperrt")
+        self.assertTrue(warten["noStaleNodes"],
+                        "der Warteblock schreibt in die abgehängten Knoten der alten Closure")
+        self.assertTrue(warten["distinguishes"],
                         "lädt-noch und nicht-verfügbar werden nicht unterschieden")
 
 

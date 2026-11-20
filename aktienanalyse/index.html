@@ -690,20 +690,30 @@ function renderRanking(active,mode){
       const index=checkBenchmark.symbol||defaultBenchmark(active);
       if(index){
         active.rankInput=field.value;
-        button.disabled=true;
-        output.replaceChildren(element("p","Vergleichsindex "+index+" wird geladen …","sub"));
+        // loadCheckBenchmark renders the whole section again, so the nodes captured by this
+        // handler are detached from that moment on. Anything written into them is invisible
+        // and any lock on them is worthless - look the live controls up every time.
+        const live=()=>{
+          const form=document.querySelector(".rank-controls");
+          return {form,button:form?.querySelector("button")||null,out:form?.nextElementSibling||null};
+        };
+        const lock=on=>{const {button}=live();if(button)button.disabled=on;};
+        const melden=(text,kind)=>live().out?.replaceChildren(element("p",text,kind));
+        lock(true);
+        melden("Vergleichsindex "+index+" wird geladen …","sub");
         // A symbol can survive a failed load with no rows, so retry whenever the series is
         // missing and no request is running.
         if(!checkBenchmark.loading)loadCheckBenchmark(index);
+        lock(true);
         const grenze=Date.now()+40000;
         while(checkBenchmark.loading&&Date.now()<grenze)await new Promise(done=>setTimeout(done,250));
-        button.disabled=false;
+        lock(false);
         if(checkBenchmark.rows.length&&active===data&&mode===selected){
-          const frisch=document.querySelector(".rank-controls");
+          const frisch=live().form;
           if(frisch)setTimeout(()=>frisch.requestSubmit(),0);
         }else if(checkBenchmark.loading)
-          output.replaceChildren(element("p","Der Vergleichsindex lädt noch; bitte erneut auswerten.","notice"));
-        else output.replaceChildren(element("p","Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt.","notice"));
+          melden("Der Vergleichsindex lädt noch; bitte erneut auswerten.","notice");
+        else melden("Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt.","notice");
         return;
       }
     }
