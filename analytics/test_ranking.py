@@ -43,6 +43,37 @@ class UniverseTest(unittest.TestCase):
                     ranking.load_universe("doesnotexist")
         self.assertIn("doesnotexist", str(error.exception))
 
+    def test_a_path_cannot_be_passed_off_as_a_universe(self):
+        """The name comes from the query string; a slash or a leading dot must not reach disk."""
+        with TemporaryDirectory() as folder:
+            secret = Path(folder, "secret.txt")
+            secret.write_text("PRIVATE\n", encoding="utf-8")
+            with patch.object(ranking, "UNIVERSE_DIR", Path(folder)):
+                for name in (str(secret), "../secret", "sub/secret", ".hidden", "a" * 80):
+                    with self.subTest(name=name):
+                        with self.assertRaises(ValueError) as error:
+                            ranking.load_universe(name)
+                        # The name itself may be echoed - it is the caller's own input - but the
+                        # message must not hand back where the server looked.
+                        self.assertNotIn("Erwartet wird die Datei", str(error.exception))
+                with self.assertRaises(ValueError) as error:
+                    ranking.load_universe("doesnotexist")
+                self.assertNotIn("/", str(error.exception))
+
+    def test_an_invalid_ticker_in_the_file_is_named_by_its_line(self):
+        with TemporaryDirectory() as folder:
+            Path(folder, "broken.txt").write_text("# Kommentar\nSAP.DE\nA/B\n", encoding="utf-8")
+            with patch.object(ranking, "UNIVERSE_DIR", Path(folder)):
+                with self.assertRaises(ValueError) as error:
+                    ranking.load_universe("broken")
+        self.assertIn("Zeile 3", str(error.exception))
+
+    def test_an_empty_universe_is_empty_not_missing(self):
+        with TemporaryDirectory() as folder:
+            Path(folder, "leer.txt").write_text("# nur Kommentare\n", encoding="utf-8")
+            with patch.object(ranking, "UNIVERSE_DIR", Path(folder)):
+                self.assertEqual(ranking.load_universe("leer"), [])
+
 
 class MetricTest(unittest.TestCase):
     def test_rising_share_stands_at_its_high(self):

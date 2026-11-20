@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -28,22 +29,35 @@ WEIGHT_ROBUSTNESS = 0.9
 WEIGHT_DISTANCE = 0.1
 PERIODS = 250
 MAX_SYMBOLS = 200
+TICKER = re.compile(r"[A-Z0-9.^=-]{1,24}")
+UNIVERSE_NAME = re.compile(r"[a-z0-9_-]{1,64}")
 
 UNIVERSE_DIR = Path(os.environ.get("AKTIENANALYSE_UNIVERSE", Path(__file__).parent / "universes"))
 
 
 def load_universe(name: str) -> list[str]:
-    """Read one ticker per line; everything after a hash is a comment."""
+    """Read one ticker per line; everything after a hash is a comment.
+
+    The name comes from the query string, so it never reaches the filesystem unchecked: a
+    slash or an absolute path would let the caller read any *.txt file on the server, and the
+    error message must not hand back a path either.
+    """
     if not name:
         return []
-    path = UNIVERSE_DIR / f"{name.lower().replace('.', '')}.txt"
-    if not path.is_file():
-        raise ValueError(f"Unbekanntes Universum: {name}. Erwartet wird die Datei {path}.")
+    key = name.lower()
+    if not UNIVERSE_NAME.fullmatch(key):
+        raise ValueError(f"Unbekanntes Universum: {name}.")
+    path = UNIVERSE_DIR / f"{key}.txt"
+    if not path.is_file() or UNIVERSE_DIR.resolve() not in path.resolve().parents:
+        raise ValueError(f"Unbekanntes Universum: {name}.")
     symbols = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), start=1):
         entry = line.split("#", 1)[0].strip().upper()
-        if entry:
-            symbols.append(entry)
+        if not entry:
+            continue
+        if not TICKER.fullmatch(entry):
+            raise ValueError(f"Das Universum enthält einen ungültigen Ticker in Zeile {number}.")
+        symbols.append(entry)
     return symbols
 
 

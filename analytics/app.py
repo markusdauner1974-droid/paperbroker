@@ -24,6 +24,46 @@ GROUPS = {
     "quarterly": "quarterly_income_stmt",
 }
 SAP = {"symbol": "SAP.DE", "name": "SAP SE", "exchange": "Xetra"}
+# A ranking downloads up to two hundred series from the provider. One run at a time, and a
+# wall-clock budget: a second click must not multiply the outbound requests of the first.
+RANKING_BUDGET_S = 180
+_RANKING_LOCK = Lock()
+_RANKING_ACTIVE = 0
+
+
+def enter_ranking():
+    """Claim the single ranking slot, or say that one is already running."""
+    global _RANKING_ACTIVE
+    with _RANKING_LOCK:
+        if _RANKING_ACTIVE:
+            raise ValueError("Es läuft bereits eine Rangliste; bitte warten.")
+        _RANKING_ACTIVE += 1
+
+
+def leave_ranking():
+    """Give the slot back, also when the run failed."""
+    global _RANKING_ACTIVE
+    with _RANKING_LOCK:
+        _RANKING_ACTIVE = max(0, _RANKING_ACTIVE - 1)
+
+
+def checked_symbols(symbols):
+    """Every ticker is checked before it becomes part of an outbound request."""
+    if any(not SYMBOL.fullmatch(symbol) for symbol in symbols):
+        raise ValueError("Bitte gültige Börsenticker angeben.")
+    return symbols
+
+
+def budgeted(fetch, seconds=RANKING_BUDGET_S):
+    """Wrap a fetch so the ranking stops asking once its time is spent."""
+    deadline = time() + seconds
+
+    def within_budget(symbol):
+        if time() > deadline:
+            raise RuntimeError("Zeitbudget der Rangliste erschöpft")
+        return fetch(symbol)
+
+    return within_budget
 
 
 def finite(value):
@@ -494,19 +534,28 @@ class Handler(BaseHTTPRequestHandler):
                 # The weighted list needs prices only, and it brings its own universe: the generic
                 # ticker check below would reject the empty q of a universe request.
                 universe = params.get("universe", [""])[0].strip()
-                own = [part for part in re.split(r"[,\s;]+", params.get("q", [""])[0].upper()) if part]
+                own = checked_symbols([part for part in
+                                       re.split(r"[,\s;]+", params.get("q", [""])[0].upper())
+                                       if part])
                 symbols = ranking.load_universe(universe) if universe else own
                 if not symbols:
-                    raise ValueError("Bitte ein Universum oder zwei bis zweihundert Ticker angeben.")
+                    # An empty universe file is not a bad request: the list says so.
+                    raise ValueError("Das Universum ist leer." if universe
+                                     else "Bitte ein Universum oder einen bis zweihundert "
+                                          "Ticker angeben.")
                 index_symbol = (params.get("index", ["^GSPC"])[0] or "^GSPC").upper()
                 if not re.fullmatch(r"[A-Z0-9.^=\-]{1,24}", index_symbol):
                     raise ValueError("Der Vergleichsindex ist ungültig.")
                 periods = int(params.get("periods", [str(ranking.PERIODS)])[0])
                 if not 60 <= periods <= 2500:
                     raise ValueError("Die Zahl der Perioden muss zwischen 60 und 2500 liegen.")
-                self.json(200, ranking.rank_list(symbols,
-                                                 lambda symbol: prices(symbol, "ranking"),
-                                                 prices(index_symbol, "index"), periods))
+                enter_ranking()
+                try:
+                    self.json(200, ranking.rank_list(
+                        symbols, budgeted(lambda symbol: prices(symbol, "ranking")),
+                        prices(index_symbol, "index"), periods))
+                finally:
+                    leave_ranking()
                 return
             symbols = list(dict.fromkeys(query.upper().split(",")))
             maximum = 15 if path == "/api/stock-batch" else 5
