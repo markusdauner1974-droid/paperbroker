@@ -6,6 +6,7 @@ runs at a time, and the run stops when its time budget is spent.
 """
 
 import sys
+import threading
 import unittest
 from pathlib import Path
 from time import sleep
@@ -91,6 +92,40 @@ class HistoryLockTest(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 app.prices("NIX.DE", "ranking-1")
         self.assertEqual(dict(app._HISTORY_LOCKS), {})
+
+    def test_a_late_caller_waits_for_the_series_instead_of_loading_it_again(self):
+        """The holder fails, waiters remain - a newcomer must queue up, not open a second download."""
+        app._HISTORY.clear()
+        app._HISTORY_LOCKS.clear()
+        zustand = {"active": 0, "peak": 0}
+        zaehler = threading.Lock()
+
+        def failing(symbol, bucket):
+            with zaehler:
+                zustand["active"] += 1
+                zustand["peak"] = max(zustand["peak"], zustand["active"])
+            sleep(0.15)
+            with zaehler:
+                zustand["active"] -= 1
+            raise RuntimeError("kein Netz")
+
+        def call():
+            self.assertRaises(RuntimeError, app.prices, "NIX.DE", "ranking-1")
+
+        with patch.object(app, "load_history", side_effect=failing):
+            holder = threading.Thread(target=call)
+            holder.start()
+            sleep(0.03)                      # the holder is inside its download
+            waiting = [threading.Thread(target=call) for _ in range(2)]
+            for thread in waiting:
+                thread.start()
+            sleep(0.17)                      # the holder failed, a waiter is downloading now
+            late = threading.Thread(target=call)
+            late.start()
+            for thread in [holder, *waiting, late]:
+                thread.join()
+        self.assertEqual(zustand["peak"], 1, "two callers downloaded the same series at once")
+        self.assertEqual(dict(app._HISTORY_LOCKS), {}, "a lock stayed behind")
 
     def test_a_successful_download_keeps_the_series_but_no_lock(self):
         with patch.object(app, "load_history", return_value=[["2026-01-02", 1.25]]):

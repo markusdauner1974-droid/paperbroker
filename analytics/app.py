@@ -123,9 +123,25 @@ def load_history(ticker, period):
 
 
 _HISTORY_GUARD = Lock()
-_HISTORY_LOCKS = {}
 _HISTORY = {}
 HISTORY_PLACES = 96
+
+
+class Flight:
+    """One lock per (symbol, bucket) and the number of callers waiting for it.
+
+    The map entry may only disappear when the last waiter has left: popping it earlier lets a new
+    arrival create a second lock and download the same series beside the waiters.
+    """
+
+    __slots__ = ("lock", "waiting")
+
+    def __init__(self):
+        self.lock = Lock()
+        self.waiting = 0
+
+
+_HISTORY_LOCKS = {}
 
 
 def prices(symbol, bucket):
@@ -139,11 +155,10 @@ def prices(symbol, bucket):
     with _HISTORY_GUARD:
         if key in _HISTORY:
             return _HISTORY[key]
-        lock = _HISTORY_LOCKS.setdefault(key, Lock())
-    with lock:
-        # The lock is dropped in a plain finally: a failed download used to leave its entry
-        # behind, one per failing ticker and bucket, for the lifetime of the process.
-        try:
+        flight = _HISTORY_LOCKS.setdefault(key, Flight())
+        flight.waiting += 1
+    try:
+        with flight.lock:
             with _HISTORY_GUARD:
                 if key in _HISTORY:
                     return _HISTORY[key]
@@ -153,8 +168,12 @@ def prices(symbol, bucket):
                     _HISTORY.pop(next(iter(_HISTORY)))
                 _HISTORY[key] = rows
             return rows
-        finally:
-            with _HISTORY_GUARD:
+    finally:
+        # Counted, not popped blindly: a failed download must not leave the entry behind, and it
+        # must not pull the lock away from callers that are still waiting on it either.
+        with _HISTORY_GUARD:
+            flight.waiting -= 1
+            if flight.waiting <= 0:
                 _HISTORY_LOCKS.pop(key, None)
 
 
