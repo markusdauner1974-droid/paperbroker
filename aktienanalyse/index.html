@@ -690,15 +690,20 @@ function renderRanking(active,mode){
       const index=checkBenchmark.symbol||defaultBenchmark(active);
       if(index){
         active.rankInput=field.value;
+        button.disabled=true;
         output.replaceChildren(element("p","Vergleichsindex "+index+" wird geladen …","sub"));
-        if(!checkBenchmark.symbol)loadCheckBenchmark(index);
+        // A symbol can survive a failed load with no rows, so retry whenever the series is
+        // missing and no request is running.
+        if(!checkBenchmark.loading)loadCheckBenchmark(index);
         const grenze=Date.now()+40000;
         while(checkBenchmark.loading&&Date.now()<grenze)await new Promise(done=>setTimeout(done,250));
         button.disabled=false;
         if(checkBenchmark.rows.length&&active===data&&mode===selected){
           const frisch=document.querySelector(".rank-controls");
           if(frisch)setTimeout(()=>frisch.requestSubmit(),0);
-        }else output.replaceChildren(element("p","Der Vergleichsindex ist nicht verfügbar; die vier indexabhängigen Kriterien bleiben außen vor.","notice"));
+        }else if(checkBenchmark.loading)
+          output.replaceChildren(element("p","Der Vergleichsindex lädt noch; bitte erneut auswerten.","notice"));
+        else output.replaceChildren(element("p","Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt.","notice"));
         return;
       }
     }

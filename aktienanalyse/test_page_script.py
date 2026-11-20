@@ -94,6 +94,14 @@ results.tableUsesSelectedCutoffs =
   /const cutoffs=cutoffsFor\(selected\)/.test(script) &&
   /relativeQuality=rank!==null/.test(script);
 
+// Waiting for the index must retry a failed load, keep the button shut and tell the truth.
+results.benchmarkWaitRetries = /if\(!checkBenchmark\.loading\)loadCheckBenchmark\(index\)/.test(script);
+results.benchmarkWaitLocksButton =
+  /button\.disabled=true;\s*output\.replaceChildren\(element\("p","Vergleichsindex "/.test(script);
+results.benchmarkWaitDistinguishes =
+  /Der Vergleichsindex lädt noch; bitte erneut auswerten\./.test(script) &&
+  /Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt\./.test(script);
+
 process.stdout.write(JSON.stringify(results));
 """
 
@@ -134,6 +142,12 @@ class PageScriptTest(unittest.TestCase):
                         "nur der Qualitäts-Check wird gegen die Gruppe gerankt")
         self.assertTrue(ergebnis["tableUsesSelectedCutoffs"],
                         "die Tabelle bewertet nicht gegen die Schwelle des gewählten Checks")
+        self.assertTrue(ergebnis["benchmarkWaitRetries"],
+                        "ein altes Index-Symbol ohne Kurse wird nicht neu geladen")
+        self.assertTrue(ergebnis["benchmarkWaitLocksButton"],
+                        "während des Wartens auf den Index bleibt der Knopf offen")
+        self.assertTrue(ergebnis["benchmarkWaitDistinguishes"],
+                        "lädt-noch und nicht-verfügbar werden nicht unterschieden")
 
 
 if __name__ == "__main__":
