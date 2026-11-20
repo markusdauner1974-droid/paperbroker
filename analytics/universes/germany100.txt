@@ -1,4 +1,109 @@
-# One ticker per line; everything after a hash is a comment.
-# The constituents are entered here, not guessed: TraderFox names its universes Germany 100,
-# Europe 200 and USA 2000. Without a reliable list the file stays empty, and the ranking list
-# reports that the universe is empty.
+# Deutschland 100 (v) · Handelsvolumen, ohne Qualitätsfilter · 100 Einträge
+# Stand 2026-11-20 · 96 von 100 Einträgen mit belastbarer Kursreihe (mindestens 300 Schlusskurse)
+# Quelle der Mitglieder: https://rankings.traderfox.com/rankings/
+# Ticker über OpenFIGI auf die Heimatbörse der ISIN aufgelöst, jeder gegen eine echte
+# Kursreihe geprüft; nicht auflösbare oder zu kurze Titel stehen nur in diesem Kopf.
+#
+# verworfen: TKMS.DE DE000TKMS001 TKMS AG & Co. KGaA (nur 276 Kurse)
+# verworfen: TKCC.DE DE000TKCC1S8 tk accelis Group AG & Co. KG (nur 18 Kurse)
+# verworfen: AMV0.DE DE000AUM0V10 Aumovio SE (nur 299 Kurse)
+# verworfen: PFS0.DE DE000PFSE253 PFISTERER Holding SE (nur 1 Kurse)
+#
+# Ein Ticker je Zeile; alles nach einem Doppelkreuz ist ein Kommentar.
+
+SAP.DE
+ENR.DE
+SIE.DE
+IFX.DE
+ALV.DE
+RHM.DE
+DTE.DE
+DBK.DE
+MUV2.DE
+BAYN.DE
+MBG.DE
+DB1.DE
+CBK.DE
+BAS.DE
+BMW.DE
+ADS.DE
+VOW3.DE
+RWE.DE
+HEI.DE
+EOAN.DE
+VNA.DE
+DTG.DE
+FRE.DE
+MTX.DE
+MRK.DE
+HNR1.DE
+SHL.DE
+FME.DE
+G24.DE
+LHA.DE
+SY1.DE
+CON.DE
+HEN3.DE
+EVK.DE
+ZAL.DE
+BEI.DE
+HOT.DE
+SRT3.DE
+TKA.DE
+G1A.DE
+AIXA.DE
+P911.DE
+NDA.DE
+NDX1.DE
+LEG.DE
+TUI1.DE
+R3NK.DE
+HAG.DE
+EVD.DE
+SDF.DE
+PAH3.DE
+DHER.DE
+KBX.DE
+NEM.DE
+BNR.DE
+PUM.DE
+KGX.DE
+TLX.DE
+FTK.DE
+BOSS.DE
+DEZ.DE
+GBF.DE
+SZG.DE
+AG1.DE
+WAF.DE
+FRA.DE
+RAA.DE
+OHB.DE
+LXS.DE
+FNTN.DE
+SMHN.DE
+BC8.DE
+VOW.DE
+S92.DE
+DWS.DE
+TEG.DE
+SHA0.DE
+AFX.DE
+HEN.DE
+TMV.DE
+8TRA.DE
+FPE3.DE
+WCH.DE
+IOS.DE
+GXI.DE
+JEN.DE
+KRN.DE
+UTDI.DE
+ELG.DE
+DHL.DE
+EVT.DE
+ACT0.DE
+HFG.DE
+2GB.DE
+SAX.DE
+VBK.DE

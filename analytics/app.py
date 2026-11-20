@@ -26,7 +26,9 @@ GROUPS = {
 SAP = {"symbol": "SAP.DE", "name": "SAP SE", "exchange": "Xetra"}
 # A ranking downloads up to two hundred series from the provider. One run at a time, and a
 # wall-clock budget: a second click must not multiply the outbound requests of the first.
-RANKING_BUDGET_S = 180
+# Measured: two hundred titles over eight workers take a little more than three minutes on a cold
+# cache, so a budget of 180 seconds dropped the tail of a full run and reported it as skipped.
+RANKING_BUDGET_S = 300
 RANKING_BUCKET_S = 900
 _RANKING_LOCK = Lock()
 _RANKING_ACTIVE = 0
@@ -53,6 +55,15 @@ def checked_symbols(symbols):
     if any(not SYMBOL.fullmatch(symbol) for symbol in symbols):
         raise ValueError("Bitte gültige Börsenticker angeben.")
     return symbols
+
+
+def capped_symbols(symbols):
+    """A universe file may name more titles than one run may fetch; the first ones count.
+
+    The files arrive in TraderFox order, so the cut keeps the most traded titles. The number of
+    entries is returned as well, because the page has to say that it ranked a part.
+    """
+    return symbols[:ranking.MAX_SYMBOLS], len(symbols)
 
 
 def ranking_bucket():
@@ -577,7 +588,11 @@ class Handler(BaseHTTPRequestHandler):
                 own = checked_symbols([part for part in
                                        re.split(r"[,\s;]+", params.get("q", [""])[0].upper())
                                        if part])
-                symbols = ranking.load_universe(universe) if universe else own
+                available = 0
+                if universe:
+                    symbols, available = capped_symbols(ranking.load_universe(universe))
+                else:
+                    symbols = own
                 if not symbols:
                     # An empty universe file is not a bad request: the list says so.
                     raise ValueError("Das Universum ist leer." if universe
@@ -592,7 +607,11 @@ class Handler(BaseHTTPRequestHandler):
                 enter_ranking()
                 try:
                     fetch, index_rows = ranking_series(index_symbol)
-                    self.json(200, ranking.rank_list(symbols, fetch, index_rows, periods))
+                    answer = ranking.rank_list(symbols, fetch, index_rows, periods)
+                    if available:
+                        # Said out loud: the list worked through a part of the file, not all of it.
+                        answer["listed"] = available
+                    self.json(200, answer)
                 finally:
                     leave_ranking()
                 return
