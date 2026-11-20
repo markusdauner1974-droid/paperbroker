@@ -43,6 +43,15 @@ results.holeIsRecognised = context.consecutiveQuarters(holed, 8);
 const shifted = quarters.map(([d], index) => [index < 4 ? d : d.replace("2025", "2024"), {}]);
 results.gapIsRecognised = context.consecutiveQuarters(shifted, 8);
 
+// An unreadable date must never pass as a quarter, and a broken entry must not throw.
+const brokenDate = quarters.map(([d], index) => [index === 3 ? "not-a-date" : d, {}]);
+results.unreadableDateRefused = context.consecutiveQuarters(brokenDate, 8) === false;
+const brokenEntry = quarters.slice();
+brokenEntry[3] = undefined;
+let threw = false;
+try { context.consecutiveQuarters(brokenEntry, 8); } catch (error) { threw = true; }
+results.brokenEntryRefused = threw === false;
+
 // The display rule: a criterion that waits for the benchmark must not show a dash.
 const pending = /benchmarkPending\s*=\s*selected===3&&checkBenchmark\.loading&&ordinal>=11/;
 const reading = /element\("td",benchmarkPending\?"Wird geladen …":value,"criterion-value"\)/;
@@ -79,6 +88,9 @@ class PageScriptTest(unittest.TestCase):
         self.assertFalse(ergebnis["sevenOnly"], "sieben Quartale dürfen kein Acht-Quartale-Fenster sein")
         self.assertFalse(ergebnis["holeIsRecognised"], "ein fehlendes Quartal wurde übersehen")
         self.assertFalse(ergebnis["gapIsRecognised"], "eine Lücke von einem Jahr wurde übersehen")
+        self.assertTrue(ergebnis["unreadableDateRefused"],
+                        "ein unlesbares Datum wird als Quartal akzeptiert")
+        self.assertTrue(ergebnis["brokenEntryRefused"], "ein kaputter Eintrag lässt die Prüfung abstürzen")
         self.assertTrue(ergebnis["pendingRuleShipped"], "die Ladeanzeige für Indexkriterien fehlt")
         self.assertTrue(ergebnis["loadingFlagIsKept"], "der Ladezustand wird nicht geführt")
         self.assertTrue(ergebnis["supplementIsGuarded"], "die Yahoo-Ergänzung ist nicht gegen Doppelläufe gesichert")

@@ -249,7 +249,10 @@ function consecutiveQuarters(entries,count){
   // distance between two neighbours must stay near a quarter.
   if(!Array.isArray(entries)||entries.length<count)return false;
   for(let index=1;index<count;index++){
-    const gap=(Date.parse(entries[index-1][0])-Date.parse(entries[index][0]))/86400000;
+    const a=Date.parse(entries[index-1]?.[0]),b=Date.parse(entries[index]?.[0]);
+    // An unreadable date is not a quarter; refuse the window instead of accepting it.
+    if(!Number.isFinite(a)||!Number.isFinite(b))return false;
+    const gap=(a-b)/86400000;
     if(gap<65||gap>120)return false;
   }
   return true;
