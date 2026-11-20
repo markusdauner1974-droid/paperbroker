@@ -287,7 +287,7 @@ def stored_statements(symbol, currency):
                                           for key in row}
                                     for day, row in block.items()}
                           for section, block in sections.items()}
-            return {**sections, "provenance": provenance}, identity.get("waehrung") or currency
+            return {**sections, "provenance": provenance}, identity.get("currency") or currency
     except (sqlite3.Error, OSError):
         return {}, None
 
@@ -370,21 +370,21 @@ def filing_entries(symbol, cutoff, isin):
     """Where the reports are: the stored list when it exists, the paid one otherwise."""
     stored = stored_filings(symbol)
     if stored:
-        grenze = date.fromisoformat(cutoff)
+        limit = date.fromisoformat(cutoff)
         entries = []
-        for eintrag in stored:
-            jahr, adresse = eintrag[0], eintrag[2]
-            veroeffentlicht = eintrag[3] if len(eintrag) > 3 else ""
-            if veroeffentlicht:
+        for item in stored:
+            year, address = item[0], item[2]
+            released = item[3] if len(item) > 3 else ""
+            if released:
                 try:
                     # A report released after the cut-off must not be read: it would
                     # carry knowledge the price series cannot have. The paid branch
                     # has always refused these; the stored branch has to as well.
-                    if date.fromisoformat(veroeffentlicht[:10]) > grenze:
+                    if date.fromisoformat(released[:10]) > limit:
                         continue
                 except ValueError:
                     continue
-            entries.append((adresse, str(jahr), veroeffentlicht or ""))
+            entries.append((address, str(year), released or ""))
         return "", entries
     ticker, _, market = symbol.rpartition(".")
     country = EU_MARKETS.get(market)

@@ -184,6 +184,31 @@ class RememberStatementsTest(unittest.TestCase):
         self.assertEqual(identity, ("DE000EVNK013", "EUR"))
         self.assertEqual(source, "ixbrl_original")
 
+    def test_the_stored_statements_report_the_currency_of_the_report(self):
+        """The page compares figures across years, so it must not use the quote currency."""
+        fs = load_collector()
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "currency.db"
+            old = os.environ.get("AKTIENANALYSE_DB")
+            os.environ["AKTIENANALYSE_DB"] = str(db)
+            try:
+                tagged = {"income": {"2025-12-31": {"totalrevenue": 391_035_000_000.0}},
+                          "provenance": {"income": {"2025-12-31": {
+                              "totalrevenue": {"url": "https://cdn.example/aapl.zip",
+                                               "filed": "2026-10-30"}}}}}
+                fs.remember_statements("AAPL", None, "USD", tagged)
+                statements, currency = fs.stored_statements("AAPL", "EUR")
+                stored_currency = fs.store.company(fs.store.connect(), "AAPL")["currency"]
+            finally:
+                if old is None:
+                    os.environ.pop("AKTIENANALYSE_DB", None)
+                else:
+                    os.environ["AKTIENANALYSE_DB"] = old
+        self.assertEqual(stored_currency, "USD", "the company row lost its currency")
+        # Reading the column by its old name yields None, and the fallback would answer EUR.
+        self.assertEqual(currency, "USD", "the read used the quote currency instead of the report's")
+        self.assertIn("2025-12-31", statements.get("income", {}))
+
     def test_a_missing_store_does_not_raise(self):
         fs = load_collector()
         with TemporaryDirectory() as tmp:
