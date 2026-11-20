@@ -1,4 +1,0 @@
-# Ein Ticker je Zeile, alles nach dem Rautezeichen ist Bemerkung.
-# Die Zusammensetzung wird hier eingetragen, nicht geschaetzt: TraderFox nennt seine
-# Universen Deutschland 100, Europa 200 und USA 2000. Ohne belastbare Liste bleibt die
-# Datei leer, und die Rangliste sagt, dass das Universum leer ist.

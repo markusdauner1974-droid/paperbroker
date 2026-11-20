@@ -1,0 +1,9 @@
+# One ticker per line; everything after a hash is a comment.
+# The constituents are entered here, not guessed: TraderFox names its universes Germany 100,
+# Europe 200 and USA 2000. Without a reliable list the file stays empty, and the ranking list
+# reports that the universe is empty.
+
+# Three tickers to try the list out.
+SAP.DE
+AAPL
+KO

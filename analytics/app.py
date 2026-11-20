@@ -491,22 +491,22 @@ class Handler(BaseHTTPRequestHandler):
                 self.json(200, search(query, self.nas))
                 return
             if path == "/api/ranking":
-                # The weighted list needs prices only, and it takes its own universe: the generic
+                # The weighted list needs prices only, and it brings its own universe: the generic
                 # ticker check below would reject the empty q of a universe request.
-                universum = params.get("universum", [""])[0].strip()
-                eigene = [teil for teil in re.split(r"[,\s;]+", params.get("q", [""])[0].upper()) if teil]
-                symbole = ranking.lade_universum(universum) if universum else eigene
-                if not symbole:
+                universe = params.get("universe", [""])[0].strip()
+                own = [part for part in re.split(r"[,\s;]+", params.get("q", [""])[0].upper()) if part]
+                symbols = ranking.load_universe(universe) if universe else own
+                if not symbols:
                     raise ValueError("Bitte ein Universum oder zwei bis zweihundert Ticker angeben.")
                 index_symbol = (params.get("index", ["^GSPC"])[0] or "^GSPC").upper()
                 if not re.fullmatch(r"[A-Z0-9.^=\-]{1,24}", index_symbol):
                     raise ValueError("Der Vergleichsindex ist ungültig.")
-                perioden = int(params.get("perioden", [str(ranking.PERIODEN)])[0])
-                if not 60 <= perioden <= 2500:
+                periods = int(params.get("periods", [str(ranking.PERIODS)])[0])
+                if not 60 <= periods <= 2500:
                     raise ValueError("Die Zahl der Perioden muss zwischen 60 und 2500 liegen.")
-                self.json(200, ranking.rangliste(symbole,
+                self.json(200, ranking.rank_list(symbols,
                                                  lambda symbol: prices(symbol, "ranking"),
-                                                 prices(index_symbol, "index"), perioden))
+                                                 prices(index_symbol, "index"), periods))
                 return
             symbols = list(dict.fromkeys(query.upper().split(",")))
             maximum = 15 if path == "/api/stock-batch" else 5
