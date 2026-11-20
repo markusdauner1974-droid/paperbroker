@@ -553,12 +553,14 @@ async function loadCheckBenchmark(symbol){
   checkBenchmark.loading=Boolean(symbol);
   checkBenchmark.message=symbol?"Index wird geladen …":"Vergleichsindex eingeben, z. B. ^GSPC.";
   activeRanking=null;
-  renderChecks();
-  if(!symbol)return;
+  // Everything that can throw sits inside the try, and the flag is cleared in finally: a
+  // failing render must not leave the check marked as loading forever, because every later
+  // comparison would then wait for an index that never arrives.
   try{
+    renderChecks();
+    if(!symbol)return;
     const response=await api("compare",symbol);
     if(request!==checkBenchmark.request||current!==data)return;
-    checkBenchmark.loading=false;
     checkBenchmark.rows=response.series[0]?.prices||[];
     const series=response.series[0];
     const label=symbol==="SPY"?"SPY (S&P-500-ETF)":symbol;
@@ -567,8 +569,10 @@ async function loadCheckBenchmark(symbol){
       "Für "+symbol+" fehlen Benchmarkkurse.";
   }catch(error){
     if(request!==checkBenchmark.request||current!==data)return;
-    checkBenchmark.loading=false;
-    checkBenchmark.message=error.message;
+    checkBenchmark.message=error.message||"Der Vergleichsindex konnte nicht geladen werden.";
+  }finally{
+    // Only the request that still owns the flag may clear it; a newer one owns it otherwise.
+    if(request===checkBenchmark.request)checkBenchmark.loading=false;
   }
   if(selected===3)renderChecks();
 }
@@ -703,7 +707,7 @@ function renderRanking(active,mode){
         report("Vergleichsindex "+index+" wird geladen …","sub");
         // A symbol can survive a failed load with no rows, so retry whenever the series is
         // missing and no request is running.
-        if(!checkBenchmark.loading)loadCheckBenchmark(index);
+        if(!checkBenchmark.loading)loadCheckBenchmark(index).catch(()=>{checkBenchmark.loading=false;});
         lock(true);
         const deadline=Date.now()+40000;
         while(checkBenchmark.loading&&Date.now()<deadline)await new Promise(done=>setTimeout(done,250));
@@ -811,7 +815,7 @@ function renderChecks(){
   renderTabs($("tabs"),titles,selected,index=>{
     if(index!==selected){selected=index;rankingGeneration++;}
     if(index===3&&!data.reference&&!checkBenchmark.symbol&&defaultBenchmark(data)){
-      loadCheckBenchmark(defaultBenchmark(data));return;
+      loadCheckBenchmark(defaultBenchmark(data)).catch(()=>{checkBenchmark.loading=false;});return;
     }
     renderChecks();
   });
@@ -862,7 +866,8 @@ function renderChecks(){
     form.onsubmit=event=>{
       event.preventDefault();
       const symbol=input.value.trim().toUpperCase();
-      if(/^[A-Z0-9.^=\-]{1,24}$/.test(symbol))loadCheckBenchmark(symbol);
+      if(/^[A-Z0-9.^=\-]{1,24}$/.test(symbol))
+        loadCheckBenchmark(symbol).catch(()=>{checkBenchmark.loading=false;});
     };
     criteria.append(element("h3","Vergleichsindex"),form,element("small",checkBenchmark.message||"Index für die Auswertung schwacher Markttage wählen."));
   }
@@ -1348,7 +1353,7 @@ function replaceData(next,{reset=false}={}){
   rankingGeneration++;activeRanking=null;
   render();
   const symbol=previousBenchmark||defaultBenchmark(data);
-  if(selected===3&&symbol)loadCheckBenchmark(symbol);
+  if(selected===3&&symbol)loadCheckBenchmark(symbol).catch(()=>{checkBenchmark.loading=false;});
 }
 async function extendStock(){
   const active=data,request=generation;

@@ -113,7 +113,24 @@ results.benchmarkWait = {
   noStaleNodes: !/button\.disabled=(true|false)/.test(waitBlock) && !/output\.replaceChildren/.test(waitBlock),
   distinguishes: /report\("Der Vergleichsindex lädt noch; bitte erneut auswerten\."/.test(waitBlock) &&
     /report\("Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt\."/.test(waitBlock),
+  handled: /loadCheckBenchmark\(index\)\.catch\(/.test(waitBlock),
 };
+
+// A failing render must not leave the check loading forever, and no caller may swallow the
+// rejection silently: the flag is cleared in finally, every call site attaches a catch.
+const loadStart = script.indexOf("async function loadCheckBenchmark(symbol){");
+const loadEnd = script.indexOf("\n}", loadStart);
+const loadBody = loadStart >= 0 && loadEnd > loadStart ? script.slice(loadStart, loadEnd) : "";
+const tryAt = loadBody.indexOf("try{");
+results.benchmarkLoad = {
+  found: Boolean(loadBody),
+  renderInsideTry: tryAt > -1 && loadBody.indexOf("renderChecks();") > tryAt,
+  clearedInFinally: /finally\{[\s\S]*?if\(request===checkBenchmark\.request\)checkBenchmark\.loading=false;/
+    .test(loadBody),
+};
+const callSites = (script.match(/loadCheckBenchmark\(/g) || []).length - 1;   // minus the definition
+const guardedCalls = (script.match(/loadCheckBenchmark\([\s\S]{0,60}?\.catch\(/g) || []).length;
+results.benchmarkCallsHandled = callSites > 0 && guardedCalls === callSites;
 
 process.stdout.write(JSON.stringify(results));
 """
@@ -168,6 +185,15 @@ class PageScriptTest(unittest.TestCase):
                         "the wait block writes into the detached nodes of the old closure")
         self.assertTrue(wait["distinguishes"],
                         "pending and unavailable are not distinguished")
+        self.assertTrue(wait["handled"], "the index load in the wait block can reject unhandled")
+        load = result["benchmarkLoad"]
+        self.assertTrue(load["found"], "loadCheckBenchmark not found")
+        self.assertTrue(load["renderInsideTry"],
+                        "the render runs outside the error handling of the index load")
+        self.assertTrue(load["clearedInFinally"],
+                        "a failing render leaves the check loading forever")
+        self.assertTrue(result["benchmarkCallsHandled"],
+                        "a call of loadCheckBenchmark can reject without being handled")
 
 
 if __name__ == "__main__":
