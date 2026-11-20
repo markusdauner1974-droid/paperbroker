@@ -147,6 +147,57 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.fs.issuer_identifier(b"<html><body>nothing</body></html>"), "")
 
 
+class RememberStatementsTest(unittest.TestCase):
+    """The write path after a paid lookup: if it fails silently, every page view pays again."""
+
+    def test_the_collected_statements_reach_the_store(self):
+        fs = load_collector()
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "write.db"
+            old = os.environ.get("AKTIENANALYSE_DB")
+            os.environ["AKTIENANALYSE_DB"] = str(db)
+            try:
+                tagged = {
+                    "income": {"2025-12-31": {"totalrevenue": 14_069_000_000.0,
+                                              "dilutedeps": 0.57}},
+                    "provenance": {"income": {"2025-12-31": {
+                        "totalrevenue": {"url": "https://cdn.example/evk.zip",
+                                         "filed": "2026-03-19"},
+                        "dilutedeps": {"url": "https://cdn.example/evk.zip",
+                                       "filed": "2026-03-19"}}}},
+                }
+                fs.remember_statements("EVK.DE", "DE000EVNK013", "EUR", tagged)
+                with sqlite3.connect(db) as conn:
+                    figures = conn.execute("SELECT COUNT(*) FROM figure").fetchone()[0]
+                    filings = conn.execute("SELECT COUNT(*) FROM filing").fetchone()[0]
+                    identity = conn.execute(
+                        "SELECT isin, currency FROM company WHERE symbol='EVK.DE'").fetchone()
+                    source = conn.execute("SELECT DISTINCT source FROM figure").fetchone()[0]
+            finally:
+                if old is None:
+                    os.environ.pop("AKTIENANALYSE_DB", None)
+                else:
+                    os.environ["AKTIENANALYSE_DB"] = old
+        # A wrong keyword name would raise TypeError, be swallowed, and leave the store empty.
+        self.assertEqual(figures, 2, "the figures of a paid lookup were not written")
+        self.assertEqual(filings, 1, "the paid filing list was not written")
+        self.assertEqual(identity, ("DE000EVNK013", "EUR"))
+        self.assertEqual(source, "ixbrl_original")
+
+    def test_a_missing_store_does_not_raise(self):
+        fs = load_collector()
+        with TemporaryDirectory() as tmp:
+            old = os.environ.get("AKTIENANALYSE_DB")
+            os.environ["AKTIENANALYSE_DB"] = str(Path(tmp) / "no" / "such" / "dir" / "x.db")
+            try:
+                fs.remember_statements("EVK.DE", None, "EUR", {"income": {}})
+            finally:
+                if old is None:
+                    os.environ.pop("AKTIENANALYSE_DB", None)
+                else:
+                    os.environ["AKTIENANALYSE_DB"] = old
+
+
 class StoreFilingTest(unittest.TestCase):
     def test_the_release_date_survives_a_round_trip(self):
         fs = load_collector()

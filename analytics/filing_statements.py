@@ -293,22 +293,27 @@ def stored_statements(symbol, currency):
 
 
 def remember_statements(symbol, isin, currency, tagged):
-    """Write what the collector learned, so the next look costs nothing."""
+    """Write what the collector learned, so the next look costs nothing.
+
+    A missing store is not worth an error: the page still shows the figures it just read. A
+    TypeError is not in that list - it means the call and the store disagree about their
+    arguments, and swallowing it would let the collector pay for every page view again.
+    """
     try:
         with closing(store.connect()) as conn:
-            store.remember_company(conn, symbol, isin=isin, waehrung=currency)
-            store.write_figures(conn, symbol, tagged, quelle="ixbrl_original", waehrung=currency)
-            berichte = []
+            store.remember_company(conn, symbol, isin=isin, currency=currency)
+            store.write_figures(conn, symbol, tagged, source="ixbrl_original", currency=currency)
+            filings = []
             for block in (tagged.get("provenance") or {}).values():
                 for day, row in block.items():
                     for entry in row.values():
                         if not isinstance(entry, dict) or not entry.get("url"):
                             continue
-                        veroeffentlicht = entry.get("filed") or ""
-                        berichte.append((int(str(day)[:4]), "IXBRL", entry["url"], str(veroeffentlicht)))
-            if berichte:
-                store.remember_filings(conn, symbol, berichte)
-    except (sqlite3.Error, OSError, ValueError, TypeError):
+                        released = entry.get("filed") or ""
+                        filings.append((int(str(day)[:4]), "IXBRL", entry["url"], str(released)))
+            if filings:
+                store.remember_filings(conn, symbol, filings)
+    except (sqlite3.Error, OSError, ValueError):
         pass
 
 
