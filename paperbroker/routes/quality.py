@@ -1,15 +1,15 @@
 """The stock analysis as a page **inside** this program — not a second service.
 
-The analysis (folder ``aktienanalyse/``) is Python code like the rest: it is loaded
+The analysis (folder ``analytics/``) is Python code like the rest: it is loaded
 here and served under ``/qualitaet/``. No proxy, no second container, no image of
 its own — one process, one port, one source tree.
 
-It still starts on its own (``python3 aktienanalyse/app.py``, port 8766): the same
+It still starts on its own (``python3 analytics/app.py``, port 8766): the same
 files, the same code, just a different entry point.
 
 Layout:
 
-* ``page()`` serves the interface (``aktienanalyse/index.html``) and injects the
+* ``page()`` serves the interface (``analytics/index.html``) and injects the
   path prefix it runs under.
 * ``api(name)`` maps the former ``/api/...`` paths of the block onto its
   functions. The arithmetic stays wherever it was delivered; only the dispatcher
@@ -35,11 +35,11 @@ from urllib.error import HTTPError, URLError
 from flask import Response, jsonify, request
 
 # The folder holding the delivered code, next to this package.
-AKT_DIR = Path(__file__).resolve().parents[2] / "aktienanalyse"
+AKT_DIR = Path(__file__).resolve().parents[2] / "analytics"
 NAS_URL_ENV = "AKTIENANALYSE_NAS_URL"
 PAGE_PATH = "/qualitaet"
 
-# The same pattern the delivered program uses (aktienanalyse/app.py): a narrower
+# The same pattern the delivered program uses (analytics/app.py): a narrower
 # one here would reject tickers the standalone entry point happily serves.
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
 
@@ -62,11 +62,11 @@ def _akt():
         if _module is None:
             if str(AKT_DIR) not in sys.path:
                 sys.path.insert(0, str(AKT_DIR))
-            spec = importlib.util.spec_from_file_location("aktienanalyse_app", AKT_DIR / "app.py")
+            spec = importlib.util.spec_from_file_location("analytics_app", AKT_DIR / "app.py")
             if spec is None or spec.loader is None:
-                raise RuntimeError(f"aktienanalyse is not readable: {AKT_DIR}")
+                raise RuntimeError(f"analytics is not readable: {AKT_DIR}")
             module = importlib.util.module_from_spec(spec)
-            sys.modules["aktienanalyse_app"] = module
+            sys.modules["analytics_app"] = module
             spec.loader.exec_module(module)
             _module = module
     return _module

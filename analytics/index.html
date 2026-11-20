@@ -553,12 +553,20 @@ async function loadCheckBenchmark(symbol){
   checkBenchmark.loading=Boolean(symbol);
   checkBenchmark.message=symbol?"Index wird geladen …":"Vergleichsindex eingeben, z. B. ^GSPC.";
   activeRanking=null;
-  renderChecks();
-  if(!symbol)return;
+  // A render error must never reject this function: a caller's catch would otherwise clear the
+  // loading flag of a *newer* request, and the wait block would report the index as unavailable
+  // while the newer load is still running. Rendering therefore goes through safeRender, and
+  // every other step sits inside the try; the flag is cleared in finally, and only by the
+  // request that still owns it.
+  const safeRender=()=>{
+    try{ renderChecks(); }
+    catch(error){ checkBenchmark.message=error.message||"Der Vergleichsindex konnte nicht geladen werden."; }
+  };
   try{
+    safeRender();
+    if(!symbol)return;
     const response=await api("compare",symbol);
     if(request!==checkBenchmark.request||current!==data)return;
-    checkBenchmark.loading=false;
     checkBenchmark.rows=response.series[0]?.prices||[];
     const series=response.series[0];
     const label=symbol==="SPY"?"SPY (S&P-500-ETF)":symbol;
@@ -567,13 +575,26 @@ async function loadCheckBenchmark(symbol){
       "Für "+symbol+" fehlen Benchmarkkurse.";
   }catch(error){
     if(request!==checkBenchmark.request||current!==data)return;
-    checkBenchmark.loading=false;
-    checkBenchmark.message=error.message;
+    checkBenchmark.message=error.message||"Der Vergleichsindex konnte nicht geladen werden.";
+  }finally{
+    // Only the request that still owns the flag may clear it; a newer one owns it otherwise.
+    if(request===checkBenchmark.request)checkBenchmark.loading=false;
   }
-  if(selected===3)renderChecks();
+  if(selected===3)safeRender();
 }
+// A single entry point for the callers: loadCheckBenchmark does not reject, so the catch only
+// keeps an unexpected rejection from becoming an unhandled one - it never touches shared state.
+const startBenchmark=symbol=>{
+  loadCheckBenchmark(symbol).catch(()=>{});
+};
 // Per-criterion cutoffs and direction published for TraderFox's quality check.
 const qualityPercentiles=[50,65,50,65,50,50,50,50,50,50,50,25,25,10,10];
+// Each check compares against the reference market. TraderFox publishes the cutoffs of the
+// quality check and names 65 % for the dividend check; the growth and robustness cutoffs are
+// not published, so they stay at the 50 % standard and the page says so.
+const blockPercentiles=[qualityPercentiles,Array(15).fill(65),Array(15).fill(50),Array(15).fill(50)];
+const blockPercentilesPublished=[true,true,false,false];
+const cutoffsFor=block=>blockPercentiles[block]||qualityPercentiles;
 const qualityLowerIsBetter=new Set([7,10,13,14]);
 function rankValue(row,index,mode){
   const value=row[6];
@@ -603,8 +624,9 @@ function rankUniverse(current,stocks,mode,benchmark){
   const universe=[base,...candidates.map(item=>item.criteria)];
   const rankAt=(member,index)=>mask[index]?percentile(rankValue(universe[member][index],index,mode),
     universe.filter((_,i)=>i!==member).map(rows=>rankValue(rows[index],index,mode))):null;
+  const cutoffs=cutoffsFor(mode);
   const points=member=>universe[member].filter((row,index)=>mask[index]&&
-    (mode===0?rankAt(member,index)>=qualityPercentiles[index]:row[2]===true)).length;
+    rankAt(member,index)>=cutoffs[index]).length;
   const score=points(0);
   const results=candidates.map(({stock},index)=>({
     symbol:stock.symbol,name:stock.info.longName||stock.info.shortName||stock.symbol,points:points(index+1)
@@ -621,6 +643,9 @@ function renderRanking(active,mode){
     return section;
   }
   const notice=element("p","Verglichen werden die angegebenen Ticker anhand derselben verfügbaren Kriterien. Bei mindestens acht gemeinsamen Kriterien wird die Quote berechnet.","sub");
+  const cutoffValues=[...new Set(cutoffsFor(mode))].sort((a,b)=>a-b).map(value=>value+" %").join(", ");
+  const cutoffNote=element("p","Rangschwelle dieses Checks: "+cutoffValues+" je Kriterium · "+
+    (blockPercentilesPublished[mode]?"veröffentlicht":"nicht veröffentlicht, Standardwert 50 %")+".","sub");
   const form=element("form",undefined,"controls rank-controls");
   const field=element("input");
   field.setAttribute("aria-label","Vergleichsgruppe aus Aktientickern");
@@ -674,6 +699,39 @@ function renderRanking(active,mode){
       output.replaceChildren(element("p","Bitte 2 bis 15 gültige Vergleichsticker eingeben.","notice"));
       return;
     }
+    // The four benchmark criteria cannot be ranked before the index series exists; wait for it,
+    // then start the comparison again from the freshly rendered form.
+    if(mode===3&&!checkBenchmark.rows.length){
+      const index=checkBenchmark.symbol||defaultBenchmark(active);
+      if(index){
+        active.rankInput=field.value;
+        // loadCheckBenchmark renders the whole section again, so the nodes captured by this
+        // handler are detached from that moment on. Anything written into them is invisible
+        // and any lock on them is worthless - look the live controls up every time.
+        const live=()=>{
+          const form=document.querySelector(".rank-controls");
+          return {form,button:form?.querySelector("button")||null,out:form?.nextElementSibling||null};
+        };
+        const lock=on=>{const {button}=live();if(button)button.disabled=on;};
+        const report=(text,kind)=>live().out?.replaceChildren(element("p",text,kind));
+        lock(true);
+        report("Vergleichsindex "+index+" wird geladen …","sub");
+        // A symbol can survive a failed load with no rows, so retry whenever the series is
+        // missing and no request is running.
+        if(!checkBenchmark.loading)startBenchmark(index);
+        lock(true);
+        const deadline=Date.now()+40000;
+        while(checkBenchmark.loading&&Date.now()<deadline)await new Promise(done=>setTimeout(done,250));
+        lock(false);
+        if(checkBenchmark.rows.length&&active===data&&mode===selected){
+          const freshForm=live().form;
+          if(freshForm)setTimeout(()=>freshForm.requestSubmit(),0);
+        }else if(checkBenchmark.loading)
+          report("Der Vergleichsindex lädt noch; bitte erneut auswerten.","notice");
+        else report("Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt.","notice");
+        return;
+      }
+    }
     const request=++rankingGeneration;
     active.rankInput=field.value;
     active.rankStatements=includeStatements.checked;
@@ -715,19 +773,19 @@ function renderRanking(active,mode){
     form.append(useNas);
   }
   if(active.nas_primary)notice.append(" Die Vergleichsgruppe verwendet den NAS-Bestand und dessen verfügbare Kennzahlen.");
-  section.append(notice,form,output);
+  section.append(notice,cutoffNote,form,output);
   return section;
 }
 function appendCriteria(parent,title,rows,referenceStatuses,offset){
   const heading=element("h3",title,"criterion-group");
   const ranking=!data.nasBaseline&&activeRanking?.active===data&&activeRanking.mode===selected?activeRanking.result:null;
+  const cutoffs=cutoffsFor(selected);
   if(!data.reference){
-    const qualityComparison=selected===0&&ranking?.ranks;
-    if(qualityComparison){
+    if(ranking?.ranks){
       const ranks=ranking.ranks.slice(offset,offset+rows.length);
       const known=ranks.filter(isNum).length;
-      const passed=ranks.filter((rank,index)=>isNum(rank)&&rank>=qualityPercentiles[offset+index]).length;
-      heading.append(element("small",known?passed+" / "+known+" vergleichbar":"—"));
+      const passed=ranks.filter((rank,index)=>isNum(rank)&&rank>=cutoffs[offset+index]).length;
+      heading.append(element("small",known?passed+" von "+known+" erfüllt":"—"));
     }else{
       heading.append(element("small",scoreLabel(scoreGroups([[title,rows]]))));
     }
@@ -736,10 +794,10 @@ function appendCriteria(parent,title,rows,referenceStatuses,offset){
   rows.forEach(([name,value,result,threshold,grade],index)=>{
     const ordinal=offset+index;
     const rank=ranking?.ranks?.[ordinal]??null;
-    const relativeQuality=rank!==null&&selected===0;
-    const meterValue=rank??(selected===0&&ranking?.ranks?null:grade);
-    const status=relativeQuality?rank>=qualityPercentiles[ordinal]:
-      selected===0&&ranking?.ranks?null:referenceStatuses?.[index]??result;
+    const relativeQuality=rank!==null;
+    const meterValue=rank??(ranking?.ranks?null:grade);
+    const status=relativeQuality?rank>=cutoffs[ordinal]:
+      ranking?.ranks?null:referenceStatuses?.[index]??result;
     const tr=tbody.insertRow();
     const label=element("th",(status===true?"✓ ":status===false?"✕ ":"")+name,status===true?"ok":status===false?"bad":"");
     label.scope="row";
@@ -757,8 +815,8 @@ function appendCriteria(parent,title,rows,referenceStatuses,offset){
       fill.style.width=Math.max(5,meterValue)+"%";fill.style.setProperty("--bar", "hsl("+meterValue*1.29+" 67% 37%)");
       track.append(fill);cell.append(track);
     }
-    if(threshold)cell.append(element("small",rank===null?(selected===0&&ranking?.ranks?"Nicht vergleichbar":threshold):
-      "Rang "+f(rank)+(relativeQuality?" · Ziel ≥ "+qualityPercentiles[ordinal]:" / 100")));
+    if(threshold)cell.append(element("small",rank===null?(ranking?.ranks?"Nicht vergleichbar":threshold):
+      "Rang "+f(rank)+(relativeQuality?" · Ziel ≥ "+cutoffs[ordinal]+" %":" / 100")));
     else if(status===true||status===false)cell.append(element("small",status?"Erfüllt":"Verfehlt"));
     tr.append(label,reading,cell);
   });
@@ -768,7 +826,7 @@ function renderChecks(){
   renderTabs($("tabs"),titles,selected,index=>{
     if(index!==selected){selected=index;rankingGeneration++;}
     if(index===3&&!data.reference&&!checkBenchmark.symbol&&defaultBenchmark(data)){
-      loadCheckBenchmark(defaultBenchmark(data));return;
+      startBenchmark(defaultBenchmark(data));return;
     }
     renderChecks();
   });
@@ -795,7 +853,7 @@ function renderChecks(){
   const details=element("details");
   details.append(element("summary","Infos zum Score"),element("p",data.reference?
     "Erfasster TraderFox-Stand für SAP. Die Marktvergleiche beziehen sich auf Deutschland 100 (v).":
-    "Balken zeigen die Kennzahl auf einer Zielskala von 0 bis 100. Bei gerichteten Kriterien liegt das Ziel bei 50. Die Farben bewerten zunächst die Zielerreichung. Nach der Auswertung einer Vergleichsgruppe wird bei gemeinsamen Kriterien der Rang innerhalb dieser Gruppe angezeigt. Gleichstände zählen bei Einzelrängen zur Hälfte. Die Marktabdeckung entspricht den ausgewählten Tickern. Ein erfülltes Kriterium zählt einen Punkt. Bei fehlenden Daten zeigt die Punktespanne die offenen Kriterien. Der Qualitätsvergleich in einer Gruppe verwendet die publizierten Rangschwellen und die vorhandenen Kennzahlen; die Einzelwertung oben verwendet die festen Schwellen der App. Das Stabilitätsmaß nutzt R² eines linearen Trends der logarithmierten Werte für steigende Verläufe und setzt fallende oder flache Trends für die Bewertung auf null. Volatilität ist die Standardabweichung einfacher Tages- oder Wochenrenditen. Drawdowns stammen aus abgeschlossenen Kalenderperioden."));
+    "Balken zeigen die Kennzahl auf einer Zielskala von 0 bis 100. Bei gerichteten Kriterien liegt das Ziel bei 50. Die Farben bewerten zunächst die Zielerreichung. Nach der Auswertung einer Vergleichsgruppe wird bei gemeinsamen Kriterien der Rang innerhalb dieser Gruppe angezeigt. Gleichstände zählen bei Einzelrängen zur Hälfte. Die Marktabdeckung entspricht den ausgewählten Tickern. Ein erfülltes Kriterium zählt einen Punkt. Bei fehlenden Daten zeigt die Punktespanne die offenen Kriterien. Der Vergleich in einer Gruppe nutzt je Check eine eigene Rangschwelle: im Qualitäts-Check die veröffentlichten 50 %, 65 % bei den Stabilitätsmaßen sowie 25 % und 10 % bei EBIT-Schulden-, Zins- und Bewertungskennzahlen, im Dividenden-Check die veröffentlichten 65 %, im Wachstums- und im Robustheits-Check 50 % (nicht veröffentlicht, deshalb Standardwert). Die Einzelwertung ohne Gruppe nutzt die festen Schwellen der App. Das Stabilitätsmaß nutzt R² eines linearen Trends der logarithmierten Werte für steigende Verläufe und setzt fallende oder flache Trends für die Bewertung auf null. Volatilität ist die Standardabweichung einfacher Tages- oder Wochenrenditen. Drawdowns stammen aus abgeschlossenen Kalenderperioden."));
   const grid=element("div",undefined,"check-grid"),charts=element("div"),criteria=element("div",undefined,"criteria");
   const annualCanvas=element("canvas"),priceCanvas=element("canvas");
   annualCanvas.id="check-year-chart";priceCanvas.id="check-price-chart";
@@ -819,7 +877,7 @@ function renderChecks(){
     form.onsubmit=event=>{
       event.preventDefault();
       const symbol=input.value.trim().toUpperCase();
-      if(/^[A-Z0-9.^=\-]{1,24}$/.test(symbol))loadCheckBenchmark(symbol);
+      if(/^[A-Z0-9.^=\-]{1,24}$/.test(symbol))startBenchmark(symbol);
     };
     criteria.append(element("h3","Vergleichsindex"),form,element("small",checkBenchmark.message||"Index für die Auswertung schwacher Markttage wählen."));
   }
@@ -1305,7 +1363,7 @@ function replaceData(next,{reset=false}={}){
   rankingGeneration++;activeRanking=null;
   render();
   const symbol=previousBenchmark||defaultBenchmark(data);
-  if(selected===3&&symbol)loadCheckBenchmark(symbol);
+  if(selected===3&&symbol)startBenchmark(symbol);
 }
 async function extendStock(){
   const active=data,request=generation;

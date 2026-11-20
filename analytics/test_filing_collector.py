@@ -35,8 +35,8 @@ class CollectorTest(unittest.TestCase):
         self.env.start()
         self.fs = load_collector()
         self.store = self.fs.store
-        with self.store.verbindung(self.db) as conn:
-            self.store.berichte_merken(conn, "EVK.DE", [
+        with self.store.connect(self.db) as conn:
+            self.store.remember_filings(conn, "EVK.DE", [
                 (2023, "IXBRL", "https://cdn.example/financialreports/media/filings/a.zip", "2024-03-19"),
                 (2024, "IXBRL", "https://cdn.example/financialreports/media/filings/b.zip", "2025-03-17"),
             ])
@@ -111,8 +111,8 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual([e[0][-5:] for e in entries], ["a.zip"])
 
     def test_a_stored_entry_without_a_release_date_stays_usable(self):
-        with self.store.verbindung(self.db) as conn:
-            self.store.berichte_merken(conn, "OHNE.DE", [(2023, "IXBRL", "https://cdn/x.zip", "")])
+        with self.store.connect(self.db) as conn:
+            self.store.remember_filings(conn, "OHNE.DE", [(2023, "IXBRL", "https://cdn/x.zip", "")])
         _lei, entries = self.fs.filing_entries("OHNE.DE", "2024-06-30", None)
         self.assertEqual(len(entries), 1)
 
@@ -138,13 +138,89 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.fs.issuer_identifier(puffer.getvalue()), "41GUOJQTALQHLF39XJ34")
 
     def test_the_issuer_is_read_from_the_report_when_no_lookup_was_made(self):
-        bericht = (b'<?xml version="1.0"?><html><body>'
-                   b'<xbrli:identifier scheme="http://standards.iso.org/iso/17442">'
-                   b'41GUOJQTALQHLF39XJ34</xbrli:identifier></body></html>')
-        self.assertEqual(self.fs.issuer_identifier(bericht), "41GUOJQTALQHLF39XJ34")
+        report = (b'<?xml version="1.0"?><html><body>'
+                  b'<xbrli:identifier scheme="http://standards.iso.org/iso/17442">'
+                  b'41GUOJQTALQHLF39XJ34</xbrli:identifier></body></html>')
+        self.assertEqual(self.fs.issuer_identifier(report), "41GUOJQTALQHLF39XJ34")
 
     def test_a_report_without_identifier_leaves_the_question_open(self):
-        self.assertEqual(self.fs.issuer_identifier(b"<html><body>nichts</body></html>"), "")
+        self.assertEqual(self.fs.issuer_identifier(b"<html><body>nothing</body></html>"), "")
+
+
+class RememberStatementsTest(unittest.TestCase):
+    """The write path after a paid lookup: if it fails silently, every page view pays again."""
+
+    def test_the_collected_statements_reach_the_store(self):
+        fs = load_collector()
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "write.db"
+            old = os.environ.get("AKTIENANALYSE_DB")
+            os.environ["AKTIENANALYSE_DB"] = str(db)
+            try:
+                tagged = {
+                    "income": {"2025-12-31": {"totalrevenue": 14_069_000_000.0,
+                                              "dilutedeps": 0.57}},
+                    "provenance": {"income": {"2025-12-31": {
+                        "totalrevenue": {"url": "https://cdn.example/evk.zip",
+                                         "filed": "2026-03-19"},
+                        "dilutedeps": {"url": "https://cdn.example/evk.zip",
+                                       "filed": "2026-03-19"}}}},
+                }
+                fs.remember_statements("EVK.DE", "DE000EVNK013", "EUR", tagged)
+                with sqlite3.connect(db) as conn:
+                    figures = conn.execute("SELECT COUNT(*) FROM figure").fetchone()[0]
+                    filings = conn.execute("SELECT COUNT(*) FROM filing").fetchone()[0]
+                    identity = conn.execute(
+                        "SELECT isin, currency FROM company WHERE symbol='EVK.DE'").fetchone()
+                    source = conn.execute("SELECT DISTINCT source FROM figure").fetchone()[0]
+            finally:
+                if old is None:
+                    os.environ.pop("AKTIENANALYSE_DB", None)
+                else:
+                    os.environ["AKTIENANALYSE_DB"] = old
+        # A wrong keyword name would raise TypeError, be swallowed, and leave the store empty.
+        self.assertEqual(figures, 2, "the figures of a paid lookup were not written")
+        self.assertEqual(filings, 1, "the paid filing list was not written")
+        self.assertEqual(identity, ("DE000EVNK013", "EUR"))
+        self.assertEqual(source, "ixbrl_original")
+
+    def test_the_stored_statements_report_the_currency_of_the_report(self):
+        """The page compares figures across years, so it must not use the quote currency."""
+        fs = load_collector()
+        with TemporaryDirectory() as tmp:
+            db = Path(tmp) / "currency.db"
+            old = os.environ.get("AKTIENANALYSE_DB")
+            os.environ["AKTIENANALYSE_DB"] = str(db)
+            try:
+                tagged = {"income": {"2025-12-31": {"totalrevenue": 391_035_000_000.0}},
+                          "provenance": {"income": {"2025-12-31": {
+                              "totalrevenue": {"url": "https://cdn.example/aapl.zip",
+                                               "filed": "2026-10-30"}}}}}
+                fs.remember_statements("AAPL", None, "USD", tagged)
+                statements, currency = fs.stored_statements("AAPL", "EUR")
+                stored_currency = fs.store.company(fs.store.connect(), "AAPL")["currency"]
+            finally:
+                if old is None:
+                    os.environ.pop("AKTIENANALYSE_DB", None)
+                else:
+                    os.environ["AKTIENANALYSE_DB"] = old
+        self.assertEqual(stored_currency, "USD", "the company row lost its currency")
+        # Reading the column by its old name yields None, and the fallback would answer EUR.
+        self.assertEqual(currency, "USD", "the read used the quote currency instead of the report's")
+        self.assertIn("2025-12-31", statements.get("income", {}))
+
+    def test_a_missing_store_does_not_raise(self):
+        fs = load_collector()
+        with TemporaryDirectory() as tmp:
+            old = os.environ.get("AKTIENANALYSE_DB")
+            os.environ["AKTIENANALYSE_DB"] = str(Path(tmp) / "no" / "such" / "dir" / "x.db")
+            try:
+                fs.remember_statements("EVK.DE", None, "EUR", {"income": {}})
+            finally:
+                if old is None:
+                    os.environ.pop("AKTIENANALYSE_DB", None)
+                else:
+                    os.environ["AKTIENANALYSE_DB"] = old
 
 
 class StoreFilingTest(unittest.TestCase):
@@ -153,25 +229,25 @@ class StoreFilingTest(unittest.TestCase):
         store = fs.store
         with TemporaryDirectory() as tmp:
             db = str(Path(tmp) / "x.db")
-            with store.verbindung(db) as conn:
-                store.berichte_merken(conn, "EVK.DE", [
+            with store.connect(db) as conn:
+                store.remember_filings(conn, "EVK.DE", [
                     (2025, "IXBRL", "https://cdn.example/a.zip", "2026-03-19")])
-                gespeichert = store.berichte(conn, "EVK.DE")
-        self.assertEqual(gespeichert, [(2025, "IXBRL", "https://cdn.example/a.zip", "2026-03-19")])
+                stored = store.filings(conn, "EVK.DE")
+        self.assertEqual(stored, [(2025, "IXBRL", "https://cdn.example/a.zip", "2026-03-19")])
 
     def test_an_older_database_gets_the_new_column(self):
         fs = load_collector()
         store = fs.store
         with TemporaryDirectory() as tmp:
-            db = str(Path(tmp) / "alt.db")
-            roh = sqlite3.connect(db)
-            roh.execute("""CREATE TABLE bericht (symbol TEXT, geschaeftsjahr INTEGER, typ TEXT,
-                           adresse TEXT, abgerufen_am TEXT, PRIMARY KEY (symbol, geschaeftsjahr, typ))""")
-            roh.commit()
-            roh.close()
-            with store.verbindung(db) as conn:
-                spalten = {row[1] for row in conn.execute("PRAGMA table_info(bericht)")}
-        self.assertIn("veroeffentlicht", spalten)
+            db = str(Path(tmp) / "older.db")
+            raw = sqlite3.connect(db)
+            raw.execute("""CREATE TABLE filing (symbol TEXT, fiscal_year INTEGER, kind TEXT,
+                           address TEXT, fetched_at TEXT, PRIMARY KEY (symbol, fiscal_year, kind))""")
+            raw.commit()
+            raw.close()
+            with store.connect(db) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(filing)")}
+        self.assertIn("released", columns)
 
 
 class LockConcurrencyTest(unittest.TestCase):

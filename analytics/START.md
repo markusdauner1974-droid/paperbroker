@@ -7,7 +7,7 @@ Die Oberfläche orientiert sich funktional an der TraderFox-Visualisierungsseite
 Entpacke diese Version vollständig in den bisherigen Ordner und ersetze die vorhandenen Programmdateien. Für die NAS-Anbindung und den Abruf von Abschlüssen werden auch `nas_scanner.py`, `sec_statements.py` und `filing_statements.py` benötigt. Beende den bisherigen Server im Terminal mit Strg+C und starte die neue Version auf Port 8766.
 
 ```bash
-python3 "$HOME/Downloads/aktienanalyse/app.py" --port 8766 --nas http://192.168.178.10:8089
+python3 "$HOME/Downloads/analytics/app.py" --port 8766 --nas http://192.168.178.10:8089
 ```
 
 Bei aktiver NAS-Anmeldung fragt das lokale Terminal nach dem vorhandenen Stock-Scanner-Passwort. Die Eingabe bleibt verborgen. Die Anmeldung erfolgt direkt beim angegebenen NAS. Das Passwort wird nicht gespeichert und die Sitzung bleibt nur im Prozessspeicher. Verwende die HTTP-Adresse im eigenen vertrauenswürdigen Heimnetz. Danach [Port 8766](http://127.0.0.1:8766/) öffnen und einen Ticker wie `AAPL` oder `SAP.DE` laden. Unter **NAS-Scanner** stehen die verfügbaren Werte mit Snapshot-Datum. Ohne `--nas` startet die reguläre Aktienanalyse.

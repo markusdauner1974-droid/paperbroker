@@ -394,7 +394,7 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     hand_earnings_routes.register(app)
     page_routes.register(app)
     # Der eigene Baustein hinter demselben Host: /qualitaet/* geht unveraendert
-    # an aktienanalyse (eigener Prozess, eigenes --base-path).
+    # an analytics (own process, own --base-path).
     quality_routes.register(app)
 
 

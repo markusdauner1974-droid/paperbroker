@@ -278,37 +278,42 @@ def stored_statements(symbol, currency):
     anything up again.
     """
     try:
-        with closing(store.verbindung()) as conn:
-            sections = store.werte_lesen(conn, symbol)
+        with closing(store.connect()) as conn:
+            sections = store.read_figures(conn, symbol)
             if not (sections.get("income") or sections.get("balance")):
                 return {}, None
-            identity = store.firma(conn, symbol)
+            identity = store.company(conn, symbol)
             provenance = {section: {day: {key: {"source": "ixbrl_original", "stored": True}
                                           for key in row}
                                     for day, row in block.items()}
                           for section, block in sections.items()}
-            return {**sections, "provenance": provenance}, identity.get("waehrung") or currency
+            return {**sections, "provenance": provenance}, identity.get("currency") or currency
     except (sqlite3.Error, OSError):
         return {}, None
 
 
 def remember_statements(symbol, isin, currency, tagged):
-    """Write what the collector learned, so the next look costs nothing."""
+    """Write what the collector learned, so the next look costs nothing.
+
+    A missing store is not worth an error: the page still shows the figures it just read. A
+    TypeError is not in that list - it means the call and the store disagree about their
+    arguments, and swallowing it would let the collector pay for every page view again.
+    """
     try:
-        with closing(store.verbindung()) as conn:
-            store.firma_merken(conn, symbol, isin=isin, waehrung=currency)
-            store.werte_schreiben(conn, symbol, tagged, quelle="ixbrl_original", waehrung=currency)
-            berichte = []
+        with closing(store.connect()) as conn:
+            store.remember_company(conn, symbol, isin=isin, currency=currency)
+            store.write_figures(conn, symbol, tagged, source="ixbrl_original", currency=currency)
+            filings = []
             for block in (tagged.get("provenance") or {}).values():
                 for day, row in block.items():
                     for entry in row.values():
                         if not isinstance(entry, dict) or not entry.get("url"):
                             continue
-                        veroeffentlicht = entry.get("filed") or ""
-                        berichte.append((int(str(day)[:4]), "IXBRL", entry["url"], str(veroeffentlicht)))
-            if berichte:
-                store.berichte_merken(conn, symbol, berichte)
-    except (sqlite3.Error, OSError, ValueError, TypeError):
+                        released = entry.get("filed") or ""
+                        filings.append((int(str(day)[:4]), "IXBRL", entry["url"], str(released)))
+            if filings:
+                store.remember_filings(conn, symbol, filings)
+    except (sqlite3.Error, OSError, ValueError):
         pass
 
 
@@ -355,8 +360,8 @@ def issuer_identifier(payload):
 def stored_filings(symbol):
     """The filing list that was already paid for, while it is young enough."""
     try:
-        with closing(store.verbindung()) as conn:
-            return store.berichte(conn, symbol)
+        with closing(store.connect()) as conn:
+            return store.filings(conn, symbol)
     except (sqlite3.Error, OSError):
         return []
 
@@ -365,21 +370,21 @@ def filing_entries(symbol, cutoff, isin):
     """Where the reports are: the stored list when it exists, the paid one otherwise."""
     stored = stored_filings(symbol)
     if stored:
-        grenze = date.fromisoformat(cutoff)
+        limit = date.fromisoformat(cutoff)
         entries = []
-        for eintrag in stored:
-            jahr, adresse = eintrag[0], eintrag[2]
-            veroeffentlicht = eintrag[3] if len(eintrag) > 3 else ""
-            if veroeffentlicht:
+        for item in stored:
+            year, address = item[0], item[2]
+            released = item[3] if len(item) > 3 else ""
+            if released:
                 try:
                     # A report released after the cut-off must not be read: it would
                     # carry knowledge the price series cannot have. The paid branch
                     # has always refused these; the stored branch has to as well.
-                    if date.fromisoformat(veroeffentlicht[:10]) > grenze:
+                    if date.fromisoformat(released[:10]) > limit:
                         continue
                 except ValueError:
                     continue
-            entries.append((adresse, str(jahr), veroeffentlicht or ""))
+            entries.append((address, str(year), released or ""))
         return "", entries
     ticker, _, market = symbol.rpartition(".")
     country = EU_MARKETS.get(market)
