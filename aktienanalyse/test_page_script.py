@@ -111,8 +111,8 @@ results.benchmarkWait = {
   // The lock helper touches a freshly looked-up button; a direct write to the captured
   // button or output would go into the detached tree.
   noStaleNodes: !/button\.disabled=(true|false)/.test(waitBlock) && !/output\.replaceChildren/.test(waitBlock),
-  distinguishes: /melden\("Der Vergleichsindex lädt noch; bitte erneut auswerten\."/.test(waitBlock) &&
-    /melden\("Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt\."/.test(waitBlock),
+  distinguishes: /report\("Der Vergleichsindex lädt noch; bitte erneut auswerten\."/.test(waitBlock) &&
+    /report\("Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt\."/.test(waitBlock),
 };
 
 process.stdout.write(JSON.stringify(results));
@@ -123,51 +123,51 @@ process.stdout.write(JSON.stringify(results));
 class PageScriptTest(unittest.TestCase):
     def test_quarter_window_and_benchmark_loading_state(self):
         import os
-        umgebung = {**os.environ, "PAGE_PATH": str(PAGE)}
-        lauf = subprocess.run(["node", "-e", HARNESS],
-                              capture_output=True, text=True, timeout=120, env=umgebung)
-        self.assertEqual(lauf.returncode, 0, lauf.stderr[-800:])
-        ergebnis = json.loads(lauf.stdout)
-        self.assertTrue(ergebnis["eightConsecutive"], "acht Quartale ohne Loch wurden nicht erkannt")
-        self.assertFalse(ergebnis["sevenOnly"], "sieben Quartale dürfen kein Acht-Quartale-Fenster sein")
-        self.assertFalse(ergebnis["holeIsRecognised"], "ein fehlendes Quartal wurde übersehen")
-        self.assertFalse(ergebnis["gapIsRecognised"], "eine Lücke von einem Jahr wurde übersehen")
-        self.assertTrue(ergebnis["unreadableDateRefused"],
-                        "ein unlesbares Datum wird als Quartal akzeptiert")
-        self.assertTrue(ergebnis["brokenEntryRefused"], "ein kaputter Eintrag lässt die Prüfung abstürzen")
-        self.assertTrue(ergebnis["pendingRuleShipped"], "die Ladeanzeige für Indexkriterien fehlt")
-        self.assertTrue(ergebnis["loadingFlagIsKept"], "der Ladezustand wird nicht geführt")
-        self.assertTrue(ergebnis["supplementIsGuarded"], "die Yahoo-Ergänzung ist nicht gegen Doppelläufe gesichert")
-        self.assertTrue(ergebnis["supplementStartsByItself"],
-                        "bei einem NAS-Kurs ohne Historie startet die Ergänzung nicht von selbst")
-        self.assertEqual(ergebnis["cutoffRows"], [15, 15, 15, 15],
-                         "jeder Check braucht fünfzehn Schwellen")
-        self.assertEqual(ergebnis["qualityRow"],
+        env = {**os.environ, "PAGE_PATH": str(PAGE)}
+        run = subprocess.run(["node", "-e", HARNESS],
+                             capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(run.returncode, 0, run.stderr[-800:])
+        result = json.loads(run.stdout)
+        self.assertTrue(result["eightConsecutive"], "eight quarters without a hole were not recognised")
+        self.assertFalse(result["sevenOnly"], "seven quarters must not count as an eight-quarter window")
+        self.assertFalse(result["holeIsRecognised"], "a missing quarter was overlooked")
+        self.assertFalse(result["gapIsRecognised"], "a one-year gap was overlooked")
+        self.assertTrue(result["unreadableDateRefused"],
+                        "an unreadable date is accepted as a quarter")
+        self.assertTrue(result["brokenEntryRefused"], "a broken entry crashes the check")
+        self.assertTrue(result["pendingRuleShipped"], "the loading label for index criteria is missing")
+        self.assertTrue(result["loadingFlagIsKept"], "the loading state is not tracked")
+        self.assertTrue(result["supplementIsGuarded"], "the Yahoo supplement is not protected against double runs")
+        self.assertTrue(result["supplementStartsByItself"],
+                        "the supplement does not start by itself for a NAS quote without history")
+        self.assertEqual(result["cutoffRows"], [15, 15, 15, 15],
+                         "every check needs fifteen cutoffs")
+        self.assertEqual(result["qualityRow"],
                          "[50,65,50,65,50,50,50,50,50,50,50,25,25,10,10]",
-                         "die veröffentlichten Schwellen des Qualitäts-Checks sind verändert")
-        self.assertEqual(ergebnis["dividendCutoffs"], [65], "Dividenden-Check: 65 % ist veröffentlicht")
-        self.assertEqual(ergebnis["growthCutoffs"], [50], "Wachstums-Check: Standardwert 50 %")
-        self.assertEqual(ergebnis["robustnessCutoffs"], [50], "Robustheits-Check: Standardwert 50 %")
-        self.assertEqual(ergebnis["cutoffForRobustness"], 50, "die Schwelle des gewählten Checks fehlt")
-        self.assertEqual(ergebnis["publishedFlags"], [True, True, False, False],
-                         "veröffentlicht und angenommen müssen unterscheidbar bleiben")
-        self.assertTrue(ergebnis["rankingCoversEveryCheck"],
-                        "nur der Qualitäts-Check wird gegen die Gruppe gerankt")
-        self.assertTrue(ergebnis["tableUsesSelectedCutoffs"],
-                        "die Tabelle bewertet nicht gegen die Schwelle des gewählten Checks")
-        warten = ergebnis["benchmarkWait"]
-        self.assertTrue(warten["found"], "der Warteblock auf den Index fehlt")
-        self.assertTrue(warten["rerunsLiveControls"],
-                        "die Bedienelemente werden nicht neu gesucht, sondern aus der alten Closure benutzt")
-        self.assertTrue(warten["retriesLoad"], "ein altes Index-Symbol ohne Kurse wird nicht neu geladen")
-        self.assertTrue(warten["lockedBeforeLoad"], "der Knopf ist vor dem Laden nicht gesperrt")
-        self.assertTrue(warten["lockedAgainAfterLoad"],
-                        "der neu gezeichnete Knopf wird nicht erneut gesperrt")
-        self.assertTrue(warten["unlockedAfterWait"], "der Knopf bleibt nach dem Warten gesperrt")
-        self.assertTrue(warten["noStaleNodes"],
-                        "der Warteblock schreibt in die abgehängten Knoten der alten Closure")
-        self.assertTrue(warten["distinguishes"],
-                        "lädt-noch und nicht-verfügbar werden nicht unterschieden")
+                         "the published cutoffs of the quality check have been changed")
+        self.assertEqual(result["dividendCutoffs"], [65], "dividend check: 65 % is published")
+        self.assertEqual(result["growthCutoffs"], [50], "growth check: default 50 %")
+        self.assertEqual(result["robustnessCutoffs"], [50], "robustness check: default 50 %")
+        self.assertEqual(result["cutoffForRobustness"], 50, "the cutoff of the selected check is missing")
+        self.assertEqual(result["publishedFlags"], [True, True, False, False],
+                         "published and assumed cutoffs must stay distinguishable")
+        self.assertTrue(result["rankingCoversEveryCheck"],
+                        "only the quality check is ranked against the group")
+        self.assertTrue(result["tableUsesSelectedCutoffs"],
+                        "the table does not judge against the cutoff of the selected check")
+        wait = result["benchmarkWait"]
+        self.assertTrue(wait["found"], "the wait block for the index is missing")
+        self.assertTrue(wait["rerunsLiveControls"],
+                        "the controls are not looked up again but taken from the old closure")
+        self.assertTrue(wait["retriesLoad"], "an old index symbol without prices is not loaded again")
+        self.assertTrue(wait["lockedBeforeLoad"], "the button is not locked before the load")
+        self.assertTrue(wait["lockedAgainAfterLoad"],
+                        "the re-rendered button is not locked again")
+        self.assertTrue(wait["unlockedAfterWait"], "the button stays locked after the wait")
+        self.assertTrue(wait["noStaleNodes"],
+                        "the wait block writes into the detached nodes of the old closure")
+        self.assertTrue(wait["distinguishes"],
+                        "pending and unavailable are not distinguished")
 
 
 if __name__ == "__main__":
