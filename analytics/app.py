@@ -12,6 +12,7 @@ from time import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 
+import ranking
 import yfinance as yf
 from filing_statements import merge_filings
 from sec_statements import load_sec_statements
@@ -23,6 +24,62 @@ GROUPS = {
     "quarterly": "quarterly_income_stmt",
 }
 SAP = {"symbol": "SAP.DE", "name": "SAP SE", "exchange": "Xetra"}
+# A ranking downloads up to two hundred series from the provider. One run at a time, and a
+# wall-clock budget: a second click must not multiply the outbound requests of the first.
+RANKING_BUDGET_S = 180
+RANKING_BUCKET_S = 900
+_RANKING_LOCK = Lock()
+_RANKING_ACTIVE = 0
+
+
+def enter_ranking():
+    """Claim the single ranking slot, or say that one is already running."""
+    global _RANKING_ACTIVE
+    with _RANKING_LOCK:
+        if _RANKING_ACTIVE:
+            raise ValueError("Es läuft bereits eine Rangliste; bitte warten.")
+        _RANKING_ACTIVE += 1
+
+
+def leave_ranking():
+    """Give the slot back, also when the run failed."""
+    global _RANKING_ACTIVE
+    with _RANKING_LOCK:
+        _RANKING_ACTIVE = max(0, _RANKING_ACTIVE - 1)
+
+
+def checked_symbols(symbols):
+    """Every ticker is checked before it becomes part of an outbound request."""
+    if any(not SYMBOL.fullmatch(symbol) for symbol in symbols):
+        raise ValueError("Bitte gültige Börsenticker angeben.")
+    return symbols
+
+
+def ranking_bucket():
+    """One bucket per quarter hour, like the page's own view.
+
+    A fixed bucket would score a small universe from the series cached at the first run, and the
+    list would rank on prices that never age.
+    """
+    return f"ranking-{int(time() // RANKING_BUCKET_S)}"
+
+
+def ranking_series(index_symbol):
+    """The symbol fetch and the index series of one ranking run, from the same bucket."""
+    bucket = ranking_bucket()
+    return budgeted(lambda symbol: prices(symbol, bucket)), prices(index_symbol, bucket)
+
+
+def budgeted(fetch, seconds=RANKING_BUDGET_S):
+    """Wrap a fetch so the ranking stops asking once its time is spent."""
+    deadline = time() + seconds
+
+    def within_budget(symbol):
+        if time() > deadline:
+            raise RuntimeError("Zeitbudget der Rangliste erschöpft")
+        return fetch(symbol)
+
+    return within_budget
 
 
 def finite(value):
@@ -66,9 +123,25 @@ def load_history(ticker, period):
 
 
 _HISTORY_GUARD = Lock()
-_HISTORY_LOCKS = {}
 _HISTORY = {}
 HISTORY_PLACES = 96
+
+
+class Flight:
+    """One lock per (symbol, bucket) and the number of callers waiting for it.
+
+    The map entry may only disappear when the last waiter has left: popping it earlier lets a new
+    arrival create a second lock and download the same series beside the waiters.
+    """
+
+    __slots__ = ("lock", "waiting")
+
+    def __init__(self):
+        self.lock = Lock()
+        self.waiting = 0
+
+
+_HISTORY_LOCKS = {}
 
 
 def prices(symbol, bucket):
@@ -82,18 +155,26 @@ def prices(symbol, bucket):
     with _HISTORY_GUARD:
         if key in _HISTORY:
             return _HISTORY[key]
-        lock = _HISTORY_LOCKS.setdefault(key, Lock())
-    with lock:
+        flight = _HISTORY_LOCKS.setdefault(key, Flight())
+        flight.waiting += 1
+    try:
+        with flight.lock:
+            with _HISTORY_GUARD:
+                if key in _HISTORY:
+                    return _HISTORY[key]
+            rows = load_history(yf.Ticker(symbol), "max")
+            with _HISTORY_GUARD:
+                if len(_HISTORY) >= HISTORY_PLACES:
+                    _HISTORY.pop(next(iter(_HISTORY)))
+                _HISTORY[key] = rows
+            return rows
+    finally:
+        # Counted, not popped blindly: a failed download must not leave the entry behind, and it
+        # must not pull the lock away from callers that are still waiting on it either.
         with _HISTORY_GUARD:
-            if key in _HISTORY:
-                return _HISTORY[key]
-        rows = load_history(yf.Ticker(symbol), "max")
-        with _HISTORY_GUARD:
-            if len(_HISTORY) >= HISTORY_PLACES:
-                _HISTORY.pop(next(iter(_HISTORY)))
-            _HISTORY[key] = rows
-            _HISTORY_LOCKS.pop(key, None)
-        return rows
+            flight.waiting -= 1
+            if flight.waiting <= 0:
+                _HISTORY_LOCKS.pop(key, None)
 
 
 def load_statements(ticker):
@@ -466,7 +547,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, self.page(), "text/html; charset=utf-8")
             return
         if path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",
-                        "/api/compare", "/api/xang"):
+                        "/api/compare", "/api/xang", "/api/ranking"):
             self.json(404, {"error": "Adresse nicht gefunden."})
             return
         params = parse_qs(target.query)
@@ -488,6 +569,32 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1 <= len(query) <= 100:
                     raise ValueError("Bitte einen Namen, Ticker oder eine ISIN eingeben.")
                 self.json(200, search(query, self.nas))
+                return
+            if path == "/api/ranking":
+                # The weighted list needs prices only, and it brings its own universe: the generic
+                # ticker check below would reject the empty q of a universe request.
+                universe = params.get("universe", [""])[0].strip()
+                own = checked_symbols([part for part in
+                                       re.split(r"[,\s;]+", params.get("q", [""])[0].upper())
+                                       if part])
+                symbols = ranking.load_universe(universe) if universe else own
+                if not symbols:
+                    # An empty universe file is not a bad request: the list says so.
+                    raise ValueError("Das Universum ist leer." if universe
+                                     else "Bitte ein Universum oder einen bis zweihundert "
+                                          "Ticker angeben.")
+                index_symbol = (params.get("index", ["^GSPC"])[0] or "^GSPC").upper()
+                if not re.fullmatch(r"[A-Z0-9.^=\-]{1,24}", index_symbol):
+                    raise ValueError("Der Vergleichsindex ist ungültig.")
+                periods = int(params.get("periods", [str(ranking.PERIODS)])[0])
+                if not 60 <= periods <= 2500:
+                    raise ValueError("Die Zahl der Perioden muss zwischen 60 und 2500 liegen.")
+                enter_ranking()
+                try:
+                    fetch, index_rows = ranking_series(index_symbol)
+                    self.json(200, ranking.rank_list(symbols, fetch, index_rows, periods))
+                finally:
+                    leave_ranking()
                 return
             symbols = list(dict.fromkeys(query.upper().split(",")))
             maximum = 15 if path == "/api/stock-batch" else 5

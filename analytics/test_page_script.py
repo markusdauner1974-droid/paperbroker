@@ -137,6 +137,27 @@ const directCalls = (script.match(/loadCheckBenchmark\(/g) || []).length - 1;   
 const wrapped = (script.match(/startBenchmark\(/g) || []).length;                 // four call sites
 results.benchmarkCallsHandled = !statefulCatch && directCalls === 1 && wrapped === 4;
 
+
+// The dividend streak counts fifteen windows and stays open when the history is too short.
+const streakStart = script.indexOf("let streak=0;");
+const streakEnd = script.indexOf("const divIncrease=");
+const streakClose = script.indexOf("const streakKnown=");
+const streakAfter = script.indexOf("const ma=rows.length>=200");
+if (streakStart < 0 || streakEnd < 0 || streakClose < 0 || streakAfter < 0)
+  throw new Error("streak rule not found");
+// Skip the two payout lines in between: they need the quote payload, the rule does not.
+const streakBody = script.slice(streakStart, streakEnd) + script.slice(streakClose, streakAfter);
+results.divYears = Number((script.match(/const divYears=(\d+);/) || [])[1]);
+const streakOf = vm.runInContext(
+  "(function(divYears,divHistory){" + streakBody + " return knownStreak; })", context);
+const year = values => { const out = Array(16).fill(1); values.forEach(([i, v]) => { out[i] = v; }); return out; };
+results.streakFull = streakOf(15, year([]));
+results.streakBrokenByZero = streakOf(15, year([[7, 0]]));
+results.streakOpenOnUnknown = streakOf(15, year([[8, null]]));
+results.streakOpenOnShortHistory = streakOf(15, [1, 1, 1, null]);
+results.streakLabelShipped = /Aufeinanderfolgende 12-Monats-Zeiträume mit Dividende \(max\. 15\)/.test(script) &&
+  /knownStreak,0,5,15\)/.test(script);
+
 process.stdout.write(JSON.stringify(results));
 """
 
@@ -201,6 +222,16 @@ class PageScriptTest(unittest.TestCase):
                         "a failing render leaves the check loading forever")
         self.assertTrue(result["benchmarkCallsHandled"],
                         "a call of loadCheckBenchmark can reject without being handled")
+        self.assertEqual(result["divYears"], 15, "the dividend history does not reach fifteen years back")
+        self.assertEqual(result["streakFull"], 15, "fifteen years with a payment must count 15")
+        self.assertEqual(result["streakBrokenByZero"], 7, "a year without a payment must end the streak")
+        self.assertIsNone(result["streakOpenOnUnknown"],
+                          "an unknown year must not be counted as a break")
+        self.assertIsNone(result["streakOpenOnShortHistory"],
+                          "a short history must not claim fifteen years")
+        self.assertTrue(result["streakLabelShipped"], "label and limit of the criterion do not match")
+
+
 
 
 if __name__ == "__main__":

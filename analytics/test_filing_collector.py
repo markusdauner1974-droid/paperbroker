@@ -209,18 +209,34 @@ class RememberStatementsTest(unittest.TestCase):
         self.assertEqual(currency, "USD", "the read used the quote currency instead of the report's")
         self.assertIn("2025-12-31", statements.get("income", {}))
 
-    def test_a_missing_store_does_not_raise(self):
+    def test_an_unwritable_store_does_not_raise(self):
+        """connect() creates missing folders, so the path has to be uncreatable, not missing."""
         fs = load_collector()
         with TemporaryDirectory() as tmp:
+            blocker = Path(tmp) / "blocker"
+            blocker.write_text("a file, not a directory", encoding="utf-8")
             old = os.environ.get("AKTIENANALYSE_DB")
-            os.environ["AKTIENANALYSE_DB"] = str(Path(tmp) / "no" / "such" / "dir" / "x.db")
+            os.environ["AKTIENANALYSE_DB"] = str(blocker / "x.db")
             try:
+                try:
+                    with fs.store.connect():
+                        pass
+                except OSError as expected:
+                    raised = type(expected).__name__
+                else:
+                    raised = ""
                 fs.remember_statements("EVK.DE", None, "EUR", {"income": {}})
+                written = (blocker / "x.db").exists()
             finally:
                 if old is None:
                     os.environ.pop("AKTIENANALYSE_DB", None)
                 else:
                     os.environ["AKTIENANALYSE_DB"] = old
+        # Without this the test passes even though the except branch was never reached.
+        self.assertEqual(raised, "FileExistsError", "the path was creatable, so nothing failed")
+        self.assertFalse(written, "a store appeared under a file")
+        with mock.patch.object(fs.store, "connect", side_effect=OSError("store gone")):
+            fs.remember_statements("EVK.DE", None, "EUR", {"income": {}})
 
 
 class StoreFilingTest(unittest.TestCase):

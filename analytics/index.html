@@ -52,6 +52,7 @@ summary.rank-banner{display:list-item;color:#091217}
 <section class="panel" id="risk"><h2>Bilanz und Risiko</h2><div id="risk-body"></div></section>
 <section class="panel" id="flow"><h2>Gewinnfluss</h2><div id="flow-body"></div></section>
 <section class="panel" id="dividend"><h2>Dividenden</h2><div id="dividend-body"></div></section>
+<section class="panel wide" id="leaderboard"><h2>Rangliste nach Gewichtung</h2><div class="controls"><label>Universum <input id="board-universe" placeholder="z. B. example" size="12"></label><label>oder Ticker <input id="board-tickers" placeholder="SAP.DE, AAPL, KO" size="24"></label><label>Index <input id="board-index" value="^GSPC" size="10"></label><label>Perioden <input id="board-periods" value="250" size="6"></label><button type="button" id="board-run">Berechnen</button></div><output id="board-note"></output><div id="board-body"></div></section>
 <section class="panel wide" id="news"><h2>Aktuelles</h2><div id="news-body"></div></section>
 </div>
 <footer id="foot"></footer>
@@ -371,13 +372,19 @@ function buildChecks(stock,benchmark=[],only=selected){
   const roic=invCapital>0&&tax>=0&&isNum(tax)&&tax<=1&&isNum(ebit)?ebit*(1-tax)/invCapital:null;
   const yearEnd=rows.at(-1)?.[0];
   const preceding=n=>yearEnd?adjustDate(yearEnd,n*12):null;
-  const divHistory=Array.from({length:11},(_,n)=>periodDividends(rows,preceding(n)));
+  // TraderFox looks fifteen years back for continuity. One extra window gives the
+  // comparison its reference point; a history that does not reach that far leaves null,
+  // and a null streak stays open instead of being read as zero.
+  const divYears=15;
+  const divHistory=Array.from({length:divYears+1},(_,n)=>periodDividends(rows,preceding(n)));
   let streak=0;
   while(streak<divHistory.length&&divHistory[streak]>0)streak++;
+  streak=Math.min(streak,divYears);
   const divIncrease=years=>cagr(divHistory[0],divHistory[years],years);
   const payoutEps=stock.nas_primary?ttmEPS:i.trailingEps;
   const payout=sameCurrency&&payoutEps>0?division(dividend,payoutEps):null;
-  const knownStreak=streak===divHistory.length||divHistory[streak]===0?streak:null;
+  const streakKnown=streak===divYears||divHistory[streak]===0;
+  const knownStreak=streakKnown?streak:null;
   const ma=rows.length>=200?meanOf(rows.slice(-200).map(r=>r[1])):null;
   const yearRows=rangeRows(rows,12);
   const high=yearRows.length>=225?Math.max(...yearRows.map(r=>r[1])):null;
@@ -436,7 +443,7 @@ function buildChecks(stock,benchmark=[],only=selected){
       p("Indizierte Dividendenrendite (Anbieter)",i.nasDividendYield??(sameCurrency?division(i.dividendRate,close):null),0,.02,.055),
       p("Ausschüttungsquote TTM",payout,.95,.75,.20)]],
     ["Kontinuität",[
-      duration("Aufeinanderfolgende 12-Monats-Zeiträume mit Dividende (max. 11)",knownStreak,0,5,11),
+      duration("Aufeinanderfolgende 12-Monats-Zeiträume mit Dividende (max. 15)",knownStreak,0,5,15),
       p("Zahlungsstetigkeit in 10 Jahresfenstern",knownValues(divHistory.slice(0,10))?
         divHistory.slice(0,10).filter(x=>x>0).length/10:null,0,.90,1)]],
     ["Dividendenwachstum",[
@@ -1329,6 +1336,39 @@ async function renderNasSnapshot(stock){
     body.replaceChildren(element("p",error.message,"notice"));
   }
 }
+async function runLeaderboard(){
+  const note=$("board-note"), body=$("board-body"), button=$("board-run");
+  const universe=$("board-universe").value.trim(), tickers=$("board-tickers").value.trim();
+  const index=$("board-index").value.trim()||"^GSPC", periods=$("board-periods").value.trim()||"250";
+  button.disabled=true;
+  note.textContent="Rangliste wird berechnet … Für bis zu zweihundert Titel dauert das einige Minuten.";
+  body.replaceChildren();
+  try{
+    const result=await api("ranking","",{universe,q:tickers,index,periods});
+    const weights=result.weights;
+    note.textContent=result.scored+" von "+result.universe+" Titeln bewertet · Gewichtung "+
+      Math.round(100*weights.robustness)+" % Robustheits-Check und "+Math.round(100*weights.distance)+
+      " % Kurs zum "+result.periods+"-Tage-Hoch · Robustheit als Anteil erfüllter Kriterien.";
+    const table=element("table",undefined,"board-table"), head=table.createTHead().insertRow();
+    for(const title of ["Rang","Ticker","Wertung","Robustheit","Kurs zum Hoch"])head.append(element("th",title));
+    const tbody=table.createTBody();
+    for(const row of result.rows){
+      const tr=tbody.insertRow();
+      tr.append(element("td",String(row.rank)),element("td",row.symbol),
+        element("td",f(row.score)),element("td",row.points+" von "+row.comparable),
+        element("td",f(100*row.distance)+" %"));
+      tr.onclick=()=>{$("query").value=row.symbol;loadStock(row.symbol);};
+      tr.tabIndex=0;
+    }
+    body.append(table);
+    if(result.skipped.length){
+      const list=element("p","Nicht bewertet: "+result.skipped.map(item=>item.symbol+
+        (item.error?" ("+item.error+")":"")).join(", "),"sub");
+      body.append(list);
+    }
+  }catch(error){note.textContent=error.message;}
+  finally{button.disabled=false;}
+}
 function render(){
   $("dashboard").hidden=false;
   renderQuote();renderChecks();renderPrice();renderPeers();populateYears();renderSeason();renderFair();renderFinance();renderNews();
@@ -1482,6 +1522,7 @@ $("compare-form").onsubmit=async event=>{
     renderPeers();
   }catch(error){if(active===data&&request===compareGeneration)$("peer-note").textContent=error.message;}
 };
+$("board-run").onclick=runLeaderboard;
 $("season-refresh").onclick=async ()=>{
   const symbol=$("benchmark").value.trim().toUpperCase();
   const active=data,request=++seasonGeneration;
