@@ -12,6 +12,7 @@ from time import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 
+import ranking
 import yfinance as yf
 from filing_statements import merge_filings
 from sec_statements import load_sec_statements
@@ -466,7 +467,7 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(200, self.page(), "text/html; charset=utf-8")
             return
         if path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",
-                        "/api/compare", "/api/xang"):
+                        "/api/compare", "/api/xang", "/api/ranking"):
             self.json(404, {"error": "Adresse nicht gefunden."})
             return
         params = parse_qs(target.query)
@@ -488,6 +489,24 @@ class Handler(BaseHTTPRequestHandler):
                 if not 1 <= len(query) <= 100:
                     raise ValueError("Bitte einen Namen, Ticker oder eine ISIN eingeben.")
                 self.json(200, search(query, self.nas))
+                return
+            if path == "/api/ranking":
+                # The weighted list needs prices only, and it takes its own universe: the generic
+                # ticker check below would reject the empty q of a universe request.
+                universum = params.get("universum", [""])[0].strip()
+                eigene = [teil for teil in re.split(r"[,\s;]+", params.get("q", [""])[0].upper()) if teil]
+                symbole = ranking.lade_universum(universum) if universum else eigene
+                if not symbole:
+                    raise ValueError("Bitte ein Universum oder zwei bis zweihundert Ticker angeben.")
+                index_symbol = (params.get("index", ["^GSPC"])[0] or "^GSPC").upper()
+                if not re.fullmatch(r"[A-Z0-9.^=\-]{1,24}", index_symbol):
+                    raise ValueError("Der Vergleichsindex ist ungültig.")
+                perioden = int(params.get("perioden", [str(ranking.PERIODEN)])[0])
+                if not 60 <= perioden <= 2500:
+                    raise ValueError("Die Zahl der Perioden muss zwischen 60 und 2500 liegen.")
+                self.json(200, ranking.rangliste(symbole,
+                                                 lambda symbol: prices(symbol, "ranking"),
+                                                 prices(index_symbol, "index"), perioden))
                 return
             symbols = list(dict.fromkeys(query.upper().split(",")))
             maximum = 15 if path == "/api/stock-batch" else 5
