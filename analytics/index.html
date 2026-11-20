@@ -52,6 +52,7 @@ summary.rank-banner{display:list-item;color:#091217}
 <section class="panel" id="risk"><h2>Bilanz und Risiko</h2><div id="risk-body"></div></section>
 <section class="panel" id="flow"><h2>Gewinnfluss</h2><div id="flow-body"></div></section>
 <section class="panel" id="dividend"><h2>Dividenden</h2><div id="dividend-body"></div></section>
+<section class="panel wide" id="leaderboard"><h2>Rangliste nach Gewichtung</h2><div class="controls"><label>Universum <input id="board-universe" placeholder="z. B. beispiel" size="12"></label><label>oder Ticker <input id="board-tickers" placeholder="SAP.DE, AAPL, KO" size="24"></label><label>Index <input id="board-index" value="^GSPC" size="10"></label><label>Perioden <input id="board-periods" value="250" size="6"></label><button type="button" id="board-run">Berechnen</button></div><output id="board-note"></output><div id="board-body"></div></section>
 <section class="panel wide" id="news"><h2>Aktuelles</h2><div id="news-body"></div></section>
 </div>
 <footer id="foot"></footer>
@@ -1335,6 +1336,39 @@ async function renderNasSnapshot(stock){
     body.replaceChildren(element("p",error.message,"notice"));
   }
 }
+async function runLeaderboard(){
+  const note=$("board-note"), body=$("board-body"), button=$("board-run");
+  const universum=$("board-universe").value.trim(), tickers=$("board-tickers").value.trim();
+  const index=$("board-index").value.trim()||"^GSPC", perioden=$("board-periods").value.trim()||"250";
+  button.disabled=true;
+  note.textContent="Rangliste wird berechnet … Für bis zu zweihundert Titel dauert das einige Minuten.";
+  body.replaceChildren();
+  try{
+    const result=await api("ranking","",{universum,q:tickers,index,perioden});
+    const gewichte=result.gewichte;
+    note.textContent=result.bewertet+" von "+result.universum+" Titeln bewertet · Gewichtung "+
+      Math.round(100*gewichte.robustheit)+" % Robustheits-Check und "+Math.round(100*gewichte.abstand)+
+      " % Kurs zum "+result.perioden+"-Tage-Hoch · Robustheit als Anteil erfüllter Kriterien.";
+    const table=element("table",undefined,"board-table"), head=table.createTHead().insertRow();
+    for(const title of ["Rang","Ticker","Wertung","Robustheit","Kurs zum Hoch"])head.append(element("th",title));
+    const tbody=table.createTBody();
+    for(const row of result.liste){
+      const tr=tbody.insertRow();
+      tr.append(element("td",String(row.rang)),element("td",row.symbol),
+        element("td",f(row.wertung)),element("td",row.punkte+" von "+row.vergleichbar),
+        element("td",f(100*row.abstand)+" %"));
+      tr.onclick=()=>{$("query").value=row.symbol;loadStock(row.symbol);};
+      tr.tabIndex=0;
+    }
+    body.append(table);
+    if(result.fehlend.length){
+      const list=element("p","Nicht bewertet: "+result.fehlend.map(item=>item.symbol+
+        (item.fehler?" ("+item.fehler+")":"")).join(", "),"sub");
+      body.append(list);
+    }
+  }catch(error){note.textContent=error.message;}
+  finally{button.disabled=false;}
+}
 function render(){
   $("dashboard").hidden=false;
   renderQuote();renderChecks();renderPrice();renderPeers();populateYears();renderSeason();renderFair();renderFinance();renderNews();
@@ -1488,6 +1522,7 @@ $("compare-form").onsubmit=async event=>{
     renderPeers();
   }catch(error){if(active===data&&request===compareGeneration)$("peer-note").textContent=error.message;}
 };
+$("board-run").onclick=runLeaderboard;
 $("season-refresh").onclick=async ()=>{
   const symbol=$("benchmark").value.trim().toUpperCase();
   const active=data,request=++seasonGeneration;
