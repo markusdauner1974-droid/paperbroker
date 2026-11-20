@@ -18,30 +18,29 @@ from urllib.request import (
 
 SECRET_FILE = "/run/secrets/nas_password"
 PASSWORD_ENV = "AKTIENANALYSE_NAS_PASSWORD"
-# Die Adresse des Scanners: im Handbetrieb die bekannte im Heimnetz, im Betrieb
-# ueber AKTIENANALYSE_NAS_URL. Beides dieselbe Zeichenkette, nur eine Quelle.
+# The scanner's address: in manual operation the known one in the home network, in production
+# through AKTIENANALYSE_NAS_URL. Both are the same string, kept in one place.
 DEFAULT_ORIGIN = "http://192.168.178.10:8089"
 
 
 def configured_password():
-    """Das Passwort fuer den Automatikbetrieb, oder ``None``.
+    """The password for unattended operation, or ``None``.
 
-    Reihenfolge: zuerst der Datei-Mount, dann die Umgebungsvariable. Beide Wege
-    sind fuer Container gedacht, in denen niemand tippen kann; die Eingabe am
-    Terminal bleibt der dritte Weg (siehe ``connect``).
+    Order: the mounted file first, then the environment variable. Both ways are
+    meant for containers where nobody can type; entering it at the terminal stays
+    the third way (see ``connect``).
 
-    Der Wert wird NICHT protokolliert, nicht ausgegeben und nicht in eine
-    Fehlermeldung eingesetzt - ein Passwort in einer Logzeile ist ein
-    abgeschriebenes Passwort.
+    The value is NOT logged, not printed and not put into an error message - a
+    password in a log line is a password written down.
     """
     try:
-        with open(SECRET_FILE, encoding="utf-8") as datei:
-            wert = datei.read().strip()
+        with open(SECRET_FILE, encoding="utf-8") as handle:
+            value = handle.read().strip()
     except OSError:
-        wert = ""
-    if not wert:
-        wert = (os.environ.get(PASSWORD_ENV) or "").strip()
-    return wert or None
+        value = ""
+    if not value:
+        value = (os.environ.get(PASSWORD_ENV) or "").strip()
+    return value or None
 
 
 class NoRedirect(HTTPRedirectHandler):
@@ -139,8 +138,8 @@ class NasScanner:
             return
         if not status.get("configured"):
             raise ValueError("Die NAS-Anmeldung ist noch nicht eingerichtet.")
-        # Erst der Mount, dann die Umgebungsvariable, zuletzt die Tastatur: in
-        # einem Container gibt es niemanden, der tippen koennte.
+        # The mounted file first, then the environment variable, the keyboard last: in a
+        # container there is nobody who could type.
         password = configured_password()
         if password is None:
             if not sys.stdin or not sys.stdin.isatty():

@@ -14,11 +14,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY paperbroker ./paperbroker
 COPY setup.py ./
-# The stock analysis lives in aktienanalyse/ and runs in this same process
+# The stock analysis lives in analytics/ and runs in this same process
 # (paperbroker/routes/quality.py resolves it next to the package). Without this
 # line the image builds, the healthcheck stays green, and /qualitaet/ answers 500
 # with FileNotFoundError.
-COPY aktienanalyse ./aktienanalyse
+COPY analytics ./analytics
 
 # non-root (CWE-250): app user owns /app/.cache so the named volume
 # mounted there inherits usable ownership

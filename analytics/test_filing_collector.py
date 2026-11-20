@@ -35,8 +35,8 @@ class CollectorTest(unittest.TestCase):
         self.env.start()
         self.fs = load_collector()
         self.store = self.fs.store
-        with self.store.verbindung(self.db) as conn:
-            self.store.berichte_merken(conn, "EVK.DE", [
+        with self.store.connect(self.db) as conn:
+            self.store.remember_filings(conn, "EVK.DE", [
                 (2023, "IXBRL", "https://cdn.example/financialreports/media/filings/a.zip", "2024-03-19"),
                 (2024, "IXBRL", "https://cdn.example/financialreports/media/filings/b.zip", "2025-03-17"),
             ])
@@ -111,8 +111,8 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual([e[0][-5:] for e in entries], ["a.zip"])
 
     def test_a_stored_entry_without_a_release_date_stays_usable(self):
-        with self.store.verbindung(self.db) as conn:
-            self.store.berichte_merken(conn, "OHNE.DE", [(2023, "IXBRL", "https://cdn/x.zip", "")])
+        with self.store.connect(self.db) as conn:
+            self.store.remember_filings(conn, "OHNE.DE", [(2023, "IXBRL", "https://cdn/x.zip", "")])
         _lei, entries = self.fs.filing_entries("OHNE.DE", "2024-06-30", None)
         self.assertEqual(len(entries), 1)
 
@@ -138,13 +138,13 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual(self.fs.issuer_identifier(puffer.getvalue()), "41GUOJQTALQHLF39XJ34")
 
     def test_the_issuer_is_read_from_the_report_when_no_lookup_was_made(self):
-        bericht = (b'<?xml version="1.0"?><html><body>'
-                   b'<xbrli:identifier scheme="http://standards.iso.org/iso/17442">'
-                   b'41GUOJQTALQHLF39XJ34</xbrli:identifier></body></html>')
-        self.assertEqual(self.fs.issuer_identifier(bericht), "41GUOJQTALQHLF39XJ34")
+        report = (b'<?xml version="1.0"?><html><body>'
+                  b'<xbrli:identifier scheme="http://standards.iso.org/iso/17442">'
+                  b'41GUOJQTALQHLF39XJ34</xbrli:identifier></body></html>')
+        self.assertEqual(self.fs.issuer_identifier(report), "41GUOJQTALQHLF39XJ34")
 
     def test_a_report_without_identifier_leaves_the_question_open(self):
-        self.assertEqual(self.fs.issuer_identifier(b"<html><body>nichts</body></html>"), "")
+        self.assertEqual(self.fs.issuer_identifier(b"<html><body>nothing</body></html>"), "")
 
 
 class StoreFilingTest(unittest.TestCase):
@@ -153,25 +153,25 @@ class StoreFilingTest(unittest.TestCase):
         store = fs.store
         with TemporaryDirectory() as tmp:
             db = str(Path(tmp) / "x.db")
-            with store.verbindung(db) as conn:
-                store.berichte_merken(conn, "EVK.DE", [
+            with store.connect(db) as conn:
+                store.remember_filings(conn, "EVK.DE", [
                     (2025, "IXBRL", "https://cdn.example/a.zip", "2026-03-19")])
-                gespeichert = store.berichte(conn, "EVK.DE")
-        self.assertEqual(gespeichert, [(2025, "IXBRL", "https://cdn.example/a.zip", "2026-03-19")])
+                stored = store.filings(conn, "EVK.DE")
+        self.assertEqual(stored, [(2025, "IXBRL", "https://cdn.example/a.zip", "2026-03-19")])
 
     def test_an_older_database_gets_the_new_column(self):
         fs = load_collector()
         store = fs.store
         with TemporaryDirectory() as tmp:
-            db = str(Path(tmp) / "alt.db")
-            roh = sqlite3.connect(db)
-            roh.execute("""CREATE TABLE bericht (symbol TEXT, geschaeftsjahr INTEGER, typ TEXT,
-                           adresse TEXT, abgerufen_am TEXT, PRIMARY KEY (symbol, geschaeftsjahr, typ))""")
-            roh.commit()
-            roh.close()
-            with store.verbindung(db) as conn:
-                spalten = {row[1] for row in conn.execute("PRAGMA table_info(bericht)")}
-        self.assertIn("veroeffentlicht", spalten)
+            db = str(Path(tmp) / "older.db")
+            raw = sqlite3.connect(db)
+            raw.execute("""CREATE TABLE filing (symbol TEXT, fiscal_year INTEGER, kind TEXT,
+                           address TEXT, fetched_at TEXT, PRIMARY KEY (symbol, fiscal_year, kind))""")
+            raw.commit()
+            raw.close()
+            with store.connect(db) as conn:
+                columns = {row[1] for row in conn.execute("PRAGMA table_info(filing)")}
+        self.assertIn("released", columns)
 
 
 class LockConcurrencyTest(unittest.TestCase):

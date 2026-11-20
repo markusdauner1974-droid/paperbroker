@@ -278,11 +278,11 @@ def stored_statements(symbol, currency):
     anything up again.
     """
     try:
-        with closing(store.verbindung()) as conn:
-            sections = store.werte_lesen(conn, symbol)
+        with closing(store.connect()) as conn:
+            sections = store.read_figures(conn, symbol)
             if not (sections.get("income") or sections.get("balance")):
                 return {}, None
-            identity = store.firma(conn, symbol)
+            identity = store.company(conn, symbol)
             provenance = {section: {day: {key: {"source": "ixbrl_original", "stored": True}
                                           for key in row}
                                     for day, row in block.items()}
@@ -295,9 +295,9 @@ def stored_statements(symbol, currency):
 def remember_statements(symbol, isin, currency, tagged):
     """Write what the collector learned, so the next look costs nothing."""
     try:
-        with closing(store.verbindung()) as conn:
-            store.firma_merken(conn, symbol, isin=isin, waehrung=currency)
-            store.werte_schreiben(conn, symbol, tagged, quelle="ixbrl_original", waehrung=currency)
+        with closing(store.connect()) as conn:
+            store.remember_company(conn, symbol, isin=isin, waehrung=currency)
+            store.write_figures(conn, symbol, tagged, quelle="ixbrl_original", waehrung=currency)
             berichte = []
             for block in (tagged.get("provenance") or {}).values():
                 for day, row in block.items():
@@ -307,7 +307,7 @@ def remember_statements(symbol, isin, currency, tagged):
                         veroeffentlicht = entry.get("filed") or ""
                         berichte.append((int(str(day)[:4]), "IXBRL", entry["url"], str(veroeffentlicht)))
             if berichte:
-                store.berichte_merken(conn, symbol, berichte)
+                store.remember_filings(conn, symbol, berichte)
     except (sqlite3.Error, OSError, ValueError, TypeError):
         pass
 
@@ -355,8 +355,8 @@ def issuer_identifier(payload):
 def stored_filings(symbol):
     """The filing list that was already paid for, while it is young enough."""
     try:
-        with closing(store.verbindung()) as conn:
-            return store.berichte(conn, symbol)
+        with closing(store.connect()) as conn:
+            return store.filings(conn, symbol)
     except (sqlite3.Error, OSError):
         return []
 

@@ -4,7 +4,7 @@ No second service, no forwarding: the page is served here, and the data endpoint
 call the functions of the delivered program directly.
 
 The arithmetic itself (criteria, CAGR, Piotroski, statements) stays in
-``aktienanalyse/`` and is tested there — ``check_nas.py`` covers it with 15 tests.
+``analytics/`` and is tested there — ``check_nas.py`` covers it with 15 tests.
 What is tested here is the **dispatch**: which address calls which function, which
 limits apply, and what a failure turns into. That is why a simple stand-in replaces
 the delivered module in these tests: no network, no quotes, just the path.

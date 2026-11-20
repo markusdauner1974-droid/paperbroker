@@ -50,7 +50,7 @@ reads the values the issuer tagged itself (`ifrs-full:Revenue`, `…:DilutedEarn
 with period, currency and share class. Amounts per share are divided units (currency over shares)
 and are read as such; without that the earnings per share of European reports never arrive.
 
-Because the list costs money, it is paid once: `aktienanalyse/store.py` keeps what the collector
+Because the list costs money, it is paid once: `analytics/store.py` keeps what the collector
 learned in one SQLite file (`AKTIENANALYSE_DB`, default `/app/.cache/aktienanalyse.db` on the
 cache volume) with four tables — company, report, value, price. Measured on Evonik: the first look
 takes 9 s and 2 credits, the second takes 0.0 s and none, and the analysis carries six fiscal years
@@ -61,7 +61,7 @@ as open; and prices are not stored, they stay live, because a cached price would
 
 ### The stock analysis as an embedded block (2026-11-19)
 
-`aktienanalyse/` is a second, self-contained application in the repository: a plain `http.server`
+`analytics/` is a second, self-contained application in the repository: a plain `http.server`
 on port 8766 that shows one share (quote, four checks with fifteen criteria each, seasonality,
 fair value, statements, news) and reads its data from Yahoo Finance, SEC EDGAR and — optional —
 the NAS scanner. It comes from Markus as a ZIP and is committed as a base state of its own; the
@@ -73,7 +73,7 @@ no image of its own and no proxy hop. `api()` is the dispatcher the delivered `a
 — the addresses (`/qualitaet/api/stock`, `…/statements`, `…/stock-batch`, `…/compare`, `…/xang`)
 stay the same, the arithmetic stays where it was delivered. The page is delivered the path prefix
 it runs under (`window.AKT_BASE_PATH`), so its own requests find the right place. The delivered
-program still starts on its own (`python3 aktienanalyse/app.py`, port 8766, exactly as before) —
+program still starts on its own (`python3 analytics/app.py`, port 8766, exactly as before) —
 the same files, a different entry point.
 
 The button "Aktien-Qualität" stands in the funnel's button row unconditionally: a missing button

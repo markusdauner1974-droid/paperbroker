@@ -609,8 +609,8 @@ def main():
         base_path = base_path.rstrip("/")
     Handler.base_path = base_path
 
-    # Ohne --nas gilt die Umgebungsvariable; ist auch die leer, laeuft die App
-    # wie bisher ohne NAS. Der Standard steht EINMAL, in nas_scanner.py.
+    # Without --nas the environment variable applies; when that is empty too, the app runs
+    # without the NAS as before. The default lives in exactly one place, nas_scanner.py.
     nas_url = args.nas or os.environ.get("AKTIENANALYSE_NAS_URL") or None
     if nas_url:
         from nas_scanner import NasScanner
