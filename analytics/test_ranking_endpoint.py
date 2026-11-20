@@ -52,6 +52,23 @@ class SingleRunTest(unittest.TestCase):
         self.assertEqual(app._RANKING_ACTIVE, 0)
 
 
+class CappedUniverseTest(unittest.TestCase):
+    """A file with two thousand entries must not be rejected, but the cut has to be visible."""
+
+    def test_a_long_file_is_cut_to_the_titles_one_run_may_fetch(self):
+        symbols = [f"T{nummer}.DE" for nummer in range(app.ranking.MAX_SYMBOLS + 37)]
+        taken, listed = app.capped_symbols(symbols)
+        self.assertEqual(len(taken), app.ranking.MAX_SYMBOLS)
+        self.assertEqual(listed, len(symbols))
+        self.assertEqual(taken[0], "T0.DE")
+        self.assertEqual(taken[-1], f"T{app.ranking.MAX_SYMBOLS - 1}.DE")
+
+    def test_a_short_file_is_taken_as_it_is(self):
+        taken, listed = app.capped_symbols(["SAP.DE", "KO"])
+        self.assertEqual(taken, ["SAP.DE", "KO"])
+        self.assertEqual(listed, 2)
+
+
 class FreshnessTest(unittest.TestCase):
     """A ranking has to see prices, not the series of its first run."""
 

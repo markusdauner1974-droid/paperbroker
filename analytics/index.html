@@ -1346,7 +1346,10 @@ async function runLeaderboard(){
   try{
     const result=await api("ranking","",{universe,q:tickers,index,periods});
     const weights=result.weights;
-    note.textContent=result.scored+" von "+result.universe+" Titeln bewertet · Gewichtung "+
+    const part=result.listed&&result.listed>result.universe
+      ? "Die ersten "+result.universe+" von "+result.listed+" Titeln dieser Universumsdatei (nach Handelsvolumen) · "
+      : "";
+    note.textContent=part+result.scored+" von "+result.universe+" Titeln bewertet · Gewichtung "+
       Math.round(100*weights.robustness)+" % Robustheits-Check und "+Math.round(100*weights.distance)+
       " % Kurs zum "+result.periods+"-Tage-Hoch · Robustheit als Anteil erfüllter Kriterien.";
     const table=element("table",undefined,"board-table"), head=table.createTHead().insertRow();
