@@ -27,6 +27,7 @@ SAP = {"symbol": "SAP.DE", "name": "SAP SE", "exchange": "Xetra"}
 # A ranking downloads up to two hundred series from the provider. One run at a time, and a
 # wall-clock budget: a second click must not multiply the outbound requests of the first.
 RANKING_BUDGET_S = 180
+RANKING_BUCKET_S = 900
 _RANKING_LOCK = Lock()
 _RANKING_ACTIVE = 0
 
@@ -52,6 +53,21 @@ def checked_symbols(symbols):
     if any(not SYMBOL.fullmatch(symbol) for symbol in symbols):
         raise ValueError("Bitte gültige Börsenticker angeben.")
     return symbols
+
+
+def ranking_bucket():
+    """One bucket per quarter hour, like the page's own view.
+
+    A fixed bucket would score a small universe from the series cached at the first run, and the
+    list would rank on prices that never age.
+    """
+    return f"ranking-{int(time() // RANKING_BUCKET_S)}"
+
+
+def ranking_series(index_symbol):
+    """The symbol fetch and the index series of one ranking run, from the same bucket."""
+    bucket = ranking_bucket()
+    return budgeted(lambda symbol: prices(symbol, bucket)), prices(index_symbol, bucket)
 
 
 def budgeted(fetch, seconds=RANKING_BUDGET_S):
@@ -125,16 +141,21 @@ def prices(symbol, bucket):
             return _HISTORY[key]
         lock = _HISTORY_LOCKS.setdefault(key, Lock())
     with lock:
-        with _HISTORY_GUARD:
-            if key in _HISTORY:
-                return _HISTORY[key]
-        rows = load_history(yf.Ticker(symbol), "max")
-        with _HISTORY_GUARD:
-            if len(_HISTORY) >= HISTORY_PLACES:
-                _HISTORY.pop(next(iter(_HISTORY)))
-            _HISTORY[key] = rows
-            _HISTORY_LOCKS.pop(key, None)
-        return rows
+        # The lock is dropped in a plain finally: a failed download used to leave its entry
+        # behind, one per failing ticker and bucket, for the lifetime of the process.
+        try:
+            with _HISTORY_GUARD:
+                if key in _HISTORY:
+                    return _HISTORY[key]
+            rows = load_history(yf.Ticker(symbol), "max")
+            with _HISTORY_GUARD:
+                if len(_HISTORY) >= HISTORY_PLACES:
+                    _HISTORY.pop(next(iter(_HISTORY)))
+                _HISTORY[key] = rows
+            return rows
+        finally:
+            with _HISTORY_GUARD:
+                _HISTORY_LOCKS.pop(key, None)
 
 
 def load_statements(ticker):
@@ -551,9 +572,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise ValueError("Die Zahl der Perioden muss zwischen 60 und 2500 liegen.")
                 enter_ranking()
                 try:
-                    self.json(200, ranking.rank_list(
-                        symbols, budgeted(lambda symbol: prices(symbol, "ranking")),
-                        prices(index_symbol, "index"), periods))
+                    fetch, index_rows = ranking_series(index_symbol)
+                    self.json(200, ranking.rank_list(symbols, fetch, index_rows, periods))
                 finally:
                     leave_ranking()
                 return

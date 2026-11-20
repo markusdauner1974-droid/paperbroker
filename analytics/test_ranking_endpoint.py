@@ -9,6 +9,7 @@ import sys
 import unittest
 from pathlib import Path
 from time import sleep
+from unittest.mock import patch
 
 AKT_DIR = Path(__file__).resolve().parent
 if str(AKT_DIR) not in sys.path:
@@ -48,6 +49,55 @@ class SingleRunTest(unittest.TestCase):
         app.enter_ranking()
         app.leave_ranking()
         self.assertEqual(app._RANKING_ACTIVE, 0)
+
+
+class FreshnessTest(unittest.TestCase):
+    """A ranking has to see prices, not the series of its first run."""
+
+    def test_the_bucket_rotates_with_the_clock(self):
+        with patch.object(app, "time", lambda: 899.0):
+            first = app.ranking_bucket()
+        with patch.object(app, "time", lambda: 900.0):
+            second = app.ranking_bucket()
+        with patch.object(app, "time", lambda: 1800.0):
+            third = app.ranking_bucket()
+        self.assertEqual(first, "ranking-0")
+        self.assertEqual(second, "ranking-1")
+        self.assertEqual(third, "ranking-2")
+
+    def test_symbols_and_index_share_one_bucket_per_run(self):
+        seen = []
+
+        def fake_prices(symbol, bucket):
+            seen.append((symbol, bucket))
+            return [["2026-01-02", 1.0]]
+
+        with patch.object(app, "prices", fake_prices), patch.object(app, "time", lambda: 5400.0):
+            fetch, index_rows = app.ranking_series("^GSPC")
+            fetch("KO")
+        self.assertEqual(seen, [("^GSPC", "ranking-6"), ("KO", "ranking-6")])
+        self.assertEqual(index_rows, [["2026-01-02", 1.0]])
+
+
+class HistoryLockTest(unittest.TestCase):
+    """Every failed download used to leave a lock behind, reachable at two hundred per run."""
+
+    def setUp(self):
+        app._HISTORY.clear()
+        app._HISTORY_LOCKS.clear()
+
+    def test_a_failed_download_leaves_no_lock_behind(self):
+        with patch.object(app, "load_history", side_effect=RuntimeError("kein Netz")):
+            with self.assertRaises(RuntimeError):
+                app.prices("NIX.DE", "ranking-1")
+        self.assertEqual(dict(app._HISTORY_LOCKS), {})
+
+    def test_a_successful_download_keeps_the_series_but_no_lock(self):
+        with patch.object(app, "load_history", return_value=[["2026-01-02", 1.25]]):
+            rows = app.prices("KO", "ranking-1")
+        self.assertEqual(rows, [["2026-01-02", 1.25]])
+        self.assertEqual(dict(app._HISTORY_LOCKS), {})
+        self.assertIn(("KO", "ranking-1"), app._HISTORY)
 
 
 class BudgetTest(unittest.TestCase):
