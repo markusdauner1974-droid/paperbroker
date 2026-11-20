@@ -553,11 +553,17 @@ async function loadCheckBenchmark(symbol){
   checkBenchmark.loading=Boolean(symbol);
   checkBenchmark.message=symbol?"Index wird geladen …":"Vergleichsindex eingeben, z. B. ^GSPC.";
   activeRanking=null;
-  // Everything that can throw sits inside the try, and the flag is cleared in finally: a
-  // failing render must not leave the check marked as loading forever, because every later
-  // comparison would then wait for an index that never arrives.
+  // A render error must never reject this function: a caller's catch would otherwise clear the
+  // loading flag of a *newer* request, and the wait block would report the index as unavailable
+  // while the newer load is still running. Rendering therefore goes through safeRender, and
+  // every other step sits inside the try; the flag is cleared in finally, and only by the
+  // request that still owns it.
+  const safeRender=()=>{
+    try{ renderChecks(); }
+    catch(error){ checkBenchmark.message=error.message||"Der Vergleichsindex konnte nicht geladen werden."; }
+  };
   try{
-    renderChecks();
+    safeRender();
     if(!symbol)return;
     const response=await api("compare",symbol);
     if(request!==checkBenchmark.request||current!==data)return;
@@ -574,8 +580,13 @@ async function loadCheckBenchmark(symbol){
     // Only the request that still owns the flag may clear it; a newer one owns it otherwise.
     if(request===checkBenchmark.request)checkBenchmark.loading=false;
   }
-  if(selected===3)renderChecks();
+  if(selected===3)safeRender();
 }
+// A single entry point for the callers: loadCheckBenchmark does not reject, so the catch only
+// keeps an unexpected rejection from becoming an unhandled one - it never touches shared state.
+const startBenchmark=symbol=>{
+  loadCheckBenchmark(symbol).catch(()=>{});
+};
 // Per-criterion cutoffs and direction published for TraderFox's quality check.
 const qualityPercentiles=[50,65,50,65,50,50,50,50,50,50,50,25,25,10,10];
 // Each check compares against the reference market. TraderFox publishes the cutoffs of the
@@ -707,7 +718,7 @@ function renderRanking(active,mode){
         report("Vergleichsindex "+index+" wird geladen …","sub");
         // A symbol can survive a failed load with no rows, so retry whenever the series is
         // missing and no request is running.
-        if(!checkBenchmark.loading)loadCheckBenchmark(index).catch(()=>{checkBenchmark.loading=false;});
+        if(!checkBenchmark.loading)startBenchmark(index);
         lock(true);
         const deadline=Date.now()+40000;
         while(checkBenchmark.loading&&Date.now()<deadline)await new Promise(done=>setTimeout(done,250));
@@ -815,7 +826,7 @@ function renderChecks(){
   renderTabs($("tabs"),titles,selected,index=>{
     if(index!==selected){selected=index;rankingGeneration++;}
     if(index===3&&!data.reference&&!checkBenchmark.symbol&&defaultBenchmark(data)){
-      loadCheckBenchmark(defaultBenchmark(data)).catch(()=>{checkBenchmark.loading=false;});return;
+      startBenchmark(defaultBenchmark(data));return;
     }
     renderChecks();
   });
@@ -866,8 +877,7 @@ function renderChecks(){
     form.onsubmit=event=>{
       event.preventDefault();
       const symbol=input.value.trim().toUpperCase();
-      if(/^[A-Z0-9.^=\-]{1,24}$/.test(symbol))
-        loadCheckBenchmark(symbol).catch(()=>{checkBenchmark.loading=false;});
+      if(/^[A-Z0-9.^=\-]{1,24}$/.test(symbol))startBenchmark(symbol);
     };
     criteria.append(element("h3","Vergleichsindex"),form,element("small",checkBenchmark.message||"Index für die Auswertung schwacher Markttage wählen."));
   }
@@ -1353,7 +1363,7 @@ function replaceData(next,{reset=false}={}){
   rankingGeneration++;activeRanking=null;
   render();
   const symbol=previousBenchmark||defaultBenchmark(data);
-  if(selected===3&&symbol)loadCheckBenchmark(symbol).catch(()=>{checkBenchmark.loading=false;});
+  if(selected===3&&symbol)startBenchmark(symbol);
 }
 async function extendStock(){
   const active=data,request=generation;

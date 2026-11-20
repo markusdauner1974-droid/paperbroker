@@ -57,7 +57,9 @@ const pending = /benchmarkPending\s*=\s*selected===3&&checkBenchmark\.loading&&o
 const reading = /element\("td",benchmarkPending\?"Wird geladen …":value,"criterion-value"\)/;
 results.pendingRuleShipped = pending.test(script) && reading.test(script);
 const loadingSet = /checkBenchmark\.loading=Boolean\(symbol\)/.test(script);
-const loadingCleared = (script.match(/checkBenchmark\.loading=false;/g) || []).length >= 2;
+// Exactly one place clears the flag, it sits in the finally block and it respects ownership.
+const loadingCleared = (script.match(/checkBenchmark\.loading=false;/g) || []).length === 1 &&
+  /finally\{[\s\S]*?if\(request===checkBenchmark\.request\)checkBenchmark\.loading=false;/.test(script);
 results.loadingFlagIsKept = loadingSet && loadingCleared;
 
 // The Yahoo supplement must not run twice and must not overwrite a newer ticker.
@@ -100,11 +102,11 @@ results.tableUsesSelectedCutoffs =
 const waitStart = script.indexOf("if(mode===3&&!checkBenchmark.rows.length){");
 const waitEnd = script.indexOf("const request=++rankingGeneration;", waitStart);
 const waitBlock = waitStart >= 0 && waitEnd > waitStart ? script.slice(waitStart, waitEnd) : "";
-const loadAt = waitBlock.indexOf("loadCheckBenchmark(index)");
+const loadAt = waitBlock.indexOf("startBenchmark(index)");
 results.benchmarkWait = {
   found: Boolean(waitBlock),
   rerunsLiveControls: /const live=\(\)=>\{\s*const form=document\.querySelector\("\.rank-controls"\)/.test(waitBlock),
-  retriesLoad: /if\(!checkBenchmark\.loading\)loadCheckBenchmark\(index\)/.test(waitBlock),
+  retriesLoad: /if\(!checkBenchmark\.loading\)startBenchmark\(index\);/.test(waitBlock),
   lockedBeforeLoad: waitBlock.indexOf("lock(true);") > -1 && waitBlock.indexOf("lock(true);") < loadAt,
   lockedAgainAfterLoad: waitBlock.lastIndexOf("lock(true);") > loadAt,
   unlockedAfterWait: waitBlock.indexOf("lock(false);") > waitBlock.indexOf("while(checkBenchmark.loading"),
@@ -113,7 +115,7 @@ results.benchmarkWait = {
   noStaleNodes: !/button\.disabled=(true|false)/.test(waitBlock) && !/output\.replaceChildren/.test(waitBlock),
   distinguishes: /report\("Der Vergleichsindex lädt noch; bitte erneut auswerten\."/.test(waitBlock) &&
     /report\("Der Vergleichsindex ist nicht verfügbar; der Gruppenvergleich wurde nicht ausgeführt\."/.test(waitBlock),
-  handled: /loadCheckBenchmark\(index\)\.catch\(/.test(waitBlock),
+  handled: /if\(!checkBenchmark\.loading\)startBenchmark\(index\);/.test(waitBlock),
 };
 
 // A failing render must not leave the check loading forever, and no caller may swallow the
@@ -121,16 +123,19 @@ results.benchmarkWait = {
 const loadStart = script.indexOf("async function loadCheckBenchmark(symbol){");
 const loadEnd = script.indexOf("\n}", loadStart);
 const loadBody = loadStart >= 0 && loadEnd > loadStart ? script.slice(loadStart, loadEnd) : "";
-const tryAt = loadBody.indexOf("try{");
 results.benchmarkLoad = {
   found: Boolean(loadBody),
-  renderInsideTry: tryAt > -1 && loadBody.indexOf("renderChecks();") > tryAt,
+  safeRender: /const safeRender=\(\)=>\{\s*try\{ renderChecks\(\); \}\s*catch\(error\)\{/.test(loadBody),
+  rendersGuarded: (loadBody.match(/renderChecks\(\)/g) || []).length === 1 &&
+    (loadBody.match(/safeRender\(\)/g) || []).length === 2,
   clearedInFinally: /finally\{[\s\S]*?if\(request===checkBenchmark\.request\)checkBenchmark\.loading=false;/
     .test(loadBody),
 };
-const callSites = (script.match(/loadCheckBenchmark\(/g) || []).length - 1;   // minus the definition
-const guardedCalls = (script.match(/loadCheckBenchmark\([\s\S]{0,60}?\.catch\(/g) || []).length;
-results.benchmarkCallsHandled = callSites > 0 && guardedCalls === callSites;
+// A caller's catch must not touch shared state: it would clear the flag of a newer request.
+const statefulCatch = /loadCheckBenchmark\([\s\S]{0,80}?\.catch\(\s*\(\)\s*=>\s*\{[^}]*loading/.test(script);
+const directCalls = (script.match(/loadCheckBenchmark\(/g) || []).length - 1;   // minus the definition
+const wrapped = (script.match(/startBenchmark\(/g) || []).length;                 // four call sites
+results.benchmarkCallsHandled = !statefulCatch && directCalls === 1 && wrapped === 4;
 
 process.stdout.write(JSON.stringify(results));
 """
@@ -188,8 +193,10 @@ class PageScriptTest(unittest.TestCase):
         self.assertTrue(wait["handled"], "the index load in the wait block can reject unhandled")
         load = result["benchmarkLoad"]
         self.assertTrue(load["found"], "loadCheckBenchmark not found")
-        self.assertTrue(load["renderInsideTry"],
-                        "the render runs outside the error handling of the index load")
+        self.assertTrue(load["safeRender"],
+                        "the render can reject the index load")
+        self.assertTrue(load["rendersGuarded"],
+                        "a render runs outside safeRender and can reject the function")
         self.assertTrue(load["clearedInFinally"],
                         "a failing render leaves the check loading forever")
         self.assertTrue(result["benchmarkCallsHandled"],
