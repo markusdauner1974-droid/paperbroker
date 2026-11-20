@@ -71,6 +71,29 @@ const autoFetch = new RegExp(
 ).test(script);
 results.supplementStartsByItself = autoFetch;
 
+// Every check ranks against its own cutoff row; the quality row is the published one.
+const cutoffStart = script.indexOf("const qualityPercentiles=");
+const cutoffEnd = script.indexOf("const qualityLowerIsBetter");
+if (cutoffStart < 0 || cutoffEnd < 0) throw new Error("cutoff rows not found");
+// const declarations stay lexical inside the vm, so the rows are handed back explicitly.
+const cutoffs = vm.runInContext(
+  "(function(){" + script.slice(cutoffStart, cutoffEnd) +
+  " return {rows:blockPercentiles, published:blockPercentilesPublished, pick:cutoffsFor}; })()", context);
+results.cutoffRows = cutoffs.rows.map(row => row.length);
+results.qualityRow = JSON.stringify(cutoffs.rows[0]);
+results.dividendCutoffs = [...new Set(cutoffs.rows[1])];
+results.growthCutoffs = [...new Set(cutoffs.rows[2])];
+results.robustnessCutoffs = [...new Set(cutoffs.rows[3])];
+results.cutoffForRobustness = cutoffs.pick(3)[0];
+results.publishedFlags = [...cutoffs.published];
+results.rankingCoversEveryCheck =
+  !/mode===0\?rankAt\(member,index\)>=qualityPercentiles\[index\]/.test(script) &&
+  /const cutoffs=cutoffsFor\(mode\)/.test(script) &&
+  /rankAt\(member,index\)>=cutoffs\[index\]/.test(script);
+results.tableUsesSelectedCutoffs =
+  /const cutoffs=cutoffsFor\(selected\)/.test(script) &&
+  /relativeQuality=rank!==null/.test(script);
+
 process.stdout.write(JSON.stringify(results));
 """
 
@@ -96,6 +119,21 @@ class PageScriptTest(unittest.TestCase):
         self.assertTrue(ergebnis["supplementIsGuarded"], "die Yahoo-Ergänzung ist nicht gegen Doppelläufe gesichert")
         self.assertTrue(ergebnis["supplementStartsByItself"],
                         "bei einem NAS-Kurs ohne Historie startet die Ergänzung nicht von selbst")
+        self.assertEqual(ergebnis["cutoffRows"], [15, 15, 15, 15],
+                         "jeder Check braucht fünfzehn Schwellen")
+        self.assertEqual(ergebnis["qualityRow"],
+                         "[50,65,50,65,50,50,50,50,50,50,50,25,25,10,10]",
+                         "die veröffentlichten Schwellen des Qualitäts-Checks sind verändert")
+        self.assertEqual(ergebnis["dividendCutoffs"], [65], "Dividenden-Check: 65 % ist veröffentlicht")
+        self.assertEqual(ergebnis["growthCutoffs"], [50], "Wachstums-Check: Standardwert 50 %")
+        self.assertEqual(ergebnis["robustnessCutoffs"], [50], "Robustheits-Check: Standardwert 50 %")
+        self.assertEqual(ergebnis["cutoffForRobustness"], 50, "die Schwelle des gewählten Checks fehlt")
+        self.assertEqual(ergebnis["publishedFlags"], [True, True, False, False],
+                         "veröffentlicht und angenommen müssen unterscheidbar bleiben")
+        self.assertTrue(ergebnis["rankingCoversEveryCheck"],
+                        "nur der Qualitäts-Check wird gegen die Gruppe gerankt")
+        self.assertTrue(ergebnis["tableUsesSelectedCutoffs"],
+                        "die Tabelle bewertet nicht gegen die Schwelle des gewählten Checks")
 
 
 if __name__ == "__main__":
