@@ -606,7 +606,14 @@ def filing_statements(symbol, cutoff, currency, bucket, isin=None):
             # The permission is asked for before the second, paid look - not after it. Otherwise
             # every cold cache key would pay for a listing and up to fourteen packages and only
             # then learn that the one allowance is gone.
-            fresh, fresh_currency = collect_statements(symbol, cutoff, currency, isin, refresh=True)
+            try:
+                fresh, fresh_currency = collect_statements(symbol, cutoff, currency, isin, refresh=True)
+            except Exception:
+                # The permission was spent before the look; an error nobody anticipated - a
+                # RecursionError on deeply nested XBRL, a MemoryError - must give it back instead
+                # of keeping the symbol blocked until the process restarts.
+                refresh_undo(symbol)
+                raise
             if not fresh:
                 # Nothing came back: a transient failure must not burn the permission.
                 refresh_undo(symbol)
