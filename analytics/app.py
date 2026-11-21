@@ -232,17 +232,23 @@ def stock(symbol, bucket):
             pass
     statements = load_statements(ticker)
     # Yahoo hands over four to five fiscal years and the oldest column often arrives empty.
-    # Five-year growth needs six years and the stability measure five points; SEC EDGAR holds
-    # ten. The ranking has used that source all along - here it was missing.
+    # Five-year growth needs six years, so the SEC series fills in - but only when the provider
+    # stays short: the companyfacts payload can pass 30 MB, and a page view should not wait for
+    # it when nothing is missing.
     sec_source = None
-    if rows and "." not in symbol:
+    if rows and "." not in symbol and fiscal_years(statements["income"]) < SEC_YEARS:
         try:
-            sec = load_sec_statements(symbol, date.fromisoformat(rows[-1][0]), bucket)
+            # Epoch seconds, not the freshness bucket: load_sec_statements derives its daily
+            # cache keys as bucket // 86400, and a 900-second index lands near 23 forever.
+            sec = load_sec_statements(symbol, date.fromisoformat(rows[-1][0]), bucket * 900)
         except (URLError, OSError, ValueError, TypeError, KeyError):
             sec = {}
         if sec.get("income") and sec.get("balance"):
             yahoo = statements
-            statements = {name: sec.get(name) or yahoo.get(name, {})
+            # Copies, not references: load_sec_statements is cached, and setdefault on its rows
+            # would write the Yahoo keys into that cache for every later request.
+            statements = {name: {day: dict(row) for day, row in (sec.get(name) or {}).items()}
+                          or yahoo.get(name, {})
                           for name in ("income", "balance", "cash", "quarterly")}
             # SEC lists no total-debt tag; the balance value of the same date from Yahoo fills
             # the gap. Without it "debt / total assets" would drop out of the check, although it
@@ -278,6 +284,15 @@ def stock(symbol, bucket):
             "price_source": "Yahoo Finance", "quote_source": "Yahoo Finance",
             "fundamentals_source": "Yahoo Finance" if info else None,
             "statements_source": statement_source(statements, official, sec_source)}
+
+
+# Five growth steps need six fiscal years; below that the SEC series is worth a download.
+SEC_YEARS = 6
+
+
+def fiscal_years(income):
+    """How many fiscal years carry a revenue figure - empty columns do not count."""
+    return sum(1 for row in income.values() if finite(row.get("totalrevenue")) is not None)
 
 
 def statement_source(statements, official, sec_source=None):
