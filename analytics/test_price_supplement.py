@@ -8,6 +8,7 @@ or one in another currency.
 
 import itertools
 import sys
+import time
 import unittest
 from datetime import date, timedelta
 from pathlib import Path
@@ -52,6 +53,44 @@ class ToleranceTest(unittest.TestCase):
 
     def test_the_same_day_is_accepted(self):
         self.assertTrue(app.recent_enough("2026-11-20", "2026-11-20"))
+
+
+class StockExtraStatementsTest(unittest.TestCase):
+    """The supplement must take the same statement path as the rest of the app.
+
+    Loading Yahoo directly skipped SEC for US issuers and the original reports for European ones -
+    so a key never helped on an instance whose prices come from the scanner, and the page could
+    not report a gap it never received.
+    """
+
+    def run_extra(self):
+        ticker = mock.Mock()
+        ticker.history_metadata = {"currency": "USD"}
+        profile = {"statements": {"income": {"2025-12-31": {"totalrevenue": 1.0}}, "quarterly": {},
+                                  "balance": {}, "cash": {}},
+                   "statements_source": "SEC EDGAR",
+                   "info": {"financialCurrency": "USD"},
+                   "data_gaps": [{"block": "Quartale", "source": "SEC EDGAR", "have": 3, "need": 8,
+                                  "reason": "Ohne acht aufeinanderfolgende Quartale."}]}
+        with mock.patch.object(app.yf, "Ticker", return_value=ticker), \
+             mock.patch.object(app, "load_history", return_value=history("2026-11-19")), \
+             mock.patch.object(app, "statement_profile", return_value=profile) as profile_call:
+            found = app.stock_extra("AAPL", next(BUCKETS), "2026-11-20", "USD")
+        return found, profile_call
+
+    def test_the_statements_come_from_the_shared_path(self):
+        found, profile_call = self.run_extra()
+        self.assertTrue(profile_call.called, "stock_extra still loads Yahoo itself")
+        self.assertEqual("SEC EDGAR", found["statements_source"])
+
+    def test_the_gap_report_travels_with_the_statements(self):
+        found, _ = self.run_extra()
+        self.assertEqual(["Quartale"], [gap["block"] for gap in found["data_gaps"]])
+
+    def test_the_profile_bucket_is_counted_in_ten_minute_steps(self):
+        _, profile_call = self.run_extra()
+        bucket = profile_call.call_args.args[2]
+        self.assertEqual(int(time.time() // 600), bucket)
 
 
 class StockExtraTest(unittest.TestCase):

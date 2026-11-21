@@ -1587,6 +1587,9 @@ async function extendStock(){
         price_source:priceLabel(baseline.price_source,detail.price_source),
         statements:baseline.statements_source?baseline.statements:detail.statements,
         statements_source:baseline.statements_source||detail.statements_source,
+        // The gap report belongs to the statements, and those arrive with the supplement - the
+        // scanner alone knows nothing about fiscal years.
+        data_gaps:detail.data_gaps?.length?detail.data_gaps:(baseline.data_gaps||[]),
         info:{...baseline.info,...detail.info},
         issues:[...baseline.issues,...detail.issues]});
     }

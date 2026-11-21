@@ -219,9 +219,10 @@ def add_cumulative_quarters(candidates):
 
 
 def tagged_statements(documents, entity, cutoff, expected_currency):
+    """Assemble the statements from documents that were already parsed once."""
     candidates = {}
-    for filed, url, payload in documents:
-        for fact, value in report_facts(payload, entity, cutoff).items():
+    for filed, url, facts in documents:
+        for fact, value in facts.items():
             if fact not in candidates:
                 candidates[fact] = (filed, url, value, None)
     candidates.update(add_cumulative_quarters(candidates))
@@ -366,9 +367,29 @@ def stored_filings(symbol):
         return []
 
 
-def filing_entries(symbol, cutoff, isin):
+# Only machine-readable packages carry the figures. A filing list of one issuer mixes ad-hoc
+# notices, videos and SEC cover forms in with the reports; those yield no tagged facts at all.
+REPORT_PERIODS = ("FY", "H1", "9M", "Q1", "Q2", "Q3", "Q4")
+PACKAGE_EXTENSIONS = {"ZIP", "XBRI", "XBRL", "XHTML"}
+# The annual list is one paginated request; taking only its first page stopped at three annual
+# packages and left the fifth and sixth year unread.
+ANNUAL_PACKAGES = 100
+# When the provider leaves the period and the extension empty, the list is unfiltered and only
+# the first few addresses are worth a download.
+LENIENT_CANDIDATES = 12
+
+
+def report_rows(company_id, cutoff, fiscal_period=None, size=100):
+    query = dict(company=company_id, ordering="-release_datetime",
+                 release_datetime_to=cutoff + "T23:59:59Z", page_size=size, view="full")
+    if fiscal_period:
+        query["fiscal_period"] = fiscal_period
+    return listing("filings", **query)
+
+
+def filing_entries(symbol, cutoff, isin, refresh=False):
     """Where the reports are: the stored list when it exists, the paid one otherwise."""
-    stored = stored_filings(symbol)
+    stored = [] if refresh else stored_filings(symbol)
     if stored:
         limit = date.fromisoformat(cutoff)
         entries = []
@@ -401,54 +422,101 @@ def filing_entries(symbol, cutoff, isin):
         return "", []
     if "isin" in identity and isin not in company.get("isins", ()):
         return "", []
-    filings = listing("filings", company=company_id, extensions="ZIP,XBRI,XHTML",
-                      ordering="-release_datetime",
-                      release_datetime_to=cutoff + "T23:59:59Z", page_size=30, view="full")
-    entries = []
-    for item in filings:
+    # The annual reports first: they carry a full fiscal year each, and the newest ad-hoc notices
+    # of a US-registered issuer are cover forms whose XBRL names a different entity. Reading only
+    # the five newest filings therefore produced no figures at all.
+    limit = date.fromisoformat(cutoff)
+    candidates = (report_rows(company_id, cutoff, "FY", ANNUAL_PACKAGES)
+                  + report_rows(company_id, cutoff, None, 60))
+
+    def usable(item, strict):
+        """The address of a report, or nothing. Missing metadata only rejects under strict."""
+        # Everything that can be malformed sits inside the guard: a null "company", a missing
+        # "release_datetime" and an address that is not a string must skip the entry, not end the
+        # collection of every remaining report for this symbol.
         try:
             filed = date.fromisoformat(item["release_datetime"][:10])
             url = item.get("document") or item.get("document_url")
-            if (filed > date.fromisoformat(cutoff) or item.get("company", {}).get("id") != company_id
+            if (filed > limit or (item.get("company") or {}).get("id") != company_id
                     or not valid_link(url, CDN)
                     or not urlsplit(url).path.startswith("/financialreports/media/filings/")):
-                continue
-            entries.append((url, item.get("period_ending_date") or url, filed.isoformat()))
+                return None
+            if strict and ((item.get("fiscal_period") or "").upper() not in REPORT_PERIODS
+                           or (item.get("file_extension") or "").upper() not in PACKAGE_EXTENSIONS):
+                return None
         except (ValueError, TypeError, KeyError, AttributeError):
-            continue
+            return None
+        return url, item.get("period_ending_date") or url, filed.isoformat()
+
+    def addresses(strict):
+        found, seen = [], set()
+        for item in candidates:
+            entry = usable(item, strict)
+            if not entry or entry[0] in seen:
+                continue
+            seen.add(entry[0])
+            found.append(entry)
+        return found
+
+    entries = addresses(True)
+    if not entries:
+        # Not every issuer fills those two fields; a missing period must not hide a report.
+        entries = addresses(False)[:LENIENT_CANDIDATES]
     return lei, entries
 
 
-def collect_statements(symbol, cutoff, currency, isin):
+# Six fiscal years need six packages; each annual ESEF package also carries the year before it.
+DOCUMENTS_READ = 10
+REPORTED_YEARS_MIN = 6
+DOCUMENTS_TRIED = 14
+
+
+def collect_statements(symbol, cutoff, currency, isin, refresh=False):
     """Download the original packages and read the tags the issuers set themselves."""
     try:
-        lei, entries = filing_entries(symbol, cutoff, isin)
+        lei, entries = filing_entries(symbol, cutoff, isin, refresh=refresh)
     except (OSError, ValueError, TypeError, AttributeError):
         return {}, None
     documents = []
     seen = set()
     attempts = 0
+    years = set()
+    limit = date.fromisoformat(cutoff)
     for url, tag, filed in entries:
-        if len(documents) >= 5 or attempts >= 7:
+        if len(documents) >= DOCUMENTS_READ or attempts >= DOCUMENTS_TRIED:
             break
         if tag in seen or not valid_link(url, CDN):
             continue
         seen.add(tag)
-        attempts += 1
         try:
             payload = read_bytes(url)
         except (OSError, ValueError):
+            attempts += 1
             continue
         if not lei:
             # No company lookup was needed, so the report names its issuer itself.
             lei = issuer_identifier(payload)
         if not re.fullmatch(r"[A-Z0-9]{20}", lei or ""):
             return {}, None
-        documents.append((filed, url, payload))
+        try:
+            facts = report_facts(payload, lei, limit)
+        except (BadZipFile, OSError, RuntimeError, ValueError):
+            continue
+        if not facts:
+            # Ad-hoc notices, cover forms and videos carry no tagged figures; they cost nothing
+            # but the download, so they must not use up the budget for real packages either.
+            continue
+        attempts += 1
+        documents.append((filed, url, facts))
+        years |= {end for (start, end, days, unit, tag_name) in facts
+                  if tag_name == "Revenue" and 345 <= days <= 385 and (not currency or unit == currency)}
+        if len(years) >= REPORTED_YEARS_MIN:
+            # Enough years to answer the question; every further package is bandwidth.
+            break
     if not documents:
         return {}, None
     try:
-        tagged, report_currency = tagged_statements(documents, lei, date.fromisoformat(cutoff), currency)
+        tagged, report_currency = tagged_statements(documents, lei, limit, currency)
     except (BadZipFile, OSError, RuntimeError, ValueError):
         return {}, None
     if tagged:
@@ -461,22 +529,84 @@ def filings_available():
     return bool(os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip())
 
 
+_REFRESHED = set()
+
+
+def refresh_once(symbol):
+    """True the first time a symbol asks for a second, paid look in this process."""
+    with _LOCKS_GUARD:
+        if symbol in _REFRESHED:
+            return False
+        if len(_REFRESHED) > 512:
+            _REFRESHED.clear()
+        _REFRESHED.add(symbol)
+        return True
+
+
+def reported_years(sections):
+    """How many fiscal years the section actually carries a revenue figure for."""
+    return sum(1 for row in (sections.get("income") or {}).values()
+               if app_finite(row.get("totalrevenue")) is not None)
+
+
+def app_finite(value):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if math.isfinite(number) else None
+
+
+def merge_blocks(stored, collected):
+    """What the reports say now, plus the years only the store still holds."""
+    merged = {"provenance": collected.get("provenance") or {}}
+    for section in ("income", "quarterly", "balance", "cash"):
+        rows = {day: dict(row) for day, row in (stored.get(section) or {}).items()}
+        for day, row in (collected.get(section) or {}).items():
+            rows[day] = {**(rows.get(day) or {}), **row}
+        if rows:
+            merged[section] = rows
+    return merged
+
+
 @lru_cache(maxsize=24)
 def filing_statements(symbol, cutoff, currency, bucket, isin=None):
     """Look up a unique issuer; load only its published, tagged original files."""
     if not os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip():
         return {}, None
+    # Read before collecting: the collector writes its own filing list, so afterwards every symbol
+    # would look as if it had come from the store.
+    had_stored_list = bool(stored_filings(symbol))
     cached, cached_currency = stored_statements(symbol, currency)
-    if cached:
+    if cached and reported_years(cached) >= REPORTED_YEARS_MIN:
         return cached, cached_currency
+    # A store filled by an older collector can hold fewer years than the reports offer. It is
+    # then not an answer but a starting point: pay once, collect, and keep the years it alone had.
     # lru_cache does not merge two cold callers: without this lock two page views at
     # the same moment would both pay for the same listing. The store is checked
     # again inside the lock, so only the first caller pays and the rest read.
     with symbol_lock(symbol):
         cached, cached_currency = stored_statements(symbol, currency)
-        if cached:
+        if cached and reported_years(cached) >= REPORTED_YEARS_MIN:
             return cached, cached_currency
-        return collect_statements(symbol, cutoff, currency, isin)
+        collected, report_currency = collect_statements(symbol, cutoff, currency, isin)
+        # A stored filing list written by an older collector can hold fewer reports than the
+        # provider offers; only then is a second, paid look worth its downloads. A symbol without
+        # a stored list has just been answered by the provider itself, and an issuer with fewer
+        # than six reported years would pay twice on every cold key without ever gaining a year -
+        # so the refresh happens once per symbol and process at most.
+        if reported_years(collected or {}) < REPORTED_YEARS_MIN and had_stored_list:
+            fresh, fresh_currency = collect_statements(symbol, cutoff, currency, isin, refresh=True)
+            # The permission is spent only by a refresh that came back with something: a transient
+            # failure must stay retryable, and a successful one that gained no year must not be
+            # repeated on every cold key.
+            if (fresh and refresh_once(symbol)
+                    and reported_years(fresh) > reported_years(collected or {})):
+                collected = fresh
+                report_currency = fresh_currency or report_currency
+        if cached and collected:
+            collected, report_currency = merge_blocks(cached, collected), report_currency or cached_currency
+        return (collected or cached), (report_currency or cached_currency)
 
 
 def merge_filings(symbol, cutoff, statements, currency, isin=None):

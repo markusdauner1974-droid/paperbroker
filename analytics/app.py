@@ -566,7 +566,8 @@ def statement_profile(symbol, cutoff, bucket):
             sec = {}
         if sec.get("income") or sec.get("quarterly"):
             return {"statements": sec, "statements_source": "SEC EDGAR",
-                    "info": {"financialCurrency": "USD"}, "statement_date_limit": cutoff}
+                    "info": {"financialCurrency": "USD"}, "statement_date_limit": cutoff,
+                    "data_gaps": statement_gaps(sec, "SEC EDGAR", False, filings_available())}
     ticker = yf.Ticker(symbol)
     statements = {name: {day: row for day, row in values.items() if day <= cutoff}
                   for name, values in load_statements(ticker).items()}
@@ -580,7 +581,8 @@ def statement_profile(symbol, cutoff, bucket):
             pass
     statements, currency, official = merge_filings(symbol, cutoff, statements, currency, isin)
     return {"statements": statements, "statements_source": statement_source(statements, official),
-            "info": {"financialCurrency": currency} if currency else {}, "statement_date_limit": cutoff}
+            "info": {"financialCurrency": currency} if currency else {}, "statement_date_limit": cutoff,
+            "data_gaps": statement_gaps(statements, None, official, filings_available())}
 
 
 # The two sources rarely close the same day: the scanner on the NAS has Friday's close while
@@ -625,19 +627,20 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
             issues.append("Die ergänzende Yahoo-Kursreihe ist momentan nicht verfügbar.")
     except Exception:
         issues.append("Die ergänzende Yahoo-Kursreihe ist momentan nicht verfügbar.")
-    statements = {} if history_only else load_statements(ticker)
-    if any(statements.values()):
-        try:
-            company = ticker.get_info()
-            if company.get("financialCurrency"):
-                info["financialCurrency"] = company["financialCurrency"]
-        except Exception:
-            pass
-    if not history_only and not statements["income"]:
+    # The same way in as the non-NAS path: SEC for US issuers and the original reports for
+    # everything else. Loading Yahoo directly here skipped both - which is why a key never helped
+    # on an instance whose prices come from the scanner.
+    # statement_profile counts its bucket in ten-minute steps (it multiplies by 600 for the
+    # daily SEC keys); this function's own bucket rotates every fifteen minutes.
+    profile = {} if history_only else statement_profile(symbol, cutoff, int(time() // 600))
+    statements = profile.get("statements") or {}
+    info = {**info, **(profile.get("info") or {})}
+    if not history_only and not (statements.get("income") or {}):
         issues.append("Yahoo Finance hat keine Jahres-GuV geliefert.")
     return {"symbol": symbol, "prices": rows, "info": info, "statements": statements, "issues": issues,
             "price_source": "Yahoo Finance" if rows else None,
-            "statements_source": "Yahoo Finance" if any(statements.values()) else None}
+            "data_gaps": profile.get("data_gaps") or [],
+            "statements_source": profile.get("statements_source")}
 
 
 class Handler(BaseHTTPRequestHandler):

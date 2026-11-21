@@ -69,13 +69,20 @@ class CollectorTest(unittest.TestCase):
                 return [{"id": 150, "lei": "41GUOJQTALQHLF39XJ34", "isins": ["DE000EVNK013"]}]
             return [{"release_datetime": "2026-03-19T10:00:00Z",
                      "document": "https://cdn.financialreports.eu/financialreports/media/filings/c.zip",
-                     "company": {"id": 150}, "period_ending_date": "2025-12-31"}]
+                     "company": {"id": 150}, "period_ending_date": "2025-12-31",
+                     "fiscal_period": "FY", "file_extension": "ZIP"},
+                    # An ad-hoc notice, as every issuer files them: no period, no figures.
+                    {"release_datetime": "2026-04-19T10:00:00Z",
+                     "document": "https://cdn.financialreports.eu/financialreports/media/filings/n.html",
+                     "company": {"id": 150}, "period_ending_date": None,
+                     "fiscal_period": None, "file_extension": "HTML"}]
 
         with mock.patch.object(self.fs, "listing", erfunden):
             # A symbol without a stored list, so the provider really is asked.
             lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
         self.assertEqual(lei, "41GUOJQTALQHLF39XJ34")
-        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries), 1, "the ad-hoc notice must not be read as a report")
+        self.assertIn("filings", gesehen, "the provider was not asked for the reports")
         self.assertEqual(gesehen["filings"]["company"], 150)
 
     def test_an_address_outside_the_cdn_is_refused(self):
@@ -89,6 +96,103 @@ class CollectorTest(unittest.TestCase):
         with mock.patch.object(self.fs, "listing", boese):
             _lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
         self.assertEqual(entries, [])
+
+    def test_a_null_company_does_not_end_the_collection(self):
+        """One malformed entry must skip itself, not take the other reports with it."""
+        def liefert(pfad, **query):
+            if pfad == "companies":
+                return [{"id": 150, "lei": "41GUOJQTALQHLF39XJ34", "isins": ["DE000EVNK013"]}]
+            return [{"release_datetime": "2026-03-19T10:00:00Z", "company": None,
+                     "fiscal_period": "FY", "file_extension": "ZIP",
+                     "document": "https://cdn.financialreports.eu/financialreports/media/filings/a.zip"},
+                    {"release_datetime": "2026-03-19T10:00:00Z", "company": {"id": 150},
+                     "fiscal_period": "FY", "file_extension": "ZIP",
+                     "document": "https://cdn.financialreports.eu/financialreports/media/filings/b.zip"}]
+
+        with mock.patch.object(self.fs, "listing", liefert):
+            _lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
+        self.assertEqual([entry[0].rsplit("/", 1)[-1] for entry in entries], ["b.zip"])
+
+    def test_a_failed_refresh_stays_retryable(self):
+        """A refresh that came back empty must not spend the one permission for the process."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        fat = {"income": {f"{year}-12-31": {"totalrevenue": 1.0} for year in range(2020, 2026)},
+               "provenance": {}}
+        self.fs._REFRESHED.clear()
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements", return_value=(thin, "EUR")), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements",
+                                  side_effect=[(thin, "EUR"), ({}, None), (thin, "EUR"), (fat, "EUR")]) as collect:
+            first, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -11)
+            self.assertNotIn("TEST.DE", self.fs._REFRESHED, "a failed refresh must stay retryable")
+            second, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -12)
+        self.assertEqual(1, self.fs.reported_years(first))
+        self.assertEqual(6, self.fs.reported_years(second), "the second attempt must reach the reports")
+        self.assertEqual(4, collect.call_count)
+        self.assertIn("TEST.DE", self.fs._REFRESHED)
+
+    def test_a_tagless_package_does_not_use_up_the_budget(self):
+        """Ad-hoc notices cost the download, not the right to read a real report."""
+        entries = [(f"https://cdn.financialreports.eu/financialreports/media/filings/{index}.zip",
+                    str(index), "2026-01-01") for index in range(20)]
+        gelesen = []
+
+        def fakten(payload, lei, limit):
+            gelesen.append(payload)
+            return {("2025-01-01", "2025-12-31", 365, "EUR", "Revenue"): 100.0} \
+                if payload == b"bericht" else {}
+
+        with mock.patch.object(self.fs, "filing_entries", return_value=("41GUOJQTALQHLF39XJ34", entries)), \
+                mock.patch.object(self.fs, "read_bytes",
+                                  side_effect=lambda url: b"bericht" if url.endswith("/19.zip") else b"notiz"), \
+                mock.patch.object(self.fs, "report_facts", side_effect=fakten), \
+                mock.patch.object(self.fs, "remember_statements"):
+            tagged, currency = self.fs.collect_statements("TEST.DE", "2026-11-20", "EUR", None)
+        self.assertIn(b"bericht", gelesen, "the twentieth entry was never reached")
+        self.assertEqual("EUR", currency)
+        self.assertEqual({"2025-12-31"}, set((tagged or {}).get("income") or {}))
+
+    def test_a_thin_store_is_refreshed_once(self):
+        """A stored filing list from an older collector must be replaced, but only once."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        fat = {"income": {f"{year}-12-31": {"totalrevenue": 1.0} for year in range(2020, 2026)},
+               "provenance": {}}
+        # One look reads the store twice (before and inside the lock), the second look the
+        # refreshed store - hence three entries for two calls.
+        self.fs._REFRESHED.clear()
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements",
+                                  side_effect=[(thin, "EUR"), (thin, "EUR"), (fat, "EUR")]), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements",
+                                  side_effect=[(thin, "EUR"), (fat, "EUR")]) as collect, \
+                mock.patch.object(self.fs, "merge_blocks", side_effect=lambda a, b: b):
+            first, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -1)
+            second, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -2)
+        self.assertEqual(6, self.fs.reported_years(first))
+        self.assertEqual(2, collect.call_count, "one collect plus exactly one refresh, not two")
+        self.assertEqual(1, sum(1 for call in collect.call_args_list if call.kwargs.get("refresh")))
+        self.assertEqual(6, self.fs.reported_years(second), "the refreshed years must stick")
+
+    def test_a_thin_store_is_counted_as_thin(self):
+        """Only years that carry a revenue figure count - an empty column is not a year."""
+        self.assertEqual(2, self.fs.reported_years(
+            {"income": {"2024-12-31": {"totalrevenue": 1.0}, "2023-12-31": {"totalrevenue": 2.0},
+                        "2022-12-31": {}}}))
+
+    def test_the_merge_keeps_years_only_the_store_had(self):
+        merged = self.fs.merge_blocks(
+            {"income": {"2020-12-31": {"totalrevenue": 27.3, "netincome": 5.0}}},
+            {"income": {"2021-12-31": {"totalrevenue": 27.8}}, "provenance": {}})
+        self.assertEqual({"2020-12-31", "2021-12-31"}, set(merged["income"]))
+
+    def test_the_report_wins_over_the_store(self):
+        merged = self.fs.merge_blocks(
+            {"income": {"2021-12-31": {"totalrevenue": 27.84, "netincome": 5.0}}},
+            {"income": {"2021-12-31": {"totalrevenue": 26.95}}, "provenance": {}})
+        self.assertEqual(26.95, merged["income"]["2021-12-31"]["totalrevenue"])
+        self.assertEqual(5.0, merged["income"]["2021-12-31"]["netincome"], "stored fields are kept")
 
     def test_two_views_of_the_same_share_share_one_lock(self):
         self.assertIs(self.fs.symbol_lock("EVK.DE"), self.fs.symbol_lock("EVK.DE"))

@@ -4,6 +4,11 @@
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
+[tool.pytest.ini_options]
+# The two check_*.py modules carry most of the collector tests, and pytest's default pattern only
+# picks up test_*.py - so those fifteen tests never ran in CI, and two of them broke unnoticed.
+python_files = ["test_*.py", "check_*.py"]
+
 [tool.ruff]
 line-length = 140
 target-version = "py313"

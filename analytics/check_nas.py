@@ -200,7 +200,10 @@ class NasTests(unittest.TestCase):
         self.addCleanup(app.stock_extra.cache_clear)
         rows = [["2026-11-18", 280, 279, 0], ["2026-11-19", 285, 284, 0]]
         statements = {"income": {"2026-09-30": {"totalrevenue": 100}}}
-        with patch.object(app, "load_history", return_value=rows), patch.object(app, "load_statements", return_value=statements):
+        profile = {"statements": statements, "statements_source": "Yahoo Finance",
+                   "info": {"financialCurrency": "EUR"}, "data_gaps": []}
+        with patch.object(app, "load_history", return_value=rows), \
+                patch.object(app, "statement_profile", return_value=profile):
             status, data = self.call("/api/stock-extra?q=AAPL&cutoff=2026-11-18&currency=USD")
             self.assertEqual(status, 200)
             self.assertEqual(data["prices"], [])
@@ -285,17 +288,26 @@ class FilingStatementTests(unittest.TestCase):
 
         data = {annual: document("2025-12-31", "800", 120), half: document("2025-06-30", "300"),
                 interim: document("2025-09-30", "515")}
+        # The provider is asked twice: once for the annual reports, once for every report of a
+        # period. A filing without a period and a package extension is an ad-hoc notice.
+        def meldung(published, address, period, extension):
+            return {"company": company, "release_datetime": published, "document": address,
+                    "period_ending_date": None, "fiscal_period": period,
+                    "file_extension": extension}
+
+        annual_report = meldung("2026-03-01T09:00:00Z", annual, "FY", "ZIP")
         filings = [
-            {"company": company, "release_datetime": "2026-05-01T09:00:00Z", "document": future},
-            {"company": company, "release_datetime": "2026-03-01T09:00:00Z", "document": annual},
-            {"company": company, "release_datetime": "2025-11-01T09:00:00Z", "document": interim},
-            {"company": company, "release_datetime": "2025-08-01T09:00:00Z", "document": half},
+            meldung("2026-05-01T09:00:00Z", future, "FY", "ZIP"),
+            annual_report,
+            meldung("2025-11-01T09:00:00Z", interim, "Q3", "ZIP"),
+            meldung("2025-08-01T09:00:00Z", half, "H1", "ZIP"),
         ]
         fallback = {"income": {"2025-12-31": {"totalrevenue": 790000}}}
         self.addCleanup(filing_statements.filing_statements.cache_clear)
         self.addCleanup(app.statement_profile.cache_clear)
         with (patch.dict(filing_statements.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}),
-              patch.object(filing_statements, "listing", side_effect=[[company], filings]) as lookup,
+              patch.object(filing_statements, "listing",
+                           side_effect=[[company], [annual_report], filings]) as lookup,
               patch.object(filing_statements, "read_bytes", side_effect=data.__getitem__) as fetch,
               patch.object(app, "load_statements", return_value=fallback),
               patch.object(app.yf, "Ticker") as ticker):
@@ -380,7 +392,7 @@ class SecStatementTests(unittest.TestCase):
         submissions = {"accessionNumber": [filing], "form": ["8-K"], "filingDate": ["2026-02-03"],
                        "items": ["2.02,9.01"]}
         payload = {"cik": 89439, "facts": {"us-gaap": facts}}
-        self.addCleanup(sec_statements.load_sec_statements.cache_clear)
+        self.addCleanup(sec_statements._sec_statements_for_day.cache_clear)
         with (patch.object(sec_statements, "ticker_index", return_value={"MLI": 89439}),
               patch.object(sec_statements, "request_json", return_value=payload),
               patch.object(sec_statements, "recent_filings", return_value=submissions),
