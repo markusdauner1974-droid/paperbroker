@@ -257,6 +257,15 @@ class ExportTest(unittest.TestCase):
         self.assertEqual([{"block": "Standardauswertung", "source": "FinancialFilings",
                            "have": 0, "need": 1, "reason": export.BUDGET_REASON}], notes)
 
+    def test_a_slot_is_refunded_on_the_day_it_was_taken(self):
+        """A download that crosses midnight must not refund tomorrow's allowance."""
+        day = store.budget_take(10)
+        self.assertEqual(store.budget_day(), day)
+        self.assertEqual(1, store.budget_used())
+        store.budget_release(day)
+        self.assertEqual(0, store.budget_used())
+        self.assertIsNone(store.budget_take(0), "no slot left for an empty allowance")
+
     def test_the_gaps_of_the_export_are_stored_with_it(self):
         store.remember_export("EIN3.DE", 134, "abc", [("2025", "totalrevenue", "Grund")])
         self.assertEqual([("2025", "totalrevenue", "Grund")], store.stored_export_gaps("EIN3.DE"))

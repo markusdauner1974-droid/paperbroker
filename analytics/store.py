@@ -281,7 +281,7 @@ def budget_day(path=None):
 
 
 def budget_take(limit, path=None):
-    """Take one slot of today's allowance, or answer that there was none."""
+    """Take one slot of today's allowance; returns the day charged, or None when there was none."""
     day = budget_day(path)
     with closing(connect(path)) as conn:
         conn.execute("INSERT OR IGNORE INTO export_budget (day, used) VALUES (?, 0)", (day,))
@@ -290,15 +290,17 @@ def budget_take(limit, path=None):
         if used > limit:
             conn.execute("UPDATE export_budget SET used = used - 1 WHERE day = ?", (day,))
             conn.commit()
-            return False
+            return None
         conn.commit()
-    return True
+    return day
 
 
-def budget_release(path=None):
-    """Give a slot back - an attempt that brought nothing must not cost one of the ten."""
+def budget_release(day, path=None):
+    """Give a slot back on the very day it was taken - a download crossing midnight must not
+    refund tomorrow's allowance."""
     with closing(connect(path)) as conn:
-        conn.execute("UPDATE export_budget SET used = MAX(used - 1, 0) WHERE day = ?", (budget_day(path),))
+        conn.execute("UPDATE export_budget SET used = MAX(used - 1, 0) WHERE day = ?",
+                     (day or budget_day(path),))
         conn.commit()
 
 

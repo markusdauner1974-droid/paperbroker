@@ -13,6 +13,7 @@ import hashlib
 import io
 import os
 import re
+import zlib
 from contextlib import closing
 from datetime import date, datetime
 from functools import lru_cache
@@ -25,6 +26,7 @@ from zipfile import BadZipFile
 import store
 from filing_statements import symbol_lock
 from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
 
 API = "https://api.financialreports.eu"
 EXPORT = "https://financialfilings.com/de/companies/api/company/{company}/financials/export.xlsx"
@@ -357,20 +359,22 @@ def _collect(symbol, cutoff, currency, isin, stored, stored_currency):
         return stored, (stored_currency or currency) if stored else None
     if store.export_attempted_within(symbol, EXPORT_RETRY_MINUTES):
         return stored, (stored_currency or currency) if stored else None
-    if not store.budget_take(EXPORT_PER_DAY):
+    charged_day = store.budget_take(EXPORT_PER_DAY)
+    if not charged_day:
         # The provider allows ten files a day. A page view must not spend the last one on a
         # failure, and it must say why the figures are missing instead of staying silent.
         _attempt(symbol, company, BUDGET_REASON)
         return stored, (stored_currency or currency) if stored else None
     payload = download(company)
     if not payload:
-        store.budget_release()
+        store.budget_release(charged_day)
         _attempt(symbol, company, DOWNLOAD_REASON)
         return stored, (stored_currency or currency) if stored else None
     try:
         report = read_export(payload)
         sections, gaps = sections_from_export(report, cutoff)
-    except (BadZipFile, ParseError, OSError, ValueError, KeyError, TypeError):
+    except (BadZipFile, ParseError, OSError, ValueError, KeyError, TypeError,
+            EOFError, InvalidFileException, zlib.error):
         # The file arrived, so the provider counted it: the slot stays taken.
         _attempt(symbol, company, UNREADABLE_REASON)
         return stored, (stored_currency or currency) if stored else None
@@ -381,16 +385,20 @@ def _collect(symbol, cutoff, currency, isin, stored, stored_currency):
     report_currency = report_currency or next((block["currency"] for block in report["interim"].values()
                                                if block["currency"]), None)
     if currency and report_currency and currency != report_currency:
-        store.budget_release()
+        store.budget_release(charged_day)
         _attempt(symbol, company, CURRENCY_REASON)
         return stored, (stored_currency or currency) if stored else None
     with closing(store.connect()) as conn:
         store.write_figures(conn, symbol, sections, source="xlsx_export", currency=report_currency)
     store.remember_export(symbol, company, hashlib.sha256(payload).hexdigest(), gaps)
     merged, merged_currency = _stored(symbol)
-    # What was just read wins: read_figures drops a whole section as soon as one of its rows is
-    # older than the window, so the stored copy can be thinner than the file in hand.
-    return {**sections, **merged}, report_currency or merged_currency or currency
+    # Section by section: read_figures drops a whole section as soon as one of its rows is older
+    # than the window, so a section missing from the stored copy must not take the freshly read
+    # one with it.
+    combined = {name: (merged.get(name) or sections.get(name) or {})
+                for name in ("income", "quarterly", "balance", "cash")}
+    combined = {name: rows for name, rows in combined.items() if rows}
+    return combined or sections, report_currency or merged_currency or currency
 
 
 @lru_cache(maxsize=64)
