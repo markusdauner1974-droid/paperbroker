@@ -22,6 +22,8 @@ setup(name='paperbroker',
             # ihre beiden Abhaengigkeiten gehoeren damit hierher.
             'yfinance>=1.4.1,<2',
             'beautifulsoup4>=4.11,<5',
+            # Die Kennzahlen der Originalberichte kommen als XLSX.
+            'openpyxl>=3.1,<4',
         ],
         # B-13: templates/ holds screen.html but is not a python package
         # (no __init__.py), so it needs an explicit data declaration.

@@ -58,6 +58,13 @@ CREATE TABLE IF NOT EXISTS figure (
     updated_at TEXT,
     PRIMARY KEY (symbol, section, day, item)
 );
+CREATE TABLE IF NOT EXISTS export (
+    symbol        TEXT PRIMARY KEY,
+    provider_id   INTEGER,
+    checksum      TEXT,
+    downloaded_at TEXT,
+    gaps          TEXT
+);
 CREATE TABLE IF NOT EXISTS price (
     symbol   TEXT,
     day      TEXT,
@@ -96,6 +103,7 @@ def connect(path=None) -> sqlite3.Connection:
     _rename_german_schema(conn)
     conn.executescript(SCHEMA)
     _add_column(conn, "filing", "released", "TEXT")
+    _add_column(conn, "company", "provider_id", "INTEGER")
     conn.commit()
     return conn
 
@@ -216,6 +224,70 @@ def write_figures(conn, symbol, sections, source=None, currency=None):
                 count += 1
     conn.commit()
     return count
+
+
+def remember_provider(symbol, provider_id, path=None):
+    """The provider's own number for an issuer, so it never has to be looked up twice."""
+    with closing(connect(path)) as conn:
+        conn.execute(
+            """INSERT INTO company (symbol, provider_id, seen_at) VALUES (?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET provider_id=excluded.provider_id""",
+            (symbol, int(provider_id), _now()))
+        conn.commit()
+
+
+def stored_provider(symbol, path=None):
+    """The remembered provider number, or None."""
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT provider_id FROM company WHERE symbol = ?", (symbol,)).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def remember_export(symbol, provider_id, checksum, gaps=(), path=None):
+    """Record what the export contained and when it was read."""
+    with closing(connect(path)) as conn:
+        conn.execute(
+            """INSERT INTO export (symbol, provider_id, checksum, downloaded_at, gaps)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                 provider_id=excluded.provider_id, checksum=excluded.checksum,
+                 downloaded_at=excluded.downloaded_at, gaps=excluded.gaps""",
+            (symbol, int(provider_id), checksum, _now(),
+             json.dumps([list(gap) for gap in gaps], ensure_ascii=False)))
+        conn.commit()
+
+
+def export_is_fresh(symbol, max_age_days, path=None):
+    """Whether the export was read successfully within the given number of days.
+
+    A failed attempt also leaves a row behind - without a checksum it is not a reading, and the
+    file must not be treated as present.
+    """
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT downloaded_at, checksum FROM export WHERE symbol = ?",
+                           (symbol,)).fetchone()
+    if not row or not row["downloaded_at"] or not (row["checksum"] or "").strip():
+        return False
+    return age_hours(row["downloaded_at"]) <= max_age_days * 24
+
+
+def export_attempted_within(symbol, minutes, path=None):
+    """Whether the export was tried recently - a failing provider must not be asked every view."""
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT downloaded_at FROM export WHERE symbol = ?", (symbol,)).fetchone()
+    if not row or not row[0]:
+        return False
+    return age_hours(row[0]) <= minutes / 60
+
+
+def stored_export_gaps(symbol, path=None):
+    """The lines the export itself could not close, as recorded when it was read."""
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT gaps FROM export WHERE symbol = ?", (symbol,)).fetchone()
+    try:
+        return [tuple(gap) for gap in json.loads(row[0])] if row and row[0] else []
+    except (ValueError, TypeError):
+        return []
 
 
 def read_figures(conn, symbol, sections=SECTIONS, max_age_h=24):

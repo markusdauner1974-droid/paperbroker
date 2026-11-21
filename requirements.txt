@@ -5,3 +5,5 @@ flask>=3.1
 # ihre Abhaengigkeiten gehoeren deshalb hierher, nicht in ein eigenes Abbild.
 yfinance>=1.4.1,<2
 beautifulsoup4>=4.11,<5
+# Die Kennzahlen der Originalberichte kommen als XLSX; gelesen wird sie im selben Prozess.
+openpyxl>=3.1,<4
