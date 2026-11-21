@@ -51,10 +51,10 @@ class StoreTest(unittest.TestCase):
         self.conn.close()
         self.tmp.cleanup()
 
-    def test_an_empty_store_is_created_with_all_four_tables(self):
+    def test_an_empty_store_is_created_with_all_tables(self):
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(names, {"company", "filing", "figure", "price"})
+        self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget"})
 
     def test_statements_survive_a_write_and_read(self):
         sections = {"income": {"2025-12-31": {"totalrevenue": 14_069_000_000.0,
@@ -147,7 +147,7 @@ class StoreTest(unittest.TestCase):
         # The old tables must be gone, otherwise the page could read the wrong one.
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(names, {"company", "filing", "figure", "price"})
+        self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget"})
         # Opening again must not touch the migrated database.
         self.conn.close()
         self.conn = self.store.connect(german)

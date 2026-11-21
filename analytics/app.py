@@ -11,11 +11,13 @@ from threading import Lock
 from time import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
+from xml.etree.ElementTree import ParseError
 
 import ranking
 import yfinance as yf
 from filing_statements import filings_available, merge_filings
 from sec_statements import load_sec_statements
+from statement_export import export_gaps, statement_export
 
 ROOT = Path(__file__).resolve().parent
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
@@ -375,7 +377,10 @@ def statement_gaps(statements, sec_source, official, filings_key):
     return gaps
 
 
-def statement_source(statements, official, sec_source=None):
+def statement_source(statements, official, sec_source=None, quarterly_export=False):
+    if official and quarterly_export:
+        return ("XBRL-Originalberichte · Quartale aus der Standardauswertung der Berichte · "
+                "Yahoo Finance für verfügbare Ergänzungen")
     if official:
         return "XBRL-Originalberichte · Yahoo Finance für verfügbare Ergänzungen"
     if sec_source:
@@ -557,6 +562,37 @@ def nas_stocks(nas, symbols, *, identify=False, bucket=None):
     return stocks
 
 
+EXPORT_BLOCK = "Standardauswertung"
+
+
+def export_notes(symbol):
+    """Why the standardised statements are missing, in the wording of the data-gap block."""
+    notes = []
+    for _year, _item, reason in export_gaps(symbol)[:3]:
+        notes.append({"block": EXPORT_BLOCK, "source": "FinancialFilings", "have": 0, "need": 1,
+                      "reason": reason})
+    return notes
+
+
+def merge_export(statements, export):
+    """Fill what the original reports and the aggregates left open; never overwrite them.
+
+    The XLSX is a standardised re-reading of the same reports, so where a tagged value exists it
+    stays. The quarterly figures are the exception in practice: no other source has them, so the
+    derived quarters arrive here.
+    """
+    result = {name: {day: dict(row) for day, row in (statements.get(name) or {}).items()}
+              for name in ("income", "quarterly", "balance", "cash")}
+    for section in ("income", "quarterly", "balance", "cash"):
+        for day, row in (export.get(section) or {}).items():
+            target = result.setdefault(section, {}).setdefault(day, {})
+            for item, value in row.items():
+                target.setdefault(item, value)
+    if statements.get("provenance"):
+        result["provenance"] = statements["provenance"]
+    return result
+
+
 @lru_cache(maxsize=96)
 def statement_profile(symbol, cutoff, bucket):
     if "." not in symbol:
@@ -580,9 +616,23 @@ def statement_profile(symbol, cutoff, bucket):
         except Exception:
             pass
     statements, currency, official = merge_filings(symbol, cutoff, statements, currency, isin)
-    return {"statements": statements, "statements_source": statement_source(statements, official),
+    supplement = {}
+    if filings_available():
+        try:
+            supplement, export_currency = statement_export(symbol, cutoff, currency, bucket, isin)
+            if export_currency and currency and export_currency != currency:
+                supplement = {}
+        except (ParseError, URLError, OSError, ValueError, TypeError, KeyError):
+            supplement = {}
+    if supplement:
+        statements = merge_export(statements, supplement)
+    gaps = statement_gaps(statements, None, official, filings_available())
+    gaps.extend(export_notes(symbol))
+    return {"statements": statements,
+            "statements_source": statement_source(statements, official,
+                                                  quarterly_export=bool((supplement or {}).get("quarterly"))),
             "info": {"financialCurrency": currency} if currency else {}, "statement_date_limit": cutoff,
-            "data_gaps": statement_gaps(statements, None, official, filings_available())}
+            "data_gaps": gaps}
 
 
 # The two sources rarely close the same day: the scanner on the NAS has Friday's close while
