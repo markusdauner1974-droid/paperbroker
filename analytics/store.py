@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS figure (
     updated_at TEXT,
     PRIMARY KEY (symbol, section, day, item)
 );
+CREATE TABLE IF NOT EXISTS export_budget (
+    day  TEXT PRIMARY KEY,
+    used INTEGER NOT NULL DEFAULT 0
+);
+CREATE TABLE IF NOT EXISTS export (
+    symbol        TEXT PRIMARY KEY,
+    provider_id   INTEGER,
+    checksum      TEXT,
+    downloaded_at TEXT,
+    gaps          TEXT
+);
 CREATE TABLE IF NOT EXISTS price (
     symbol   TEXT,
     day      TEXT,
@@ -96,6 +107,7 @@ def connect(path=None) -> sqlite3.Connection:
     _rename_german_schema(conn)
     conn.executescript(SCHEMA)
     _add_column(conn, "filing", "released", "TEXT")
+    _add_column(conn, "company", "provider_id", "INTEGER")
     conn.commit()
     return conn
 
@@ -218,6 +230,105 @@ def write_figures(conn, symbol, sections, source=None, currency=None):
     return count
 
 
+def remember_provider(symbol, provider_id, path=None):
+    """The provider's own number for an issuer, so it never has to be looked up twice."""
+    with closing(connect(path)) as conn:
+        conn.execute(
+            """INSERT INTO company (symbol, provider_id, seen_at) VALUES (?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET provider_id=excluded.provider_id""",
+            (symbol, int(provider_id), _now()))
+        conn.commit()
+
+
+def stored_provider(symbol, path=None):
+    """The remembered provider number, or None."""
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT provider_id FROM company WHERE symbol = ?", (symbol,)).fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def remember_export(symbol, provider_id, checksum, gaps=(), path=None):
+    """Record what the export contained and when it was read."""
+    with closing(connect(path)) as conn:
+        conn.execute(
+            """INSERT INTO export (symbol, provider_id, checksum, downloaded_at, gaps)
+               VALUES (?, ?, ?, ?, ?)
+               ON CONFLICT(symbol) DO UPDATE SET
+                 provider_id=excluded.provider_id, checksum=excluded.checksum,
+                 downloaded_at=excluded.downloaded_at, gaps=excluded.gaps""",
+            (symbol, int(provider_id), checksum, _now(),
+             json.dumps([list(gap) for gap in gaps], ensure_ascii=False)))
+        conn.commit()
+
+
+def export_is_fresh(symbol, max_age_days, path=None):
+    """Whether the export was read successfully within the given number of days.
+
+    A failed attempt also leaves a row behind - without a checksum it is not a reading, and the
+    file must not be treated as present.
+    """
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT downloaded_at, checksum FROM export WHERE symbol = ?",
+                           (symbol,)).fetchone()
+    if not row or not row["downloaded_at"] or not (row["checksum"] or "").strip():
+        return False
+    return age_hours(row["downloaded_at"]) <= max_age_days * 24
+
+
+def budget_day(path=None):
+    """The provider counts per calendar day; UTC is the safe side of every time zone."""
+    return datetime.now(UTC).date().isoformat()
+
+
+def budget_take(limit, path=None):
+    """Take one slot of today's allowance; returns the day charged, or None when there was none."""
+    day = budget_day(path)
+    with closing(connect(path)) as conn:
+        conn.execute("INSERT OR IGNORE INTO export_budget (day, used) VALUES (?, 0)", (day,))
+        conn.execute("UPDATE export_budget SET used = used + 1 WHERE day = ?", (day,))
+        used = conn.execute("SELECT used FROM export_budget WHERE day = ?", (day,)).fetchone()[0]
+        if used > limit:
+            conn.execute("UPDATE export_budget SET used = used - 1 WHERE day = ?", (day,))
+            conn.commit()
+            return None
+        conn.commit()
+    return day
+
+
+def budget_release(day, path=None):
+    """Give a slot back on the very day it was taken - a download crossing midnight must not
+    refund tomorrow's allowance."""
+    with closing(connect(path)) as conn:
+        conn.execute("UPDATE export_budget SET used = MAX(used - 1, 0) WHERE day = ?",
+                     (day or budget_day(path),))
+        conn.commit()
+
+
+def budget_used(path=None):
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT used FROM export_budget WHERE day = ?", (budget_day(path),)).fetchone()
+    return int(row[0]) if row else 0
+
+
+def export_attempted_within(symbol, minutes, path=None):
+    """Whether the export was tried recently - a failing provider must not be asked every view."""
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT downloaded_at FROM export WHERE symbol = ?", (symbol,)).fetchone()
+    if not row or not row[0]:
+        return False
+    return age_hours(row[0]) <= minutes / 60
+
+
+def stored_export_gaps(symbol, path=None):
+    """The lines the export itself could not close, as recorded when it was read."""
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT gaps FROM export WHERE symbol = ?", (symbol,)).fetchone()
+    try:
+        return [tuple(gap) for gap in json.loads(row[0])] if row and row[0] else []
+    except (ValueError, TypeError):
+        return []
+
+
 def read_figures(conn, symbol, sections=SECTIONS, max_age_h=24):
     """Read the stored statements back; empty when nothing is stored or it is stale."""
     result = {}
@@ -232,6 +343,14 @@ def read_figures(conn, symbol, sections=SECTIONS, max_age_h=24):
             block.setdefault(row["day"], {})[row["item"]] = row["amount"]
         result[section] = block
     return result
+
+
+def stored_currency(conn, symbol):
+    """The currency the stored figures were reported in, or None."""
+    row = conn.execute(
+        "SELECT currency FROM figure WHERE symbol = ? AND currency IS NOT NULL AND currency != '' LIMIT 1",
+        (symbol,)).fetchone()
+    return row[0] if row else None
 
 
 def figure_sources(conn, symbol):
