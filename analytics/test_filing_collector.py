@@ -153,6 +153,34 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual("EUR", currency)
         self.assertEqual({"2025-12-31"}, set((tagged or {}).get("income") or {}))
 
+    def test_a_spent_permission_costs_no_download(self):
+        """Once the one allowance is gone, a cold key must not pay for a listing first."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        self.fs._REFRESHED.clear()
+        self.fs._REFRESHED.add("TEST.DE")
+        self.addCleanup(self.fs._REFRESHED.clear)
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements", return_value=(thin, "EUR")), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements", return_value=(thin, "EUR")) as collect:
+            result, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -21)
+        self.assertEqual(1, self.fs.reported_years(result))
+        self.assertEqual(1, collect.call_count, "no second, paid look after the allowance is spent")
+        self.assertEqual([], [call for call in collect.call_args_list if call.kwargs.get("refresh")])
+
+    def test_an_unexpected_error_does_not_burn_the_permission(self):
+        """A RecursionError or MemoryError must not block the symbol until the process ends."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        self.fs._REFRESHED.clear()
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements", return_value=(thin, "EUR")), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements",
+                                  side_effect=[(thin, "EUR"), RecursionError("zu tief verschachtelt")]):
+            with self.assertRaises(RecursionError):
+                self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -31)
+        self.assertNotIn("TEST.DE", self.fs._REFRESHED, "the permission must come back")
+
     def test_a_thin_store_is_refreshed_once(self):
         """A stored filing list from an older collector must be replaced, but only once."""
         thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
