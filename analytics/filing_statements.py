@@ -530,6 +530,9 @@ def filings_available():
 
 
 _REFRESHED = set()
+_UNDONE = {}
+# How often a symbol may be given its one permission back before it has to wait for a restart.
+REFRESH_RETRIES = 2
 
 
 def refresh_once(symbol):
@@ -539,14 +542,25 @@ def refresh_once(symbol):
             return False
         if len(_REFRESHED) > 512:
             _REFRESHED.clear()
+            _UNDONE.clear()
         _REFRESHED.add(symbol)
         return True
 
 
-def refresh_undo(symbol):
-    """Take the permission back after a refresh that brought nothing, so it stays retryable."""
+def refresh_undo(symbol, budget=REFRESH_RETRIES):
+    """Give the permission back after a refresh that brought nothing - a bounded number of times.
+
+    A transient failure should be retried, but a document that always breaks would otherwise cost
+    a full collection on every request: lru_cache does not remember exceptions, so nothing else
+    stops it. After the budget the permission stays spent until the process ends.
+    """
     with _LOCKS_GUARD:
+        used = _UNDONE.get(symbol, 0)
+        if used >= budget:
+            return False
+        _UNDONE[symbol] = used + 1
         _REFRESHED.discard(symbol)
+        return True
 
 
 def reported_years(sections):
