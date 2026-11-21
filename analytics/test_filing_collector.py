@@ -97,6 +97,49 @@ class CollectorTest(unittest.TestCase):
             _lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
         self.assertEqual(entries, [])
 
+    def test_a_tagless_package_does_not_use_up_the_budget(self):
+        """Ad-hoc notices cost the download, not the right to read a real report."""
+        entries = [(f"https://cdn.financialreports.eu/financialreports/media/filings/{index}.zip",
+                    str(index), "2026-01-01") for index in range(20)]
+        gelesen = []
+
+        def fakten(payload, lei, limit):
+            gelesen.append(payload)
+            return {("2025-01-01", "2025-12-31", 365, "EUR", "Revenue"): 100.0} \
+                if payload == b"bericht" else {}
+
+        with mock.patch.object(self.fs, "filing_entries", return_value=("41GUOJQTALQHLF39XJ34", entries)), \
+                mock.patch.object(self.fs, "read_bytes",
+                                  side_effect=lambda url: b"bericht" if url.endswith("/19.zip") else b"notiz"), \
+                mock.patch.object(self.fs, "report_facts", side_effect=fakten), \
+                mock.patch.object(self.fs, "remember_statements"):
+            tagged, currency = self.fs.collect_statements("TEST.DE", "2026-11-20", "EUR", None)
+        self.assertIn(b"bericht", gelesen, "the twentieth entry was never reached")
+        self.assertEqual("EUR", currency)
+        self.assertEqual({"2025-12-31"}, set((tagged or {}).get("income") or {}))
+
+    def test_a_thin_store_is_refreshed_once(self):
+        """A stored filing list from an older collector must be replaced, but only once."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        fat = {"income": {f"{year}-12-31": {"totalrevenue": 1.0} for year in range(2020, 2026)},
+               "provenance": {}}
+        # One look reads the store twice (before and inside the lock), the second look the
+        # refreshed store - hence three entries for two calls.
+        self.fs._REFRESHED.clear()
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements",
+                                  side_effect=[(thin, "EUR"), (thin, "EUR"), (fat, "EUR")]), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements",
+                                  side_effect=[(thin, "EUR"), (fat, "EUR")]) as collect, \
+                mock.patch.object(self.fs, "merge_blocks", side_effect=lambda a, b: b):
+            first, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -1)
+            second, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -2)
+        self.assertEqual(6, self.fs.reported_years(first))
+        self.assertEqual(2, collect.call_count, "one collect plus exactly one refresh, not two")
+        self.assertEqual(1, sum(1 for call in collect.call_args_list if call.kwargs.get("refresh")))
+        self.assertEqual(6, self.fs.reported_years(second), "the refreshed years must stick")
+
     def test_a_thin_store_is_counted_as_thin(self):
         """Only years that carry a revenue figure count - an empty column is not a year."""
         self.assertEqual(2, self.fs.reported_years(
