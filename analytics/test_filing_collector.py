@@ -69,13 +69,20 @@ class CollectorTest(unittest.TestCase):
                 return [{"id": 150, "lei": "41GUOJQTALQHLF39XJ34", "isins": ["DE000EVNK013"]}]
             return [{"release_datetime": "2026-03-19T10:00:00Z",
                      "document": "https://cdn.financialreports.eu/financialreports/media/filings/c.zip",
-                     "company": {"id": 150}, "period_ending_date": "2025-12-31"}]
+                     "company": {"id": 150}, "period_ending_date": "2025-12-31",
+                     "fiscal_period": "FY", "file_extension": "ZIP"},
+                    # An ad-hoc notice, as every issuer files them: no period, no figures.
+                    {"release_datetime": "2026-04-19T10:00:00Z",
+                     "document": "https://cdn.financialreports.eu/financialreports/media/filings/n.html",
+                     "company": {"id": 150}, "period_ending_date": None,
+                     "fiscal_period": None, "file_extension": "HTML"}]
 
         with mock.patch.object(self.fs, "listing", erfunden):
             # A symbol without a stored list, so the provider really is asked.
             lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
         self.assertEqual(lei, "41GUOJQTALQHLF39XJ34")
-        self.assertEqual(len(entries), 1)
+        self.assertEqual(len(entries), 1, "the ad-hoc notice must not be read as a report")
+        self.assertIn("filings", gesehen, "the provider was not asked for the reports")
         self.assertEqual(gesehen["filings"]["company"], 150)
 
     def test_an_address_outside_the_cdn_is_refused(self):
@@ -89,6 +96,25 @@ class CollectorTest(unittest.TestCase):
         with mock.patch.object(self.fs, "listing", boese):
             _lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
         self.assertEqual(entries, [])
+
+    def test_a_thin_store_is_counted_as_thin(self):
+        """Only years that carry a revenue figure count - an empty column is not a year."""
+        self.assertEqual(2, self.fs.reported_years(
+            {"income": {"2024-12-31": {"totalrevenue": 1.0}, "2023-12-31": {"totalrevenue": 2.0},
+                        "2022-12-31": {}}}))
+
+    def test_the_merge_keeps_years_only_the_store_had(self):
+        merged = self.fs.merge_blocks(
+            {"income": {"2020-12-31": {"totalrevenue": 27.3, "netincome": 5.0}}},
+            {"income": {"2021-12-31": {"totalrevenue": 27.8}}, "provenance": {}})
+        self.assertEqual({"2020-12-31", "2021-12-31"}, set(merged["income"]))
+
+    def test_the_report_wins_over_the_store(self):
+        merged = self.fs.merge_blocks(
+            {"income": {"2021-12-31": {"totalrevenue": 27.84, "netincome": 5.0}}},
+            {"income": {"2021-12-31": {"totalrevenue": 26.95}}, "provenance": {}})
+        self.assertEqual(26.95, merged["income"]["2021-12-31"]["totalrevenue"])
+        self.assertEqual(5.0, merged["income"]["2021-12-31"]["netincome"], "stored fields are kept")
 
     def test_two_views_of_the_same_share_share_one_lock(self):
         self.assertIs(self.fs.symbol_lock("EVK.DE"), self.fs.symbol_lock("EVK.DE"))
