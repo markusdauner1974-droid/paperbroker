@@ -440,9 +440,11 @@ function buildChecks(stock,benchmark=[],only=selected){
   };
   const weeklyVol=n=>weekly.length>=n+3?deviation(adjacentReturns(weekly.slice(-n-2,-1).map(x=>x.at(-1)))):null;
   const netMargin=division(earn,rev);
-  const invCapital=v(assets,"InvestedCapital");
-  const tax=division(v(a,"TaxProvision"),v(a,"PretaxIncome"));
-  const roic=invCapital>0&&tax>=0&&isNum(tax)&&tax<=1&&isNum(ebit)?ebit*(1-tax)/invCapital:null;
+  // TraderFox nennt das Kriterium "Rendite auf das eingesetzte Kapital" und meint ROCE,
+  // nicht ROIC: EBIT bezogen auf Bilanzsumme minus kurzfristige Verbindlichkeiten.
+  const capital=isNum(total)&&isNum(v(assets,"CurrentLiabilities"))?total-v(assets,"CurrentLiabilities"):null;
+  const roce=capital>0&&isNum(ebit)?division(ebit,capital):null;
+  const ownRoe=division(earn,v(assets,"StockholdersEquity"));
   const yearEnd=rows.at(-1)?.[0];
   const preceding=n=>yearEnd?adjustDate(yearEnd,n*12):null;
   // TraderFox looks fifteen years back for continuity. One extra window gives the
@@ -486,21 +488,46 @@ function buildChecks(stock,benchmark=[],only=selected){
         return values.every(x=>isNum(x)&&x>0)?trendFit(values.map(Math.log)):null;
       };
       const years=span=>span?" "+span+" Jahre":"";
+      // Eine negative Basis macht jede Wachstumsrate unbrauchbar: aus -1,78 wird keine 26 %.
+      // Die Referenz greift dann auf das letzte positive Jahr im Fenster zurück, und zwar mit der
+      // Fensterlänge als Nenner (GAP: 2,13 gegen 0,67 über fünf Jahre = 26,0 % gegen 26,43 %).
+      const positiveBase=(series,span)=>{
+        for(let back=span;back>=1;back--){
+          const base=annualMetric(back,series);
+          if(isNum(base)&&base>0)return base;
+        }
+        return null;
+      };
+      // Stabilität braucht positive Werte für den Logarithmus. Liegen Verluste im Fenster,
+      // misst sie stattdessen die Gleichmäßigkeit der Wachstumsraten - das ist die Größe, die
+      // der Kriterienname nennt ("Stabilität EPS-Wachstum").
+      const stability=(series,span)=>{
+        const levels=long(series,span);
+        if(levels!==null)return levels;
+        if(!span)return null;
+        const values=Array.from({length:span+1},(_,i)=>annualMetric(i,series)).reverse();
+        if(values.some(x=>!isNum(x)))return null;
+        // Mit Verlusten im Fenster gibt es keinen Logarithmus; dann misst die Anpassungsgüte
+        // der Rohwerte, wie gleichmäßig der Verlauf ist.
+        return trendFit(values);
+      };
       const salesSpan=spanOf(sales),epsSpan=spanOf(eps);
       return [["Wachstum und Beständigkeit",[
         p("Umsatzwachstum"+years(salesSpan)+" (CAGR)",
           salesSpan?cagr(rev,annualMetric(salesSpan,sales),salesSpan):null,-.10,.05,.23),
         p("Umsatzstabilität"+years(salesSpan)+" (R²)",long(sales,salesSpan),0,.60,1),
-        p("EPS-Wachstum"+years(epsSpan)+" (CAGR)",
-          epsSpan?cagr(eps(a),annualMetric(epsSpan,eps),epsSpan):null,-.15,.08,.35),
-        p("EPS-Stabilität"+years(epsSpan)+" (R²)",long(eps,epsSpan),0,.60,1)]],
+        p("EPS-Wachstum"+years(epsSpan)+" (CAGR, positives Basisjahr)",
+          epsSpan?cagr(eps(a),positiveBase(eps,epsSpan),epsSpan):null,-.15,.08,.35),
+        p("EPS-Stabilität"+years(epsSpan)+" (R²)",stability(eps,epsSpan),0,.60,1)]],
       ["Rentabilität",[
-        p("Eigenkapitalrendite (TTM, Anbieter)",i.returnOnEquity,-.12,.10,.34),
-        p("ROIC (EBIT nach Steuern / eingesetztes Kapital)",roic,-.12,.10,.28),
+        p("Eigenkapitalrendite (Geschäftsjahr)",ownRoe,-.12,.10,.34),
+        p("Rendite auf das eingesetzte Kapital (ROCE)",roce,-.12,.10,.28),
         p("Nettogewinnmarge (Geschäftsjahr)",netMargin,-.12,.10,.30)]],
       ["Kursprofil",[
-        p("Wochenvolatilität über 50 Wochen",weeklyVol(50),.10,.05,.015),
-        p("Kurswachstum pro Jahr, 5 Jahre",isNum(ret(60))?(1+ret(60))**.2-1:null,-.15,.08,.32),
+        // Drei Jahre Wochenrenditen: damit trifft die Zahl die Referenz (GAP 7,02 % gegen 7,01 %),
+        // während fünfzig Wochen systematisch zu ruhig messen.
+        p("Volatilität (Wochenrenditen, 3 Jahre)",weeklyVol(156),.10,.05,.015),
+        p("Performance pro Jahr (10 Jahre, bereinigt)",isNum(ret(120))?(1+ret(120))**.1-1:null,-.15,.08,.32),
         p("Kursstabilität 12 Monate (R²)",lineStability(12),0,.60,1)]],
       ["Bilanz und Zinslast",[
         p("Finanzschulden / Bilanzsumme",division(debt,total),.80,.35,.02),
@@ -590,8 +617,30 @@ function trendFit(values){
   const cross=values.reduce((sum,value,index)=>sum+(value-mean)*(index-mid),0);
   const vs=values.reduce((sum,value)=>sum+(value-mean)**2,0);
   const xs=values.reduce((sum,_,index)=>sum+(index-mid)**2,0);
-  // A falling or flat series has no positive trend to score.
-  return cross>0&&vs>0&&xs>0?clamp(cross**2/(vs*xs)):0;
+  // R² misst, wie gleichmäßig eine Reihe verläuft, nicht wohin. Eine Firma mit stetig leicht
+  // sinkendem Umsatz ist stabil und wurde hier bisher mit 0 % abgestraft; die Richtung bewertet
+  // das Wachstumskriterium daneben.
+  return vs>0&&xs>0?clamp(cross**2/(vs*xs)):0;
+}
+// Die Referenz bewertet jedes Kriterium im Kontext des Marktes: erfüllt, wenn die Firma besser
+// abschneidet als ein veröffentlichter Anteil der Vergleichsaktien (50 %, 65 %, 25 %, 10 %).
+// Ohne ausgewertete Gruppe bleibt es bei den festen Schwellen der App - dann sagt es das Abzeichen.
+function applyGroupRanks(groups,ranking,mode){
+  if(!ranking||!ranking.result||ranking.result.error||!ranking.result.ranks)return false;
+  const {ranks,mask}=ranking.result, cutoffs=cutoffsFor(mode);
+  let applied=false;
+  groups.flatMap(([,rows])=>rows).forEach((row,index)=>{
+    if(!mask[index]||!isNum(ranks[index]))return;
+    const cutoff=cutoffs[index];
+    row[2]=ranks[index]>=cutoff;
+    row[3]="Ziel ≥ "+cutoff+" % · besser als "+Math.round(ranks[index])+" %";
+    row[5]=Math.round(ranks[index]);
+    applied=true;
+  });
+  return applied;
+}
+function groupRanking(current,mode){
+  return activeRanking&&activeRanking.active===current&&activeRanking.mode===mode?activeRanking:null;
 }
 function scoreGroups(groups){
   const criteria=groups.flatMap(([,rows])=>rows);
@@ -605,11 +654,15 @@ function scoreLabel(score){
 }
 function liveChecks(){
   const groups=buildChecks(data,checkBenchmark.rows);
-  const score=scoreGroups(groups);
+  const ranking=groupRanking(data,selected);
+  const ranked=applyGroupRanks(groups,ranking,selected);
+  const score=ranked?{points:ranking.result.score,count:ranking.result.count,total:groups.flatMap(([,rows])=>rows).length}
+    :scoreGroups(groups);
   const yieldValue=division(periodDividends(data.prices,data.prices.at(-1)?.[0]),data.prices.at(-1)?.[1]);
   const dividendMissing=selected===1&&!isNum(yieldValue);
   const pause=selected===1&&isNum(yieldValue)&&yieldValue<.02;
-  const coverage=score.count+" von "+score.total+" Kriterien bewertbar";
+  const coverage=ranked?"Rang gegen "+ranking.result.results.length+" Vergleichsaktien · "+score.count+" gemeinsame Kriterien"
+    :score.count+" von "+score.total+" Kriterien bewertbar";
   const note=pause?"Dividendenrendite unter 2 % · "+coverage+".":
     dividendMissing?"Dividendenrendite unbekannt · "+coverage+".":
     coverage+(score.count<score.total&&score.count>0?" · möglicher Punktebereich.":".");
@@ -918,7 +971,9 @@ function renderChecks(){
     element("div",data.reference?"SAP · WKN 716460 · DE0007164600 · Deutschland 100 (v)":
       [data.symbol,data.info.fullExchangeName||data.info.exchange,data.info.sector].filter(Boolean).join(" · ")),
     element("small",note,"score-note"));
-  badge.append(element("small",data.reference?"TraderFox · Archiv":"Eigene feste Schwellen"),element("strong",score));
+  badge.append(element("small",data.reference?"TraderFox · Archiv":
+    groupRanking(data,selected)?.result&&!groupRanking(data,selected).result.error?"Rang im Vergleich · Perzentile":
+    "Eigene feste Schwellen"),element("strong",score));
   if(isNum(ratio))badge.style.setProperty("--score-color", "hsl("+ratio*128+" 66% "+(ratio>.35&&ratio<.65?29:32)+"%)");
   summary.append(identity,badge);
   const metrics=element("div",undefined,"check-metrics");
@@ -933,7 +988,7 @@ function renderChecks(){
   const details=element("details");
   details.append(element("summary","Infos zum Score"),element("p",data.reference?
     "Erfasster TraderFox-Stand für SAP. Die Marktvergleiche beziehen sich auf Deutschland 100 (v).":
-    "Balken zeigen die Kennzahl auf einer Zielskala von 0 bis 100. Bei gerichteten Kriterien liegt das Ziel bei 50. Die Farben bewerten zunächst die Zielerreichung. Nach der Auswertung einer Vergleichsgruppe wird bei gemeinsamen Kriterien der Rang innerhalb dieser Gruppe angezeigt. Gleichstände zählen bei Einzelrängen zur Hälfte. Die Marktabdeckung entspricht den ausgewählten Tickern. Ein erfülltes Kriterium zählt einen Punkt. Bei fehlenden Daten zeigt die Punktespanne die offenen Kriterien. Der Vergleich in einer Gruppe nutzt je Check eine eigene Rangschwelle: im Qualitäts-Check die veröffentlichten 50 %, 65 % bei den Stabilitätsmaßen sowie 25 % und 10 % bei EBIT-Schulden-, Zins- und Bewertungskennzahlen, im Dividenden-Check die veröffentlichten 65 %, im Wachstums- und im Robustheits-Check 50 % (nicht veröffentlicht, deshalb Standardwert). Die Einzelwertung ohne Gruppe nutzt die festen Schwellen der App. Das Stabilitätsmaß nutzt R² eines linearen Trends der logarithmierten Werte für steigende Verläufe und setzt fallende oder flache Trends für die Bewertung auf null. Volatilität ist die Standardabweichung einfacher Tages- oder Wochenrenditen. Drawdowns stammen aus abgeschlossenen Kalenderperioden."));
+    "Balken zeigen die Kennzahl auf einer Zielskala von 0 bis 100. Bei gerichteten Kriterien liegt das Ziel bei 50. Die Farben bewerten zunächst die Zielerreichung. Nach der Auswertung einer Vergleichsgruppe wird bei gemeinsamen Kriterien der Rang innerhalb dieser Gruppe angezeigt. Gleichstände zählen bei Einzelrängen zur Hälfte. Die Marktabdeckung entspricht den ausgewählten Tickern. Ein erfülltes Kriterium zählt einen Punkt. Bei fehlenden Daten zeigt die Punktespanne die offenen Kriterien. Der Vergleich in einer Gruppe nutzt je Check eine eigene Rangschwelle: im Qualitäts-Check die veröffentlichten 50 %, 65 % bei den Stabilitätsmaßen sowie 25 % und 10 % bei EBIT-Schulden-, Zins- und Bewertungskennzahlen, im Dividenden-Check die veröffentlichten 65 %, im Wachstums- und im Robustheits-Check 50 % (nicht veröffentlicht, deshalb Standardwert). Die Einzelwertung ohne Gruppe nutzt die festen Schwellen der App. Das Stabilitätsmaß nutzt R² eines linearen Trends der logarithmierten Werte: es misst, wie gleichmäßig eine Reihe verläuft, nicht wohin — eine stetig sinkende Reihe ist stabil, und die Richtung bewertet das Wachstumskriterium daneben. Volatilität ist die Standardabweichung von Wochenrenditen über drei Jahre, damit sie der Referenz entspricht. Drawdowns stammen aus abgeschlossenen Kalenderperioden."));
   const grid=element("div",undefined,"check-grid"),charts=element("div"),criteria=element("div",undefined,"criteria");
   const annualCanvas=element("canvas"),priceCanvas=element("canvas");
   annualCanvas.id="check-year-chart";priceCanvas.id="check-price-chart";

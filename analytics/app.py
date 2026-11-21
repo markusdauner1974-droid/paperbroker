@@ -231,6 +231,31 @@ def stock(symbol, bucket):
         except Exception:
             pass
     statements = load_statements(ticker)
+    # Yahoo liefert vier bis fünf Geschäftsjahre, und die älteste Spalte kommt häufig leer an.
+    # Das Fünfjahreswachstum braucht sechs Jahre, die Stabilität fünf Stützpunkte - SEC EDGAR
+    # hält zehn. Dieselbe Quelle wird für die Rangliste längst benutzt; hier fehlte sie.
+    sec_source = None
+    if rows and "." not in symbol:
+        try:
+            sec = load_sec_statements(symbol, date.fromisoformat(rows[-1][0]), bucket)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            sec = {}
+        if sec.get("income") and sec.get("balance"):
+            yahoo = statements
+            statements = {name: sec.get(name) or yahoo.get(name, {})
+                          for name in ("income", "balance", "cash", "quarterly")}
+            # SEC führt keinen Gesamtschulden-Tag; der Bilanzwert desselben Stichtags aus
+            # Yahoo füllt die Lücke. Ohne ihn fiele "Finanzschulden / Bilanzsumme" aus dem
+            # Check, obwohl er der einzige Wert war, der zur Referenz passte.
+            for day, row in statements["balance"].items():
+                for key, value in (yahoo.get("balance", {}).get(day) or {}).items():
+                    if finite(value) is not None:
+                        row.setdefault(key, value)
+            for day, row in statements["income"].items():
+                for key, value in (yahoo.get("income", {}).get(day) or {}).items():
+                    if finite(value) is not None:
+                        row.setdefault(key, value)
+            sec_source = "SEC EDGAR"
     statements, report_currency, official = merge_filings(
         symbol, rows[-1][0], statements, info.get("financialCurrency"), info.get("isin"))
     if report_currency:
@@ -252,12 +277,14 @@ def stock(symbol, bucket):
             "statements": statements, "issues": issues, "news": news,
             "price_source": "Yahoo Finance", "quote_source": "Yahoo Finance",
             "fundamentals_source": "Yahoo Finance" if info else None,
-            "statements_source": statement_source(statements, official)}
+            "statements_source": statement_source(statements, official, sec_source)}
 
 
-def statement_source(statements, official):
+def statement_source(statements, official, sec_source=None):
     if official:
         return "XBRL-Originalberichte · Yahoo Finance für verfügbare Ergänzungen"
+    if sec_source:
+        return sec_source if any(statements.values()) else None
     return "Yahoo Finance" if any(statements.values()) else None
 
 
