@@ -14,7 +14,7 @@ from urllib.parse import parse_qs, urlsplit
 
 import ranking
 import yfinance as yf
-from filing_statements import merge_filings
+from filing_statements import filings_available, merge_filings
 from sec_statements import load_sec_statements
 
 ROOT = Path(__file__).resolve().parent
@@ -268,6 +268,10 @@ def stock(symbol, bucket):
         info["financialCurrency"] = report_currency
     if not any("totalrevenue" in row for row in statements["income"].values()):
         issues.append("Jahresabschlüsse fehlen.")
+    # What the page can honestly say about its own data: source, span, and why a span is short.
+    # Filling a gap silently would be worse than naming it - a score built on four years is a
+    # different score, and the reader has to see that.
+    gaps = statement_gaps(statements, sec_source, official, filings_available())
     news = []
     try:
         for entry in ticker.get_news(count=8):
@@ -280,7 +284,7 @@ def stock(symbol, bucket):
     except Exception:
         pass
     return {"symbol": symbol, "prices": rows, "info": info,
-            "statements": statements, "issues": issues, "news": news,
+            "statements": statements, "issues": issues, "news": news, "data_gaps": gaps,
             "price_source": "Yahoo Finance", "quote_source": "Yahoo Finance",
             "fundamentals_source": "Yahoo Finance" if info else None,
             "statements_source": statement_source(statements, official, sec_source)}
@@ -293,6 +297,53 @@ SEC_YEARS = 6
 def fiscal_years(income):
     """How many fiscal years carry a revenue figure - empty columns do not count."""
     return sum(1 for row in income.values() if finite(row.get("totalrevenue")) is not None)
+
+
+def statement_gaps(statements, sec_source, official, filings_key):
+    """One entry per block that is short, with the reason it is short.
+
+    The page shows this next to the score. "Fehlende Werte bleiben sichtbar offen" was the
+    agreement from the start; this is the place where a reader can see *why* they are open.
+    """
+    years = fiscal_years(statements.get("income") or {})
+    quarters = len(statements.get("quarterly") or {})
+    if official:
+        source = "Originalberichte (XBRL)"
+    elif sec_source:
+        source = sec_source
+    else:
+        source = "Yahoo Finance"
+    gaps = []
+    if years < SEC_YEARS:
+        gaps.append({
+            "block": "Jahresabschlüsse",
+            "source": source,
+            "have": years,
+            "need": SEC_YEARS,
+            "reason": ("Der Schlüssel AKTIENANALYSE_FILINGS_KEY ist nicht gesetzt, deshalb werden "
+                       "Originalberichte gar nicht erst abgefragt."
+                       if not filings_key else
+                       "Für diesen Titel wurde kein auswertbarer Originalbericht gefunden."),
+        })
+    if quarters < 4:
+        gaps.append({
+            "block": "Quartale",
+            "source": source,
+            "have": quarters,
+            "need": 4,
+            "reason": "Ohne vier zusammenhängende Quartale bleiben die TTM-Werte offen.",
+        })
+    empty = [day for day, row in sorted((statements.get("income") or {}).items())
+             if finite(row.get("totalrevenue")) is None]
+    if empty:
+        gaps.append({
+            "block": "Geschäftsjahre ohne Umsatz",
+            "source": source,
+            "have": len(empty),
+            "need": 0,
+            "reason": "Die Zeile kam leer an: " + ", ".join(empty) + ".",
+        })
+    return gaps
 
 
 def statement_source(statements, official, sec_source=None):

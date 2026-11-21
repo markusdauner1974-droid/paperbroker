@@ -984,6 +984,15 @@ function renderChecks(){
   for(const [label,value] of items){
     const cell=element("div");cell.append(element("small",label),element("strong",value));metrics.append(cell);
   }
+  // Data state: which blocks are short and why. A score built on four years is a different
+  // score from one built on six - the reader should see that, not read it in a console.
+  const gaps=element("details",undefined,"data-gaps");
+  if(data.data_gaps?.length){
+    gaps.append(element("summary","Datenlage · "+data.data_gaps.length+" Hinweis"+(data.data_gaps.length>1?"e":"")));
+    const rows=data.data_gaps.map(gap=>[gap.block,gap.source,
+      (gap.need?gap.have+" von "+gap.need:"—"),gap.reason]);
+    gaps.append(table(rows,["Block","Quelle","Jahre","Grund"]));
+  }
   const details=element("details");
   details.append(element("summary","Infos zum Score"),element("p",data.reference?
     "Erfasster TraderFox-Stand für SAP. Die Marktvergleiche beziehen sich auf Deutschland 100 (v).":
@@ -1023,7 +1032,7 @@ function renderChecks(){
     offset+=rows.length;
   });
   grid.append(charts,criteria);
-  body.replaceChildren(summary,metrics,details,grid,renderRanking(data,selected));
+  body.replaceChildren(summary,metrics,...(gaps.childNodes.length?[gaps]:[]),details,grid,renderRanking(data,selected));
   annualPlot(annualCanvas);
   if(data.prices.length)plot("check-price-chart",[{points:rangeRows(data.prices,120).map(r=>[Date.parse(r[0]),price(r)])}]);
 }

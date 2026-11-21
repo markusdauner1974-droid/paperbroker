@@ -456,6 +456,11 @@ def collect_statements(symbol, cutoff, currency, isin):
     return tagged, report_currency
 
 
+def filings_available():
+    """Whether the original reports may be asked for at all - the key decides."""
+    return bool(os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip())
+
+
 @lru_cache(maxsize=24)
 def filing_statements(symbol, cutoff, currency, bucket, isin=None):
     """Look up a unique issuer; load only its published, tagged original files."""
