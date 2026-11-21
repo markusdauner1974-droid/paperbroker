@@ -116,14 +116,39 @@ class ExportTest(unittest.TestCase):
         self.assertAlmostEqual(260.025e6, sections["quarterly"]["2025-12-31"]["totalrevenue"], places=2)
 
     def test_a_quarter_follows_its_period_end_not_its_label(self):
-        """A provider label that names the wrong year must not move the figure."""
-        interim = [("Q4 2026", "2025-12-31", {"Total Revenues": 1157.714}),
+        """A label that names the wrong year must not move the figure.
+
+        Every fourth quarter of a widely used list is named one year late. The grouping therefore
+        comes from the period ends, and the label only says whether a column is cumulative.
+        """
+        interim = [("FY 2026", "2025-12-31", {"Total Revenues": 1157.714}),
                    ("9M 2025", "2025-09-30", {"Total Revenues": 897.689}),
                    ("H1 2025", "2025-06-30", {"Total Revenues": 630.224}),
                    ("Q1 2025", "2025-03-31", {"Total Revenues": 302.832})]
         sections, _gaps = export.sections_from_export(self.report(interim=interim), "2026-11-20")
         self.assertIn("2025-12-31", sections["quarterly"], "stored under its period end")
         self.assertAlmostEqual(260.025e6, sections["quarterly"]["2025-12-31"]["totalrevenue"], places=2)
+        self.assertEqual({"2025-03-31", "2025-06-30", "2025-09-30", "2025-12-31"},
+                         set(sections["quarterly"]), "no quarter of 2026 may appear")
+
+    def test_a_fiscal_year_that_does_not_end_in_december(self):
+        """The quarters hang on the fiscal year of the report, not on the calendar year."""
+        annual = {"2025-06-30": {"Total Revenues": 1200.0}}
+        interim = [("Q1 2024", "2024-09-30", {"Total Revenues": 300.0}),
+                   ("H1 2024", "2024-12-31", {"Total Revenues": 620.0}),
+                   ("9M 2024", "2025-03-31", {"Total Revenues": 900.0}),
+                   ("FY 2024", "2025-06-30", {"Total Revenues": 1200.0})]
+        sections, gaps = export.sections_from_export(self.report(annual=annual, interim=interim), "2026-11-20")
+        quarters = sections["quarterly"]
+        self.assertAlmostEqual(320.0e6, quarters["2024-12-31"]["totalrevenue"], places=2)
+        self.assertAlmostEqual(280.0e6, quarters["2025-03-31"]["totalrevenue"], places=2)
+        self.assertAlmostEqual(300.0e6, quarters["2025-06-30"]["totalrevenue"], places=2)
+        self.assertEqual([], gaps)
+
+    def test_a_published_single_quarter_is_taken_as_it_is(self):
+        interim = [("Q2 2024", "2024-06-30", {"Total Revenues": 306.673})]
+        sections, _gaps = export.sections_from_export(self.report(annual={}, interim=interim), "2026-11-20")
+        self.assertAlmostEqual(306.673e6, sections["quarterly"]["2024-06-30"]["totalrevenue"], places=2)
 
     def test_a_year_that_contradicts_the_annual_report_is_dropped(self):
         """The interim sheet names a year of its own; if it disagrees with the annual one, nothing
@@ -186,6 +211,16 @@ class ExportTest(unittest.TestCase):
         self.assertIsNone(currency)
         self.assertEqual(export.EXPORT_PER_DAY, store.budget_used())
         self.assertEqual([("", "", export.BUDGET_REASON)], store.stored_export_gaps("T99.DE"))
+
+    def test_an_unreadable_file_keeps_its_slot(self):
+        """The provider counted the download, so the tenth slot is gone even if we cannot read it."""
+        with mock.patch.object(export, "company_id", return_value=134), \
+                mock.patch.object(export, "download", return_value=b"kein xlsx") as geladen:
+            export.statement_export("EIN3.DE", "2026-11-20", "EUR", 40)
+            export.statement_export("EIN3.DE", "2026-11-20", "EUR", 41)
+        self.assertEqual(1, store.budget_used(), "a delivered file costs a slot")
+        self.assertEqual(1, geladen.call_count, "the failure must not be retried at once")
+        self.assertEqual([("", "", export.UNREADABLE_REASON)], store.stored_export_gaps("EIN3.DE"))
 
     def test_a_failed_attempt_gives_its_slot_back(self):
         with mock.patch.object(export, "company_id", return_value=134), \

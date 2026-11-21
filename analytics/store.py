@@ -343,6 +343,14 @@ def read_figures(conn, symbol, sections=SECTIONS, max_age_h=24):
     return result
 
 
+def stored_currency(conn, symbol):
+    """The currency the stored figures were reported in, or None."""
+    row = conn.execute(
+        "SELECT currency FROM figure WHERE symbol = ? AND currency IS NOT NULL AND currency != '' LIMIT 1",
+        (symbol,)).fetchone()
+    return row[0] if row else None
+
+
 def figure_sources(conn, symbol):
     """Which sources the stored values come from, for the source line on the page."""
     rows = conn.execute(

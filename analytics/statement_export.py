@@ -19,9 +19,11 @@ from functools import lru_cache
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+from xml.etree.ElementTree import ParseError
 from zipfile import BadZipFile
 
 import store
+from filing_statements import symbol_lock
 from openpyxl import load_workbook
 
 API = "https://api.financialreports.eu"
@@ -41,6 +43,10 @@ EXPORT_RETRY_MINUTES = 30
 FOUR_QUARTERS = 8
 
 BUDGET_REASON = "Das Tagesbudget von zehn Auswertungen ist verbraucht; morgen wieder."
+DOWNLOAD_REASON = "Der Abruf der Standardauswertung ist fehlgeschlagen."
+UNREADABLE_REASON = "Die Standardauswertung ließ sich nicht lesen."
+EMPTY_REASON = "Die Standardauswertung enthielt keine auswertbaren Zahlen."
+CURRENCY_REASON = "Die Standardauswertung nennt eine andere Währung."
 ANNUAL = {"income": "Income (Annual)", "balance": "Balance (Annual)", "cash": "Cash Flow (Annual)"}
 INTERIM = {"income": "Income (Interim)", "balance": "Balance (Interim)", "cash": "Cash Flow (Interim)"}
 
@@ -157,7 +163,7 @@ def read_export(payload):
                     if not item or not isinstance(value, (int, float)) or isinstance(value, bool):
                         continue
                     amount = float(value) if item in NOT_MONEY else float(value) * scale
-                    bucket = report[blocks].setdefault(day, {"span": span, "year": year,
+                    bucket = report[blocks].setdefault(day, {"day": day, "span": span, "year": year,
                                                              "currency": currency, "items": {},
                                                              "sources": {}})
                     bucket["items"][item] = amount
@@ -167,45 +173,73 @@ def read_export(payload):
     return report
 
 
-def quarters_from_interim(report, cutoff=None):
-    """Single quarters from the cumulative interim columns - only where the chain closes.
+def _months_between(earlier, later):
+    return ((later.year - earlier.year) * 12 + later.month - earlier.month)
 
-    Q2 = H1 - Q1, Q3 = 9M - H1, Q4 = FY - 9M. A year whose own annual column contradicts the
-    interim chain is dropped instead of guessed: the provider's columns disagree with each other
-    often enough to make that check worth its cost.
+
+def fiscal_end(day, ends):
+    """The fiscal year end a period belongs to, decided by dates alone.
+
+    The provider's column label names a year, and that year can be wrong - a list that names every
+    fourth quarter one year late is in circulation. A period end cannot be wrong in the same way,
+    so the grouping is done here and the label only says whether a column is cumulative.
     """
-    spans = {}
-    for day, block in report["interim"].items():
+    moment = date.fromisoformat(day)
+    for end in ends:
+        if end >= day and (date.fromisoformat(end) - moment).days <= 300:
+            return end
+    # Nothing to lean on: the calendar year end is then the documented assumption.
+    return f"{day[:4]}-12-31"
+
+
+def quarters_from_interim(report, cutoff=None):
+    """Single quarters from the interim columns - only where the chain closes.
+
+    Q2 = H1 - Q1, Q3 = 9M - H1, Q4 = year - 9M. A column that already is one quarter (Q1..Q4) is
+    taken as published. A year whose own figure contradicts the interim chain is dropped instead
+    of guessed: the provider's columns disagree with each other often enough to warrant the check.
+    """
+    ends = sorted(report["annual"])
+    groups = {}
+    singles = {}
+    for day, block in sorted(report["interim"].items()):
         if cutoff and day > cutoff:
             continue
-        spans.setdefault(block["year"], {})[block["span"]] = block
-    annual = {}
-    for block in report["annual"].values():
-        annual[block["year"]] = block
-    quarters = {}
+        span = block["span"]
+        if span in ("Q2", "Q3", "Q4"):
+            singles.setdefault(day, {}).update(block["items"])
+            continue
+        if span not in ("Q1", "H1", "9M", "FY"):
+            continue
+        groups.setdefault(fiscal_end(day, ends), {})[span] = block
+        if span == "Q1":
+            singles.setdefault(day, {}).update(block["items"])
+    annual = dict(report["annual"])
+    quarters = {day: dict(items) for day, items in singles.items()}
     gaps = []
-    for year, by_span in sorted(spans.items()):
+    for end, by_span in sorted(groups.items()):
+        if "Q1" not in by_span or "H1" not in by_span:
+            continue
+        q1_block, h1_block = by_span["Q1"], by_span["H1"]
+        own_year = annual.get(end)
         items = set()
         for block in by_span.values():
             items |= set(block["items"])
-        if "Q1" not in by_span or "H1" not in by_span:
-            continue
-        own_year = annual.get(year)
         for item in sorted(items):
-            chain = {"Q1": by_span["Q1"]["items"].get(item)}
+            base = q1_block["items"].get(item)
             cumulative = {span: by_span.get(span, {}).get("items", {}).get(item) for span in ("H1", "9M", "FY")}
             # Some issuers publish no year-end column among the interim sheets. The annual sheet
             # is then the published year, and Q4 = year - 9M is still a subtraction of two
             # reported figures rather than an estimate.
             if cumulative["FY"] is None:
                 cumulative["FY"] = (own_year or {}).get("items", {}).get(item)
-            if chain["Q1"] is None or cumulative["H1"] is None:
+            if base is None or cumulative["H1"] is None:
                 continue
-            currency = by_span["Q1"]["currency"]
+            currency = q1_block["currency"]
             if any(block["currency"] not in ("", currency) for block in by_span.values()):
-                gaps.append((f"{year}", item, "Die Spalten nennen verschiedene Währungen."))
+                gaps.append((end[:4], item, "Die Spalten nennen verschiedene Währungen."))
                 continue
-            derived = {"Q1": chain["Q1"], "Q2": cumulative["H1"] - chain["Q1"]}
+            derived = {"Q1": base, "Q2": cumulative["H1"] - base}
             if cumulative["9M"] is not None:
                 derived["Q3"] = cumulative["9M"] - cumulative["H1"]
             if cumulative["9M"] is not None and cumulative["FY"] is not None:
@@ -218,12 +252,15 @@ def quarters_from_interim(report, cutoff=None):
                 parts = [derived.get(q) for q in ("Q1", "Q2", "Q3", "Q4")]
                 year_total = sum(part for part in parts if part is not None)
                 if published is not None and abs(year_total - published) > abs(published) * 0.005:
-                    gaps.append((f"{year}", item, "Die Quartale ergeben nicht das Jahr des Berichts."))
+                    gaps.append((end[:4], item, "Die Quartale ergeben nicht das Jahr des Berichts."))
                     continue
+            # The quarter ends are the period ends of the columns they were derived from.
+            place = {"Q1": q1_block["day"], "Q2": h1_block["day"],
+                     "Q3": by_span.get("9M", h1_block)["day"], "Q4": end}
             for span, amount in derived.items():
                 if amount is None:
                     continue
-                day = f"{year}-{QUARTER_END[span]}"
+                day = place[span]
                 if cutoff and day > cutoff:
                     continue
                 quarters.setdefault(day, {})[item] = round(amount, 4 if item in NOT_MONEY else 2)
@@ -304,50 +341,70 @@ def _stored(symbol):
     with closing(store.connect()) as conn:
         sections = store.read_figures(conn, symbol, max_age_h=EXPORT_MAX_AGE_DAYS * 24,
                                       sections=("income", "quarterly", "balance", "cash"))
-    return sections, None
+        currency = store.stored_currency(conn, symbol)
+    return sections, currency
 
 
-@lru_cache(maxsize=64)
-def statement_export(symbol, cutoff, currency, bucket=0, isin=None):
-    """The export's contribution for one symbol, downloaded at most once a week."""
-    if not os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip():
-        return {}, None
-    stored, stored_currency = _stored(symbol)
-    if store.export_is_fresh(symbol, EXPORT_MAX_AGE_DAYS):
-        return stored, stored_currency or currency
+def _attempt(symbol, company, reason):
+    """Remember a failed look so the next page view does not knock again."""
+    store.remember_export(symbol, company, "", [(("", "", reason))])
+
+
+def _collect(symbol, cutoff, currency, isin, stored, stored_currency):
+    """The part that talks to the provider; called under the per-symbol lock."""
     company = company_id(symbol, isin)
     if not company:
-        return stored, stored_currency or currency
+        return stored, (stored_currency or currency) if stored else None
     if store.export_attempted_within(symbol, EXPORT_RETRY_MINUTES):
         return stored, (stored_currency or currency) if stored else None
     if not store.budget_take(EXPORT_PER_DAY):
         # The provider allows ten files a day. A page view must not spend the last one on a
         # failure, and it must say why the figures are missing instead of staying silent.
-        store.remember_export(symbol, company, "", [("", "", BUDGET_REASON)])
+        _attempt(symbol, company, BUDGET_REASON)
         return stored, (stored_currency or currency) if stored else None
     payload = download(company)
     if not payload:
         store.budget_release()
-        store.remember_export(symbol, company, "", [("", "", "Der Abruf ist fehlgeschlagen.")])
+        _attempt(symbol, company, DOWNLOAD_REASON)
         return stored, (stored_currency or currency) if stored else None
     try:
         report = read_export(payload)
-    except (BadZipFile, OSError, ValueError, KeyError, TypeError):
-        store.budget_release()
+        sections, gaps = sections_from_export(report, cutoff)
+    except (BadZipFile, ParseError, OSError, ValueError, KeyError, TypeError):
+        # The file arrived, so the provider counted it: the slot stays taken.
+        _attempt(symbol, company, UNREADABLE_REASON)
         return stored, (stored_currency or currency) if stored else None
-    sections, gaps = sections_from_export(report, cutoff)
     if not sections:
+        _attempt(symbol, company, EMPTY_REASON)
         return stored, (stored_currency or currency) if stored else None
     report_currency = next((block["currency"] for block in report["annual"].values() if block["currency"]), None)
     report_currency = report_currency or next((block["currency"] for block in report["interim"].values()
                                                if block["currency"]), None)
     if currency and report_currency and currency != report_currency:
+        store.budget_release()
+        _attempt(symbol, company, CURRENCY_REASON)
         return stored, (stored_currency or currency) if stored else None
     with closing(store.connect()) as conn:
         store.write_figures(conn, symbol, sections, source="xlsx_export", currency=report_currency)
     store.remember_export(symbol, company, hashlib.sha256(payload).hexdigest(), gaps)
     merged, merged_currency = _stored(symbol)
-    return merged or sections, report_currency or merged_currency or currency
+    # What was just read wins: read_figures drops a whole section as soon as one of its rows is
+    # older than the window, so the stored copy can be thinner than the file in hand.
+    return {**sections, **merged}, report_currency or merged_currency or currency
+
+
+@lru_cache(maxsize=64)
+def statement_export(symbol, cutoff, currency, bucket=0, isin=None):
+    """The export's contribution for one symbol, read at most once every ninety days."""
+    if not os.environ.get("AKTIENANALYSE_FILINGS_KEY", "").strip():
+        return {}, None
+    stored, stored_currency = _stored(symbol)
+    if store.export_is_fresh(symbol, EXPORT_MAX_AGE_DAYS):
+        return stored, stored_currency or currency
+    # Two page views at the same moment must not both spend a slot - the guard and the download
+    # are one step, not a check followed by an act.
+    with symbol_lock(symbol):
+        return _collect(symbol, cutoff, currency, isin, stored, stored_currency)
 
 
 def export_gaps(symbol):

@@ -11,6 +11,7 @@ from threading import Lock
 from time import time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
+from xml.etree.ElementTree import ParseError
 
 import ranking
 import yfinance as yf
@@ -621,7 +622,7 @@ def statement_profile(symbol, cutoff, bucket):
             supplement, export_currency = statement_export(symbol, cutoff, currency, bucket, isin)
             if export_currency and currency and export_currency != currency:
                 supplement = {}
-        except (URLError, OSError, ValueError, TypeError, KeyError):
+        except (ParseError, URLError, OSError, ValueError, TypeError, KeyError):
             supplement = {}
     if supplement:
         statements = merge_export(statements, supplement)
