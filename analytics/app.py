@@ -19,6 +19,13 @@ from sec_statements import load_sec_statements
 
 ROOT = Path(__file__).resolve().parent
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
+# Die Fassade traegt dieselbe Schrift wie der Trichter. Die Dateien liegen beim Programm,
+# nicht doppelt hier: ein Ursprung, und keine Anfrage verlaesst das LAN.
+FONT_DIR = ROOT.parent / "paperbroker" / "static" / "fonts"
+FONT_CSS = FONT_DIR.parent / "fonts.css"
+FONT_NAME = re.compile(r"[a-z0-9-]+\.woff2")
+#: Platzhalter in index.html; hier ohne Praefix, weil die Seite an der Wurzel laeuft.
+ASSET_BASE = "__ASSET_BASE__"
 GROUPS = {
     "income": "income_stmt", "balance": "balance_sheet", "cash": "cash_flow",
     "quarterly": "quarterly_income_stmt",
@@ -511,6 +518,15 @@ class Handler(BaseHTTPRequestHandler):
             return path[len(prefix):]
         return None
 
+    def asset(self, path):
+        """fonts.css und die woff2-Dateien der Fassade; dieselben Dateien wie im Trichter."""
+        if path == "/fonts.css":
+            return FONT_CSS.read_bytes(), "text/css; charset=utf-8"
+        name = path[len("/fonts/"):]
+        if not FONT_NAME.fullmatch(name) or not (FONT_DIR / name).is_file():
+            return None, None
+        return (FONT_DIR / name).read_bytes(), "font/woff2"
+
     def page(self):
         """index.html mit eingespieltem Basispfad.
 
@@ -525,7 +541,8 @@ class Handler(BaseHTTPRequestHandler):
         Stelle (genau das ist beim ersten Anlauf passiert - der Block landete in
         einem Kommentar des Skripts).
         """
-        html = (ROOT / "index.html").read_bytes()
+        html = (ROOT / "index.html").read_text(encoding="utf-8").replace(ASSET_BASE, "")
+        html = html.encode()
         start = html.find(b"<html")
         ende = html.find(b">", start) if start >= 0 else -1
         if start < 0 or ende < 0:
@@ -556,6 +573,13 @@ class Handler(BaseHTTPRequestHandler):
         path = self.inner_path(target.path)
         if path in ("/", "/index.html"):
             self.reply(200, self.page(), "text/html; charset=utf-8")
+            return
+        if path and (path == "/fonts.css" or path.startswith("/fonts/")):
+            content, content_type = self.asset(path)
+            if content is None:
+                self.json(404, {"error": "Adresse nicht gefunden."})
+            else:
+                self.reply(200, content, content_type)
             return
         if path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",
                         "/api/compare", "/api/xang", "/api/ranking"):

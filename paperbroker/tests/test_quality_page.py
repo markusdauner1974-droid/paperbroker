@@ -65,6 +65,29 @@ class QualityPageTest(unittest.TestCase):
         self.assertEqual(1, page.count('<script>window.AKT_BASE_PATH="/qualitaet"</script>'),
                          "exactly one injection, right behind the <html> tag")
 
+    def test_the_page_wears_the_type_of_the_funnel(self):
+        """Same three fonts as the funnel, and they come from the program itself."""
+        page = self.client.get("/qualitaet/").get_data(as_text=True)
+        self.assertIn('href="/qualitaet/fonts.css"', page)
+        self.assertNotIn("__ASSET_BASE__", page, "the placeholder must not reach the browser")
+        self.assertIn('--font-display:"Oswald"', page)
+        self.assertIn('--font-mono:"Martian Mono"', page)
+
+    def test_the_font_files_are_served_here(self):
+        rules = self.client.get("/qualitaet/fonts.css")
+        self.assertEqual(200, rules.status_code)
+        self.assertIn("text/css", rules.headers["Content-Type"])
+        self.assertIn("@font-face", rules.get_data(as_text=True))
+        letter = self.client.get("/qualitaet/fonts/instrument-sans-latin.woff2")
+        self.assertEqual(200, letter.status_code)
+        self.assertEqual("font/woff2", letter.headers["Content-Type"])
+        self.assertGreater(len(letter.get_data()), 5_000)
+
+    def test_a_font_name_that_is_not_a_font_is_refused(self):
+        for name in ("../quality.py", "fonts.css", "passwd", "instrument-sans-latin.woff2.bak"):
+            with self.subTest(name=name):
+                self.assertEqual(404, self.client.get(f"/qualitaet/fonts/{name}").status_code)
+
     def test_the_address_works_with_and_without_the_slash(self):
         self.assertEqual(200, self.client.get("/qualitaet/").status_code)
         self.assertEqual(200, self.client.get("/qualitaet").status_code)
