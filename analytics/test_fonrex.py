@@ -177,6 +177,17 @@ class DefectTests(unittest.TestCase):
             with mock.patch.object(fonrex, "BASE", address):
                 self.assertFalse(fonrex.permitted_target(), address)
 
+    def test_an_insecure_address_is_named_and_remembers_nothing(self):
+        """Kody: an address the key may not travel to was reported as a dead host."""
+        with mock.patch.object(fonrex, "BASE", "http://fonrex.example.com:5000"):
+            sections, _currency, reason = fonrex.esef_sections("MC.PA")
+            self.assertEqual({}, sections)
+            self.assertEqual(fonrex.INSECURE_TARGET, reason)
+            from contextlib import closing
+            with closing(store.connect()) as conn:
+                self.assertIsNone(store.read_fonrex(conn, fonrex.DOWN_KEY, max_age_h=1),
+                                  "nothing was attempted, so nothing may be remembered")
+
     def test_a_ticker_cannot_walk_out_of_its_path(self):
         """Kody: '..' passed the page's symbol pattern and reached the raw path."""
         for ticker in ("..", "../sec", ".", "", "A/B"):
@@ -187,6 +198,31 @@ class DefectTests(unittest.TestCase):
             self.assertEqual(0, asked.call_count)
         self.assertTrue(fonrex.symbol_ok("MC.PA"))
         self.assertTrue(fonrex.symbol_ok("BRK-B"))
+
+    def test_a_404_for_one_issuer_does_not_silence_the_others(self):
+        """Kody: a per-resource error marked the whole service dead for five minutes."""
+        with mock.patch.object(fonrex, "_get", return_value=fonrex.HTTP_FAILED):
+            sections, _currency, reason = fonrex.esef_sections("OR.PA")
+            self.assertEqual({}, sections)
+            self.assertEqual(fonrex.NO_REPORTS, reason, "a 404 is 'nothing there', not 'unreachable'")
+            # the service still answers for the next issuer
+            with mock.patch.object(fonrex, "_get",
+                                   return_value={"years": [{"period_end": "2024-12-31", "currency": "EUR",
+                                                            "figures": {"revenue": {"value": 5.0}}}]}):
+                self.assertTrue(fonrex.esef_sections("MC.PA")[0])
+        from contextlib import closing
+        with closing(store.connect()) as conn:
+            self.assertIsNone(store.read_fonrex(conn, fonrex.DOWN_KEY, max_age_h=1))
+
+    def test_a_warm_answer_survives_while_the_service_is_marked_down(self):
+        answer = {"years": [{"period_end": "2024-12-31", "currency": "EUR",
+                            "figures": {"revenue": {"value": 7.0}}}]}
+        with mock.patch.object(fonrex, "_get", return_value=answer):
+            fonrex.esef_sections("MC.PA")
+        store.write_fonrex(fonrex.DOWN_KEY, {"down": True})
+        with mock.patch.object(fonrex, "_get", side_effect=AssertionError("must not be asked")):
+            sections, _currency, _reason = fonrex.esef_sections("MC.PA")
+        self.assertTrue(sections.get("income"), "the stored answer is still served")
 
     def test_a_year_without_known_figures_does_not_become_a_year(self):
         """Kody: an unmapped year appeared as a business year without revenue."""

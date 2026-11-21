@@ -55,6 +55,19 @@ PRIVATE_HOST_RE = re.compile(
     r"|172\.(1[6-9]|2[0-9]|3[01])\.[0-9.]+)$")
 
 SYMBOL_INVALID = "Der Tickersymbol ist für diese Abfrage nicht zulässig."
+
+
+class _HttpFailed:
+    """The service answered, just not for this resource (404, 500, unreadable body).
+
+    Kept apart from a transport failure: one missing report must not mark the whole service dead.
+    """
+
+    def __repr__(self):
+        return "HTTP_FAILED"
+
+
+HTTP_FAILED = _HttpFailed()
 INSECURE_TARGET = "Fonrex ist nur über eine unverschlüsselte Adresse erreichbar; der Schlüssel bleibt zurück."
 
 # Fonrex names its figures after the IFRS concepts; the page reads the vocabulary of the annual
@@ -133,23 +146,32 @@ def _get(path, params=None):
     try:
         with urlopen(request, timeout=TIMEOUT) as answer:
             payload = answer.read()
-        return json.loads(payload)
-    except (HTTPError, URLError, OSError, ValueError, TypeError):
+    except HTTPError:
+        return HTTP_FAILED
+    except (URLError, OSError):
         return None
+    try:
+        return json.loads(payload)
+    except (ValueError, TypeError):
+        return HTTP_FAILED
 
 
 def _cached(key, max_age_days, read):
     """The stored answer while it is fresh, otherwise one request and a write.
 
     A failed look leaves a mark for a few minutes, so a service that is down costs one timeout and
-    not one per symbol and bucket.
+    not one per symbol and bucket. The mark is only for a real transport failure: when nothing was
+    even attempted - no key, an address the key may not travel to - there is nothing to remember.
     """
+    if not available() or not permitted_target():
+        return None
     with closing(store.connect()) as conn:
-        if store.read_fonrex(conn, DOWN_KEY, max_age_h=DOWN_MINUTES / 60) is not None:
-            return None
         stored = store.read_fonrex(conn, key, max_age_h=max_age_days * 24)
+        down = store.read_fonrex(conn, DOWN_KEY, max_age_h=DOWN_MINUTES / 60)
     if stored is not None:
-        return stored
+        return stored          # a warm answer survives even while the mark is up
+    if down is not None:
+        return None
     payload = read()
     if payload is None:
         store.write_fonrex(DOWN_KEY, {"down": True})
@@ -176,10 +198,15 @@ def esef_sections(ticker, cutoff=None):
     """
     if not available():
         return {}, None, NO_KEY
+    if not permitted_target():
+        return {}, None, INSECURE_TARGET
     if not symbol_ok(ticker):
         return {}, None, SYMBOL_INVALID
     payload = _cached(f"esef:{ticker}", ESEF_MAX_AGE_DAYS,
                       lambda: _get(f"/esef/{quote(ticker, safe='')}/statements", {"years": 6}))
+    if payload is HTTP_FAILED:
+        # 404 or a body that is not JSON: this issuer has nothing under that address.
+        return {}, None, NO_REPORTS
     if payload is not None and not isinstance(payload, dict):
         # An answer of the wrong shape is not "no reports" - it is a source we cannot read.
         return {}, None, UNREACHABLE
