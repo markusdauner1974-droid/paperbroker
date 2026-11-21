@@ -31,9 +31,9 @@ summary.rank-banner{display:list-item;color:#091217}
 @media(max-width:440px){.criteria{padding:8px}.meter-track{width:60px}.criteria .criterion-meter{width:70px}}
 .nas-columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,255px),1fr));gap:18px}.nas-columns table{min-width:0}.nas-columns td{overflow-wrap:anywhere}
 
-/* Fassade wie im Trichter: Oswald fuer Ueberschriften, Instrument Sans fuer Text,
-   Martian Mono fuer Beschriftungen, Knoepfe und Zahlen. Ecken eckig, Linien gepunktet,
-   Akzent erst beim Zeigen - dieselben Regeln wie in paperbroker/templates/screen.html. */
+/* The facade of the funnel: Oswald for headings, Instrument Sans for text, Martian Mono for
+   labels, buttons and figures. Square corners, dotted lines, the accent only on hover - the same
+   rules as in paperbroker/templates/screen.html. */
 :root{--font-display:"Oswald",sans-serif;--font-body:"Instrument Sans",system-ui,sans-serif;
   --font-mono:"Martian Mono",ui-monospace,monospace;--faint:rgba(250,250,250,.48);
   --hair:rgba(250,250,250,.20);--edge:rgba(250,250,250,.36)}
@@ -51,20 +51,20 @@ header{background:var(--paper);border-bottom:1px dotted var(--hair)}
 .quote div,.meter-track,.meter-fill,.rank-banner,#matches button,.pill,button,input,select{
   border-radius:0}
 
-/* Knoepfe: ruhige Kante, Akzent erst beim Zeigen; der Hauptknopf bleibt gefuellt. */
+/* Buttons: a quiet edge, the accent only on hover. */
 button,.pill{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
   text-transform:uppercase;background:none;border:1px solid var(--edge);color:var(--sub);
   padding:6px 10px}
 button:hover:not(:disabled),.pill:hover{color:var(--ink);border-color:var(--accent)}
-/* Auch der Hauptknopf bleibt ruhig - im Trichter ist der Klick auf "Scannen" genauso
-   gezeichnet: keine Fuellung, Akzent erst beim Zeigen. */
+/* The primary button stays quiet too - the funnel draws its "scan" click the same way:
+   no fill, the accent only on hover. */
 button.primary{background:none;border-color:var(--edge);color:var(--sub)}
 button.primary:hover:not(:disabled){background:none;border-color:var(--accent);color:var(--ink)}
 button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#091217;
   font-weight:600}
 button:disabled{opacity:.4;cursor:not-allowed}
 
-/* Eingabefelder: transparent, gepunktete Unterkante wie das Datumsfeld im Trichter. */
+/* Inputs: transparent, a dotted underline like the date field in the funnel. */
 input,select{font-family:var(--font-mono);font-size:12px;background:transparent;border:0;
   border-bottom:1px dotted var(--edge);color:var(--ink);padding:8px 2px}
 input:focus,select:focus{outline:none;border-bottom-color:var(--accent)}
@@ -72,7 +72,7 @@ input::placeholder{color:var(--faint)}
 .controls label,.tabs label{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
   text-transform:uppercase;color:var(--faint)}
 
-/* Flaechen: flach, gepunktete Kanten statt Karten mit Schatten. */
+/* Surfaces: flat, dotted edges instead of cards with shadows. */
 .panel{border:1px dotted var(--hair);background:var(--paper)}
 .notice{border:1px dotted rgba(224,85,52,.55);background:rgba(224,85,52,.08);color:#f7d3c9}
 .quote div{border:1px dotted var(--hair);background:var(--paper)}
@@ -83,7 +83,7 @@ input::placeholder{color:var(--faint)}
 .score-tile strong{font-family:var(--font-mono);font-weight:600}
 .criteria{border:1px dotted var(--hair);background:var(--paper)}
 .check-metrics div{background:rgba(250,250,250,.04);border:1px dotted var(--hair)}
-/* Mono ist breit: ohne nowrap bricht die Einheit allein in die naechste Zeile. */
+/* Mono is wide: without nowrap the unit alone wraps onto the next line. */
 .check-metrics strong{font-family:var(--font-mono);font-weight:600;font-size:11.5px;
   white-space:nowrap}
 canvas{background:#0a141a;border:1px dotted var(--hair)}
@@ -91,7 +91,7 @@ nav a{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;text-tran
   color:var(--sub);background:none;border:1px solid transparent;padding:5px 8px}
 nav a:hover{color:var(--ink);border-color:var(--edge)}
 
-/* Tabellen: Mono, blasse Versalien im Kopf, gepunktete Zeilen. */
+/* Tables: mono, pale capitals in the head, dotted rows. */
 table{font-family:var(--font-mono);font-size:10.5px}
 th{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
   font-weight:600}
@@ -440,8 +440,8 @@ function buildChecks(stock,benchmark=[],only=selected){
   };
   const weeklyVol=n=>weekly.length>=n+3?deviation(adjacentReturns(weekly.slice(-n-2,-1).map(x=>x.at(-1)))):null;
   const netMargin=division(earn,rev);
-  // TraderFox nennt das Kriterium "Rendite auf das eingesetzte Kapital" und meint ROCE,
-  // nicht ROIC: EBIT bezogen auf Bilanzsumme minus kurzfristige Verbindlichkeiten.
+  // The reference calls this criterion "return on capital employed" and means ROCE, not ROIC:
+  // EBIT over total assets minus current liabilities.
   const capital=isNum(total)&&isNum(v(assets,"CurrentLiabilities"))?total-v(assets,"CurrentLiabilities"):null;
   const roce=capital>0&&isNum(ebit)?division(ebit,capital):null;
   const ownRoe=division(earn,v(assets,"StockholdersEquity"));
@@ -488,9 +488,9 @@ function buildChecks(stock,benchmark=[],only=selected){
         return values.every(x=>isNum(x)&&x>0)?trendFit(values.map(Math.log)):null;
       };
       const years=span=>span?" "+span+" Jahre":"";
-      // Eine negative Basis macht jede Wachstumsrate unbrauchbar: aus -1,78 wird keine 26 %.
-      // Die Referenz greift dann auf das letzte positive Jahr im Fenster zurück, und zwar mit der
-      // Fensterlänge als Nenner (GAP: 2,13 gegen 0,67 über fünf Jahre = 26,0 % gegen 26,43 %).
+      // A negative base makes any growth rate meaningless: -1.78 does not become 26 %.
+      // The reference falls back to the last positive year in the window and keeps the window
+      // length as the denominator (GAP: 2.13 against 0.67 over five years = 26.0 % vs 26.43 %).
       const positiveBase=(series,span)=>{
         for(let back=span;back>=1;back--){
           const base=annualMetric(back,series);
@@ -498,17 +498,16 @@ function buildChecks(stock,benchmark=[],only=selected){
         }
         return null;
       };
-      // Stabilität braucht positive Werte für den Logarithmus. Liegen Verluste im Fenster,
-      // misst sie stattdessen die Gleichmäßigkeit der Wachstumsraten - das ist die Größe, die
-      // der Kriterienname nennt ("Stabilität EPS-Wachstum").
+      // Stability needs positive values for the logarithm. With losses inside the window there
+      // is none, so the fit of the raw values answers instead.
       const stability=(series,span)=>{
         const levels=long(series,span);
         if(levels!==null)return levels;
         if(!span)return null;
         const values=Array.from({length:span+1},(_,i)=>annualMetric(i,series)).reverse();
         if(values.some(x=>!isNum(x)))return null;
-        // Mit Verlusten im Fenster gibt es keinen Logarithmus; dann misst die Anpassungsgüte
-        // der Rohwerte, wie gleichmäßig der Verlauf ist.
+        // No logarithm with losses in the window: the fit of the raw values measures how evenly
+        // the series runs.
         return trendFit(values);
       };
       const salesSpan=spanOf(sales),epsSpan=spanOf(eps);
@@ -524,8 +523,8 @@ function buildChecks(stock,benchmark=[],only=selected){
         p("Rendite auf das eingesetzte Kapital (ROCE)",roce,-.12,.10,.28),
         p("Nettogewinnmarge (Geschäftsjahr)",netMargin,-.12,.10,.30)]],
       ["Kursprofil",[
-        // Drei Jahre Wochenrenditen: damit trifft die Zahl die Referenz (GAP 7,02 % gegen 7,01 %),
-        // während fünfzig Wochen systematisch zu ruhig messen.
+        // Three years of weekly returns: that hits the reference (GAP 7.02 % against 7.01 %),
+        // while fifty weeks measure systematically too calm.
         p("Volatilität (Wochenrenditen, 3 Jahre)",weeklyVol(156),.10,.05,.015),
         p("Performance pro Jahr (10 Jahre, bereinigt)",isNum(ret(120))?(1+ret(120))**.1-1:null,-.15,.08,.32),
         p("Kursstabilität 12 Monate (R²)",lineStability(12),0,.60,1)]],
@@ -617,14 +616,14 @@ function trendFit(values){
   const cross=values.reduce((sum,value,index)=>sum+(value-mean)*(index-mid),0);
   const vs=values.reduce((sum,value)=>sum+(value-mean)**2,0);
   const xs=values.reduce((sum,_,index)=>sum+(index-mid)**2,0);
-  // R² misst, wie gleichmäßig eine Reihe verläuft, nicht wohin. Eine Firma mit stetig leicht
-  // sinkendem Umsatz ist stabil und wurde hier bisher mit 0 % abgestraft; die Richtung bewertet
-  // das Wachstumskriterium daneben.
+  // R² measures how evenly a series runs, not where it goes. A company with steadily falling
+  // revenue is stable and used to be scored 0 % here; the growth criterion next door judges
+  // the direction.
   return vs>0&&xs>0?clamp(cross**2/(vs*xs)):0;
 }
-// Die Referenz bewertet jedes Kriterium im Kontext des Marktes: erfüllt, wenn die Firma besser
-// abschneidet als ein veröffentlichter Anteil der Vergleichsaktien (50 %, 65 %, 25 %, 10 %).
-// Ohne ausgewertete Gruppe bleibt es bei den festen Schwellen der App - dann sagt es das Abzeichen.
+// The reference judges every criterion in the context of the market: fulfilled when the company
+// does better than a published share of the comparison group (50 %, 65 %, 25 %, 10 %).
+// Without an evaluated group the app's fixed thresholds stay, and the badge says so.
 function applyGroupRanks(groups,ranking,mode){
   if(!ranking||!ranking.result||ranking.result.error||!ranking.result.ranks)return false;
   const {ranks,mask}=ranking.result, cutoffs=cutoffsFor(mode);

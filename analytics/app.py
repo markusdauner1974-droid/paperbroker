@@ -231,9 +231,9 @@ def stock(symbol, bucket):
         except Exception:
             pass
     statements = load_statements(ticker)
-    # Yahoo liefert vier bis fünf Geschäftsjahre, und die älteste Spalte kommt häufig leer an.
-    # Das Fünfjahreswachstum braucht sechs Jahre, die Stabilität fünf Stützpunkte - SEC EDGAR
-    # hält zehn. Dieselbe Quelle wird für die Rangliste längst benutzt; hier fehlte sie.
+    # Yahoo hands over four to five fiscal years and the oldest column often arrives empty.
+    # Five-year growth needs six years and the stability measure five points; SEC EDGAR holds
+    # ten. The ranking has used that source all along - here it was missing.
     sec_source = None
     if rows and "." not in symbol:
         try:
@@ -244,9 +244,9 @@ def stock(symbol, bucket):
             yahoo = statements
             statements = {name: sec.get(name) or yahoo.get(name, {})
                           for name in ("income", "balance", "cash", "quarterly")}
-            # SEC führt keinen Gesamtschulden-Tag; der Bilanzwert desselben Stichtags aus
-            # Yahoo füllt die Lücke. Ohne ihn fiele "Finanzschulden / Bilanzsumme" aus dem
-            # Check, obwohl er der einzige Wert war, der zur Referenz passte.
+            # SEC lists no total-debt tag; the balance value of the same date from Yahoo fills
+            # the gap. Without it "debt / total assets" would drop out of the check, although it
+            # was the one figure that already matched the reference.
             for day, row in statements["balance"].items():
                 for key, value in (yahoo.get("balance", {}).get(day) or {}).items():
                     if finite(value) is not None:
@@ -546,10 +546,10 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def asset(self, path):
-        """fonts.css und die woff2-Dateien der Fassade; dieselben Dateien wie im Trichter.
+        """The facade's fonts.css and woff2 files; the same files the funnel uses.
 
-        Fehlt die Datei, kommt ``(None, None)`` zurueck und der Aufrufer antwortet 404 - ein
-        FileNotFoundError hier würde den Socket ohne Statuszeile schliessen.
+        A missing file returns ``(None, None)`` and the caller answers 404 - a FileNotFoundError
+        here would close the socket without a status line.
         """
         if path == "/fonts.css":
             if not FONT_CSS.is_file():
@@ -587,7 +587,7 @@ class Handler(BaseHTTPRequestHandler):
         return html[:ende + 1] + injection + html[ende + 1:]
 
     def reply_asset(self, content, content_type):
-        """Eine Schriftdatei: lange haltbar, weil sich der Inhalt nicht aendert."""
+        """One font file: held for a week, because its content does not change."""
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
@@ -624,8 +624,8 @@ class Handler(BaseHTTPRequestHandler):
             if content is None:
                 self.json(404, {"error": "Adresse nicht gefunden."})
             else:
-                # Nicht ueber reply(): das setzt no-store und liesse den Browser die sechs
-                # Schriftdateien bei jedem Aufruf neu holen.
+                # Not through reply(): it sets no-store and would make the browser fetch the
+                # six font files again on every request.
                 self.reply_asset(content, content_type)
             return
         if path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",
