@@ -231,6 +231,37 @@ def stock(symbol, bucket):
         except Exception:
             pass
     statements = load_statements(ticker)
+    # Yahoo hands over four to five fiscal years and the oldest column often arrives empty.
+    # Five-year growth needs six years, so the SEC series fills in - but only when the provider
+    # stays short: the companyfacts payload can pass 30 MB, and a page view should not wait for
+    # it when nothing is missing.
+    sec_source = None
+    if rows and "." not in symbol and fiscal_years(statements["income"]) < SEC_YEARS:
+        try:
+            # Epoch seconds, not the freshness bucket: load_sec_statements derives its daily
+            # cache keys as bucket // 86400, and a 900-second index lands near 23 forever.
+            sec = load_sec_statements(symbol, date.fromisoformat(rows[-1][0]), bucket * 900)
+        except (URLError, OSError, ValueError, TypeError, KeyError):
+            sec = {}
+        if sec.get("income") and sec.get("balance"):
+            yahoo = statements
+            # Copies, not references: load_sec_statements is cached, and setdefault on its rows
+            # would write the Yahoo keys into that cache for every later request.
+            statements = {name: {day: dict(row) for day, row in (sec.get(name) or {}).items()}
+                          or yahoo.get(name, {})
+                          for name in ("income", "balance", "cash", "quarterly")}
+            # SEC lists no total-debt tag; the balance value of the same date from Yahoo fills
+            # the gap. Without it "debt / total assets" would drop out of the check, although it
+            # was the one figure that already matched the reference.
+            for day, row in statements["balance"].items():
+                for key, value in (yahoo.get("balance", {}).get(day) or {}).items():
+                    if finite(value) is not None:
+                        row.setdefault(key, value)
+            for day, row in statements["income"].items():
+                for key, value in (yahoo.get("income", {}).get(day) or {}).items():
+                    if finite(value) is not None:
+                        row.setdefault(key, value)
+            sec_source = "SEC EDGAR"
     statements, report_currency, official = merge_filings(
         symbol, rows[-1][0], statements, info.get("financialCurrency"), info.get("isin"))
     if report_currency:
@@ -252,12 +283,23 @@ def stock(symbol, bucket):
             "statements": statements, "issues": issues, "news": news,
             "price_source": "Yahoo Finance", "quote_source": "Yahoo Finance",
             "fundamentals_source": "Yahoo Finance" if info else None,
-            "statements_source": statement_source(statements, official)}
+            "statements_source": statement_source(statements, official, sec_source)}
 
 
-def statement_source(statements, official):
+# Five growth steps need six fiscal years; below that the SEC series is worth a download.
+SEC_YEARS = 6
+
+
+def fiscal_years(income):
+    """How many fiscal years carry a revenue figure - empty columns do not count."""
+    return sum(1 for row in income.values() if finite(row.get("totalrevenue")) is not None)
+
+
+def statement_source(statements, official, sec_source=None):
     if official:
         return "XBRL-Originalberichte · Yahoo Finance für verfügbare Ergänzungen"
+    if sec_source:
+        return sec_source if any(statements.values()) else None
     return "Yahoo Finance" if any(statements.values()) else None
 
 
@@ -519,10 +561,10 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def asset(self, path):
-        """fonts.css und die woff2-Dateien der Fassade; dieselben Dateien wie im Trichter.
+        """The facade's fonts.css and woff2 files; the same files the funnel uses.
 
-        Fehlt die Datei, kommt ``(None, None)`` zurueck und der Aufrufer antwortet 404 - ein
-        FileNotFoundError hier würde den Socket ohne Statuszeile schliessen.
+        A missing file returns ``(None, None)`` and the caller answers 404 - a FileNotFoundError
+        here would close the socket without a status line.
         """
         if path == "/fonts.css":
             if not FONT_CSS.is_file():
@@ -560,7 +602,7 @@ class Handler(BaseHTTPRequestHandler):
         return html[:ende + 1] + injection + html[ende + 1:]
 
     def reply_asset(self, content, content_type):
-        """Eine Schriftdatei: lange haltbar, weil sich der Inhalt nicht aendert."""
+        """One font file: held for a week, because its content does not change."""
         self.send_response(200)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(content)))
@@ -597,8 +639,8 @@ class Handler(BaseHTTPRequestHandler):
             if content is None:
                 self.json(404, {"error": "Adresse nicht gefunden."})
             else:
-                # Nicht ueber reply(): das setzt no-store und liesse den Browser die sechs
-                # Schriftdateien bei jedem Aufruf neu holen.
+                # Not through reply(): it sets no-store and would make the browser fetch the
+                # six font files again on every request.
                 self.reply_asset(content, content_type)
             return
         if path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",

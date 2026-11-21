@@ -101,15 +101,15 @@ class StoreTest(unittest.TestCase):
     def test_prices_are_stored_once_per_day(self):
         # Relative days on purpose: read_prices drops a series whose newest close is older than a
         # day, so a fixed date in the past makes this test fail after midnight - and only then.
-        heute = datetime.now(UTC).date()
-        gestern = (heute - timedelta(days=1)).isoformat()
-        heute = heute.isoformat()
-        self.store.write_prices(self.conn, "EVK.DE", [(gestern, 21.78), (heute, 18.25)],
+        today = datetime.now(UTC).date()
+        previous_day = (today - timedelta(days=1)).isoformat()
+        today = today.isoformat()
+        self.store.write_prices(self.conn, "EVK.DE", [(previous_day, 21.78), (today, 18.25)],
                                 currency="EUR", source="yahoo")
-        self.store.write_prices(self.conn, "EVK.DE", [(heute, 18.251)],
+        self.store.write_prices(self.conn, "EVK.DE", [(today, 18.251)],
                                 currency="EUR", source="yahoo")
         series = self.store.read_prices(self.conn, "EVK.DE")
-        self.assertEqual(series, [(gestern, 21.78), (heute, 18.251)])
+        self.assertEqual(series, [(previous_day, 21.78), (today, 18.251)])
 
     def test_the_freshness_line_names_all_three_kinds(self):
         self.store.write_figures(self.conn, "EVK.DE",
