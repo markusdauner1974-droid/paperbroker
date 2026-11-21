@@ -1,6 +1,7 @@
 <!doctype html>
 <html lang="de"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Aktienanalyse</title>
+<link rel="stylesheet" href="__ASSET_BASE__/fonts.css">
 <style>
 :root{color-scheme:dark;--bg:#091217;--paper:#0d181e;--ink:#fafafa;--sub:rgba(250,250,250,.62);--line:rgba(250,250,250,.10);--accent:#e05534;--lime:#e05534;--warn:#d9a441}
 *{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.55 system-ui,sans-serif}a{color:var(--accent)}button,input,select{font:inherit}button{cursor:pointer}button:disabled{cursor:wait;opacity:.65}header{background:var(--paper);color:var(--ink);padding:42px max(5vw,calc((100vw - 1200px)/2));}header small{color:var(--sub)}h1{font:clamp(42px,8vw,85px)/1 Georgia,serif;margin:16px 0;letter-spacing:-.045em}h2{font:32px/1.1 Georgia,serif;margin:4px 0 18px}h3{font-size:15px;margin:18px 0 6px}p{margin:8px 0}.search{display:flex;flex-wrap:wrap;gap:8px;margin-top:24px}.search input{flex:1;min-width:210px;max-width:560px}input,select{padding:9px 12px;border:1px solid rgba(250,250,250,.20);border-radius:8px;background:var(--paper);color:var(--ink)}button,.pill{border:1px solid var(--line);color:var(--ink);background:var(--paper);border-radius:8px;padding:8px 12px}button.primary{background:var(--lime);border-color:var(--lime);color:#091217;font-weight:700}button[aria-pressed=true]{background:var(--accent);color:#091217;border-color:var(--accent)}#matches{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}#matches button span{display:block;color:var(--sub);font-size:12px}main{width:min(1200px,94%);margin:22px auto 48px}.notice{background:rgba(224,85,52,.10);border:1px solid rgba(250,250,250,.14);border-radius:10px;padding:10px 14px;margin:12px 0}.notice a{white-space:nowrap}.quote{display:flex;gap:14px;flex-wrap:wrap;margin:16px 0}.quote div{flex:1;min-width:132px;background:var(--paper);border-radius:10px;padding:12px 15px}.quote strong{display:block;font-size:22px;font-variant-numeric:tabular-nums}.sub,small{color:var(--sub)}.layout{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px}.panel{padding:clamp(15px,2.3vw,26px);border:1px solid var(--line);border-radius:14px;background:var(--paper);min-width:0;scroll-margin-top:15px}.wide{grid-column:1/-1}.tabs,.controls,nav{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:8px 0 14px}nav a{padding:6px 10px;background:var(--paper);border-radius:8px;text-decoration:none}table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}th,td{text-align:left;padding:7px 4px;border-bottom:1px solid var(--line)}td:last-child{text-align:right}th{font-weight:520}.score{display:inline-block;background:var(--lime);border-radius:8px;font-weight:750;padding:5px 10px}.ok{color:var(--accent)}.bad{color:var(--warn)}.status{width:2rem;text-align:center!important}canvas{width:100%;height:270px;display:block;background:#0a141a;border-radius:8px}output{display:block;min-height:1.5em;color:var(--sub)}#search-status{color:var(--ink)}.scroll{overflow:auto}.scroll table{min-width:360px}.scroll td{text-align:right}.compare input{width:min(100%,340px)}.scorecard{margin-top:13px}.gain{color:var(--accent)}.loss{color:var(--warn)}footer{margin-top:20px;color:var(--sub)}@media(max-width:740px){.layout{grid-template-columns:1fr}header{padding:28px 4vw}canvas{height:230px}}
@@ -29,6 +30,78 @@ summary.rank-banner{display:list-item;color:#091217}
 @media(max-width:850px){.check-grid{grid-template-columns:minmax(0,1fr)}}
 @media(max-width:440px){.criteria{padding:8px}.meter-track{width:60px}.criteria .criterion-meter{width:70px}}
 .nas-columns{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,255px),1fr));gap:18px}.nas-columns table{min-width:0}.nas-columns td{overflow-wrap:anywhere}
+
+/* Fassade wie im Trichter: Oswald fuer Ueberschriften, Instrument Sans fuer Text,
+   Martian Mono fuer Beschriftungen, Knoepfe und Zahlen. Ecken eckig, Linien gepunktet,
+   Akzent erst beim Zeigen - dieselben Regeln wie in paperbroker/templates/screen.html. */
+:root{--font-display:"Oswald",sans-serif;--font-body:"Instrument Sans",system-ui,sans-serif;
+  --font-mono:"Martian Mono",ui-monospace,monospace;--faint:rgba(250,250,250,.48);
+  --hair:rgba(250,250,250,.20);--edge:rgba(250,250,250,.36)}
+body{font:15px/1.5 var(--font-body);-webkit-font-smoothing:antialiased}
+h1{font:700 26px/1.05 var(--font-display);text-transform:uppercase;
+  letter-spacing:.01em;margin:10px 0 4px}
+h2{font:700 17px/1.1 var(--font-display);text-transform:uppercase;letter-spacing:.03em;
+  margin:0 0 12px}
+h3{font-family:var(--font-mono);font-size:10px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--faint);font-weight:600;margin:16px 0 6px}
+header small{font-family:var(--font-mono);font-size:10px;letter-spacing:.14em;
+  text-transform:uppercase;color:var(--faint)}
+header{background:var(--paper);border-bottom:1px dotted var(--hair)}
+.panel,canvas,table,.score,.score-tile,.check-summary,.criteria,.check-metrics div,.notice,
+.quote div,.meter-track,.meter-fill,.rank-banner,#matches button,.pill,button,input,select{
+  border-radius:0}
+
+/* Knoepfe: ruhige Kante, Akzent erst beim Zeigen; der Hauptknopf bleibt gefuellt. */
+button,.pill{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;
+  text-transform:uppercase;background:none;border:1px solid var(--edge);color:var(--sub);
+  padding:6px 10px}
+button:hover:not(:disabled),.pill:hover{color:var(--ink);border-color:var(--accent)}
+/* Auch der Hauptknopf bleibt ruhig - im Trichter ist der Klick auf "Scannen" genauso
+   gezeichnet: keine Fuellung, Akzent erst beim Zeigen. */
+button.primary{background:none;border-color:var(--edge);color:var(--sub)}
+button.primary:hover:not(:disabled){background:none;border-color:var(--accent);color:var(--ink)}
+button[aria-pressed=true]{background:var(--accent);border-color:var(--accent);color:#091217;
+  font-weight:600}
+button:disabled{opacity:.4;cursor:not-allowed}
+
+/* Eingabefelder: transparent, gepunktete Unterkante wie das Datumsfeld im Trichter. */
+input,select{font-family:var(--font-mono);font-size:12px;background:transparent;border:0;
+  border-bottom:1px dotted var(--edge);color:var(--ink);padding:8px 2px}
+input:focus,select:focus{outline:none;border-bottom-color:var(--accent)}
+input::placeholder{color:var(--faint)}
+.controls label,.tabs label{font-family:var(--font-mono);font-size:10px;letter-spacing:.08em;
+  text-transform:uppercase;color:var(--faint)}
+
+/* Flaechen: flach, gepunktete Kanten statt Karten mit Schatten. */
+.panel{border:1px dotted var(--hair);background:var(--paper)}
+.notice{border:1px dotted rgba(224,85,52,.55);background:rgba(224,85,52,.08);color:#f7d3c9}
+.quote div{border:1px dotted var(--hair);background:var(--paper)}
+.quote strong{font-family:var(--font-mono);font-size:20px;font-weight:600}
+.check-summary{background:none;border:1px dotted var(--hair)}
+.check-summary h3{font:700 clamp(20px,2.6vw,26px)/1.15 var(--font-display);text-transform:uppercase}
+.score-tile{background:#12232b;border:1px dotted var(--hair)}
+.score-tile strong{font-family:var(--font-mono);font-weight:600}
+.criteria{border:1px dotted var(--hair);background:var(--paper)}
+.check-metrics div{background:rgba(250,250,250,.04);border:1px dotted var(--hair)}
+/* Mono ist breit: ohne nowrap bricht die Einheit allein in die naechste Zeile. */
+.check-metrics strong{font-family:var(--font-mono);font-weight:600;font-size:11.5px;
+  white-space:nowrap}
+canvas{background:#0a141a;border:1px dotted var(--hair)}
+nav a{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+  color:var(--sub);background:none;border:1px solid transparent;padding:5px 8px}
+nav a:hover{color:var(--ink);border-color:var(--edge)}
+
+/* Tabellen: Mono, blasse Versalien im Kopf, gepunktete Zeilen. */
+table{font-family:var(--font-mono);font-size:10.5px}
+th{font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--faint);
+  font-weight:600}
+th,td{border-bottom:1px dotted var(--line);padding:6px 4px}
+.score{font-family:var(--font-mono);font-size:10.5px;font-weight:600;padding:3px 7px;
+  letter-spacing:.04em}
+summary{font-family:var(--font-mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase}
+.rank-banner{font-family:var(--font-mono);font-size:10.5px;letter-spacing:.06em}
+footer{font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;text-transform:uppercase;
+  color:var(--faint)}
 </style>
 <header>
 <small>Aktienanalyse</small><h1 id="company">Aktienanalyse</h1>

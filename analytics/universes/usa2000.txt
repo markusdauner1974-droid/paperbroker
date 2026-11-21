@@ -31,9 +31,10 @@
 # ohne Ticker: US09076W1099 bioAffinity Technologies Inc
 # ohne Ticker: US1844921064 Zone Frontier Inc
 # ohne Ticker: US53261U4031 Neutron Holdings Inc
-# ohne belastbare Kursreihe: SPCX US84615Q1031 Space Exploration Techs. C (113 Kurse)
-# ohne belastbare Kursreihe: CBRS US15675D1037 Cerebras Systems Inc (133 Kurse)
-# ohne belastbare Kursreihe: HONA US43849R1059 Honeywell Aerospace Inc. (112 Kurse)
+# nicht in der Liste (zu kurz fuer die Bewertung, unter 300 Schlusskurse):
+#   SPCX US84615Q1031 Space Exploration Techs. C (113 Kurse)
+#   CBRS US15675D1037 Cerebras Systems Inc (133 Kurse)
+#   HONA US43849R1059 Honeywell Aerospace Inc. (112 Kurse)
 #
 # Ein Ticker je Zeile; alles nach einem Doppelkreuz ist ein Kommentar.
 
@@ -44,7 +45,6 @@ MSFT
 META
 TSLA
 AMD
-SPCX
 SNDK
 AMZN
 GOOGL
@@ -113,7 +113,6 @@ MS
 IBM
 MCHP
 MPC
-CBRS
 WFC
 C
 BA
@@ -199,7 +198,6 @@ LMT
 ROST
 AXTI
 ASTS
-HONA
 FIX
 PWR
 VST

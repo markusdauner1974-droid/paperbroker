@@ -99,13 +99,17 @@ class StoreTest(unittest.TestCase):
         self.assertEqual(data["currency"], "EUR")
 
     def test_prices_are_stored_once_per_day(self):
-        self.store.write_prices(self.conn, "EVK.DE",
-                                [("2026-11-18", 21.78), ("2026-11-19", 18.25)],
+        # Relative days on purpose: read_prices drops a series whose newest close is older than a
+        # day, so a fixed date in the past makes this test fail after midnight - and only then.
+        heute = datetime.now(UTC).date()
+        gestern = (heute - timedelta(days=1)).isoformat()
+        heute = heute.isoformat()
+        self.store.write_prices(self.conn, "EVK.DE", [(gestern, 21.78), (heute, 18.25)],
                                 currency="EUR", source="yahoo")
-        self.store.write_prices(self.conn, "EVK.DE", [("2026-11-19", 18.251)],
+        self.store.write_prices(self.conn, "EVK.DE", [(heute, 18.251)],
                                 currency="EUR", source="yahoo")
         series = self.store.read_prices(self.conn, "EVK.DE")
-        self.assertEqual(series, [("2026-11-18", 21.78), ("2026-11-19", 18.251)])
+        self.assertEqual(series, [(gestern, 21.78), (heute, 18.251)])
 
     def test_the_freshness_line_names_all_three_kinds(self):
         self.store.write_figures(self.conn, "EVK.DE",
@@ -119,7 +123,8 @@ class StoreTest(unittest.TestCase):
         german = Path(self.tmp.name) / "german.db"
         with sqlite3.connect(german) as conn:
             conn.executescript(GERMAN_SCHEMA)
-            stamp = "2026-11-19T10:00:00+00:00"
+            # Same reason as above: a fetched_at fixed in the past trips the freshness filter.
+            stamp = datetime.now(UTC).replace(microsecond=0).isoformat()
             conn.execute("INSERT INTO firma VALUES ('EVK.DE','DE000EVNK013','Evonik','XETRA',"
                          "'EUR',?)", (stamp,))
             conn.execute("INSERT INTO bericht VALUES ('EVK.DE',2025,'IXBRL',"

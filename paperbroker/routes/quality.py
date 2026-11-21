@@ -39,6 +39,14 @@ AKT_DIR = Path(__file__).resolve().parents[2] / "analytics"
 NAS_URL_ENV = "AKTIENANALYSE_NAS_URL"
 PAGE_PATH = "/qualitaet"
 
+# The page wears the same type as the funnel: Oswald for headings, Instrument Sans for text,
+# Martian Mono for labels and numbers. The files already ship for the funnel, so they are served
+# from there instead of being copied - one source, and no request leaves the LAN.
+FONT_DIR = Path(__file__).resolve().parents[1] / "static" / "fonts"
+FONT_NAME = re.compile(r"[a-z0-9-]+\.woff2")
+#: Placeholder in index.html, replaced with the prefix the page runs under.
+ASSET_BASE = "__ASSET_BASE__"
+
 # The same pattern the delivered program uses (analytics/app.py): a narrower
 # one here would reject tickers the standalone entry point happily serves.
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
@@ -109,7 +117,7 @@ def nas():
 
 def page() -> Response:
     """The interface, with the path prefix injected."""
-    html = (AKT_DIR / "index.html").read_text(encoding="utf-8")
+    html = (AKT_DIR / "index.html").read_text(encoding="utf-8").replace(ASSET_BASE, PAGE_PATH)
     start = html.find("<html")
     end = html.find(">", start) if start >= 0 else -1
     if start >= 0 and end >= 0:
@@ -142,6 +150,28 @@ def _one() -> str:
 
 def _bucket() -> int:
     return int(time.time() // 900)
+
+
+def fonts_css() -> Response:
+    """The @font-face rules; their relative urls land on the route below.
+
+    A missing file answers 404 like a missing font does: the page then falls back to the
+    system fonts, which is readable — a 500 on a stylesheet would not be.
+    """
+    rules = FONT_DIR.parent / "fonts.css"
+    if not rules.is_file():
+        return Response("", status=404)
+    return Response(rules.read_text(encoding="utf-8"),
+                    content_type="text/css; charset=utf-8",
+                    headers={"Cache-Control": "public, max-age=604800"})
+
+
+def font(name: str) -> Response:
+    """One self-hosted woff2 file, but only the ones that are actually there."""
+    if not FONT_NAME.fullmatch(name) or not (FONT_DIR / name).is_file():
+        return Response("", status=404)
+    return Response((FONT_DIR / name).read_bytes(), content_type="font/woff2",
+                    headers={"Cache-Control": "public, max-age=604800"})
 
 
 def api(name: str):
@@ -291,4 +321,8 @@ def register(app) -> None:
     app.add_url_rule(PAGE_PATH + "/", endpoint="quality_page", view_func=page,
                      methods=["GET"], strict_slashes=False)
     app.add_url_rule(PAGE_PATH + "/api/<name>", endpoint="quality_api", view_func=api,
+                     methods=["GET"])
+    app.add_url_rule(PAGE_PATH + "/fonts.css", endpoint="quality_fonts_css", view_func=fonts_css,
+                     methods=["GET"])
+    app.add_url_rule(PAGE_PATH + "/fonts/<name>", endpoint="quality_font", view_func=font,
                      methods=["GET"])
