@@ -6,8 +6,12 @@ index.html is replaced, and a name that is not a font is refused.
 """
 
 import sys
+import threading
 import unittest
+from http.client import HTTPConnection
+from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
@@ -40,6 +44,14 @@ class FontsTest(unittest.TestCase):
         self.assertIn('href="/fonts.css"', seite)
         self.assertNotIn(app.ASSET_BASE, seite)
 
+    def test_a_missing_stylesheet_answers_404_instead_of_raising(self):
+        """Without the funnel's files the page must fall back to system fonts, not drop the socket."""
+        fehlt = Path("/nicht/vorhanden/fonts.css")
+        with mock.patch.object(app, "FONT_CSS", fehlt):
+            inhalt, typ = app.Handler.asset(_Seite(), "/fonts.css")
+        self.assertIsNone(inhalt)
+        self.assertIsNone(typ)
+
     def test_a_name_that_is_not_a_font_is_refused(self):
         stub = _Seite()
         for pfad in ("/fonts/passwd", "/fonts/../app.py", "/fonts/app.py",
@@ -56,6 +68,56 @@ class FontsTest(unittest.TestCase):
         regeln, typ = app.Handler.asset(_Seite(), "/fonts.css")
         self.assertEqual("text/css; charset=utf-8", typ)
         self.assertIn("@font-face", regeln.decode())
+
+
+class _ServerTest(unittest.TestCase):
+    """The real socket, because Cache-Control is written by the handler, not by asset()."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.server = ThreadingHTTPServer(("127.0.0.1", 0), app.Handler)
+        cls.thread = threading.Thread(target=cls.server.serve_forever, daemon=True)
+        cls.thread.start()
+        cls.port = cls.server.server_address[1]
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.server.shutdown()
+        cls.server.server_close()
+        cls.thread.join(timeout=5)
+
+    def holen(self, pfad):
+        verbindung = HTTPConnection("127.0.0.1", self.port, timeout=10)
+        try:
+            verbindung.request("GET", pfad)
+            antwort = verbindung.getresponse()
+            return antwort.status, dict(antwort.getheaders()), antwort.read()
+        finally:
+            verbindung.close()
+
+    def test_a_font_may_be_cached_like_the_program_serves_it(self):
+        """no-store here would make the browser fetch six files on every page view."""
+        status, kopf, inhalt = self.holen("/fonts/oswald-latin.woff2")
+        self.assertEqual(200, status)
+        self.assertEqual("font/woff2", kopf["Content-Type"])
+        self.assertIn("max-age=604800", kopf["Cache-Control"])
+        self.assertGreater(len(inhalt), 5_000)
+
+    def test_the_rules_may_be_cached_as_well(self):
+        status, kopf, inhalt = self.holen("/fonts.css")
+        self.assertEqual(200, status)
+        self.assertIn("max-age=604800", kopf["Cache-Control"])
+        self.assertIn(b"@font-face", inhalt)
+
+    def test_an_unknown_font_answers_404_without_dropping_the_socket(self):
+        status, _, inhalt = self.holen("/fonts/app.py")
+        self.assertEqual(404, status)
+        self.assertIn("error", inhalt.decode())
+
+    def test_the_page_still_answers_no_store(self):
+        status, kopf, _ = self.holen("/")
+        self.assertEqual(200, status)
+        self.assertEqual("no-store", kopf["Cache-Control"])
 
 
 if __name__ == "__main__":

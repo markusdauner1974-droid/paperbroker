@@ -153,8 +153,15 @@ def _bucket() -> int:
 
 
 def fonts_css() -> Response:
-    """The @font-face rules; their relative urls land on the route below."""
-    return Response((FONT_DIR.parent / "fonts.css").read_text(encoding="utf-8"),
+    """The @font-face rules; their relative urls land on the route below.
+
+    A missing file answers 404 like a missing font does: the page then falls back to the
+    system fonts, which is readable — a 500 on a stylesheet would not be.
+    """
+    rules = FONT_DIR.parent / "fonts.css"
+    if not rules.is_file():
+        return Response("", status=404)
+    return Response(rules.read_text(encoding="utf-8"),
                     content_type="text/css; charset=utf-8",
                     headers={"Cache-Control": "public, max-age=604800"})
 

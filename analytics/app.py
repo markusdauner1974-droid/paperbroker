@@ -519,8 +519,14 @@ class Handler(BaseHTTPRequestHandler):
         return None
 
     def asset(self, path):
-        """fonts.css und die woff2-Dateien der Fassade; dieselben Dateien wie im Trichter."""
+        """fonts.css und die woff2-Dateien der Fassade; dieselben Dateien wie im Trichter.
+
+        Fehlt die Datei, kommt ``(None, None)`` zurueck und der Aufrufer antwortet 404 - ein
+        FileNotFoundError hier würde den Socket ohne Statuszeile schliessen.
+        """
         if path == "/fonts.css":
+            if not FONT_CSS.is_file():
+                return None, None
             return FONT_CSS.read_bytes(), "text/css; charset=utf-8"
         name = path[len("/fonts/"):]
         if not FONT_NAME.fullmatch(name) or not (FONT_DIR / name).is_file():
@@ -553,6 +559,18 @@ class Handler(BaseHTTPRequestHandler):
         injection = (f"<script>window.AKT_BASE_PATH={escaped}</script>").encode()
         return html[:ende + 1] + injection + html[ende + 1:]
 
+    def reply_asset(self, content, content_type):
+        """Eine Schriftdatei: lange haltbar, weil sich der Inhalt nicht aendert."""
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(content)))
+        self.send_header("Cache-Control", "public, max-age=604800")
+        self.end_headers()
+        try:
+            self.wfile.write(content)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+
     def reply(self, status, content, content_type):
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -579,7 +597,9 @@ class Handler(BaseHTTPRequestHandler):
             if content is None:
                 self.json(404, {"error": "Adresse nicht gefunden."})
             else:
-                self.reply(200, content, content_type)
+                # Nicht ueber reply(): das setzt no-store und liesse den Browser die sechs
+                # Schriftdateien bei jedem Aufruf neu holen.
+                self.reply_asset(content, content_type)
             return
         if path not in ("/api/search", "/api/stock", "/api/stock-batch", "/api/stock-extra", "/api/statements",
                         "/api/compare", "/api/xang", "/api/ranking"):

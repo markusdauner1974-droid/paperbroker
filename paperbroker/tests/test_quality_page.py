@@ -83,6 +83,17 @@ class QualityPageTest(unittest.TestCase):
         self.assertEqual("font/woff2", letter.headers["Content-Type"])
         self.assertGreater(len(letter.get_data()), 5_000)
 
+    def test_a_missing_stylesheet_answers_404(self):
+        """Without the funnel's files the page falls back to system fonts; a 500 on a
+        stylesheet would take the whole page down instead."""
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(quality, "FONT_DIR", Path(tmp) / "fonts"):
+                self.assertEqual(404, self.client.get("/qualitaet/fonts.css").status_code)
+                self.assertEqual(404, self.client.get(
+                    "/qualitaet/fonts/oswald-latin.woff2").status_code)
+
     def test_a_font_name_that_is_not_a_font_is_refused(self):
         for name in ("../quality.py", "fonts.css", "passwd", "instrument-sans-latin.woff2.bak"):
             with self.subTest(name=name):
