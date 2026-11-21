@@ -108,6 +108,15 @@ const loadingCleared = (script.match(/checkBenchmark\.loading=false;/g) || []).l
   /finally\{[\s\S]*?if\(request===checkBenchmark\.request\)checkBenchmark\.loading=false;/.test(script);
 results.loadingFlagIsKept = loadingSet && loadingCleared;
 
+// The gap report comes with the statements, not with the scanner: the merge has to carry it,
+// and the page has to render it above the score explanation.
+results.gapReport = {
+  travelsWithTheSupplement: /data_gaps:detail\.data_gaps\?\.length\?detail\.data_gaps:\(baseline\.data_gaps\|\|\[\]\)/.test(script),
+  blockIsBuilt: /const gaps=element\("details",undefined,"data-gaps"\)/.test(script),
+  blockIsRendered: /body\.replaceChildren\(summary,metrics,\.\.\.\(gaps\.childNodes\.length\?\[gaps\]:\[\]\),details/.test(script),
+  namesBlockAndYears: /"Block","Quelle","Jahre","Grund"/.test(script),
+};
+
 // The Yahoo supplement must not run twice and must not overwrite a newer ticker.
 const guard = /if\(active\.history_loading\)return;/.test(script);
 const identity = /if\(data!==active\|\|request!==generation\)return;/.test(script);
@@ -240,6 +249,12 @@ class PageScriptTest(unittest.TestCase):
         self.assertTrue(joined["withoutPrimary"])
         self.assertTrue(joined["labelNamesBoth"])
         self.assertTrue(joined["labelSingle"])
+        report = _run()["gapReport"]
+        self.assertTrue(report["travelsWithTheSupplement"],
+                        "the gap report is dropped when the supplement replaces the scanner data")
+        self.assertTrue(report["blockIsBuilt"], "the gap block is not built at all")
+        self.assertTrue(report["blockIsRendered"], "the gap block is built but never shown")
+        self.assertTrue(report["namesBlockAndYears"], "the gap table lost its columns")
 
     def test_quarter_window_and_benchmark_loading_state(self):
         import os
