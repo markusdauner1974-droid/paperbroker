@@ -580,17 +580,32 @@ def export_notes(symbol):
     return notes
 
 
+def same_fiscal_year(one, other):
+    """Whether two period ends describe the same business year.
+
+    A retailer closing on 2021-01-03 and a report ending 2020-12-31 are the same year. Keeping both
+    would count it twice and shift every growth figure built on the series.
+    """
+    try:
+        return abs((date.fromisoformat(one) - date.fromisoformat(other)).days) <= 45
+    except (ValueError, TypeError):
+        return False
+
+
 def merge_fonrex(statements, extra):
     """Fill the annual figures the collector could not read; never overwrite a tagged value.
 
     Fonrex reads the same ESEF filings, so wherever paperbroker has a figure it stays. What arrives
-    here are years that would otherwise be Yahoo years or missing altogether.
+    here are years that would otherwise be Yahoo years or missing altogether - and a year that is
+    already there under a slightly different period end is enriched, not added a second time.
     """
     result = {name: {day: dict(row) for day, row in (statements.get(name) or {}).items()}
               for name in ("income", "quarterly", "balance", "cash")}
     for section in ("income", "balance", "cash"):
         for day, row in (extra.get(section) or {}).items():
-            target = result.setdefault(section, {}).setdefault(day, {})
+            rows = result.setdefault(section, {})
+            twin = next((known for known in rows if same_fiscal_year(known, day)), None)
+            target = rows.setdefault(twin or day, {})
             for item, value in row.items():
                 target.setdefault(item, value)
     return {name: rows for name, rows in result.items() if rows}

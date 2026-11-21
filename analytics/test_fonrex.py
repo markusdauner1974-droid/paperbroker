@@ -92,6 +92,13 @@ class EsefTests(unittest.TestCase):
         self.assertEqual(({}, fonrex.NO_KEY), (sections, reason))
         self.assertEqual(0, asked.call_count)
 
+    def test_a_source_that_delivered_is_not_called_unreachable(self):
+        """The block only names a reason from the report path - never an invented one."""
+        self.assertEqual([], fonrex.notes("SU.PA", "FR0000121972", None))
+        self.assertEqual([], fonrex.notes("SU.PA", "FR0000121972", fonrex.NO_KEY))
+        block = fonrex.notes("OR.PA", "FR0000120321", fonrex.NO_REPORTS)
+        self.assertEqual("Fonrex", block[0]["block"])
+
     def test_a_risk_answer_is_passed_through_only_when_it_carries_a_figure(self):
         answer = {"ticker": "SAP.DE", "annualized_volatility": 0.4143,
                   "max_drawdown": {"value": -0.3886}, "years": 3}
@@ -113,6 +120,22 @@ class MergeTests(unittest.TestCase):
         merged = app.merge_fonrex(statements, extra)
         self.assertEqual(1.0, merged["income"]["2024-12-31"]["totalrevenue"])
         self.assertEqual(5.0, merged["income"]["2024-12-31"]["netincome"])
+
+    def test_a_year_already_there_is_enriched_not_added_twice(self):
+        """A retailer's 2021-01-03 and a report's 2020-12-31 are the same business year."""
+        import app
+        statements = {"income": {"2021-01-03": {"totalrevenue": 74.0}}, "balance": {}, "cash": {}}
+        extra = {"income": {"2020-12-31": {"totalrevenue": 99.0, "netincome": 2.0}}}
+        merged = app.merge_fonrex(statements, extra)
+        self.assertEqual(["2021-01-03"], sorted(merged["income"]), "one year, not two")
+        self.assertEqual(74.0, merged["income"]["2021-01-03"]["totalrevenue"], "the tagged figure wins")
+        self.assertEqual(2.0, merged["income"]["2021-01-03"]["netincome"], "the missing one is added")
+
+    def test_a_year_two_years_apart_is_a_different_year(self):
+        import app
+        merged = app.merge_fonrex({"income": {"2021-01-03": {"totalrevenue": 74.0}}},
+                                  {"income": {"2020-06-30": {"totalrevenue": 50.0}}})
+        self.assertEqual(2, len(merged["income"]))
 
     def test_empty_sections_are_dropped(self):
         import app

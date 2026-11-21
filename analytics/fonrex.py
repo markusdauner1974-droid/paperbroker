@@ -170,12 +170,12 @@ def risk(ticker, isin=None):
 
 
 def notes(ticker, isin=None, reason=None):
-    """What Fonrex contributed or why it did not - one entry for the data-gap block."""
-    if reason == NO_KEY:
-        return []
-    if reason is None and not risk(ticker, isin):
-        reason = UNREACHABLE
-    if reason is None:
+    """Why Fonrex could not add years - one entry for the data-gap block.
+
+    Only a reason from the report path is reported here. A missing risk figure stays visible by its
+    absent cells; turning it into "unreachable" would call a source dead that had just delivered.
+    """
+    if reason in (None, NO_KEY):
         return []
     return [{"block": "Fonrex", "source": "Fonrex (ESEF, Risiko)", "have": 0, "need": 1,
              "reason": reason}]
