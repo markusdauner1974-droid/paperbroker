@@ -342,12 +342,22 @@ def find_q4_release(cik, end, cutoff, day):
     return None
 
 
-@lru_cache(maxsize=96)
 def load_sec_statements(symbol, cutoff, bucket):
-    cik = ticker_index(bucket // 86400).get(symbol)
+    """The XBRL series for one symbol, cached per day rather than per freshness bucket.
+
+    ``bucket`` is epoch seconds: the daily caches below derive ``bucket // 86400`` from it. The
+    heavy companyfacts payload (up to 32 MB) must not be fetched again for every 15-minute window,
+    so the work sits in a day-keyed cache one level down.
+    """
+    return _sec_statements_for_day(symbol, cutoff, bucket // 86400)
+
+
+@lru_cache(maxsize=96)
+def _sec_statements_for_day(symbol, cutoff, day):
+    cik = ticker_index(day).get(symbol)
     if cik is None:
         return {}
     payload = request_json(f"https://data.sec.gov/api/xbrl/companyfacts/CIK{cik:010d}.json")
     if payload.get("cik") != cik:
         return {}
-    return parse_statements(payload, cutoff, lambda end: find_q4_release(cik, end, cutoff, bucket // 86400))
+    return parse_statements(payload, cutoff, lambda end: find_q4_release(cik, end, cutoff, day))
