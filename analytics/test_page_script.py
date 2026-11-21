@@ -66,17 +66,35 @@ function lift(name) {
 }
 vm.runInContext(lift("joinPrices"), context);
 vm.runInContext(lift("priceLabel"), context);
-const nas = [["2026-11-18", 180], ["2026-11-19", 185], ["2026-11-20", 187]];
-const yahoo = [["1998-04-09", 30], ["2026-11-18", 180], ["2026-11-19", 185]];
+// NAS rows carry no dividend column: [day, close, null, null].
+const nas = [["2026-11-18", 180, null, null], ["2026-11-19", 185, null, null],
+             ["2026-11-20", 187, null, null]];
+const yahoo = [["1998-04-09", 30, 30, 0], ["2026-11-18", 180, 180, 0],
+               ["2026-11-19", 185, 185, 2.5]];
 const joined = context.joinPrices(nas, yahoo);
+// A short Yahoo series must not swallow scanner days it does not cover itself.
+const gappy = context.joinPrices(
+  [["2025-06-02", 100, null, null], ["2026-06-01", 150, null, null],
+   ["2026-11-20", 187, null, null]],
+  [["2026-01-02", 120, 120, 0], ["2026-11-19", 185, 185, 0]]);
+vm.runInContext(lift("adjustDate"), context);
+vm.runInContext(lift("periodDividends"), context);
 results.priceJoin = {
   keepsTheDeepStart: joined[0][0] === "1998-04-09",
   appendsTheNewerDay: joined.at(-1)[0] === "2026-11-20",
   noDoubleDay: joined.filter(row => row[0] === "2026-11-19").length === 1,
+  sorted: joined.every((row, index) => index === 0 || joined[index - 1][0] < row[0]),
   length: joined.length,
+  keepsDividend: joined.find(row => row[0] === "2026-11-19")[3] === 2.5,
+  nullDividendBecomesZero: joined.at(-1)[3] === 0,
+  dividendWindowStillWorks: context.periodDividends(joined, "2026-11-20") === 2.5,
+  keepsScannerDaysInsideTheRange: gappy.some(row => row[0] === "2025-06-02") &&
+    gappy.some(row => row[0] === "2026-06-01"),
+  gappyIsSorted: gappy.map(row => row[0]).join() ===
+    "2025-06-02,2026-01-02,2026-06-01,2026-11-19,2026-11-20",
   withoutDeeper: context.joinPrices(nas, []).length === 3,
   withoutPrimary: context.joinPrices([], yahoo).length === 3,
-  labelNamesBoth: context.priceLabel("xang auf NAS", "Yahoo Finance").includes("neueste Tage"),
+  labelNamesBoth: context.priceLabel("xang auf NAS", "Yahoo Finance").includes("Tage von"),
   labelSingle: context.priceLabel(null, "Yahoo Finance") === "Yahoo Finance",
 };
 
@@ -209,6 +227,15 @@ class PageScriptTest(unittest.TestCase):
         self.assertTrue(joined["appendsTheNewerDay"])
         self.assertTrue(joined["noDoubleDay"])
         self.assertEqual(4, joined["length"])
+        self.assertTrue(joined["sorted"], "the joined series is not in trading-day order")
+        self.assertTrue(joined["keepsDividend"], "the dividend of the deeper series was lost")
+        self.assertTrue(joined["nullDividendBecomesZero"],
+                        "a scanner row without a dividend column stays null")
+        self.assertTrue(joined["dividendWindowStillWorks"],
+                        "the twelve-month dividend window is refused after the join")
+        self.assertTrue(joined["keepsScannerDaysInsideTheRange"],
+                        "scanner days inside a short Yahoo range were dropped")
+        self.assertTrue(joined["gappyIsSorted"], "the gappy series is out of order")
         self.assertTrue(joined["withoutDeeper"])
         self.assertTrue(joined["withoutPrimary"])
         self.assertTrue(joined["labelNamesBoth"])
