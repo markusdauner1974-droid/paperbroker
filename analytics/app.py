@@ -299,6 +299,34 @@ def fiscal_years(income):
     return sum(1 for row in income.values() if finite(row.get("totalrevenue")) is not None)
 
 
+# The page only builds its TTM growth from eight consecutive quarters; below that the figures
+# stay open, and the gap report has to use the same number.
+QUARTER_WINDOW = 8
+
+
+def consecutive_quarters(quarterly):
+    """How many quarters run without a hole at the newest end, revenue included.
+
+    Counting entries alone was wrong: four empty rows passed as a complete block while the page
+    could not add a single TTM figure. A quarter counts when it carries a revenue value and sits
+    65 to 120 days after its successor - the same window the page uses.
+    """
+    days = sorted(quarterly, reverse=True)
+    run = 0
+    for index, day in enumerate(days):
+        if finite((quarterly[day] or {}).get("totalrevenue")) is None:
+            break
+        if index:
+            try:
+                distance = (date.fromisoformat(days[index - 1]) - date.fromisoformat(day)).days
+            except ValueError:
+                break
+            if not 65 <= distance <= 120:
+                break
+        run += 1
+    return run
+
+
 def statement_gaps(statements, sec_source, official, filings_key):
     """One entry per block that is short, with the reason it is short.
 
@@ -306,7 +334,7 @@ def statement_gaps(statements, sec_source, official, filings_key):
     agreement from the start; this is the place where a reader can see *why* they are open.
     """
     years = fiscal_years(statements.get("income") or {})
-    quarters = len(statements.get("quarterly") or {})
+    quarters = consecutive_quarters(statements.get("quarterly") or {})
     if official:
         source = "Originalberichte (XBRL)"
     elif sec_source:
@@ -325,13 +353,14 @@ def statement_gaps(statements, sec_source, official, filings_key):
                        if not filings_key else
                        "Für diesen Titel wurde kein auswertbarer Originalbericht gefunden."),
         })
-    if quarters < 4:
+    if quarters < QUARTER_WINDOW:
         gaps.append({
             "block": "Quartale",
             "source": source,
             "have": quarters,
-            "need": 4,
-            "reason": "Ohne vier zusammenhängende Quartale bleiben die TTM-Werte offen.",
+            "need": QUARTER_WINDOW,
+            "reason": ("Ohne acht aufeinanderfolgende Quartale mit Umsatz bleibt das TTM-Wachstum "
+                       "offen."),
         })
     empty = [day for day, row in sorted((statements.get("income") or {}).items())
              if finite(row.get("totalrevenue")) is None]
