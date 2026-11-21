@@ -81,7 +81,11 @@ NOT_MONEY = {"basiceps", "dilutedeps", "basicaverageshares", "dilutedaverageshar
 
 UNREACHABLE = "Fonrex ist nicht erreichbar."
 NO_KEY = "Kein Zugangsschlüssel für Fonrex hinterlegt."
-NO_REPORTS = "Fonrex hat für diesen Titel keine Abschlüsse."
+# Measured 2026-11-22: Fonrex serves German issuers with quotes, technicals, risk and a Yahoo
+# mirror of the statements - what it does not have are the ESEF reports. filings.xbrl.org itself
+# returns count 0 for SAP's and Einhell's LEI, so the gap is the index, not the query.
+NO_REPORTS = ("Fonrex führt zu diesem Emittenten keine ESEF-Berichte; Kennzahlen, Kurse und Risiko "
+              "liefert es sehr wohl.")
 
 
 def available() -> bool:

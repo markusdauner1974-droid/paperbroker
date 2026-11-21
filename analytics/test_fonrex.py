@@ -64,6 +64,13 @@ class EsefTests(unittest.TestCase):
         self.assertEqual(({}, None, fonrex.NO_REPORTS), (sections, currency, reason))
         self.assertEqual(1, asked.call_count)
 
+    def test_the_reason_for_german_issuers_names_the_esef_gap_not_the_source(self):
+        """Fonrex serves German issuers; only its ESEF index is empty for them."""
+        with mock.patch.object(fonrex, "_get", return_value={"years": []}):
+            _sections, _currency, reason = fonrex.esef_sections("SAP.DE", "2026-11-20")
+        self.assertIn("ESEF", reason or "")
+        self.assertIn("Kennzahlen", reason or "")
+
     def test_an_unreachable_source_says_so(self):
         with mock.patch.object(fonrex, "_get", return_value=None):
             sections, currency, reason = fonrex.esef_sections("SIE.DE", "2026-11-20")
