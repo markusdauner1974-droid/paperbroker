@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS export (
     downloaded_at TEXT,
     gaps          TEXT
 );
+CREATE TABLE IF NOT EXISTS fonrex (
+    key TEXT PRIMARY KEY,
+    payload TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS price (
     symbol   TEXT,
     day      TEXT,
@@ -228,6 +234,25 @@ def write_figures(conn, symbol, sections, source=None, currency=None):
                 count += 1
     conn.commit()
     return count
+
+
+def write_fonrex(key, payload, path=None):
+    """Store what Fonrex answered, so a second look does not ask again."""
+    with closing(connect(path)) as conn:
+        conn.execute("INSERT OR REPLACE INTO fonrex (key, payload, fetched_at) VALUES (?, ?, ?)",
+                     (key, json.dumps(payload, ensure_ascii=False), _now()))
+        conn.commit()
+
+
+def read_fonrex(conn, key, max_age_h=24):
+    """The stored answer while it is fresh, otherwise None."""
+    row = conn.execute("SELECT payload, fetched_at FROM fonrex WHERE key = ?", (key,)).fetchone()
+    if not row or age_hours(row["fetched_at"]) > max_age_h:
+        return None
+    try:
+        return json.loads(row["payload"])
+    except ValueError:
+        return None
 
 
 def remember_provider(symbol, provider_id, path=None):

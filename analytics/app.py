@@ -13,9 +13,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlsplit
 from xml.etree.ElementTree import ParseError
 
+import fonrex
 import ranking
 import yfinance as yf
-from filing_statements import filings_available, merge_filings
+from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
 from sec_statements import load_sec_statements
 from statement_export import export_gaps, statement_export
 
@@ -377,12 +378,16 @@ def statement_gaps(statements, sec_source, official, filings_key):
     return gaps
 
 
-def statement_source(statements, official, sec_source=None, quarterly_export=False):
+def statement_source(statements, official, sec_source=None, quarterly_export=False,
+                     fonrex_years=False):
     if official and quarterly_export:
         return ("XBRL-Originalberichte · Quartale aus der Standardauswertung der Berichte · "
                 "Yahoo Finance für verfügbare Ergänzungen")
     if official:
         return "XBRL-Originalberichte · Yahoo Finance für verfügbare Ergänzungen"
+    if fonrex_years:
+        return ("Jahre aus den ESEF-Berichten über Fonrex · Quartale aus der Standardauswertung · "
+                "Yahoo Finance für verfügbare Ergänzungen")
     if sec_source:
         return sec_source if any(statements.values()) else None
     return "Yahoo Finance" if any(statements.values()) else None
@@ -563,6 +568,7 @@ def nas_stocks(nas, symbols, *, identify=False, bucket=None):
 
 
 EXPORT_BLOCK = "Standardauswertung"
+CURRENCY_MISMATCH = "Die Quelle nennt eine andere Währung als der Abschluss."
 
 
 def export_notes(symbol):
@@ -572,6 +578,22 @@ def export_notes(symbol):
         notes.append({"block": EXPORT_BLOCK, "source": "FinancialFilings", "have": 0, "need": 1,
                       "reason": reason})
     return notes
+
+
+def merge_fonrex(statements, extra):
+    """Fill the annual figures the collector could not read; never overwrite a tagged value.
+
+    Fonrex reads the same ESEF filings, so wherever paperbroker has a figure it stays. What arrives
+    here are years that would otherwise be Yahoo years or missing altogether.
+    """
+    result = {name: {day: dict(row) for day, row in (statements.get(name) or {}).items()}
+              for name in ("income", "quarterly", "balance", "cash")}
+    for section in ("income", "balance", "cash"):
+        for day, row in (extra.get(section) or {}).items():
+            target = result.setdefault(section, {}).setdefault(day, {})
+            for item, value in row.items():
+                target.setdefault(item, value)
+    return {name: rows for name, rows in result.items() if rows}
 
 
 def merge_export(statements, export):
@@ -603,6 +625,7 @@ def statement_profile(symbol, cutoff, bucket):
         if sec.get("income") or sec.get("quarterly"):
             return {"statements": sec, "statements_source": "SEC EDGAR",
                     "info": {"financialCurrency": "USD"}, "statement_date_limit": cutoff,
+                    "risk": fonrex.risk(symbol),
                     "data_gaps": statement_gaps(sec, "SEC EDGAR", False, filings_available())}
     ticker = yf.Ticker(symbol)
     statements = {name: {day: row for day, row in values.items() if day <= cutoff}
@@ -616,6 +639,19 @@ def statement_profile(symbol, cutoff, bucket):
         except Exception:
             pass
     statements, currency, official = merge_filings(symbol, cutoff, statements, currency, isin)
+    # Fonrex only fills what the original reports could not deliver. For a German issuer it has
+    # nothing (its own provider module says filings.xbrl.org carries no German filing), for a Dutch
+    # or French one it has the official years - measured: ASML six against five from Yahoo.
+    fonrex_reason = None
+    # Asked when the reports are missing altogether or when there are too few of them: four years
+    # give a different score from six, and the block should say whether the gap could be closed.
+    if not official or reported_years(statements) < REPORTED_YEARS_MIN:
+        extra, extra_currency, fonrex_reason = fonrex.esef_sections(symbol, cutoff)
+        if extra and (not currency or not extra_currency or extra_currency == currency):
+            statements = merge_fonrex(statements, extra)
+            currency = currency or extra_currency
+        else:
+            fonrex_reason = fonrex_reason or CURRENCY_MISMATCH
     supplement = {}
     if filings_available():
         try:
@@ -628,9 +664,12 @@ def statement_profile(symbol, cutoff, bucket):
         statements = merge_export(statements, supplement)
     gaps = statement_gaps(statements, None, official, filings_available())
     gaps.extend(export_notes(symbol))
+    gaps.extend(fonrex.notes(symbol, isin, fonrex_reason))
     return {"statements": statements,
+            "risk": fonrex.risk(symbol, isin),
             "statements_source": statement_source(statements, official,
-                                                  quarterly_export=bool((supplement or {}).get("quarterly"))),
+                                                  quarterly_export=bool((supplement or {}).get("quarterly")),
+                                                  fonrex_years=official is False and not fonrex_reason),
             "info": {"financialCurrency": currency} if currency else {}, "statement_date_limit": cutoff,
             "data_gaps": gaps}
 
@@ -689,6 +728,7 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
         issues.append("Yahoo Finance hat keine Jahres-GuV geliefert.")
     return {"symbol": symbol, "prices": rows, "info": info, "statements": statements, "issues": issues,
             "price_source": "Yahoo Finance" if rows else None,
+            "risk": profile.get("risk"),
             "data_gaps": profile.get("data_gaps") or [],
             "statements_source": profile.get("statements_source")}
 
