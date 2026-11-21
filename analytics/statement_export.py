@@ -31,12 +31,16 @@ TIMEOUT = 12
 
 # One download per symbol and week. The figures are stored, so a second look costs nothing; a
 # provider that answers with 429 must not be asked again on every cold cache key.
-EXPORT_MAX_AGE_DAYS = 7
+# Ten exports a day are allowed, so a weekly refresh of a whole universe is out of reach. A quarter
+# only changes four times a year, so a quarter of a year is a fair lifetime for one reading.
+EXPORT_MAX_AGE_DAYS = 90
+EXPORT_PER_DAY = 10
 # After a failed attempt the provider is left alone for this long. Without it every cold cache
 # key would knock again, and a provider that answers 429 stays angry.
 EXPORT_RETRY_MINUTES = 30
 FOUR_QUARTERS = 8
 
+BUDGET_REASON = "Das Tagesbudget von zehn Auswertungen ist verbraucht; morgen wieder."
 ANNUAL = {"income": "Income (Annual)", "balance": "Balance (Annual)", "cash": "Cash Flow (Annual)"}
 INTERIM = {"income": "Income (Interim)", "balance": "Balance (Interim)", "cash": "Cash Flow (Interim)"}
 
@@ -316,13 +320,20 @@ def statement_export(symbol, cutoff, currency, bucket=0, isin=None):
         return stored, stored_currency or currency
     if store.export_attempted_within(symbol, EXPORT_RETRY_MINUTES):
         return stored, (stored_currency or currency) if stored else None
+    if not store.budget_take(EXPORT_PER_DAY):
+        # The provider allows ten files a day. A page view must not spend the last one on a
+        # failure, and it must say why the figures are missing instead of staying silent.
+        store.remember_export(symbol, company, "", [("", "", BUDGET_REASON)])
+        return stored, (stored_currency or currency) if stored else None
     payload = download(company)
     if not payload:
+        store.budget_release()
         store.remember_export(symbol, company, "", [("", "", "Der Abruf ist fehlgeschlagen.")])
         return stored, (stored_currency or currency) if stored else None
     try:
         report = read_export(payload)
     except (BadZipFile, OSError, ValueError, KeyError, TypeError):
+        store.budget_release()
         return stored, (stored_currency or currency) if stored else None
     sections, gaps = sections_from_export(report, cutoff)
     if not sections:

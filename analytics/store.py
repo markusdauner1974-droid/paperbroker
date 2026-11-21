@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS figure (
     updated_at TEXT,
     PRIMARY KEY (symbol, section, day, item)
 );
+CREATE TABLE IF NOT EXISTS export_budget (
+    day  TEXT PRIMARY KEY,
+    used INTEGER NOT NULL DEFAULT 0
+);
 CREATE TABLE IF NOT EXISTS export (
     symbol        TEXT PRIMARY KEY,
     provider_id   INTEGER,
@@ -269,6 +273,39 @@ def export_is_fresh(symbol, max_age_days, path=None):
     if not row or not row["downloaded_at"] or not (row["checksum"] or "").strip():
         return False
     return age_hours(row["downloaded_at"]) <= max_age_days * 24
+
+
+def budget_day(path=None):
+    """The provider counts per calendar day; UTC is the safe side of every time zone."""
+    return datetime.now(UTC).date().isoformat()
+
+
+def budget_take(limit, path=None):
+    """Take one slot of today's allowance, or answer that there was none."""
+    day = budget_day(path)
+    with closing(connect(path)) as conn:
+        conn.execute("INSERT OR IGNORE INTO export_budget (day, used) VALUES (?, 0)", (day,))
+        conn.execute("UPDATE export_budget SET used = used + 1 WHERE day = ?", (day,))
+        used = conn.execute("SELECT used FROM export_budget WHERE day = ?", (day,)).fetchone()[0]
+        if used > limit:
+            conn.execute("UPDATE export_budget SET used = used - 1 WHERE day = ?", (day,))
+            conn.commit()
+            return False
+        conn.commit()
+    return True
+
+
+def budget_release(path=None):
+    """Give a slot back - an attempt that brought nothing must not cost one of the ten."""
+    with closing(connect(path)) as conn:
+        conn.execute("UPDATE export_budget SET used = MAX(used - 1, 0) WHERE day = ?", (budget_day(path),))
+        conn.commit()
+
+
+def budget_used(path=None):
+    with closing(connect(path)) as conn:
+        row = conn.execute("SELECT used FROM export_budget WHERE day = ?", (budget_day(path),)).fetchone()
+    return int(row[0]) if row else 0
 
 
 def export_attempted_within(symbol, minutes, path=None):

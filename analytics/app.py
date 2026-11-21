@@ -561,6 +561,18 @@ def nas_stocks(nas, symbols, *, identify=False, bucket=None):
     return stocks
 
 
+EXPORT_BLOCK = "Standardauswertung"
+
+
+def export_notes(symbol):
+    """Why the standardised statements are missing, in the wording of the data-gap block."""
+    notes = []
+    for _year, _item, reason in export_gaps(symbol)[:3]:
+        notes.append({"block": EXPORT_BLOCK, "source": "FinancialFilings", "have": 0, "need": 1,
+                      "reason": reason})
+    return notes
+
+
 def merge_export(statements, export):
     """Fill what the original reports and the aggregates left open; never overwrite them.
 
@@ -613,11 +625,13 @@ def statement_profile(symbol, cutoff, bucket):
             supplement = {}
     if supplement:
         statements = merge_export(statements, supplement)
+    gaps = statement_gaps(statements, None, official, filings_available())
+    gaps.extend(export_notes(symbol))
     return {"statements": statements,
             "statements_source": statement_source(statements, official,
                                                   quarterly_export=bool((supplement or {}).get("quarterly"))),
             "info": {"financialCurrency": currency} if currency else {}, "statement_date_limit": cutoff,
-            "data_gaps": statement_gaps(statements, None, official, filings_available())}
+            "data_gaps": gaps}
 
 
 # The two sources rarely close the same day: the scanner on the NAS has Friday's close while

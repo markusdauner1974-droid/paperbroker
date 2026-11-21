@@ -172,6 +172,27 @@ class ExportTest(unittest.TestCase):
         self.assertEqual({}, sections)
         self.assertIsNone(currency)
 
+    def test_only_ten_exports_a_day_are_taken(self):
+        """The provider allows ten files a day; a page view must not spend them silently."""
+        payload = workbook()
+        self.assertEqual(0, store.budget_used())
+        with mock.patch.object(export, "company_id", return_value=134), \
+                mock.patch.object(export, "download", return_value=payload):
+            for slot in range(export.EXPORT_PER_DAY):
+                sections, _currency = export.statement_export(f"T{slot}.DE", "2026-11-20", "EUR", slot)
+                self.assertTrue(sections, f"slot {slot} was refused")
+            refused, currency = export.statement_export("T99.DE", "2026-11-20", "EUR", 99)
+        self.assertEqual({}, refused)
+        self.assertIsNone(currency)
+        self.assertEqual(export.EXPORT_PER_DAY, store.budget_used())
+        self.assertEqual([("", "", export.BUDGET_REASON)], store.stored_export_gaps("T99.DE"))
+
+    def test_a_failed_attempt_gives_its_slot_back(self):
+        with mock.patch.object(export, "company_id", return_value=134), \
+                mock.patch.object(export, "download", return_value=b""):
+            export.statement_export("EIN3.DE", "2026-11-20", "EUR", 30)
+        self.assertEqual(0, store.budget_used(), "a failure must not cost one of the ten")
+
     def test_a_failed_download_is_not_repeated_on_the_next_view(self):
         """A provider that answers 429 must not be asked again on every cold cache key."""
         with mock.patch.object(export, "company_id", return_value=134), \
@@ -191,6 +212,15 @@ class ExportTest(unittest.TestCase):
         store.remember_provider("EIN3.DE", 134)
         self.assertEqual(134, store.stored_provider("EIN3.DE"))
         self.assertIsNone(store.stored_provider("UNBEKANNT.DE"))
+
+    def test_the_page_names_the_daily_budget_as_the_reason(self):
+        """A missing figure must come with its cause, not with silence."""
+        import app
+        with mock.patch.dict(export.os.environ, {"AKTIENANALYSE_DB": str(Path(self.directory.name) / "test.db")}):
+            store.remember_export("EIN3.DE", 134, "", [("", "", export.BUDGET_REASON)])
+            notes = app.export_notes("EIN3.DE")
+        self.assertEqual([{"block": "Standardauswertung", "source": "FinancialFilings",
+                           "have": 0, "need": 1, "reason": export.BUDGET_REASON}], notes)
 
     def test_the_gaps_of_the_export_are_stored_with_it(self):
         store.remember_export("EIN3.DE", 134, "abc", [("2025", "totalrevenue", "Grund")])
