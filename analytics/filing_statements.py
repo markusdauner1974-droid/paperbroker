@@ -431,17 +431,20 @@ def filing_entries(symbol, cutoff, isin, refresh=False):
 
     def usable(item, strict):
         """The address of a report, or nothing. Missing metadata only rejects under strict."""
+        # Everything that can be malformed sits inside the guard: a null "company", a missing
+        # "release_datetime" and an address that is not a string must skip the entry, not end the
+        # collection of every remaining report for this symbol.
         try:
             filed = date.fromisoformat(item["release_datetime"][:10])
             url = item.get("document") or item.get("document_url")
+            if (filed > limit or (item.get("company") or {}).get("id") != company_id
+                    or not valid_link(url, CDN)
+                    or not urlsplit(url).path.startswith("/financialreports/media/filings/")):
+                return None
+            if strict and ((item.get("fiscal_period") or "").upper() not in REPORT_PERIODS
+                           or (item.get("file_extension") or "").upper() not in PACKAGE_EXTENSIONS):
+                return None
         except (ValueError, TypeError, KeyError, AttributeError):
-            return None
-        if (filed > limit or item.get("company", {}).get("id") != company_id
-                or not valid_link(url, CDN)
-                or not urlsplit(url).path.startswith("/financialreports/media/filings/")):
-            return None
-        if strict and ((item.get("fiscal_period") or "").upper() not in REPORT_PERIODS
-                       or (item.get("file_extension") or "").upper() not in PACKAGE_EXTENSIONS):
             return None
         return url, item.get("period_ending_date") or url, filed.isoformat()
 
@@ -592,10 +595,13 @@ def filing_statements(symbol, cutoff, currency, bucket, isin=None):
         # a stored list has just been answered by the provider itself, and an issuer with fewer
         # than six reported years would pay twice on every cold key without ever gaining a year -
         # so the refresh happens once per symbol and process at most.
-        if (reported_years(collected or {}) < REPORTED_YEARS_MIN
-                and had_stored_list and refresh_once(symbol)):
+        if reported_years(collected or {}) < REPORTED_YEARS_MIN and had_stored_list:
             fresh, fresh_currency = collect_statements(symbol, cutoff, currency, isin, refresh=True)
-            if reported_years(fresh or {}) > reported_years(collected or {}):
+            # The permission is spent only by a refresh that came back with something: a transient
+            # failure must stay retryable, and a successful one that gained no year must not be
+            # repeated on every cold key.
+            if (fresh and refresh_once(symbol)
+                    and reported_years(fresh) > reported_years(collected or {})):
                 collected = fresh
                 report_currency = fresh_currency or report_currency
         if cached and collected:

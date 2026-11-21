@@ -97,6 +97,41 @@ class CollectorTest(unittest.TestCase):
             _lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
         self.assertEqual(entries, [])
 
+    def test_a_null_company_does_not_end_the_collection(self):
+        """One malformed entry must skip itself, not take the other reports with it."""
+        def liefert(pfad, **query):
+            if pfad == "companies":
+                return [{"id": 150, "lei": "41GUOJQTALQHLF39XJ34", "isins": ["DE000EVNK013"]}]
+            return [{"release_datetime": "2026-03-19T10:00:00Z", "company": None,
+                     "fiscal_period": "FY", "file_extension": "ZIP",
+                     "document": "https://cdn.financialreports.eu/financialreports/media/filings/a.zip"},
+                    {"release_datetime": "2026-03-19T10:00:00Z", "company": {"id": 150},
+                     "fiscal_period": "FY", "file_extension": "ZIP",
+                     "document": "https://cdn.financialreports.eu/financialreports/media/filings/b.zip"}]
+
+        with mock.patch.object(self.fs, "listing", liefert):
+            _lei, entries = self.fs.filing_entries("TEST.DE", "2026-11-19", "DE000EVNK013")
+        self.assertEqual([entry[0].rsplit("/", 1)[-1] for entry in entries], ["b.zip"])
+
+    def test_a_failed_refresh_stays_retryable(self):
+        """A refresh that came back empty must not spend the one permission for the process."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        fat = {"income": {f"{year}-12-31": {"totalrevenue": 1.0} for year in range(2020, 2026)},
+               "provenance": {}}
+        self.fs._REFRESHED.clear()
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements", return_value=(thin, "EUR")), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements",
+                                  side_effect=[(thin, "EUR"), ({}, None), (thin, "EUR"), (fat, "EUR")]) as collect:
+            first, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -11)
+            self.assertNotIn("TEST.DE", self.fs._REFRESHED, "a failed refresh must stay retryable")
+            second, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -12)
+        self.assertEqual(1, self.fs.reported_years(first))
+        self.assertEqual(6, self.fs.reported_years(second), "the second attempt must reach the reports")
+        self.assertEqual(4, collect.call_count)
+        self.assertIn("TEST.DE", self.fs._REFRESHED)
+
     def test_a_tagless_package_does_not_use_up_the_budget(self):
         """Ad-hoc notices cost the download, not the right to read a real report."""
         entries = [(f"https://cdn.financialreports.eu/financialreports/media/filings/{index}.zip",
