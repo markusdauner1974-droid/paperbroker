@@ -112,6 +112,92 @@ class EsefTests(unittest.TestCase):
                 self.assertIsNone(fonrex.risk("OTHER.DE"))
 
 
+class DefectTests(unittest.TestCase):
+    """The six things Kody found on the first commit."""
+
+    def setUp(self):
+        self.tmp = os.path.join(os.environ.get("TMPDIR", "/tmp"), f"pb-kody-{id(self)}.db")
+        patcher = mock.patch.dict(os.environ, {"AKTIENANALYSE_FONREX_KEY": "test-only",
+                                               "AKTIENANALYSE_FONREX_URL": "http://fonrex-api:5000",
+                                               "AKTIENANALYSE_DB": self.tmp})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.cleanup)
+
+    def cleanup(self):
+        for suffix in ("", "-wal", "-shm"):
+            try:
+                os.unlink(self.tmp + suffix)
+            except OSError:
+                pass
+
+    def test_the_provenance_map_survives_the_merge(self):
+        """Kody: merge_fonrex dropped the key the page uses to mark a figure as tagged."""
+        import app
+        provenance = {"income": {"2024-12-31": {"totalrevenue": {"source": "ixbrl_original"}}}}
+        merged = app.merge_fonrex({"income": {"2024-12-31": {"totalrevenue": 1.0}},
+                                   "provenance": provenance},
+                                  {"income": {"2025-12-31": {"totalrevenue": 2.0}}})
+        self.assertEqual(provenance, merged["provenance"])
+
+    def test_a_payload_of_the_wrong_shape_is_a_reason_not_an_exception(self):
+        """Kody: a non-dict answer raised AttributeError inside the request thread."""
+        for ticker, answer in (("AA.PA", ["unerwartet"]), ("BB.PA", "text")):
+            with mock.patch.object(fonrex, "_get", return_value=answer):
+                sections, _currency, reason = fonrex.esef_sections(ticker)
+            self.assertEqual({}, sections)
+            self.assertEqual(fonrex.UNREACHABLE, reason, "an unreadable answer is not 'no reports'")
+        for ticker, answer in (("CC.PA", {"years": "keine Liste"}), ("DD.PA", {"years": [None, 7]}),
+                               ("EE.PA", {"years": []})):
+            with mock.patch.object(fonrex, "_get", return_value=answer):
+                sections, _currency, reason = fonrex.esef_sections(ticker)
+            self.assertEqual({}, sections)
+            self.assertEqual(fonrex.NO_REPORTS, reason)
+
+    def test_an_unreachable_service_is_asked_once_not_per_symbol(self):
+        """Kody: three blocking timeouts per cold profile while the host is down."""
+        with mock.patch.object(fonrex, "_get", return_value=None) as asked:
+            fonrex.esef_sections("MC.PA")
+            fonrex.esef_sections("SU.PA")
+            fonrex.risk("MC.PA")
+        self.assertEqual(1, asked.call_count, "one timeout, then the mark holds for five minutes")
+
+    def test_the_key_does_not_travel_to_a_public_host_in_clear_text(self):
+        """Kody: X-API-KEY over plain HTTP."""
+        with mock.patch.object(fonrex, "BASE", "http://fonrex.example.com:5000"):
+            self.assertFalse(fonrex.permitted_target())
+            # The guard sits in _get, the one place that attaches the header.
+            with mock.patch.object(fonrex, "urlopen", side_effect=AssertionError("must not connect")):
+                self.assertIsNone(fonrex._get("/esef/MC.PA/statements"))
+        for address in ("https://fonrex.example.com", "http://fonrex-api:5000",
+                        "http://192.168.178.10:5100", "http://172.29.80.48:5000"):
+            with mock.patch.object(fonrex, "BASE", address):
+                self.assertTrue(fonrex.permitted_target(), address)
+        for address in ("ftp://fonrex-api:5000", "http://8.8.8.8:5000"):
+            with mock.patch.object(fonrex, "BASE", address):
+                self.assertFalse(fonrex.permitted_target(), address)
+
+    def test_a_ticker_cannot_walk_out_of_its_path(self):
+        """Kody: '..' passed the page's symbol pattern and reached the raw path."""
+        for ticker in ("..", "../sec", ".", "", "A/B"):
+            self.assertFalse(fonrex.symbol_ok(ticker), ticker)
+            with mock.patch.object(fonrex, "_get") as asked:
+                self.assertEqual({}, fonrex.esef_sections(ticker)[0])
+                self.assertIsNone(fonrex.risk(ticker))
+            self.assertEqual(0, asked.call_count)
+        self.assertTrue(fonrex.symbol_ok("MC.PA"))
+        self.assertTrue(fonrex.symbol_ok("BRK-B"))
+
+    def test_a_year_without_known_figures_does_not_become_a_year(self):
+        """Kody: an unmapped year appeared as a business year without revenue."""
+        answer = {"years": [{"period_end": "2024-12-31", "currency": "EUR",
+                             "figures": {"unbekannt": {"value": 1.0}}}]}
+        with mock.patch.object(fonrex, "_get", return_value=answer):
+            sections, _currency, reason = fonrex.esef_sections("MC.PA")
+        self.assertEqual({}, sections)
+        self.assertEqual(fonrex.NO_REPORTS, reason)
+
+
 class MergeTests(unittest.TestCase):
     def test_a_tagged_figure_is_never_overwritten(self):
         import app

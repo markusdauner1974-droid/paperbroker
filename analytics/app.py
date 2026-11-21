@@ -599,16 +599,21 @@ def merge_fonrex(statements, extra):
     here are years that would otherwise be Yahoo years or missing altogether - and a year that is
     already there under a slightly different period end is enriched, not added a second time.
     """
-    result = {name: {day: dict(row) for day, row in (statements.get(name) or {}).items()}
-              for name in ("income", "quarterly", "balance", "cash")}
+    sections = ("income", "quarterly", "balance", "cash")
+    # Everything else stays as it was - above all the provenance map merge_filings attached, which
+    # the page reads to mark a figure as coming from the original reports (index.html:1345).
+    result = dict(statements or {})
+    for name in sections:
+        rows = result.get(name)
+        result[name] = {day: dict(row) for day, row in rows.items()} if isinstance(rows, dict) else {}
     for section in ("income", "balance", "cash"):
         for day, row in (extra.get(section) or {}).items():
-            rows = result.setdefault(section, {})
+            rows = result[section]
             twin = next((known for known in rows if same_fiscal_year(known, day)), None)
             target = rows.setdefault(twin or day, {})
             for item, value in row.items():
                 target.setdefault(item, value)
-    return {name: rows for name, rows in result.items() if rows}
+    return {name: rows for name, rows in result.items() if rows or name not in sections}
 
 
 def merge_export(statements, export):
