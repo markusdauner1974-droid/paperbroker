@@ -361,6 +361,20 @@ function periodDividends(rows,end){
   const amounts=rows.filter(row=>row[0]>start&&row[0]<=end).map(row=>row[3]);
   return amounts.length&&amounts.every(value=>isNum(value)&&value>=0)?amounts.reduce((sum,value)=>sum+value,0):null;
 }
+function joinPrices(primary,deeper){
+  // The scanner on the NAS often has one more close than Yahoo. Keeping only one of the two
+  // loses either the deeper history or the newest day, so the deeper series wins and the newer
+  // days of the primary source are appended.
+  if(!Array.isArray(deeper)||!deeper.length)return Array.isArray(primary)?primary:[];
+  if(!Array.isArray(primary)||!primary.length)return deeper;
+  const last=deeper.at(-1)[0];
+  return [...deeper,...primary.filter(row=>row[0]>last)];
+}
+function priceLabel(primary,deeper){
+  if(!deeper)return primary||null;
+  if(!primary||primary===deeper)return deeper;
+  return deeper+" · neueste Tage "+primary;
+}
 function statementSeries(stock,name) {
   return Object.entries(stock.statements?.[name]||{}).sort((a,b)=>b[0].localeCompare(a[0]));
 }
@@ -1563,8 +1577,8 @@ async function extendStock(){
     // this call started with.
     if(detail.price_source||detail.statements_source){
       replaceData({...baseline,nasBaseline:baseline,
-        prices:detail.prices.length?detail.prices:baseline.prices,
-        price_source:detail.price_source||baseline.price_source,
+        prices:joinPrices(baseline.prices,detail.prices),
+        price_source:priceLabel(baseline.price_source,detail.price_source),
         statements:baseline.statements_source?baseline.statements:detail.statements,
         statements_source:baseline.statements_source||detail.statements_source,
         info:{...baseline.info,...detail.info},

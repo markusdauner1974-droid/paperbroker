@@ -583,6 +583,22 @@ def statement_profile(symbol, cutoff, bucket):
             "info": {"financialCurrency": currency} if currency else {}, "statement_date_limit": cutoff}
 
 
+# The two sources rarely close the same day: the scanner on the NAS has Friday's close while
+# Yahoo still ends on Thursday. Demanding the same day threw the whole eighteen-year series away -
+# and with it the ten-year performance and every dividend figure. A week covers a weekend and a
+# holiday; anything older is a genuinely stale series and still refuses.
+CUTOFF_TOLERANCE_DAYS = 7
+
+
+def recent_enough(last_day, cutoff):
+    """Whether a series ending on last_day still belongs to this cutoff."""
+    try:
+        distance = (date.fromisoformat(cutoff) - date.fromisoformat(last_day)).days
+    except (ValueError, TypeError):
+        return False
+    return 0 <= distance <= CUTOFF_TOLERANCE_DAYS
+
+
 def with_statements(result, bucket):
     cutoff = result["prices"][-1][0]
     profile = statement_profile(result["symbol"], cutoff, bucket)
@@ -598,11 +614,15 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
     try:
         candidate = [row for row in load_history(ticker, "max") if row[0] <= cutoff]
         price_currency = ticker.history_metadata.get("currency")
-        if candidate and candidate[-1][0] == cutoff and price_currency and (not currency or currency == price_currency):
+        if candidate and recent_enough(candidate[-1][0], cutoff) and price_currency \
+                and (not currency or currency == price_currency):
             rows = candidate
             info["currency"] = price_currency
+        elif candidate:
+            issues.append("Die Yahoo-Kursreihe endet zu früh für den NAS-Stichtag oder nennt "
+                          "eine andere Notierungswährung.")
         else:
-            issues.append("Die Yahoo-Kursreihe passt nicht zum NAS-Stichtag oder zur Notierungswährung.")
+            issues.append("Die ergänzende Yahoo-Kursreihe ist momentan nicht verfügbar.")
     except Exception:
         issues.append("Die ergänzende Yahoo-Kursreihe ist momentan nicht verfügbar.")
     statements = {} if history_only else load_statements(ticker)

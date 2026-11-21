@@ -52,6 +52,34 @@ let threw = false;
 try { context.consecutiveQuarters(brokenEntry, 8); } catch (error) { threw = true; }
 results.brokenEntryRefused = threw === false;
 
+// Two price sources close on different days: the deeper series wins, the newer days of the
+// primary source are appended once, and the label names both.
+function lift(name) {
+  const start = script.indexOf("function " + name + "(");
+  if (start < 0) throw new Error(name + " not found");
+  let depth = 0, end = start;
+  for (let index = script.indexOf("{", start); index < script.length; index++) {
+    if (script[index] === "{") depth++;
+    if (script[index] === "}") { depth--; if (depth === 0) { end = index + 1; break; } }
+  }
+  return script.slice(start, end);
+}
+vm.runInContext(lift("joinPrices"), context);
+vm.runInContext(lift("priceLabel"), context);
+const nas = [["2026-11-18", 180], ["2026-11-19", 185], ["2026-11-20", 187]];
+const yahoo = [["1998-04-09", 30], ["2026-11-18", 180], ["2026-11-19", 185]];
+const joined = context.joinPrices(nas, yahoo);
+results.priceJoin = {
+  keepsTheDeepStart: joined[0][0] === "1998-04-09",
+  appendsTheNewerDay: joined.at(-1)[0] === "2026-11-20",
+  noDoubleDay: joined.filter(row => row[0] === "2026-11-19").length === 1,
+  length: joined.length,
+  withoutDeeper: context.joinPrices(nas, []).length === 3,
+  withoutPrimary: context.joinPrices([], yahoo).length === 3,
+  labelNamesBoth: context.priceLabel("xang auf NAS", "Yahoo Finance").includes("neueste Tage"),
+  labelSingle: context.priceLabel(null, "Yahoo Finance") === "Yahoo Finance",
+};
+
 // The display rule: a criterion that waits for the benchmark must not show a dash.
 const pending = /benchmarkPending\s*=\s*selected===3&&checkBenchmark\.loading&&ordinal>=11/;
 const reading = /element\("td",benchmarkPending\?"Wird geladen …":value,"criterion-value"\)/;
@@ -162,8 +190,30 @@ process.stdout.write(JSON.stringify(results));
 """
 
 
+def _run():
+    """Runs the harness once and hands back its results."""
+    import os
+    env = {**os.environ, "PAGE_PATH": str(PAGE)}
+    run = subprocess.run(["node", "-e", HARNESS],
+                         capture_output=True, text=True, timeout=120, env=env)
+    if run.returncode != 0:
+        raise AssertionError(run.stderr[-800:])
+    return json.loads(run.stdout)
+
+
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class PageScriptTest(unittest.TestCase):
+    def test_the_price_series_of_both_sources_is_joined_once(self):
+        joined = _run()["priceJoin"]
+        self.assertTrue(joined["keepsTheDeepStart"])
+        self.assertTrue(joined["appendsTheNewerDay"])
+        self.assertTrue(joined["noDoubleDay"])
+        self.assertEqual(4, joined["length"])
+        self.assertTrue(joined["withoutDeeper"])
+        self.assertTrue(joined["withoutPrimary"])
+        self.assertTrue(joined["labelNamesBoth"])
+        self.assertTrue(joined["labelSingle"])
+
     def test_quarter_window_and_benchmark_loading_state(self):
         import os
         env = {**os.environ, "PAGE_PATH": str(PAGE)}
