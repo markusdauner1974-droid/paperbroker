@@ -52,6 +52,52 @@ let threw = false;
 try { context.consecutiveQuarters(brokenEntry, 8); } catch (error) { threw = true; }
 results.brokenEntryRefused = threw === false;
 
+// Two price sources close on different days: the deeper series wins, the newer days of the
+// primary source are appended once, and the label names both.
+function lift(name) {
+  const start = script.indexOf("function " + name + "(");
+  if (start < 0) throw new Error(name + " not found");
+  let depth = 0, end = start;
+  for (let index = script.indexOf("{", start); index < script.length; index++) {
+    if (script[index] === "{") depth++;
+    if (script[index] === "}") { depth--; if (depth === 0) { end = index + 1; break; } }
+  }
+  return script.slice(start, end);
+}
+vm.runInContext(lift("joinPrices"), context);
+vm.runInContext(lift("priceLabel"), context);
+// NAS rows carry no dividend column: [day, close, null, null].
+const nas = [["2026-11-18", 180, null, null], ["2026-11-19", 185, null, null],
+             ["2026-11-20", 187, null, null]];
+const yahoo = [["1998-04-09", 30, 30, 0], ["2026-11-18", 180, 180, 0],
+               ["2026-11-19", 185, 185, 2.5]];
+const joined = context.joinPrices(nas, yahoo);
+// A short Yahoo series must not swallow scanner days it does not cover itself.
+const gappy = context.joinPrices(
+  [["2025-06-02", 100, null, null], ["2026-06-01", 150, null, null],
+   ["2026-11-20", 187, null, null]],
+  [["2026-01-02", 120, 120, 0], ["2026-11-19", 185, 185, 0]]);
+vm.runInContext(lift("adjustDate"), context);
+vm.runInContext(lift("periodDividends"), context);
+results.priceJoin = {
+  keepsTheDeepStart: joined[0][0] === "1998-04-09",
+  appendsTheNewerDay: joined.at(-1)[0] === "2026-11-20",
+  noDoubleDay: joined.filter(row => row[0] === "2026-11-19").length === 1,
+  sorted: joined.every((row, index) => index === 0 || joined[index - 1][0] < row[0]),
+  length: joined.length,
+  keepsDividend: joined.find(row => row[0] === "2026-11-19")[3] === 2.5,
+  nullDividendBecomesZero: joined.at(-1)[3] === 0,
+  dividendWindowStillWorks: context.periodDividends(joined, "2026-11-20") === 2.5,
+  keepsScannerDaysInsideTheRange: gappy.some(row => row[0] === "2025-06-02") &&
+    gappy.some(row => row[0] === "2026-06-01"),
+  gappyIsSorted: gappy.map(row => row[0]).join() ===
+    "2025-06-02,2026-01-02,2026-06-01,2026-11-19,2026-11-20",
+  withoutDeeper: context.joinPrices(nas, []).length === 3,
+  withoutPrimary: context.joinPrices([], yahoo).length === 3,
+  labelNamesBoth: context.priceLabel("xang auf NAS", "Yahoo Finance").includes("Tage von"),
+  labelSingle: context.priceLabel(null, "Yahoo Finance") === "Yahoo Finance",
+};
+
 // The display rule: a criterion that waits for the benchmark must not show a dash.
 const pending = /benchmarkPending\s*=\s*selected===3&&checkBenchmark\.loading&&ordinal>=11/;
 const reading = /element\("td",benchmarkPending\?"Wird geladen …":value,"criterion-value"\)/;
@@ -162,8 +208,39 @@ process.stdout.write(JSON.stringify(results));
 """
 
 
+def _run():
+    """Runs the harness once and hands back its results."""
+    import os
+    env = {**os.environ, "PAGE_PATH": str(PAGE)}
+    run = subprocess.run(["node", "-e", HARNESS],
+                         capture_output=True, text=True, timeout=120, env=env)
+    if run.returncode != 0:
+        raise AssertionError(run.stderr[-800:])
+    return json.loads(run.stdout)
+
+
 @unittest.skipUnless(shutil.which("node"), "node is not installed")
 class PageScriptTest(unittest.TestCase):
+    def test_the_price_series_of_both_sources_is_joined_once(self):
+        joined = _run()["priceJoin"]
+        self.assertTrue(joined["keepsTheDeepStart"])
+        self.assertTrue(joined["appendsTheNewerDay"])
+        self.assertTrue(joined["noDoubleDay"])
+        self.assertEqual(4, joined["length"])
+        self.assertTrue(joined["sorted"], "the joined series is not in trading-day order")
+        self.assertTrue(joined["keepsDividend"], "the dividend of the deeper series was lost")
+        self.assertTrue(joined["nullDividendBecomesZero"],
+                        "a scanner row without a dividend column stays null")
+        self.assertTrue(joined["dividendWindowStillWorks"],
+                        "the twelve-month dividend window is refused after the join")
+        self.assertTrue(joined["keepsScannerDaysInsideTheRange"],
+                        "scanner days inside a short Yahoo range were dropped")
+        self.assertTrue(joined["gappyIsSorted"], "the gappy series is out of order")
+        self.assertTrue(joined["withoutDeeper"])
+        self.assertTrue(joined["withoutPrimary"])
+        self.assertTrue(joined["labelNamesBoth"])
+        self.assertTrue(joined["labelSingle"])
+
     def test_quarter_window_and_benchmark_loading_state(self):
         import os
         env = {**os.environ, "PAGE_PATH": str(PAGE)}

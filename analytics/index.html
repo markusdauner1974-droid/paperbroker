@@ -361,6 +361,26 @@ function periodDividends(rows,end){
   const amounts=rows.filter(row=>row[0]>start&&row[0]<=end).map(row=>row[3]);
   return amounts.length&&amounts.every(value=>isNum(value)&&value>=0)?amounts.reduce((sum,value)=>sum+value,0):null;
 }
+function joinPrices(primary,deeper){
+  // The scanner on the NAS often has one more close than Yahoo, and a short Yahoo series may
+  // start after the scanner already began. Both cases must keep every day: the deeper series
+  // carries the full row (close, adjusted close, dividend), the primary adds the days it alone
+  // has - inside the range as well, not just at the end. NAS rows carry no dividend column, so
+  // their slot reads as a paid-nothing day instead of null: periodDividends refuses a null.
+  const live=Array.isArray(primary)?primary:[];
+  const deep=Array.isArray(deeper)?deeper:[];
+  if(!deep.length)return live;
+  if(!live.length)return deep;
+  const days=new Set(deep.map(row=>row[0]));
+  const extra=live.filter(row=>row&&!days.has(row[0]))
+    .map(row=>[row[0],row[1],isNum(row[2])?row[2]:null,isNum(row[3])?row[3]:0]);
+  return [...deep,...extra].sort((a,b)=>a[0]<b[0]?-1:a[0]>b[0]?1:0);
+}
+function priceLabel(primary,deeper){
+  if(!deeper)return primary||null;
+  if(!primary||primary===deeper)return deeper;
+  return deeper+" · Tage von "+primary+" ergänzt";
+}
 function statementSeries(stock,name) {
   return Object.entries(stock.statements?.[name]||{}).sort((a,b)=>b[0].localeCompare(a[0]));
 }
@@ -1563,8 +1583,8 @@ async function extendStock(){
     // this call started with.
     if(detail.price_source||detail.statements_source){
       replaceData({...baseline,nasBaseline:baseline,
-        prices:detail.prices.length?detail.prices:baseline.prices,
-        price_source:detail.price_source||baseline.price_source,
+        prices:joinPrices(baseline.prices,detail.prices),
+        price_source:priceLabel(baseline.price_source,detail.price_source),
         statements:baseline.statements_source?baseline.statements:detail.statements,
         statements_source:baseline.statements_source||detail.statements_source,
         info:{...baseline.info,...detail.info},
