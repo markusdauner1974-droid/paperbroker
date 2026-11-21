@@ -153,6 +153,70 @@ class CollectorTest(unittest.TestCase):
         self.assertEqual("EUR", currency)
         self.assertEqual({"2025-12-31"}, set((tagged or {}).get("income") or {}))
 
+    def test_a_spent_permission_costs_no_download(self):
+        """Once the one allowance is gone, a cold key must not pay for a listing first."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        self.fs._REFRESHED.clear()
+        self.fs._REFRESHED.add("TEST.DE")
+        self.addCleanup(self.fs._REFRESHED.clear)
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements", return_value=(thin, "EUR")), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements", return_value=(thin, "EUR")) as collect:
+            result, _ = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -21)
+        self.assertEqual(1, self.fs.reported_years(result))
+        self.assertEqual(1, collect.call_count, "no second, paid look after the allowance is spent")
+        self.assertEqual([], [call for call in collect.call_args_list if call.kwargs.get("refresh")])
+
+    def test_a_poisoned_document_is_paid_for_a_bounded_number_of_times(self):
+        """lru_cache does not remember exceptions, so the undo itself has to be limited."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        self.fs._REFRESHED.clear()
+        self.fs._UNDONE.clear()
+        self.addCleanup(self.fs._UNDONE.clear)
+        aufrufe = []
+
+        def bricht(*args, **kwargs):
+            aufrufe.append(kwargs.get("refresh"))
+            if kwargs.get("refresh"):
+                raise RecursionError("immer wieder")
+            return thin, "EUR"
+
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements", return_value=(thin, "EUR")), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements", side_effect=bricht):
+            for key in range(self.fs.REFRESH_RETRIES + 1):
+                with self.assertRaises(RecursionError):
+                    self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -100 - key)
+            # The budget is used up: the symbol is served from the thin store without a refresh.
+            result, _currency = self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -200)
+        versuche = [call for call in aufrufe if call]
+        self.assertEqual(self.fs.REFRESH_RETRIES + 1, len(versuche),
+                         "after the budget the symbol stops being refreshed at all")
+        self.assertEqual(1, self.fs.reported_years(result), "the stored years are still served")
+
+    def test_the_undo_map_has_its_own_ceiling(self):
+        """Undone symbols leave _REFRESHED, so that map's cap alone would let this one grow."""
+        self.fs._UNDONE.clear()
+        self.addCleanup(self.fs._UNDONE.clear)
+        for number in range(self.fs._UNDONE_MAX + 40):
+            self.fs.refresh_undo(f"T{number}.DE")
+        self.assertLessEqual(len(self.fs._UNDONE), self.fs._UNDONE_MAX + 1)
+
+    def test_an_unexpected_error_does_not_burn_the_permission(self):
+        """A RecursionError or MemoryError must not block the symbol until the process ends."""
+        thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}
+        self.fs._REFRESHED.clear()
+        with mock.patch.dict(self.fs.os.environ, {"AKTIENANALYSE_FILINGS_KEY": "test-only"}), \
+                mock.patch.object(self.fs, "stored_statements", return_value=(thin, "EUR")), \
+                mock.patch.object(self.fs, "stored_filings", return_value=[(2024, "IXBRL", "u", "x")]), \
+                mock.patch.object(self.fs, "collect_statements",
+                                  side_effect=[(thin, "EUR"), RecursionError("zu tief verschachtelt")]):
+            with self.assertRaises(RecursionError):
+                self.fs.filing_statements("TEST.DE", "2026-11-20", "EUR", -31)
+        self.assertNotIn("TEST.DE", self.fs._REFRESHED, "the permission must come back")
+
     def test_a_thin_store_is_refreshed_once(self):
         """A stored filing list from an older collector must be replaced, but only once."""
         thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}

@@ -530,6 +530,12 @@ def filings_available():
 
 
 _REFRESHED = set()
+_UNDONE = {}
+# Both maps take request input, so both need their own ceiling: an undone symbol leaves
+# _REFRESHED, which means that map's cap never fires for it.
+_UNDONE_MAX = 512
+# How often a symbol may be given its one permission back before it has to wait for a restart.
+REFRESH_RETRIES = 2
 
 
 def refresh_once(symbol):
@@ -539,7 +545,27 @@ def refresh_once(symbol):
             return False
         if len(_REFRESHED) > 512:
             _REFRESHED.clear()
+        if len(_UNDONE) > _UNDONE_MAX:
+            _UNDONE.clear()
         _REFRESHED.add(symbol)
+        return True
+
+
+def refresh_undo(symbol, budget=REFRESH_RETRIES):
+    """Give the permission back after a refresh that brought nothing - a bounded number of times.
+
+    A transient failure should be retried, but a document that always breaks would otherwise cost
+    a full collection on every request: lru_cache does not remember exceptions, so nothing else
+    stops it. After the budget the permission stays spent until the process ends.
+    """
+    with _LOCKS_GUARD:
+        used = _UNDONE.get(symbol, 0)
+        if used >= budget:
+            return False
+        if len(_UNDONE) > _UNDONE_MAX:
+            _UNDONE.clear()
+        _UNDONE[symbol] = used + 1
+        _REFRESHED.discard(symbol)
         return True
 
 
@@ -595,13 +621,23 @@ def filing_statements(symbol, cutoff, currency, bucket, isin=None):
         # a stored list has just been answered by the provider itself, and an issuer with fewer
         # than six reported years would pay twice on every cold key without ever gaining a year -
         # so the refresh happens once per symbol and process at most.
-        if reported_years(collected or {}) < REPORTED_YEARS_MIN and had_stored_list:
-            fresh, fresh_currency = collect_statements(symbol, cutoff, currency, isin, refresh=True)
-            # The permission is spent only by a refresh that came back with something: a transient
-            # failure must stay retryable, and a successful one that gained no year must not be
-            # repeated on every cold key.
-            if (fresh and refresh_once(symbol)
-                    and reported_years(fresh) > reported_years(collected or {})):
+        if (reported_years(collected or {}) < REPORTED_YEARS_MIN and had_stored_list
+                and refresh_once(symbol)):
+            # The permission is asked for before the second, paid look - not after it. Otherwise
+            # every cold cache key would pay for a listing and up to fourteen packages and only
+            # then learn that the one allowance is gone.
+            try:
+                fresh, fresh_currency = collect_statements(symbol, cutoff, currency, isin, refresh=True)
+            except Exception:
+                # The permission was spent before the look; an error nobody anticipated - a
+                # RecursionError on deeply nested XBRL, a MemoryError - must give it back instead
+                # of keeping the symbol blocked until the process restarts.
+                refresh_undo(symbol)
+                raise
+            if not fresh:
+                # Nothing came back: a transient failure must not burn the permission.
+                refresh_undo(symbol)
+            elif reported_years(fresh) > reported_years(collected or {}):
                 collected = fresh
                 report_currency = fresh_currency or report_currency
         if cached and collected:
