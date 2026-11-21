@@ -196,6 +196,14 @@ class CollectorTest(unittest.TestCase):
                          "after the budget the symbol stops being refreshed at all")
         self.assertEqual(1, self.fs.reported_years(result), "the stored years are still served")
 
+    def test_the_undo_map_has_its_own_ceiling(self):
+        """Undone symbols leave _REFRESHED, so that map's cap alone would let this one grow."""
+        self.fs._UNDONE.clear()
+        self.addCleanup(self.fs._UNDONE.clear)
+        for number in range(self.fs._UNDONE_MAX + 40):
+            self.fs.refresh_undo(f"T{number}.DE")
+        self.assertLessEqual(len(self.fs._UNDONE), self.fs._UNDONE_MAX + 1)
+
     def test_an_unexpected_error_does_not_burn_the_permission(self):
         """A RecursionError or MemoryError must not block the symbol until the process ends."""
         thin = {"income": {"2024-12-31": {"totalrevenue": 1.0}}, "provenance": {}}

@@ -531,6 +531,9 @@ def filings_available():
 
 _REFRESHED = set()
 _UNDONE = {}
+# Both maps take request input, so both need their own ceiling: an undone symbol leaves
+# _REFRESHED, which means that map's cap never fires for it.
+_UNDONE_MAX = 512
 # How often a symbol may be given its one permission back before it has to wait for a restart.
 REFRESH_RETRIES = 2
 
@@ -542,6 +545,7 @@ def refresh_once(symbol):
             return False
         if len(_REFRESHED) > 512:
             _REFRESHED.clear()
+        if len(_UNDONE) > _UNDONE_MAX:
             _UNDONE.clear()
         _REFRESHED.add(symbol)
         return True
@@ -558,6 +562,8 @@ def refresh_undo(symbol, budget=REFRESH_RETRIES):
         used = _UNDONE.get(symbol, 0)
         if used >= budget:
             return False
+        if len(_UNDONE) > _UNDONE_MAX:
+            _UNDONE.clear()
         _UNDONE[symbol] = used + 1
         _REFRESHED.discard(symbol)
         return True
