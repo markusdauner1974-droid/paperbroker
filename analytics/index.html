@@ -84,7 +84,7 @@ input::placeholder{color:var(--faint)}
 .quote strong{font-family:var(--font-mono);font-size:20px;font-weight:600}
 .check-summary{background:none;border:1px dotted var(--hair)}
 .check-summary h3{font:700 clamp(20px,2.6vw,26px)/1.15 var(--font-display);text-transform:uppercase}
-.score-tile{background:#12232b;border:1px dotted var(--hair)}
+.score-tile{background:var(--score-color,#12232b);border:1px dotted var(--hair)}
 .score-tile strong{font-family:var(--font-mono);font-weight:600}
 .criteria{border:1px dotted var(--hair);background:var(--paper)}
 .check-metrics div{background:rgba(250,250,250,.04);border:1px dotted var(--hair)}
@@ -697,6 +697,42 @@ function scoreLabel(score){
   const unknown=score.total-score.count;
   return unknown?score.points+"–"+(score.points+unknown)+" / "+score.total:score.points+" / "+score.total;
 }
+// The grade the reader asked for: one number instead of a band. "10–12 / 15" cannot be read -
+// is it nearer ten or nearer twelve? - so the grade is computed from the criteria that ARE
+// fulfilled; the unknown ones cannot raise it, and the note line names how many there are.
+// Fixed cuts in fifteenths: 13-15 -> 1, 11-12 -> 2, 9-10 -> 3, 7-8 -> 4, 5-6 -> 5, 0-4 -> 6.
+function gradeOf(points,total){
+  if(!isNum(points)||!isNum(total)||total<=0)return null;
+  const share=points/total;
+  return share>=13/15?1:share>=11/15?2:share>=9/15?3:share>=7/15?4:share>=5/15?5:6;
+}
+// A whole grade would hide what the band still knows: twelve of fifteen with one criterion without
+// data is a 2 at worst and a 1 at best, so it reads 1,5. Half steps only - the data does not carry
+// a finer mark, and a "2,3" would pretend it does.
+function gradeValue(points,total,unknown){
+  const worst=gradeOf(points,total);
+  if(!isNum(worst))return null;
+  const best=gradeOf(points+Math.max(0,unknown||0),total);
+  return isNum(best)?(worst+best)/2:worst;
+}
+// German school marks are written with a comma: 1,5 - never 1.5.
+function gradeText(value){
+  if(!isNum(value))return null;
+  return "Note "+(Number.isInteger(value)?String(value):value.toFixed(1).replace(".",","));
+}
+// Every grade gets a colour, not only the perfect and the failed paper: hue 130 (green, grade 1)
+// down to 0 (red, grade 6) in even steps, so a 3 sits in the middle instead of staying uncoloured.
+function gradeColor(grade){
+  if(!isNum(grade))return null;
+  const hue=Math.round(130-clamp((grade-1)/5)*130);
+  return "hsl("+hue+" 62% 30%)";
+}
+// The archive rows carry their score as text ("11 / 15"); the same grade rule applies to them, so
+// the tile is coloured there too.
+function gradeFromText(text){
+  const parts=/(\d+)\s*\/\s*(\d+)/.exec(String(text||""));
+  return parts?gradeValue(Number(parts[1]),Number(parts[2]),0):null;
+}
 function liveChecks(){
   const groups=buildChecks(data,checkBenchmark.rows);
   const ranking=groupRanking(data,selected);
@@ -706,13 +742,16 @@ function liveChecks(){
   const yieldValue=division(periodDividends(data.prices,data.prices.at(-1)?.[0]),data.prices.at(-1)?.[1]);
   const dividendMissing=selected===1&&!isNum(yieldValue);
   const pause=selected===1&&isNum(yieldValue)&&yieldValue<.02;
-  const coverage=ranked?"Rang gegen "+ranking.result.results.length+" Vergleichsaktien · "+score.count+" gemeinsame Kriterien"
-    :score.count+" von "+score.total+" Kriterien bewertbar";
-  const note=pause?"Dividendenrendite unter 2 % · "+coverage+".":
-    dividendMissing?"Dividendenrendite unbekannt · "+coverage+".":
-    coverage+(score.count<score.total&&score.count>0?" · möglicher Punktebereich.":".");
-  return [pause?"Ausgesetzt":dividendMissing?"—":scoreLabel(score),note,groups,
-    pause?0:!dividendMissing&&score.count===score.total?division(score.points,score.total):null];
+  const missing=score.total-score.count;
+  const grade=gradeValue(score.points,score.total,missing);
+  // The grade replaces the band, so the note line has to carry what the band used to say: how many
+  // criteria are fulfilled and how many could not be judged at all.
+  const coverage=ranked?"Rang gegen "+ranking.result.results.length+" Vergleichsaktien · ":"";
+  const note=pause?"Dividendenrendite unter 2 % · "+coverage+"ausgesetzt.":
+    dividendMissing?"Dividendenrendite unbekannt · "+coverage+"nicht bewertet.":
+    coverage+score.points+" von "+score.total+" erfüllt"+(missing?" · "+missing+" ohne Daten":"")+".";
+  return [pause?"Ausgesetzt":dividendMissing?"—":gradeText(grade)||"—",note,groups,
+    pause||dividendMissing?null:grade];
 }
 const usUniverse="AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,KO,XOM,WMT";
 const deUniverse="SAP.DE,SIE.DE,ALV.DE,DTE.DE,ADS.DE,MBG.DE,IFX.DE,BAS.DE,DB1.DE,RWE.DE";
@@ -1009,8 +1048,12 @@ function renderChecks(){
     renderChecks();
   });
   const body=$("check-body");
-  const [score,note,groups,ratio]=data.reference?
+  const checks=data.reference?
     (data.checks[selected]||["—","Für die gespeicherte SAP-Referenz fehlen Benchmark- und Kursreihen. Für den Robustheits-Check SAP.DE oder einen anderen Ticker laden.",[]]):liveChecks();
+  const [score,note,groups]=checks;
+  // The archive rows carry their score as text, so the grade is taken from there when the live path
+  // did not hand one over. "Ausgesetzt" has no grade and stays uncoloured - it is not a mark.
+  const grade=isNum(checks[3])?checks[3]:gradeFromText(score);
   const summary=element("div",undefined,"check-summary"),identity=element("div"),badge=element("div",undefined,"score-tile");
   identity.append(element("h3",data.reference?"SAP SE":data.info.longName||data.info.shortName||data.symbol),
     element("div",data.reference?"SAP · WKN 716460 · DE0007164600 · Deutschland 100 (v)":
@@ -1018,8 +1061,9 @@ function renderChecks(){
     element("small",note,"score-note"));
   badge.append(element("small",data.reference?"TraderFox · Archiv":
     groupRanking(data,selected)?.result&&!groupRanking(data,selected).result.error?"Rang im Vergleich · Perzentile":
-    "Eigene feste Schwellen"),element("strong",score));
-  if(isNum(ratio))badge.style.setProperty("--score-color", "hsl("+ratio*128+" 66% "+(ratio>.35&&ratio<.65?29:32)+"%)");
+    "Eigene feste Schwellen"),element("strong",gradeText(grade)||score));
+  const tileColor=gradeColor(grade);
+  if(tileColor)badge.style.setProperty("--score-color",tileColor);
   summary.append(identity,badge);
   const metrics=element("div",undefined,"check-metrics");
   const quote=data.quote_price??(data.nasBaseline?.prices||data.prices).at(-1)?.[1];

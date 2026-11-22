@@ -128,6 +128,14 @@ const autoFetch = /data\.nas_primary&&data\.prices\.length\)await extendStock\(\
 results.supplementStartsByItself = autoFetch;
 results.noWayBackToTheBareRow = !/Zur Grundansicht/.test(script) &&
   !/replaceData\(data\.nasBaseline\)/.test(script);
+// The tile carries a grade and is coloured for EVERY grade - the old colour hung on a ratio that
+// only existed when all fifteen criteria were known, so a paper with one gap had no colour at all.
+results.tileShowsGrade = /element\("strong",gradeText\(grade\)\|\|score\)/.test(script) &&
+  /gradeValue\(score\.points,score\.total,missing\)/.test(script);
+results.tileAlwaysColoured =
+  /const tileColor=gradeColor\(grade\);/.test(script) &&
+  /if\(tileColor\)badge\.style\.setProperty\("--score-color",tileColor\)/.test(script) &&
+  !/isNum\(ratio\)/.test(script);
 
 // Every check ranks against its own cutoff row; the quality row is the published one.
 const cutoffStart = script.indexOf("const qualityPercentiles=");
@@ -275,6 +283,9 @@ class PageScriptTest(unittest.TestCase):
                         "a NAS row with prices does not always ask for the supplement")
         self.assertTrue(result["noWayBackToTheBareRow"],
                         "the page still offers a way back to the bare scanner row")
+        self.assertTrue(result["tileShowsGrade"], "the tile does not show a grade")
+        self.assertTrue(result["tileAlwaysColoured"],
+                        "the tile colour still depends on a complete data set")
 
     def test_quarter_window_and_benchmark_loading_state(self):
         import os
