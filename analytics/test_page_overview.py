@@ -53,10 +53,42 @@ class LeftoverTests(unittest.TestCase):
     def test_no_loading_sentence_and_no_loaded_sentence(self):
         body = script()
         self.assertIn('<progress id="search-busy"', TEXT)
-        self.assertIn('function busy(on){$("search-busy").hidden=!on;}', body)
         self.assertNotIn('status(symbol+" geladen.")', body)
         # the peer field keeps its own loading note - that one is about another request
         self.assertNotIn('status("Daten für "', body)
+
+
+class ProgressBarTests(unittest.TestCase):
+    """The bar fills with the work; an empty or spinning bar says nothing about progress."""
+
+    def test_the_bar_has_a_value_and_is_not_a_spinner(self):
+        body = script()
+        self.assertIn("bar.value=shown", body, "a spinner has no value - this bar is filled")
+        self.assertIn("bar.value=0", body)
+        self.assertIn("requestAnimationFrame(tick)", body, "it grows frame by frame")
+
+    def test_the_load_reports_its_steps(self):
+        body = script()
+        step = body[body.index("async function loadStock(symbol)"):body.index("async function completeStatements")]
+        self.assertIn("busy.start()", step)
+        self.assertIn("busy.step(.6)", step, "the main data is the first big share")
+        self.assertIn("busy.step(.97)", step)
+        self.assertIn("busy.done()", step, "and it ends full")
+
+    def test_statements_move_the_bar_too(self):
+        body = script()
+        step = body[body.index("async function completeStatements"):body.index("$(" + '"search").onsubmit')]
+        self.assertIn("busy.step(.8)", step)
+
+    def test_the_end_is_full_before_it_disappears(self):
+        body = script()
+        self.assertIn("done(){to(100);", body)
+        self.assertIn("setTimeout(()=>{bar.hidden=true", body)
+
+    def test_a_finished_load_leaves_no_text_behind(self):
+        body = script()
+        step = body[body.index("async function loadStock(symbol)"):body.index("async function completeStatements")]
+        self.assertIn('busy.step(.97);status("")', step)
 
 
 class ProvenanceTests(unittest.TestCase):
