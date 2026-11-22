@@ -214,6 +214,39 @@ class DefectTests(unittest.TestCase):
         with closing(store.connect()) as conn:
             self.assertIsNone(store.read_fonrex(conn, fonrex.DOWN_KEY, max_age_h=1))
 
+    def test_a_refused_key_is_its_own_state(self):
+        """Kody: 401/403 was reported as 'this issuer has no reports'."""
+        with mock.patch.object(fonrex, "_get", return_value=fonrex.AUTH_FAILED):
+            sections, _currency, reason = fonrex.esef_sections("MC.PA")
+        self.assertEqual({}, sections)
+        self.assertEqual(fonrex.AUTH_REJECTED, reason)
+        from contextlib import closing
+        with closing(store.connect()) as conn:
+            self.assertIsNone(store.read_fonrex(conn, fonrex.DOWN_KEY, max_age_h=1),
+                              "a refused key is not an outage")
+
+    def test_a_server_error_still_counts_as_unreachable(self):
+        """Kody: 500/503 must not become 'no reports' either."""
+        with mock.patch.object(fonrex, "_get", return_value=None):
+            sections, _currency, reason = fonrex.esef_sections("MC.PA")
+        self.assertEqual({}, sections)
+        self.assertEqual(fonrex.UNREACHABLE, reason)
+
+    def test_the_three_statuses_are_told_apart(self):
+        """404 -> nothing there, 401 -> key refused, 503 -> service failing."""
+        import io
+        from urllib.error import HTTPError
+
+        def answer(code):
+            return HTTPError("http://fonrex-api:5000/x", code, "x", {}, io.BytesIO(b""))
+
+        expectations = {404: fonrex.HTTP_FAILED, 401: fonrex.AUTH_FAILED, 403: fonrex.AUTH_FAILED,
+                        500: None, 503: None}
+        for code, expected in expectations.items():
+            with mock.patch.object(fonrex, "urlopen", side_effect=answer(code)):
+                got = fonrex._get("/esef/MC.PA/statements")
+            self.assertIs(expected, got, f"HTTP {code}")
+
     def test_a_warm_answer_survives_while_the_service_is_marked_down(self):
         answer = {"years": [{"period_end": "2024-12-31", "currency": "EUR",
                             "figures": {"revenue": {"value": 7.0}}}]}
