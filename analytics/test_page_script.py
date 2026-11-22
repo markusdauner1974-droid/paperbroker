@@ -130,7 +130,8 @@ results.noWayBackToTheBareRow = !/Zur Grundansicht/.test(script) &&
   !/replaceData\(data\.nasBaseline\)/.test(script);
 // The tile carries a grade and is coloured for EVERY grade - the old colour hung on a ratio that
 // only existed when all fifteen criteria were known, so a paper with one gap had no colour at all.
-results.tileShowsGrade = /isNum\(grade\)\?"Note "\+grade:score/.test(script);
+results.tileShowsGrade = /element\("strong",gradeText\(grade\)\|\|score\)/.test(script) &&
+  /gradeValue\(score\.points,score\.total,missing\)/.test(script);
 results.tileAlwaysColoured =
   /const tileColor=gradeColor\(grade\);/.test(script) &&
   /if\(tileColor\)badge\.style\.setProperty\("--score-color",tileColor\)/.test(script) &&

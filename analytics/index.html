@@ -706,6 +706,20 @@ function gradeOf(points,total){
   const share=points/total;
   return share>=13/15?1:share>=11/15?2:share>=9/15?3:share>=7/15?4:share>=5/15?5:6;
 }
+// A whole grade would hide what the band still knows: twelve of fifteen with one criterion without
+// data is a 2 at worst and a 1 at best, so it reads 1,5. Half steps only - the data does not carry
+// a finer mark, and a "2,3" would pretend it does.
+function gradeValue(points,total,unknown){
+  const worst=gradeOf(points,total);
+  if(!isNum(worst))return null;
+  const best=gradeOf(points+Math.max(0,unknown||0),total);
+  return isNum(best)?(worst+best)/2:worst;
+}
+// German school marks are written with a comma: 1,5 - never 1.5.
+function gradeText(value){
+  if(!isNum(value))return null;
+  return "Note "+(Number.isInteger(value)?String(value):value.toFixed(1).replace(".",","));
+}
 // Every grade gets a colour, not only the perfect and the failed paper: hue 130 (green, grade 1)
 // down to 0 (red, grade 6) in even steps, so a 3 sits in the middle instead of staying uncoloured.
 function gradeColor(grade){
@@ -717,7 +731,7 @@ function gradeColor(grade){
 // the tile is coloured there too.
 function gradeFromText(text){
   const parts=/(\d+)\s*\/\s*(\d+)/.exec(String(text||""));
-  return parts?gradeOf(Number(parts[1]),Number(parts[2])):null;
+  return parts?gradeValue(Number(parts[1]),Number(parts[2]),0):null;
 }
 function liveChecks(){
   const groups=buildChecks(data,checkBenchmark.rows);
@@ -729,14 +743,14 @@ function liveChecks(){
   const dividendMissing=selected===1&&!isNum(yieldValue);
   const pause=selected===1&&isNum(yieldValue)&&yieldValue<.02;
   const missing=score.total-score.count;
-  const grade=gradeOf(score.points,score.total);
+  const grade=gradeValue(score.points,score.total,missing);
   // The grade replaces the band, so the note line has to carry what the band used to say: how many
   // criteria are fulfilled and how many could not be judged at all.
   const coverage=ranked?"Rang gegen "+ranking.result.results.length+" Vergleichsaktien · ":"";
   const note=pause?"Dividendenrendite unter 2 % · "+coverage+"ausgesetzt.":
     dividendMissing?"Dividendenrendite unbekannt · "+coverage+"nicht bewertet.":
     coverage+score.points+" von "+score.total+" erfüllt"+(missing?" · "+missing+" ohne Daten":"")+".";
-  return [pause?"Ausgesetzt":dividendMissing?"—":isNum(grade)?"Note "+grade:"—",note,groups,
+  return [pause?"Ausgesetzt":dividendMissing?"—":gradeText(grade)||"—",note,groups,
     pause||dividendMissing?null:grade];
 }
 const usUniverse="AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,KO,XOM,WMT";
@@ -1047,7 +1061,7 @@ function renderChecks(){
     element("small",note,"score-note"));
   badge.append(element("small",data.reference?"TraderFox · Archiv":
     groupRanking(data,selected)?.result&&!groupRanking(data,selected).result.error?"Rang im Vergleich · Perzentile":
-    "Eigene feste Schwellen"),element("strong",isNum(grade)?"Note "+grade:score));
+    "Eigene feste Schwellen"),element("strong",gradeText(grade)||score));
   const tileColor=gradeColor(grade);
   if(tileColor)badge.style.setProperty("--score-color",tileColor);
   summary.append(identity,badge);

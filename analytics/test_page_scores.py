@@ -47,7 +47,8 @@ const context = vm.createContext({
   Math,
 });
 vm.runInContext(lift("trendFit") + "\n" + lift("applyGroupRanks") + "\n" + lift("gradeOf") +
-                "\n" + lift("gradeColor") + "\n" + lift("gradeFromText"), context);
+                "\n" + lift("gradeValue") + "\n" + lift("gradeText") + "\n" +
+                lift("gradeColor") + "\n" + lift("gradeFromText"), context);
 
 // R² of a straight line is 1 - in both directions.
 results.fallingLine = context.trendFit([5, 4, 3, 2, 1]);
@@ -88,10 +89,17 @@ results.grades = [[15, 15], [13, 15], [12, 15], [11, 15], [10, 15], [9, 15],
   .map(([points, total]) => context.gradeOf(points, total));
 results.gradeWithoutPoints = context.gradeOf(null, 15);
 results.gradeWithoutTotal = context.gradeOf(0, 0);
+// With a criterion without data the mark sits in the middle of the band: 12 of 15 is a 2 at worst
+// and a 1 at best, so 1,5; 10 of 15 with two open is a 3 at worst and a 2 at best, so 2,5.
+results.gradeValues = [[12, 15, 0], [12, 15, 1], [10, 15, 2], [10, 15, 0], [6, 15, 1],
+                       [14, 15, 1], [0, 15, 4], [15, 15, 0]]
+  .map(([points, total, unknown]) => context.gradeValue(points, total, unknown));
+results.gradeTexts = [2, 2.5, 1.5, 6].map(value => context.gradeText(value));
+results.gradeTextWithoutValue = context.gradeText(null);
 results.gradeFromArchive = context.gradeFromText("11 / 15");
 results.gradeFromSuspended = context.gradeFromText("Ausgesetzt");
 // Every grade is coloured, and the hue walks from green (130) to red (0) - no grade stays grey.
-results.colors = [1, 2, 3, 4, 5, 6].map(grade => context.gradeColor(grade));
+results.colors = [1, 1.5, 2, 3, 4, 5, 6].map(grade => context.gradeColor(grade));
 
 console.log(JSON.stringify(results));
 """
@@ -145,11 +153,24 @@ class PageScoresTest(unittest.TestCase):
         self.assertIsNone(self.result["gradeFromSuspended"],
                           "a suspended evaluation must not become a mark")
 
+    def test_an_open_criterion_puts_the_mark_in_the_middle(self):
+        """Half steps, because that is all the data carries.
+
+        12 of 15 is a 2 at worst and a 1 at best -> 1,5; ten of 15 with two open -> 2,5. A whole
+        grade would throw the band away; a decimal like 2,3 would pretend a precision that is not
+        there.
+        """
+        self.assertEqual([2, 1.5, 2.5, 3, 4.5, 1, 6, 1], self.result["gradeValues"])
+
+    def test_the_mark_is_written_with_a_comma(self):
+        self.assertEqual(["Note 2", "Note 2,5", "Note 1,5", "Note 6"], self.result["gradeTexts"])
+        self.assertIsNone(self.result["gradeTextWithoutValue"])
+
     def test_every_grade_is_coloured_from_green_to_red(self):
         colors = self.result["colors"]
-        self.assertEqual(6, len(colors))
+        self.assertEqual(7, len(colors))
         self.assertNotIn(None, colors, "a grade without a colour")
-        self.assertEqual(6, len(set(colors)), "two grades share one colour")
+        self.assertEqual(7, len(set(colors)), "two grades share one colour")
         self.assertTrue(colors[0].startswith("hsl(130 "), colors[0])
         self.assertTrue(colors[-1].startswith("hsl(0 "), colors[-1])
         hues = [int(color.split("(")[1].split(" ")[0]) for color in colors]
