@@ -46,7 +46,8 @@ const context = vm.createContext({
   qualityLowerIsBetter: new Set([7, 10, 13, 14]),
   Math,
 });
-vm.runInContext(lift("trendFit") + "\n" + lift("applyGroupRanks"), context);
+vm.runInContext(lift("trendFit") + "\n" + lift("applyGroupRanks") + "\n" + lift("gradeOf") +
+                "\n" + lift("gradeColor") + "\n" + lift("gradeFromText"), context);
 
 // R² of a straight line is 1 - in both directions.
 results.fallingLine = context.trendFit([5, 4, 3, 2, 1]);
@@ -79,6 +80,18 @@ results.maskedStays = masked[0][1][1][2];
 const broken = groups();
 results.brokenApplied = context.applyGroupRanks(broken, {result: {error: "zu wenige"}}, 0);
 results.brokenFlags = broken[0][1].map(r => r[2]);
+
+// The grade replaces the band "10-12 / 15": one number, taken from the fulfilled criteria only.
+// Unknown criteria cannot raise it - the note line names how many there are.
+results.grades = [[15, 15], [13, 15], [12, 15], [11, 15], [10, 15], [9, 15],
+                  [8, 15], [7, 15], [6, 15], [5, 15], [4, 15], [0, 15]]
+  .map(([points, total]) => context.gradeOf(points, total));
+results.gradeWithoutPoints = context.gradeOf(null, 15);
+results.gradeWithoutTotal = context.gradeOf(0, 0);
+results.gradeFromArchive = context.gradeFromText("11 / 15");
+results.gradeFromSuspended = context.gradeFromText("Ausgesetzt");
+// Every grade is coloured, and the hue walks from green (130) to red (0) - no grade stays grey.
+results.colors = [1, 2, 3, 4, 5, 6].map(grade => context.gradeColor(grade));
 
 console.log(JSON.stringify(results));
 """
@@ -116,6 +129,31 @@ class PageScoresTest(unittest.TestCase):
     def test_a_failed_ranking_changes_nothing(self):
         self.assertFalse(self.result["brokenApplied"])
         self.assertEqual([None, None, None], self.result["brokenFlags"])
+
+    def test_the_grade_replaces_the_band(self):
+        """One number instead of "10–12 / 15", taken from the fulfilled criteria only.
+
+        A band cannot be read: is it nearer ten or nearer twelve? The grade of ten is a 3, and
+        the note line says how many criteria could not be judged at all.
+        """
+        self.assertEqual([1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6], self.result["grades"])
+        self.assertIsNone(self.result["gradeWithoutPoints"])
+        self.assertIsNone(self.result["gradeWithoutTotal"])
+
+    def test_the_archive_rows_get_the_same_grade(self):
+        self.assertEqual(2, self.result["gradeFromArchive"])
+        self.assertIsNone(self.result["gradeFromSuspended"],
+                          "a suspended evaluation must not become a mark")
+
+    def test_every_grade_is_coloured_from_green_to_red(self):
+        colors = self.result["colors"]
+        self.assertEqual(6, len(colors))
+        self.assertNotIn(None, colors, "a grade without a colour")
+        self.assertEqual(6, len(set(colors)), "two grades share one colour")
+        self.assertTrue(colors[0].startswith("hsl(130 "), colors[0])
+        self.assertTrue(colors[-1].startswith("hsl(0 "), colors[-1])
+        hues = [int(color.split("(")[1].split(" ")[0]) for color in colors]
+        self.assertEqual(sorted(hues, reverse=True), hues, f"the hues do not walk down: {hues}")
 
 
 if __name__ == "__main__":
