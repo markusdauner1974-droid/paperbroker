@@ -30,6 +30,18 @@ class CompanyKeyTests(unittest.TestCase):
         self.assertEqual("", app.company_key(""))
         self.assertEqual("s.a.", app.company_key("S.A."))
 
+    def test_the_apostrophe_does_not_make_a_second_row(self):
+        """Measured: "L'Oréal S.A." gave "l oreal", "L’Oréal S.A." gave "loreal" - two rows, one company."""
+        self.assertEqual(app.company_key("L'Oréal S.A."), app.company_key("L’Oréal S.A."))
+        self.assertEqual(app.company_key("L'Oreal SA"), app.company_key("L’Oréal"))
+
+    def test_a_leading_the_is_one_company(self):
+        """Kody: dropping "the" from the legal forms split "The Home Depot" from "Home Depot"."""
+        self.assertEqual(app.company_key("Home Depot"), app.company_key("The Home Depot"))
+        self.assertEqual(app.company_key("Home Depot Inc."), app.company_key("The Home Depot"))
+        # a "The" in the middle belongs to the name
+        self.assertNotEqual(app.company_key("Theatre Group"), app.company_key("Group"))
+
     def test_group_and_holdings_keep_two_companies_apart(self):
         """Kody: "X Group" and "X Holdings" became one row - the only word telling them apart."""
         self.assertNotEqual(app.company_key("Siemens Group"), app.company_key("Siemens Holdings"))
@@ -134,6 +146,27 @@ class GroupingTests(unittest.TestCase):
         with mock.patch.object(app, "listing_facts", return_value={}):
             grouped = app.group_matches(matches, 1)
         self.assertEqual(["OR.PA", "MC.PA"], [row["symbol"] for row in grouped])
+
+    def test_every_row_is_offered_to_the_isin_lookup(self):
+        """Kody: only the first two rows were asked, so rows three and up never got an ISIN."""
+        matches = [{"symbol": symbol, "name": f"Firma {index}", "exchange": "Xetra"}
+                   for index, symbol in enumerate(("A.DE", "B.DE", "C.DE", "D.DE", "E.DE"))]
+        with mock.patch.object(app, "listing_facts", return_value={}), \
+                mock.patch.object(app, "company_isin", side_effect=lambda name, *_: name.replace(" ", "-")) as isin:
+            grouped = app.group_matches(matches, 1, path=":memory:")
+        self.assertEqual(5, isin.call_count)
+        self.assertEqual([f"Firma-{index}" for index in range(5)], [row["isin"] for row in grouped])
+
+    def test_the_deadline_stops_the_lookups_not_the_rows(self):
+        """A slow service must not make the search wait for every company."""
+        matches = [{"symbol": symbol, "name": f"Firma {index}", "exchange": "Xetra"}
+                   for index, symbol in enumerate(("A.DE", "B.DE", "C.DE"))]
+        slow = mock.Mock(side_effect=lambda *args, **kwargs: "")
+        with mock.patch.object(app, "listing_facts", return_value={}), \
+                mock.patch.object(app, "company_isin", slow), \
+                mock.patch.object(app, "monotonic", side_effect=[0.0, 0.0, 0.0, 99.0, 99.0]):
+            grouped = app.group_matches(matches, 1, path=":memory:")
+        self.assertEqual(3, len(grouped), "no row is lost, only its ISIN is missing")
 
     def test_the_scanner_path_asks_nobody(self):
         """Kody: a search must not wait on a second source that has nothing to add."""

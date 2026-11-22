@@ -408,6 +408,11 @@ RESALE_CODES = {"FRA", "STU", "HAM", "BER", "DUS", "MUN", "HAN", "PNK", "OTC"}
 RESALE_NAMES = {"frankfurt", "stuttgart", "hamburg", "berlin", "düsseldorf", "dusseldorf",
                 "münchen", "muenchen", "hannover", "otc markets", "otc", "xetra frankfurt"}
 
+# ASCII and typographic apostrophes alike become a separator, so one spelling cannot make two rows.
+APOSTROPHES = ("'" + chr(0x2018) + chr(0x2019) + chr(0x02BC) + "`"
+               + chr(0x00B4))
+APOSTROPHE_TO_SPACE = {ord(character): " " for character in APOSTROPHES}
+
 # Words that name a legal form, not a company. Stripped before two listings are compared.
 # Only legal forms belong here. "Group" and "Holdings" are part of a name and often the only word
 # that tells two companies apart - "X Group" and "X Holdings" must not become one row.
@@ -419,13 +424,22 @@ def company_key(name):
     """One key per company, so six listings of L'Oreal become one row.
 
     Accents, punctuation and the legal form are dropped: "L'Oréal S.A.", "L'Oreal S.A. (ADRs)" and
-    "L'Oreal SA" all end up as "oreal". A name that leaves nothing behind keeps its own text, so two
-    unknown companies never collapse into one row by accident.
+    "L'Oreal SA" all end up as "oreal". A leading "The" goes too - "The Home Depot" and "Home Depot"
+    are one company, and a listing that adds or drops the article must not become a second row. A
+    name that leaves nothing behind keeps its own text, so two unknown companies never collapse.
     """
-    text = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
-    text = text.casefold().replace("(", " ").replace(")", " ")
+    # The apostrophe is turned into a space before the accents are folded away: dropping it instead
+    # would leave "loreal" beside "l oreal" - the same company in two rows.
+    text = str(name or "").translate(APOSTROPHE_TO_SPACE)
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode().casefold()
+    text = text.replace("(", " ").replace(")", " ")
     words = [word for word in re.split(r"[^a-z0-9]+", text) if word]
-    kept = [word for word in words if word not in LEGAL_FORMS and len(word) > 1]
+    # "the" only as the first word: a "The" in the middle is part of the name.
+    if words and words[0] == "the":
+        words = words[1:]
+    # Every word that is not a legal form stays, including a short one: "Firma 0" and "Firma 1"
+    # differ by a single character, and dropping it would fold two companies into one row.
+    kept = [word for word in words if word not in LEGAL_FORMS]
     return " ".join(kept) or str(name or "").strip().casefold()
 
 
@@ -572,9 +586,8 @@ def company_isin(name, country, path=None):
 
 
 # Wikidata allows few requests and refuses the rest with 429 - asking in parallel makes it refuse
-# more. So they are asked one at a time, two companies per search, and never past the deadline: the
-# answer is stored, the next search continues where this one stopped.
-ISIN_LOOKUPS = 2
+# more. So they are asked one at a time and never past the deadline: the answer is stored, the next
+# search continues where this one stopped.
 ISIN_DEADLINE_S = 3.5
 
 
@@ -637,8 +650,11 @@ def group_matches(matches, bucket, lookup=True, path=None):
             pending.append((len(result) - 1, lead_facts.get("isin"), result[-1]["name"],
                             lead_facts.get("country") or ""))
     if pending:
+        # Every row is offered to the lookup: a stored answer costs a millisecond, and only the
+        # uncached ones can take time. The deadline stops those - the next search picks up the rest,
+        # because what was answered is stored.
         deadline = monotonic() + ISIN_DEADLINE_S
-        for index, raw, name, country in pending[:ISIN_LOOKUPS]:
+        for index, raw, name, country in pending:
             if monotonic() > deadline:
                 break
             result[index]["isin"] = verified_isin(raw, name, country, path)
