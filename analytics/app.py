@@ -9,7 +9,7 @@ from datetime import date, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from time import monotonic, time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
@@ -477,6 +477,19 @@ def lead_index(listings, facts):
     return 0
 
 
+# How many listings may be asked from Yahoo at the same time - per request and, through the gate
+# below, in the whole process: four page requests at once must not multiply the lookups into four
+# times six. A search holds a slot only while it waits for Yahoo.
+FACT_WORKERS = 6
+FACT_GATE = BoundedSemaphore(FACT_WORKERS)
+
+
+def gated_facts(symbol, bucket):
+    """listing_facts behind the process-wide gate."""
+    with FACT_GATE:
+        return listing_facts(symbol, bucket)
+
+
 @lru_cache(maxsize=256)
 def listing_facts(symbol, bucket):
     """Currency, daily volume and ISIN of one listing - three figures, no statements.
@@ -589,7 +602,6 @@ def company_isin(name, country, path=None):
 # more. So they are asked one at a time and never past the deadline: the answer is stored, the next
 # search continues where this one stopped.
 ISIN_DEADLINE_S = 2.0
-FACT_WORKERS = 6          # listings asked from Yahoo at the same time
 
 
 def verified_isin(raw, name, country, path=None):
@@ -659,7 +671,7 @@ def group_matches(matches, bucket, lookup=True, path=None, deadline=None):
     # The same symbol is asked once - two groups can carry the same listing.
     if work:
         with ThreadPoolExecutor(max_workers=FACT_WORKERS) as pool:
-            answers = list(pool.map(lambda item: listing_facts(item[1]["symbol"], bucket), work))
+            answers = list(pool.map(lambda item: gated_facts(item[1]["symbol"], bucket), work))
         by_symbol = {item[1]["symbol"]: answer for item, answer in zip(work, answers, strict=True)}
     else:
         by_symbol = {}

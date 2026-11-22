@@ -5,6 +5,7 @@ US5021172037.SG (Stuttgart), LOR.HM (Hamburg) and LOR.F (Frankfurt) - the same c
 with the numbers of one listing each.
 """
 
+import threading
 import time
 import unittest
 from unittest import mock
@@ -348,3 +349,36 @@ class SharedListingTests(unittest.TestCase):
                 mock.patch.object(app, "company_isin", return_value="FR0000120321"):
             result = app.search("loreal", mock.Mock(), 0)
         self.assertEqual("FR0000120321", result["matches"][0]["isin"])
+
+
+class OutboundGateTests(unittest.TestCase):
+    """Kody: four page requests at once must not multiply the Yahoo lookups into four times six."""
+
+    def test_the_gate_caps_the_whole_process_not_one_request(self):
+        active = 0
+        highest = 0
+        lock = threading.Lock()
+
+        def slow_facts(*_args):
+            nonlocal active, highest
+            with lock:
+                active += 1
+                highest = max(highest, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return {}
+
+        def caller(index):
+            for step in range(2):
+                app.gated_facts(f"S{index}{step}", 0)
+
+        with mock.patch.object(app, "listing_facts", side_effect=slow_facts):
+            threads = [threading.Thread(target=caller, args=(index,)) for index in range(12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(app.FACT_WORKERS, highest,
+                         f"{highest} lookups ran at once, the gate allows {app.FACT_WORKERS}")
+        self.assertEqual(0, active, "every slot was given back")
