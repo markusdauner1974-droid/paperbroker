@@ -112,7 +112,7 @@ footer{font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;text-tra
 <small>Aktienanalyse</small><h1 id="company">Aktienanalyse</h1>
 <div id="identity">Aktie und Börsenplatz auswählen</div>
 <form id="search" class="search"><input id="query" aria-label="Aktie suchen" placeholder="Name, Ticker oder ISIN" maxlength="100" required><button class="primary">Suchen</button><button type="button" id="direct">Ticker laden</button></form>
-<progress id="search-busy" aria-label="Daten werden geladen" hidden></progress><output id="search-status" aria-live="polite"></output><div id="matches"></div>
+<progress id="search-busy" aria-label="Daten werden geladen" value="0" max="100" hidden></progress><output id="search-status" aria-live="polite"></output><div id="matches"></div>
 </header>
 <main id="dashboard" hidden>
 <div class="controls" id="data-actions"></div>
@@ -1588,7 +1588,33 @@ async function api(path,q,options={}){
   return json;
 }
 function status(text){$("search-status").textContent=text;}
-function busy(on){$("search-busy").hidden=!on;}
+
+// The bar fills with the work, it does not spin: every step has a share of the whole, and the bar
+// creeps towards that share on every frame, so a slow step is visible as a bar that keeps moving
+// instead of one that stands still. Values are percentages of the finished load.
+const busy=(()=>{
+  const bar=$("search-busy");
+  // A progress element stops at max, and the default is 1: every percentage would have been full
+  // from the first frame. Set here as well as in the markup, so the bar cannot be broken by markup.
+  bar.max=100;
+  let target=0,shown=0,frame=0,hid=0;
+  function tick(){
+    frame=0;
+    shown+=Math.max(.7,(target-shown)*.16);
+    if(shown>target)shown=target;
+    bar.value=shown;
+    if(shown<target)frame=requestAnimationFrame(tick);
+  }
+  function to(value){
+    target=Math.max(0,Math.min(100,value));
+    if(!frame)frame=requestAnimationFrame(tick);
+  }
+  return {
+    start(){clearTimeout(hid);bar.hidden=false;shown=0;target=0;bar.value=0;to(7);},
+    step(share){to(share*100);},
+    done(){to(100);hid=setTimeout(()=>{bar.hidden=true;bar.value=0;shown=0;target=0;},450);}
+  };
+})();
 function replaceData(next,{reset=false}={}){
   const previousBenchmark=reset?"":checkBenchmark.symbol;
   data=normalizeStatements(next);
@@ -1647,11 +1673,12 @@ async function loadStock(symbol){
   const request=++generation;
   // An unlabelled bar instead of a sentence: the reader sees that something runs, and no message
   // stays behind afterwards that only repeats what is on screen anyway.
-  busy(true);
+  busy.start();
   status("");
   try{
     const next=await api("stock",symbol);
     if(request!==generation)return;
+    busy.step(.6);
     next.statements_loading=Boolean(next.nas_primary&&!next.statements_source);
     replaceData(next,{reset:true});
     if(next.statements_loading)await completeStatements(data,request);
@@ -1660,8 +1687,10 @@ async function loadStock(symbol){
     // without asking: no second click.
     if(request===generation&&data.nas_primary&&data.prices.length&&
        (!isNum(periodReturn(data.prices,120))||!isNum(lastYearDividends())))await extendStock();
+    // Nothing left over on success: whatever an earlier step wrote (or an earlier search) goes.
+    if(request===generation){busy.step(.97);status("");}
   }catch(error){if(request===generation)status(error.message);}
-  finally{if(request===generation)busy(false);}
+  finally{if(request===generation)busy.done();}
 }
 async function completeStatements(active,request){
   try{
@@ -1672,6 +1701,7 @@ async function completeStatements(active,request){
     if(data===active&&request===generation)status("Abschlüsse momentan nicht abrufbar. "+error.message);
   }finally{
     if(data===active&&request===generation){
+      busy.step(.8);
       active.statements_loading=false;
       renderQuote();renderChecks();renderFinance();renderFair();
     }
