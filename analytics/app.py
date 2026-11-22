@@ -580,6 +580,48 @@ def export_notes(symbol):
     return notes
 
 
+RISK_WINDOW_DAYS = 756          # three trading years
+RISK_MIN_RETURNS = 61           # below three months a volatility is a guess
+
+
+def price_risk(prices):
+    """Volatility, largest drawdown and annualised return from the daily closes on the page.
+
+    Computed here rather than asked for: the page already holds the series, and a secondary source
+    that keeps daily prices for only a fraction of the papers (measured 7 of 14) would leave every
+    other header without the two figures - or with a window that is not the three years its label
+    claims.
+    """
+    # A price row is [day, close, ...] with more fields behind it - take the two that matter and
+    # leave the rest alone, so a wider row later does not break the series.
+    closes = [(row[0], float(row[1])) for row in (prices or [])[-RISK_WINDOW_DAYS:]
+              if isinstance(row, (list, tuple)) and len(row) > 1 and row[1]]
+    if len(closes) < RISK_MIN_RETURNS + 1:
+        return None
+    returns = [math.log(closes[i][1] / closes[i - 1][1])
+               for i in range(1, len(closes)) if closes[i - 1][1] > 0 and closes[i][1] > 0]
+    if len(returns) < RISK_MIN_RETURNS:
+        return None
+    peak, peak_day = closes[0][1], closes[0][0]
+    drawdown, trough_day, trough_peak_day = 0.0, closes[0][0], closes[0][0]
+    for day, value in closes:
+        if value > peak:
+            peak, peak_day = value, day
+        if value / peak - 1 < drawdown:
+            # The peak and the low belong together: storing only the day of the low would pair it
+            # with a later, higher peak that never saw the drop.
+            drawdown, trough_day, trough_peak_day = value / peak - 1, day, peak_day
+    years = len(returns) / 252
+    total = closes[-1][1] / closes[0][1]
+    mean = sum(returns) / len(returns)
+    variance = sum((value - mean) ** 2 for value in returns) / (len(returns) - 1)
+    return {"annualized_volatility": round(math.sqrt(variance) * math.sqrt(252), 6),
+            "annualized_return": round(total ** (1 / years) - 1, 6) if years > 0 and total > 0 else None,
+            "max_drawdown": {"value": round(drawdown, 6), "peak": trough_peak_day, "trough": trough_day},
+            "returns": len(returns), "start": closes[0][0], "end": closes[-1][0],
+            "source": "eigene Kurse"}
+
+
 def same_fiscal_year(one, other):
     """Whether two period ends describe the same business year.
 
@@ -748,7 +790,9 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
         issues.append("Yahoo Finance hat keine Jahres-GuV geliefert.")
     return {"symbol": symbol, "prices": rows, "info": info, "statements": statements, "issues": issues,
             "price_source": "Yahoo Finance" if rows else None,
-            "risk": profile.get("risk"),
+            # The page's own closes give the three years its label promises; the secondary source
+            # is the fallback for a series too short to say anything.
+            "risk": price_risk(rows) or profile.get("risk"),
             "data_gaps": profile.get("data_gaps") or [],
             "statements_source": profile.get("statements_source")}
 

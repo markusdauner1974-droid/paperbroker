@@ -313,6 +313,20 @@ function renderQuote(){
     rows.push(["EPS TTM · NAS",money(i.trailingEps,"")],["KGV erwartet · NAS",f(i.forwardPE)],
       ["Kurs/Buchwert · NAS",f(i.priceToBook)],["Nettogewinnmarge · NAS",pct(i.profitMargins)],
       ["Operative Marge · NAS",pct(i.operatingMargins)],["Dividendenrendite laut Anbieter · NAS",pct(i.nasDividendYield)]);
+  }else{
+    // The same three figures the scanner carries, for a paper the scanner does not hold - taken
+    // from Yahoo and labelled so nobody mistakes them for scanner numbers. A field Yahoo does not
+    // give is left out rather than printed as a dash.
+    if(isNum(i.forwardPE))rows.push(["KGV erwartet · Yahoo Finance",f(i.forwardPE)]);
+    if(isNum(i.profitMargins))rows.push(["Nettogewinnmarge · Yahoo Finance",pct(i.profitMargins)]);
+    if(isNum(i.operatingMargins))rows.push(["Operative Marge · Yahoo Finance",pct(i.operatingMargins)]);
+  }
+  // Volatility and drawdown come from the daily closes on this page, from the secondary source only
+  // when the series is too short; the label names whichever it was.
+  if(data.risk&&isNum(data.risk.annualized_volatility)){
+    const origin=data.risk.source==="Fonrex"?"Fonrex":"eigene Kurse";
+    rows.push(["Volatilität 3 J ("+origin+")",pct(data.risk.annualized_volatility)],
+      ["Größter Rückgang 3 J ("+origin+")",pct(data.risk.max_drawdown?.value)]);
   }
   $("quote").replaceChildren(...rows.map(([label,value])=>{
     const card=element("div");card.append(element("small",label),element("strong",value));return card;
@@ -1004,8 +1018,9 @@ function renderChecks(){
   // The risk figures come from Fonrex and from nowhere else on this page: the criteria measure the
   // business, these measure the price. Labelled with the source because their cut-off differs.
   if(data.risk&&isNum(data.risk.annualized_volatility)){
-    items.push(["Volatilität 3 J (Fonrex)",pct(data.risk.annualized_volatility)]);
-    if(isNum(data.risk.max_drawdown?.value))items.push(["Größter Rückgang 3 J (Fonrex)",pct(data.risk.max_drawdown.value)]);
+    const origin=data.risk.source==="Fonrex"?"Fonrex":"eigene Kurse";
+    items.push(["Volatilität 3 J ("+origin+")",pct(data.risk.annualized_volatility)]);
+    if(isNum(data.risk.max_drawdown?.value))items.push(["Größter Rückgang 3 J ("+origin+")",pct(data.risk.max_drawdown.value)]);
   }
   for(const [label,value] of items){
     const cell=element("div");cell.append(element("small",label),element("strong",value));metrics.append(cell);
@@ -1596,6 +1611,9 @@ async function extendStock(){
         // The gap report belongs to the statements, and those arrive with the supplement - the
         // scanner alone knows nothing about fiscal years.
         data_gaps:detail.data_gaps?.length?detail.data_gaps:(baseline.data_gaps||[]),
+        // The risk figures arrive with the supplement, never with the scanner row: without this
+        // line the two cells in the header stay absent although the numbers were fetched.
+        risk:detail.risk||baseline.risk||null,
         info:{...baseline.info,...detail.info},
         issues:[...baseline.issues,...detail.issues]});
     }
