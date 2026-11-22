@@ -4,6 +4,14 @@
     Endpoint: https://cdn.cboe.com/api/global/delayed_quotes/options/{SYM}.json
     (verified 2026-10-07, keyless, requires a full browser User-Agent)
 
+    Since 2026-11-22 that host redirects (307) to ``cdn-api.cboe.com``, which
+    sits behind Cloudflare and answers every browser-like request WITHOUT a
+    cboe.com ``Referer`` with 403 "You have been blocked". The header is part
+    of the request contract now - see ``_CHAIN_REFERER``. The URL itself keeps
+    naming ``cdn.cboe.com`` on purpose: the alias follows the next move of the
+    feed, a pinned ``cdn-api`` host would not, and ``requests`` follows a GET
+    redirect on its own.
+
     Units verified against live AAPL data (3568 contracts):
       - iv   is DECIMAL (median 0.309)  -> stored as percent (x100)
       - delta/gamma/vega/theta/rho are RAW (|delta| 0..1) -> stored x100
@@ -93,6 +101,17 @@ class CboeUnusableChainError(CboeRequestError):
 _BROWSER_UA = ("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                "AppleWebKit/537.36 (KHTML, like Gecko) "
                "Chrome/131.0.0.0 Safari/537.36")
+
+#: Where the chain request claims to come from.
+#:
+#: Measured 2026-11-22 against the live feed: ``cdn.cboe.com`` redirects to
+#: ``cdn-api.cboe.com`` (Cloudflare), and there the SAME request is 403
+#: without this header and 200 with it - for all 16 tickers of a funnel run.
+#: The check is on the origin, not on the symbol's page: an AAPL page Referer
+#: delivered the GRRR chain, a non-cboe origin was blocked. So one constant
+#: value is correct here, and it is a request contract, not a nicety: without
+#: it every chain call of a scan reports ``blocked``.
+_CHAIN_REFERER = "https://www.cboe.com/"
 
 
 def _num(value, scale=1.0):
@@ -225,7 +244,9 @@ class CBOEQuoteAdapter(QuoteAdapter):
                  retry_budget=None):
         self._timeout = timeout_seconds
         self._session = session or requests.Session()
-        self._session.headers.update({"User-Agent": _BROWSER_UA, "Accept": "application/json"})
+        self._session.headers.update({"User-Agent": _BROWSER_UA,
+                                      "Accept": "application/json",
+                                      "Referer": _CHAIN_REFERER})
         self._now_fn = now_fn if now_fn is not None else arrow.utcnow
         # Injected in tests: the retry policy is what is under test, not the
         # wall clock.
