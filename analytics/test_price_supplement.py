@@ -8,6 +8,7 @@ or one in another currency.
 
 import itertools
 import sys
+import threading
 import time
 import unittest
 from datetime import date, timedelta
@@ -122,6 +123,47 @@ class StockExtraTest(unittest.TestCase):
         found = self.detail("2026-11-19", currency="USD")
         self.assertIsNone(found["price_source"])
         self.assertIn("Notierungswährung", found["issues"][0])
+
+
+class StockExtraSingleFlightTest(unittest.TestCase):
+    """Concurrent cold calls for one ticker download once, not once per caller.
+
+    Measured before: six simultaneous requests for the same key ran six
+    ``yf.Ticker(...).history(period="max")`` beside each other - ``lru_cache`` serves
+    finished calls, not calls that are in flight. The page asks for the supplement on
+    every NAS load now, so the same ticker can be asked for twice at once (two tabs, a
+    reload, a second click).
+    """
+
+    def test_concurrent_cold_calls_download_once(self):
+        downloads = []
+        ticker = mock.Mock()
+        ticker.history_metadata = {"currency": "USD"}
+
+        def counted(*_args, **_kwargs):
+            downloads.append(1)
+            time.sleep(0.05)          # a real download is slow, a fake must be too
+            return history("2026-11-19")
+
+        bucket = next(BUCKETS)
+        results = [None] * 6
+
+        def worker(index):
+            results[index] = app.stock_extra("AAPL", bucket, "2026-11-20", "USD",
+                                             history_only=True)
+
+        with mock.patch.object(app.yf, "Ticker", return_value=ticker), \
+             mock.patch.object(app, "load_history", side_effect=counted):
+            threads = [threading.Thread(target=worker, args=(index,)) for index in range(6)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+        self.assertEqual(1, len(downloads), "the supplement was downloaded more than once")
+        self.assertEqual(6, len([result for result in results if result is not None]))
+        self.assertTrue(all(result == results[0] for result in results),
+                        "the waiting callers did not get the same answer")
 
 
 if __name__ == "__main__":
