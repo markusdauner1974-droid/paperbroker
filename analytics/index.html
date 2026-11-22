@@ -177,6 +177,10 @@ let benchmarkSeries=null, benchmarkSymbol="", rankingGeneration=0;
 const isNum = n => typeof n==="number" && Number.isFinite(n);
 const f = n => isNum(n)?number.format(n):"—";
 const pct = n => isNum(n)?f(n*100)+" %":"—";
+// Yahoo names the payout either as a yield or as an amount per share; both are one division apart
+// from the figure the header wants, and neither may be invented when both are missing.
+const providerDividendYield = (info, price) => isNum(info.dividendYield) ? info.dividendYield
+  : division(info.dividendRate, price);
 const division = (a,b) => isNum(a)&&isNum(b)&&b!==0?a/b:null;
 const growth = (a,b) => {const ratio=b>0?division(a,b):null;return ratio===null?null:ratio-1;};
 const money = (n,c=data.info.currency) => isNum(n)?f(n)+(c?" "+c:""):"—";
@@ -314,12 +318,15 @@ function renderQuote(){
       ["Kurs/Buchwert · NAS",f(i.priceToBook)],["Nettogewinnmarge · NAS",pct(i.profitMargins)],
       ["Operative Marge · NAS",pct(i.operatingMargins)],["Dividendenrendite laut Anbieter · NAS",pct(i.nasDividendYield)]);
   }else{
-    // The same three figures the scanner carries, for a paper the scanner does not hold - taken
-    // from Yahoo and labelled so nobody mistakes them for scanner numbers. A field Yahoo does not
-    // give is left out rather than printed as a dash.
-    if(isNum(i.forwardPE))rows.push(["KGV erwartet · Yahoo Finance",f(i.forwardPE)]);
-    if(isNum(i.profitMargins))rows.push(["Nettogewinnmarge · Yahoo Finance",pct(i.profitMargins)]);
-    if(isNum(i.operatingMargins))rows.push(["Operative Marge · Yahoo Finance",pct(i.operatingMargins)]);
+    // The same six cells, for a paper the scanner does not hold - same layout, so two headers can
+    // be compared at all. A value the source does not give is a dash: the cell stays, the gap stays
+    // visible. Nothing is left out and nothing moved.
+    rows.push(["EPS TTM · Yahoo Finance",money(i.trailingEps,"")],
+      ["KGV erwartet · Yahoo Finance",f(i.forwardPE)],
+      ["Kurs/Buchwert · Yahoo Finance",f(i.priceToBook)],
+      ["Nettogewinnmarge · Yahoo Finance",pct(i.profitMargins)],
+      ["Operative Marge · Yahoo Finance",pct(i.operatingMargins)],
+      ["Dividendenrendite laut Anbieter · Yahoo Finance",pct(providerDividendYield(i,quote))]);
   }
   // Volatility and drawdown come from the daily closes on this page, from the secondary source only
   // when the series is too short; the label names whichever it was.
