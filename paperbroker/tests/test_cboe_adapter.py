@@ -10,12 +10,15 @@
 """
 import threading
 import unittest
+import urllib.parse
 from concurrent.futures import ThreadPoolExecutor
 from unittest.mock import MagicMock
 
 import requests
 
 from ..adapters.quotes.CBOEQuoteAdapter import (
+    _BROWSER_UA,
+    _CHAIN_REFERER,
     CHAIN_BLOCKED,
     CHAIN_MALFORMED,
     CHAIN_NOT_LISTED,
@@ -285,6 +288,39 @@ class TestCboeAdapter(unittest.TestCase):
         payload = _chain_payload(["FAKE280229C00100000", "FAKE261016C00100000"])
         ad = self._adapter_with(payload)
         self.assertIn("2028-02-29", ad.get_expiration_dates("FAKE"))
+
+
+class TestTheChainRequestCarriesACboeReferer(unittest.TestCase):
+    """The Referer is a request contract, not decoration.
+
+    Measured 2026-11-22 against the live feed: ``cdn.cboe.com`` redirects to
+    ``cdn-api.cboe.com`` behind Cloudflare, and a browser-like request without
+    a cboe.com Referer is answered with 403 - the class the caller reports as
+    ``blocked``. Losing the header therefore breaks every chain of a scan
+    without any code path changing, which is exactly what a test has to catch.
+    """
+
+    def test_the_session_sends_the_cboe_referer(self):
+        ad = CBOEQuoteAdapter()
+        self.assertEqual(ad._session.headers.get("Referer"), _CHAIN_REFERER)
+
+    def test_the_request_contract_is_complete(self):
+        # The blocking answer is decided on the header trio: a browser-like
+        # User-Agent, a JSON Accept and a cboe.com Referer. All three are
+        # pinned here, because a missing one is a 403 and not a slow call.
+        ad = CBOEQuoteAdapter()
+        self.assertEqual(ad._session.headers.get("User-Agent"), _BROWSER_UA)
+        self.assertEqual(ad._session.headers.get("Accept"), "application/json")
+        parts = urllib.parse.urlsplit(_CHAIN_REFERER)
+        self.assertEqual(parts.scheme, "https")
+        self.assertEqual(parts.netloc, "www.cboe.com")
+
+    def test_an_injected_session_gets_the_same_headers(self):
+        # The live server builds the adapter with its own session; a fake
+        # session must not be the only place where the contract holds.
+        session = requests.Session()
+        CBOEQuoteAdapter(session=session)
+        self.assertEqual(session.headers.get("Referer"), _CHAIN_REFERER)
 
 
 class TestChainFailuresAreClassified(unittest.TestCase):
