@@ -270,7 +270,10 @@ def risk(ticker, isin=None):
     key = f"risk:{isin}" if isin else f"risk:{ticker}"
     payload = _cached(key, RISK_MAX_AGE_DAYS,
                       lambda: _get("/risk/" + quote(ticker, safe=""), {"isin": isin} if isin else None))
-    return payload if isinstance(payload, dict) and payload.get("annualized_volatility") is not None else None
+    if isinstance(payload, dict) and payload.get("annualized_volatility") is not None:
+        # Labelled at the source: the page prints it, and a figure must say where it came from.
+        return {**payload, "source": "Fonrex"}
+    return None
 
 
 def notes(ticker, isin=None, reason=None):
