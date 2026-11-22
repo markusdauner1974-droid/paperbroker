@@ -73,6 +73,15 @@ class PriceRiskTests(unittest.TestCase):
         self.assertFalse(app.spans_the_years({}), "no window, no claim")
         self.assertFalse(app.spans_the_years({"start": None, "end": None}))
 
+    def test_the_window_decides_not_the_years_field(self):
+        """The service wrote years: 3 beside a one-year window; the window must win."""
+        lying = {"start": "2025-11-21", "end": "2026-11-20", "years": 3,
+                 "annualized_volatility": 0.41}
+        honest = {"start": "2023-11-21", "end": "2026-11-20", "years": 1,
+                  "annualized_volatility": 0.41}
+        self.assertFalse(app.spans_the_years(lying), "years: 3 does not make a window")
+        self.assertTrue(app.spans_the_years(honest), "the window does")
+
     def test_a_short_series_says_nothing(self):
         """Three months are the floor - below that a volatility is a guess, not a figure."""
         self.assertIsNone(app.price_risk(series([100.0] * 30)))

@@ -100,8 +100,11 @@ class EsefTests(unittest.TestCase):
         self.assertEqual("Fonrex", block[0]["block"])
 
     def test_a_risk_answer_is_passed_through_only_when_it_carries_a_figure(self):
-        answer = {"ticker": "SAP.DE", "annualized_volatility": 0.4143,
-                  "max_drawdown": {"value": -0.3886}, "years": 3}
+        # The shape the service really answers with (measured 2026-11-22): the window is in it, and
+        # `years` is not to be trusted - it said 3 for a window of one year.
+        answer = {"ticker": "SAP.DE", "annualized_volatility": 0.4143, "returns": 252,
+                  "max_drawdown": {"value": -0.3886, "peak": "2026-01-02", "trough": "2026-06-30"},
+                  "years": 3, "start": "2025-11-21", "end": "2026-11-20"}
         with mock.patch.object(fonrex, "_get", return_value=answer):
             antwort = fonrex.risk("SAP.DE", "DE0007164600")
         self.assertIsNotNone(antwort)
