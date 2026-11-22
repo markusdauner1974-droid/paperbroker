@@ -40,6 +40,30 @@ def load_store():
     return module
 
 
+class CompanyIsinStoreTests(unittest.TestCase):
+    """An ISIN does not change, so it is stored without an expiry - and read back forever."""
+
+    def setUp(self):
+        self.directory = TemporaryDirectory()
+        self.store = load_store()
+        self.path = str(Path(self.directory.name) / "isin.db")
+
+    def tearDown(self):
+        self.directory.cleanup()
+
+    def test_an_isin_is_stored_and_read_back(self):
+        self.assertTrue(self.store.write_company_isin("oreal", "FR0000120321", self.path))
+        with self.store.connect(self.path) as conn:
+            self.assertEqual("FR0000120321", self.store.read_company_isin(conn, "oreal"))
+            self.assertIsNone(self.store.read_company_isin(conn, "unbekannt"))
+
+    def test_a_second_write_replaces_the_first(self):
+        self.store.write_company_isin("oreal", "FR0000120321", self.path)
+        self.store.write_company_isin("oreal", "FR0000120322", self.path)
+        with self.store.connect(self.path) as conn:
+            self.assertEqual("FR0000120322", self.store.read_company_isin(conn, "oreal"))
+
+
 class StoreTest(unittest.TestCase):
     def setUp(self):
         self.tmp = TemporaryDirectory()
@@ -54,7 +78,8 @@ class StoreTest(unittest.TestCase):
     def test_an_empty_store_is_created_with_all_tables(self):
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget", "fonrex"})
+        self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget",
+                                  "fonrex", "company_isin"})
 
     def test_statements_survive_a_write_and_read(self):
         sections = {"income": {"2025-12-31": {"totalrevenue": 14_069_000_000.0,
@@ -147,7 +172,8 @@ class StoreTest(unittest.TestCase):
         # The old tables must be gone, otherwise the page could read the wrong one.
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
-        self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget", "fonrex"})
+        self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget",
+                                  "fonrex", "company_isin"})
         # Opening again must not touch the migrated database.
         self.conn.close()
         self.conn = self.store.connect(german)

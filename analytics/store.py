@@ -74,6 +74,11 @@ CREATE TABLE IF NOT EXISTS fonrex (
     payload TEXT NOT NULL,
     fetched_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS company_isin (
+    company  TEXT PRIMARY KEY,
+    isin     TEXT NOT NULL,
+    fetched_at TEXT NOT NULL
+);
 
 CREATE TABLE IF NOT EXISTS price (
     symbol   TEXT,
@@ -247,6 +252,21 @@ def write_fonrex(key, payload, path=None):
                      (key, text, _now()))
         conn.commit()
     return True
+
+
+def write_company_isin(company, isin, path=None):
+    """Remember a verified ISIN for good: an ISIN does not change, and Wikidata rate-limits lookups."""
+    with closing(connect(path)) as conn:
+        conn.execute("INSERT OR REPLACE INTO company_isin (company, isin, fetched_at) VALUES (?, ?, ?)",
+                     (company, isin, _now()))
+        conn.commit()
+    return True
+
+
+def read_company_isin(conn, company):
+    """The stored ISIN, or None. No expiry: the number is an identifier, not a quotation."""
+    row = conn.execute("SELECT isin FROM company_isin WHERE company = ?", (company,)).fetchone()
+    return row["isin"] if row and row["isin"] else None
 
 
 def read_fonrex(conn, key, max_age_h: float = 24):

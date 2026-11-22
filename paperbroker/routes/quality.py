@@ -189,7 +189,9 @@ def api(name: str):
             text = _query()
             if not 1 <= len(text) <= 100:
                 raise ValueError("Bitte einen Namen, Ticker oder eine ISIN eingeben.")
-            return jsonify(akt.search(text, scanner))
+            # The bucket keys the per-listing cache; without it every lookup lands under the same
+            # key and a currency or volume from weeks ago is served for good.
+            return jsonify(akt.search(text, scanner, bucket))
 
         if name == "xang":
             if not SYMBOL.fullmatch(_query().upper()):
