@@ -42,9 +42,32 @@ class HeaderBranchesTests(unittest.TestCase):
                       "a payout given per share is divided by the price, not dropped")
 
     def test_a_payout_per_share_is_turned_into_a_yield(self):
+        """Yahoo's `dividendYield` is in percent - 1.66 for L'Oreal, not 0.0166.
+
+        Treated as a fraction it printed 166 %. The amount per share has no such doubt.
+        """
         text = PAGE.read_text(encoding="utf-8")
-        self.assertIn("isNum(info.dividendYield) ? info.dividendYield", text)
         self.assertIn("division(info.dividendRate, price)", text)
+        self.assertNotIn("isNum(info.dividendYield)", text, "percent mistaken for a fraction")
+
+
+class EveryPrintedFieldReachesThePageTests(unittest.TestCase):
+    """A figure Yahoo holds but app.stock() does not pass on arrives as a dash - silently.
+
+    `priceToBook` was missing from the tuple for months: L'Oreal has 6.84 at the source and the
+    header printed a dash, which looks like a gap in the data instead of a gap in the plumbing.
+    """
+
+    # Read from the payload, not from Yahoo: these are set by the scanner or derived in the page.
+    NOT_FROM_YAHOO = {"marketCapCurrency", "nasDividendYield", "nasProvider", "test"}
+
+    def test_every_info_field_the_page_prints_is_passed_on(self):
+        page = PAGE.read_text(encoding="utf-8")
+        printed = {name for name in re.findall(r"\bi\.([a-zA-Z][a-zA-Z0-9]*)", page)
+                   if name not in self.NOT_FROM_YAHOO and name != "priceToSalesTrailing"}
+        source = (PAGE.parent / "app.py").read_text(encoding="utf-8")
+        missing = sorted(name for name in printed if f'"{name}"' not in source)
+        self.assertEqual([], missing, "fields the page prints but app.stock() drops")
 
 
 if __name__ == "__main__":

@@ -218,11 +218,15 @@ def stock(symbol, bucket):
         raw = ticker.get_info()
         text_keys = ("shortName", "longName", "currency", "financialCurrency", "sector", "isin",
                      "industry", "exchange", "fullExchangeName", "quoteType")
+        # Every field the page prints must be listed here - a figure Yahoo has but this tuple does
+        # not mention reaches the page as undefined and is shown as a dash. `priceToBook` was missing
+        # for exactly that reason: L'Oreal has 6.84 at the source and the header showed nothing.
         number_keys = ("marketCap", "trailingPE", "forwardPE", "priceToSalesTrailing12Months",
                        "revenueGrowth", "earningsQuarterlyGrowth", "grossMargins",
                        "profitMargins", "returnOnEquity", "totalDebt", "totalRevenue",
                        "operatingMargins", "targetMeanPrice", "recommendationMean",
-                       "numberOfAnalystOpinions", "trailingEps", "dividendRate")
+                       "numberOfAnalystOpinions", "trailingEps", "dividendRate",
+                       "priceToBook", "dividendYield", "bookValue", "pegRatio")
         info = {key: str(raw[key]) for key in text_keys if raw.get(key)}
         info.update({key: finite(raw.get(key)) for key in number_keys})
     except Exception:

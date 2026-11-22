@@ -177,10 +177,10 @@ let benchmarkSeries=null, benchmarkSymbol="", rankingGeneration=0;
 const isNum = n => typeof n==="number" && Number.isFinite(n);
 const f = n => isNum(n)?number.format(n):"—";
 const pct = n => isNum(n)?f(n*100)+" %":"—";
-// Yahoo names the payout either as a yield or as an amount per share; both are one division apart
-// from the figure the header wants, and neither may be invented when both are missing.
-const providerDividendYield = (info, price) => isNum(info.dividendYield) ? info.dividendYield
-  : division(info.dividendRate, price);
+// Only the amount per share is used: Yahoo's `dividendYield` arrives in percent (measured: 1.66 for
+// L'Oreal, not 0.0166), and treating it as a fraction printed 166 %. A payout per share divided by
+// the price is unambiguous - and when the amount is missing the cell stays a dash.
+const providerDividendYield = (info, price) => division(info.dividendRate, price);
 const division = (a,b) => isNum(a)&&isNum(b)&&b!==0?a/b:null;
 const growth = (a,b) => {const ratio=b>0?division(a,b):null;return ratio===null?null:ratio-1;};
 const money = (n,c=data.info.currency) => isNum(n)?f(n)+(c?" "+c:""):"—";
