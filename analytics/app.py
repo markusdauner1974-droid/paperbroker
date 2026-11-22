@@ -2,7 +2,9 @@ import json
 import math
 import os
 import re
+import unicodedata
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import date, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -10,11 +12,13 @@ from pathlib import Path
 from threading import Lock
 from time import time
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, quote, urlsplit
+from urllib.request import Request, urlopen
 from xml.etree.ElementTree import ParseError
 
 import fonrex
 import ranking
+import store
 import yfinance as yf
 from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
 from sec_statements import load_sec_statements
@@ -397,7 +401,216 @@ def statement_source(statements, official, sec_source=None, quarterly_export=Fal
     return "Yahoo Finance" if any(statements.values()) else None
 
 
-def search(query, nas=None):
+# Venues that merely resell a paper another exchange prices: Frankfurt, Stuttgart, Hamburg and the
+# other German regional boards, plus the OTC market. Their volume is a fraction of the home venue's,
+# so they are never the listing a company is valued at.
+RESALE_CODES = {"FRA", "STU", "HAM", "BER", "DUS", "MUN", "HAN", "PNK", "OTC"}
+RESALE_NAMES = {"frankfurt", "stuttgart", "hamburg", "berlin", "düsseldorf", "dusseldorf",
+                "münchen", "muenchen", "hannover", "otc markets", "otc", "xetra frankfurt"}
+
+# Words that name a legal form, not a company. Stripped before two listings are compared.
+LEGAL_FORMS = {"sa", "s", "a", "ag", "se", "nv", "n", "v", "spa", "sp", "ab", "asa", "oyj", "plc",
+               "inc", "corp", "co", "the", "group", "holding", "holdings", "kgaa", "gmbh", "na",
+               "societe", "anonyme", "adr", "adrs", "o"}
+
+
+def company_key(name):
+    """One key per company, so six listings of L'Oreal become one row.
+
+    Accents, punctuation and the legal form are dropped: "L'Oréal S.A.", "L'Oreal S.A. (ADRs)" and
+    "L'Oreal SA" all end up as "oreal". A name that leaves nothing behind keeps its own text, so two
+    unknown companies never collapse into one row by accident.
+    """
+    text = unicodedata.normalize("NFKD", str(name or "")).encode("ascii", "ignore").decode()
+    text = text.casefold().replace("(", " ").replace(")", " ")
+    words = [word for word in re.split(r"[^a-z0-9]+", text) if word]
+    kept = [word for word in words if word not in LEGAL_FORMS and len(word) > 1]
+    return " ".join(kept) or str(name or "").strip().casefold()
+
+
+def is_resale(listing):
+    """Whether this listing only resells a price another exchange makes."""
+    code = str(listing.get("exchange_code") or "").upper()
+    name = str(listing.get("exchange") or "").strip().casefold()
+    return code in RESALE_CODES or name in RESALE_NAMES
+
+
+LEAD_LOOKUPS = 3    # a search must answer in a second, not in ten
+
+
+def lead_index(listings, facts):
+    """Which of a company's listings carries the price.
+
+    Decided by currency, not by rank: the price belongs to the venue that trades in the currency the
+    company reports in. Measured 2026-11-22, Yahoo ranks NASDAQ first for ASML (USD) and the NYSE
+    first for SAP (USD) - taking those would put a dollar price beside euro statements, and an FX
+    error the reader cannot see. Where no listing matches the reporting currency, the first that is
+    not a regional resale board or the OTC market stands; if every listing is one, the first stays.
+    """
+    facts = list(facts) + [{}] * max(0, len(listings) - len(facts))
+    reporting = next((fact.get("reporting_currency") or fact.get("currency")
+                       for fact in facts[:LEAD_LOOKUPS] if fact.get("reporting_currency")
+                       or fact.get("currency")), "")
+    for index, listing in enumerate(listings[:LEAD_LOOKUPS]):
+        code = facts[index].get("exchange_code", "")
+        if (reporting and facts[index].get("currency") == reporting
+                and not is_resale({**listing, "exchange_code": code})):
+            return index
+    for index, listing in enumerate(listings):
+        if not is_resale({**listing, "exchange_code": facts[index].get("exchange_code", "")}):
+            return index
+    return 0
+
+
+@lru_cache(maxsize=256)
+def listing_facts(symbol, bucket):
+    """Currency, daily volume and ISIN of one listing - three figures, no statements.
+
+    Deliberately not `stock()`: a search must answer in a second, and loading balance sheets for
+    every hit would take ten.
+    """
+    try:
+        raw = yf.Ticker(symbol).get_info() or {}
+    except Exception:
+        return {}
+    return {"currency": raw.get("currency") or "", "volume": finite(raw.get("averageVolume")),
+            "exchange_code": raw.get("exchange") or "", "isin": raw.get("isin") or "",
+            "reporting_currency": raw.get("financialCurrency") or "",
+            "country": raw.get("country") or "",
+            "name": raw.get("longName") or raw.get("shortName") or ""}
+
+
+# Wikidata records the ISIN of a company as claim P946. It is the only free source that names it for
+# a European listing: Yahoo holds no ISIN (`isin` is always null, and `Ticker.isin` answers with a
+# foreign paper's number - measured: FR0011149590 for L'Oreal instead of FR0000120321).
+WIKIDATA_API = "https://www.wikidata.org/w/api.php"
+COUNTRY_ISIN_PREFIX = {
+    "france": "FR", "germany": "DE", "netherlands": "NL", "belgium": "BE", "italy": "IT",
+    "spain": "ES", "portugal": "PT", "austria": "AT", "switzerland": "CH", "sweden": "SE",
+    "denmark": "DK", "norway": "NO", "finland": "FI", "ireland": "IE", "poland": "PL",
+    "united kingdom": "GB", "united states": "US", "canada": "CA", "japan": "JP",
+    "australia": "AU", "hong kong": "HK", "china": "CN", "brazil": "BR", "india": "IN",
+    "south africa": "ZA", "south korea": "KR", "taiwan": "TW", "singapore": "SG",
+    "mexico": "MX", "turkey": "TR", "israel": "IL", "new zealand": "NZ", "luxembourg": "LU",
+    "greece": "GR", "hungary": "HU", "czechia": "CZ", "czech republic": "CZ", "russia": "RU",
+}
+ISIN_FORM = re.compile(r"[A-Z]{2}[A-Z0-9]{9}[0-9]")
+# A legal form in the query keeps Wikidata from finding the company: "L'Oréal S.A." returns nothing,
+# "L'Oréal" returns the right entity. The suffix is peeled off one step at a time.
+LEGAL_SUFFIX = re.compile(
+    r"[\s,]+(s\.?a\.?|s\.?e\.?|a\.?g\.?|n\.?v\.?|b\.?v\.?|s\.?p\.?a\.?|plc|inc\.?|corp\.?|"
+    r"co\.?|kgaa|gmbh|ab|asa|oyj|na|societe anonyme)\.?$", re.IGNORECASE)
+
+
+def isin_search_terms(name):
+    """The name as given, then with its legal form peeled off - the order Wikidata answers in."""
+    terms = []
+    current = str(name or "").strip()
+    while current and current not in terms and len(terms) < 4:
+        terms.append(current)
+        current = LEGAL_SUFFIX.sub("", current).strip()
+    return terms
+
+
+WIKIDATA_PAUSE_S = 300     # after a 429 the service is left alone for five minutes
+_wikidata_blocked_until = 0.0
+
+
+def _wikidata(params):
+    """One answer from Wikidata, or None. A search must never fail because a helper is silent.
+
+    The service answers 429 with a Retry-After when asked too often. That is respected: after a
+    refusal nothing is asked for five minutes, and the page simply shows no ISIN meanwhile.
+    """
+    global _wikidata_blocked_until
+    if time() < _wikidata_blocked_until:
+        return None
+    url = WIKIDATA_API + "?" + "&".join(f"{key}={quote(str(value))}" for key, value in params.items())
+    request = Request(url, headers={"User-Agent": "paperbroker-analytics/1 (stock analysis page)"})
+    try:
+        with urlopen(request, timeout=4) as answer:
+            return json.loads(answer.read())
+    except HTTPError as refusal:
+        if refusal.code == 429:
+            _wikidata_blocked_until = time() + WIKIDATA_PAUSE_S
+        return None
+    except (URLError, OSError, ValueError):
+        return None
+
+
+def company_isin(name, country, path=None):
+    """The ISIN of a company, accepted only when its country prefix matches the company's country.
+
+    Without that check a name match alone is not evidence: "SAP" also finds other entities, and an
+    ISIN pointing at the wrong paper would be worse than no ISIN at all. Two letters must agree, and
+    the form must be exact - anything else returns "".
+    """
+    prefix = COUNTRY_ISIN_PREFIX.get(str(country or "").strip().casefold(), "")
+    if not prefix or not name:
+        return ""
+    key = company_key(name)
+    with closing(store.connect(path)) as conn:
+        stored = store.read_company_isin(conn, key)
+    if stored:
+        return stored
+    for term in isin_search_terms(name):
+        found = _wikidata({"action": "wbsearchentities", "format": "json", "language": "de",
+                           "uselang": "de", "type": "item", "limit": 1, "search": term})
+        hits = (found or {}).get("search") or []
+        if not hits or not hits[0].get("id"):
+            continue
+        entity = _wikidata({"action": "wbgetentities", "format": "json", "props": "claims",
+                            "ids": hits[0]["id"]})
+        claims = (((entity or {}).get("entities") or {}).get(hits[0]["id"]) or {}).get("claims") or {}
+        for claim in claims.get("P946") or []:
+            value = (((claim.get("mainsnak") or {}).get("datavalue") or {}).get("value") or "")
+            if isinstance(value, str) and ISIN_FORM.fullmatch(value) and value.startswith(prefix):
+                store.write_company_isin(key, value, path)
+                return value
+    return ""
+
+
+def group_matches(matches, bucket, lookup=True):
+    """One entry per company, its other listings kept behind it.
+
+    A share and its ADR are the same company in another unit, and four German boards resell the
+    Paris price. Showing six rows of "L'Oréal S.A." leaves the reader to guess which one the numbers
+    belong to - the home listing is the answer, and the rest follow on request.
+    """
+    groups = {}
+    order = []
+    for match in matches:
+        key = company_key(match.get("name") or match.get("symbol") or "")
+        if key not in groups:
+            groups[key] = []
+            order.append(key)
+        groups[key].append(match)
+    result = []
+    for key in order:
+        listings = groups[key]
+        # The scanner hands the figures with its rows; asking Yahoo for them anyway would make a
+        # search wait on a second source that has nothing to add.
+        facts = [{field: listing[field] for field in ("currency", "volume", "exchange_code",
+                                                      "reporting_currency", "country", "isin")
+                  if listing.get(field) not in (None, "")} if not lookup
+                 else listing_facts(listing["symbol"], bucket) for listing in listings]
+        index = lead_index(listings, facts)
+        lead = listings[index]
+        lead_facts = facts[index]
+        result.append({"symbol": lead["symbol"], "name": lead.get("name") or lead["symbol"],
+                       "exchange": lead.get("exchange") or "",
+                       "currency": lead_facts.get("currency", ""),
+                       "volume": lead_facts.get("volume"),
+                       "isin": (lead_facts.get("isin") or company_isin(lead.get("name") or "",
+                                                                      lead_facts.get("country") or "")
+                                if lookup else lead_facts.get("isin", "")),
+                       "listings": [{"symbol": listing["symbol"],
+                                     "exchange": listing.get("exchange") or ""}
+                                    for listing in listings]})
+    return result
+
+
+def search(query, nas=None, bucket=None):
     normalized = query.upper()
     fallback = [SAP] if normalized in {"SAP", "SAP SE", "SAP.DE", "DE0007164600", "716460"} else []
     if nas is not None and len(query) <= 50:
@@ -418,7 +631,7 @@ def search(query, nas=None):
             matches.append({"symbol": symbol, "name": row.get("name") or symbol,
                             "exchange": row.get("exchange") or row.get("market") or ""})
         if matches:
-            return {"matches": matches, "source": "xang auf NAS"}
+            return {"matches": group_matches(matches, bucket, lookup=False), "source": "xang auf NAS"}
     try:
         results = yf.Search(query, max_results=20, news_count=0, timeout=8).quotes
         seen = set()
@@ -432,7 +645,7 @@ def search(query, nas=None):
                             "exchange": row.get("exchDisp") or row.get("exchange") or ""})
         if fallback and SAP["symbol"] not in seen:
             matches.insert(0, SAP)
-        return {"matches": matches, "source": "Yahoo Finance"}
+        return {"matches": group_matches(matches, bucket), "source": "Yahoo Finance"}
     except Exception:
         return {"matches": fallback, "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
 
@@ -950,7 +1163,7 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/api/search":
                 if not 1 <= len(query) <= 100:
                     raise ValueError("Bitte einen Namen, Ticker oder eine ISIN eingeben.")
-                self.json(200, search(query, self.nas))
+                self.json(200, search(query, self.nas, int(time() // 600)))
                 return
             if path == "/api/ranking":
                 # The weighted list needs prices only, and it brings its own universe: the generic
