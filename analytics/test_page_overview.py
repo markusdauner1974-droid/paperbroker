@@ -47,7 +47,7 @@ class VenueListTests(unittest.TestCase):
 
 class LeftoverTests(unittest.TestCase):
     def test_the_archive_button_is_gone(self):
-        self.assertNotIn("SAP-Archiv vom", TEXT)
+        self.assertNotIn("SAP-Archiv", TEXT)
         self.assertNotIn('$("example")', script())
 
     def test_no_loading_sentence_and_no_loaded_sentence(self):

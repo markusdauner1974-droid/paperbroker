@@ -1569,11 +1569,11 @@ function render(){
   $("dashboard").hidden=false;
   renderQuote();renderChecks();renderPrice();renderPeers();populateYears();renderSeason();renderFair();renderFinance();renderNews();
   renderNasSnapshot(data);
-  $("foot").textContent=data.reference?"SAP-Referenzaufnahme · Abweichende Kennzahlen können verschiedene Stichtage haben.":
+  $("foot").textContent=data.reference?"Referenzaufnahme · Abweichende Kennzahlen können verschiedene Stichtage haben.":
     "Kurse, aktuelle Kennzahlen und Geschäftsabschlüsse können unterschiedliche Stichtage haben.";
 }
 // Der Pfadanfang, unter dem die Seite laeuft. Der Server spielt ihn in den
-// <head> ein (window.AKT_BASE_PATH); direkt geoeffnet - SAP-Archiv per file:// -
+// <head> ein (window.AKT_BASE_PATH); direkte Datei - Referenz per file:// -
 // fehlt er, und dann gilt die Wurzel wie bisher. JEDE Datenabfrage der Seite
 // laeuft ueber diese eine Funktion, deshalb steht der Basispfad an genau einer
 // Stelle statt an jeder Aufrufstelle.
@@ -1767,6 +1767,6 @@ $("fair-years").onchange=renderFair;
 addEventListener("resize",()=>{
   if(!$("dashboard").hidden){renderChecks();renderPrice();renderPeers();renderSeason();renderFair();}
 });
-status("Aktie suchen oder Ticker laden. Das SAP-Archiv ist eine datierte Referenz.");
+status("Aktie suchen oder Ticker laden.");
 </script>
 </html>
