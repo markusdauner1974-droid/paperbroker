@@ -588,7 +588,7 @@ def company_isin(name, country, path=None):
 # Wikidata allows few requests and refuses the rest with 429 - asking in parallel makes it refuse
 # more. So they are asked one at a time and never past the deadline: the answer is stored, the next
 # search continues where this one stopped.
-ISIN_DEADLINE_S = 3.5
+ISIN_DEADLINE_S = 2.0
 
 
 def verified_isin(raw, name, country, path=None):
@@ -602,6 +602,33 @@ def verified_isin(raw, name, country, path=None):
     if prefix and isinstance(raw, str) and ISIN_FORM.fullmatch(raw) and raw.startswith(prefix):
         return raw
     return company_isin(name, country, path)
+
+
+def merge_same_isin(rows):
+    """Two rows with the same ISIN are one security, so they become one row.
+
+    Measured: the search for "apple" answered AAPL (NASDAQ) and APC.DE (Germany) side by side, both
+    US0378331005. The ISIN arrives after the grouping, so it is the second chance to notice.
+    """
+    by_isin = {}
+    order = []
+    for row in rows:
+        isin = row.get("isin") or ""
+        if not isin:
+            order.append(row)
+            continue
+        if isin not in by_isin:
+            by_isin[isin] = row
+            order.append(row)
+            continue
+        kept = by_isin[isin]
+        if (row.get("volume") or 0) > (kept.get("volume") or 0):
+            # The liquid listing carries the row: its venue, its currency, its volume.
+            for field in ("symbol", "name", "exchange", "currency", "volume"):
+                kept[field] = row[field]
+        known = {listing["symbol"] for listing in kept["listings"]}
+        kept["listings"] += [listing for listing in row["listings"] if listing["symbol"] not in known]
+    return order
 
 
 def group_matches(matches, bucket, lookup=True, path=None):
@@ -619,6 +646,19 @@ def group_matches(matches, bucket, lookup=True, path=None):
             groups[key] = []
             order.append(key)
         groups[key].append(match)
+    work = [(key, listing) for key in order
+            for listing in groups[key][:LEAD_LOOKUPS]] if lookup else []
+    pool = ThreadPoolExecutor(max_workers=8)
+    if work:
+        answers = list(pool.map(lambda item: listing_facts(item[1]["symbol"], bucket), work))
+        pool.shutdown()
+        filled = {}
+        for (key, listing), answer in zip(work, answers, strict=True):
+            filled.setdefault(key, []).append((listing, answer))
+        facts_by_key = {key: [answer for _listing, answer in pairs] for key, pairs in filled.items()}
+    else:
+        facts_by_key = {}
+
     result = []
     pending = []        # (row index, raw isin, name, country) - filled after the loop, in parallel
     for key in order:
@@ -626,11 +666,8 @@ def group_matches(matches, bucket, lookup=True, path=None):
         # The scanner hands the figures with its rows; asking Yahoo for them anyway would make a
         # search wait on a second source that has nothing to add.
         if lookup:
-            # Three lookups per company at most, and in parallel: twenty sequential answers would
-            # keep the search waiting for ten seconds.
-            facts = list(ThreadPoolExecutor(max_workers=LEAD_LOOKUPS).map(
-                lambda listing: listing_facts(listing["symbol"], bucket), listings[:LEAD_LOOKUPS]))
-            facts += [{}] * (len(listings) - len(facts))
+            facts = facts_by_key.get(key, []) + [{}] * (len(listings) - LEAD_LOOKUPS)
+            facts = facts[:len(listings)]
         else:
             facts = [{field: listing[field] for field in ("currency", "volume", "exchange_code",
                                                           "reporting_currency", "country", "isin")
@@ -638,8 +675,11 @@ def group_matches(matches, bucket, lookup=True, path=None):
         index = lead_index(listings, facts)
         lead = listings[index]
         lead_facts = facts[index]
-        result.append({"symbol": lead["symbol"], "name": lead.get("name") or lead["symbol"],
-                       "exchange": lead.get("exchange") or "",
+        result.append({"symbol": lead["symbol"],
+                       "name": lead.get("name") or lead_facts.get("name") or lead["symbol"],
+                       # A venue the source did not name is better than an empty column: the code
+                       # from Yahoo ("GER", "NMS") at least says where the price comes from.
+                       "exchange": lead.get("exchange") or lead_facts.get("exchange_code") or "",
                        "currency": lead_facts.get("currency", ""),
                        "volume": lead_facts.get("volume"),
                        "isin": "",
@@ -658,47 +698,81 @@ def group_matches(matches, bucket, lookup=True, path=None):
             if monotonic() > deadline:
                 break
             result[index]["isin"] = verified_isin(raw, name, country, path)
-    return result
+    return merge_same_isin(result)
+
+
+def scanner_matches(query, nas):
+    """The scanner's own rows - symbol, name, the venue it knows. Nothing else.
+
+    Useful for a paper Yahoo does not find, useless as a row on its own: it carries no currency, no
+    volume and no ISIN, and two spellings of one company become two rows.
+    """
+    if nas is None or len(query) > 50:
+        return []
+    matches = []
+    seen = set()
+    try:
+        rows = nas.search(query)
+    except (URLError, OSError, ValueError, EOFError):
+        # A failing scanner must not take the search down: Yahoo answers alone.
+        return []
+    for row in rows:
+        symbol = row.get("symbol", "") if isinstance(row, dict) else ""
+        if (not isinstance(symbol, str) or not SYMBOL.fullmatch(symbol) or symbol in seen
+                or row.get("industry") == "Exchange Traded Fund"):
+            continue
+        seen.add(symbol)
+        matches.append({"symbol": symbol, "name": row.get("name") or symbol,
+                        "exchange": row.get("exchange") or row.get("market") or ""})
+    return matches
+
+
+def yahoo_matches(query):
+    """Every quote Yahoo knows for the name, one entry per symbol."""
+    matches = []
+    seen = set()
+    for row in yf.Search(query, max_results=20, news_count=0, timeout=8).quotes:
+        symbol = row.get("symbol", "")
+        if row.get("quoteType") != "EQUITY" or not SYMBOL.fullmatch(symbol) or symbol in seen:
+            continue
+        seen.add(symbol)
+        matches.append({"symbol": symbol,
+                        "name": row.get("longname") or row.get("shortname") or symbol,
+                        "exchange": row.get("exchDisp") or row.get("exchange") or ""})
+    return matches
 
 
 def search(query, nas=None, bucket=None):
+    """One row per company, whichever source knows it.
+
+    Yahoo answers first because only Yahoo carries the currency, the volume and the other venues.
+    The scanner follows - but only with papers Yahoo did not return, because a scanner row whose
+    symbol already sits among a company's venues is that very venue, not a second company:
+    measured, "asml" produced a bare "ASML" row beside the complete "ASML.AS" one.
+    """
     normalized = query.upper()
     fallback = [SAP] if normalized in {"SAP", "SAP SE", "SAP.DE", "DE0007164600", "716460"} else []
-    if nas is not None and len(query) <= 50:
-        matches = []
-        seen = set()
-        nas_query = SAP["symbol"] if fallback else query
-        try:
-            rows = nas.search(nas_query)
-        except (URLError, OSError, ValueError, EOFError):
-            # A failing scanner must not take the search down: fall through to Yahoo.
-            rows = []
-        for row in rows:
-            symbol = row.get("symbol", "") if isinstance(row, dict) else ""
-            if (not isinstance(symbol, str) or not SYMBOL.fullmatch(symbol) or symbol in seen
-                    or row.get("industry") == "Exchange Traded Fund"):
-                continue
-            seen.add(symbol)
-            matches.append({"symbol": symbol, "name": row.get("name") or symbol,
-                            "exchange": row.get("exchange") or row.get("market") or ""})
-        if matches:
-            return {"matches": group_matches(matches, bucket, lookup=False), "source": "xang auf NAS"}
+    scanned = scanner_matches(query, nas)
     try:
-        results = yf.Search(query, max_results=20, news_count=0, timeout=8).quotes
-        seen = set()
-        matches = []
-        for row in results:
-            symbol = row.get("symbol", "")
-            if row.get("quoteType") != "EQUITY" or not SYMBOL.fullmatch(symbol) or symbol in seen:
-                continue
-            seen.add(symbol)
-            matches.append({"symbol": symbol, "name": row.get("longname") or row.get("shortname") or symbol,
-                            "exchange": row.get("exchDisp") or row.get("exchange") or ""})
-        if fallback and SAP["symbol"] not in seen:
-            matches.insert(0, SAP)
-        return {"matches": group_matches(matches, bucket), "source": "Yahoo Finance"}
+        found = yahoo_matches(query)
     except Exception:
-        return {"matches": fallback, "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
+        found = []
+    if fallback and SAP["symbol"] not in {row["symbol"] for row in found}:
+        found.insert(0, SAP)
+
+    groups = group_matches(found, bucket) if found else []
+    known = {listing["symbol"] for group in groups for listing in group["listings"]}
+    extra = [row for row in scanned if row["symbol"] not in known]
+    if extra:
+        groups += group_matches(extra, bucket)
+    # The two sources are grouped apart, so the same security can still sit in both: measured,
+    # "apple" answered AAPL from Yahoo and APC.DE from the scanner, the same ISIN twice.
+    groups = merge_same_isin(groups)
+    if not groups:
+        return {"matches": fallback,
+                "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
+    source = [label for label, used in (("xang auf NAS", scanned), ("Yahoo Finance", found)) if used]
+    return {"matches": groups, "source": " + ".join(source)}
 
 
 def nas_rows(entries):

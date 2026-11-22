@@ -81,11 +81,21 @@ class NasTests(unittest.TestCase):
         handler.do_GET()
         return handler.json.call_args.args
 
-    def test_search_and_stock_stay_local(self):
-        status, matches = self.call("/api/search?q=Apple")
+    def test_search_completes_the_scanner_row_and_stock_stays_local(self):
+        """The search needs venue, currency, volume and ISIN - the scanner carries none of them.
+
+        So the name search asks Yahoo as well. The scanner's own figures for a single paper are a
+        different path and stay local; that is what the last assertion guards.
+        """
+        yahoo = [{"symbol": "AAPL", "name": "Apple Inc", "exchange": "NASDAQ"}]
+        with patch.object(app, "yahoo_matches", return_value=yahoo), \
+                patch.object(app, "listing_facts", return_value={"currency": "USD", "volume": 5e7}), \
+                patch.object(app, "company_isin", return_value=""):
+            status, matches = self.call("/api/search?q=Apple")
         self.assertEqual(status, 200)
-        self.assertEqual(matches["source"], "xang auf NAS")
+        self.assertEqual(matches["source"], "xang auf NAS + Yahoo Finance")
         self.assertEqual([row["symbol"] for row in matches["matches"]], ["AAPL"])
+        self.assertEqual(matches["matches"][0]["currency"], "USD")
         status, stock = self.call("/api/stock?q=AAPL")
         self.assertEqual(status, 200)
         self.assertEqual(stock["info"]["longName"], "Apple Inc")
@@ -94,7 +104,6 @@ class NasTests(unittest.TestCase):
         self.assertEqual(stock["prices"][-1], ["2026-11-18", 280, None, None])
         self.assertEqual(stock["statements"], {})
         self.yahoo_ticker.assert_not_called()
-        self.yahoo_search.assert_not_called()
 
     def test_batch_handles_gaps_and_native_currency(self):
         status, result = self.call("/api/stock-batch?q=AAPL,SAP.DE,MISSING")

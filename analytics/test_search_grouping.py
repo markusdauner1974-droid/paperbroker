@@ -7,6 +7,7 @@ with the numbers of one listing each.
 
 import unittest
 from unittest import mock
+from urllib.error import URLError
 
 import app
 
@@ -93,6 +94,80 @@ class LeadListingTests(unittest.TestCase):
         listings = [{"symbol": "X.SG", "exchange": "Stuttgart"},
                     {"symbol": "Y.PA", "exchange": "Paris"}]
         self.assertEqual(1, app.lead_index(listings, []))
+
+
+class SearchSourcesTests(unittest.TestCase):
+    """Yahoo answers first; the scanner only adds papers Yahoo does not return."""
+
+    YAHOO = [{"symbol": "SAP.DE", "name": "SAP SE", "exchange": "XETRA"},
+             {"symbol": "SAP", "name": "SAP SE", "exchange": "NYSE"},
+             {"symbol": "SAP.TO", "name": "Saputo Inc.", "exchange": "Toronto"}]
+
+    def test_a_scanner_row_that_is_already_a_venue_is_not_a_second_row(self):
+        """Measured: "asml" gave a bare "ASML" row beside the complete "ASML.AS" one."""
+        nas = mock.Mock()
+        nas.search.return_value = [{"symbol": "SAP.DE", "name": "SAP SE", "exchange": "Xetra"}]
+        with mock.patch.object(app, "yahoo_matches", return_value=self.YAHOO), \
+                mock.patch.object(app, "group_matches",
+                                  side_effect=lambda rows, *a, **k: [{"symbol": r["symbol"],
+                                                                      "listings": [r]} for r in rows]):
+            result = app.search("sap", nas, 0)
+        self.assertEqual(3, len(result["matches"]))
+
+    def test_a_paper_the_scanner_knows_and_yahoo_does_not_is_kept(self):
+        nas = mock.Mock()
+        nas.search.return_value = [{"symbol": "SAP.DE", "name": "SAP SE", "exchange": "Xetra"},
+                                   {"symbol": "KRN.DE", "name": "Krones AG", "exchange": "Xetra"}]
+        seen = []
+        def grouping(rows, bucket=None, lookup=True, path=None):
+            seen.append(lookup)
+            return [{"symbol": r["symbol"], "listings": [r]} for r in rows]
+        with mock.patch.object(app, "yahoo_matches", return_value=self.YAHOO), \
+                mock.patch.object(app, "group_matches", side_effect=grouping):
+            result = app.search("sap", nas, 0)
+        self.assertIn("KRN.DE", [row["symbol"] for row in result["matches"]])
+        self.assertEqual([True, True], seen, "both calls enrich, none may return bare rows")
+
+    def test_a_failing_scanner_leaves_yahoo_alone(self):
+        nas = mock.Mock()
+        nas.search.side_effect = OSError("scanner down")
+        with mock.patch.object(app, "yahoo_matches", return_value=self.YAHOO), \
+                mock.patch.object(app, "group_matches",
+                                  side_effect=lambda rows, *a, **k: [{"symbol": r["symbol"],
+                                                                      "listings": [r]} for r in rows]):
+            result = app.search("sap", nas, 0)
+        self.assertEqual("Yahoo Finance", result["source"])
+
+    def test_a_failing_search_says_so_instead_of_inventing_rows(self):
+        with mock.patch.object(app, "yahoo_matches", side_effect=URLError("offline")):
+            result = app.search("loreal", None, 0)
+        self.assertEqual([], result["matches"])
+        self.assertIn("offline", result["notice"])
+
+
+class SameIsinTests(unittest.TestCase):
+    """One ISIN, one row - measured: "apple" gave AAPL and APC.DE, both US0378331005."""
+
+    def test_two_rows_with_one_isin_become_the_liquid_one(self):
+        rows = [{"symbol": "AAPL", "name": "Apple Inc.", "exchange": "NASDAQ", "currency": "USD",
+                 "volume": 42_000_000, "isin": "US0378331005", "listings": [{"symbol": "AAPL"}]},
+                {"symbol": "APC.DE", "name": "Apple Inc.", "exchange": "GER", "currency": "EUR",
+                 "volume": 19_000, "isin": "US0378331005", "listings": [{"symbol": "APC.DE"}]}]
+        merged = app.merge_same_isin(rows)
+        self.assertEqual(1, len(merged))
+        self.assertEqual("AAPL", merged[0]["symbol"])
+        self.assertEqual(42_000_000, merged[0]["volume"])
+        self.assertEqual(["AAPL", "APC.DE"], [listing["symbol"] for listing in merged[0]["listings"]])
+
+    def test_rows_without_an_isin_are_never_merged(self):
+        rows = [{"symbol": "APLE", "isin": "", "volume": 1, "listings": []},
+                {"symbol": "APC.DE", "isin": "", "volume": 2, "listings": []}]
+        self.assertEqual(2, len(app.merge_same_isin(rows)))
+
+    def test_two_different_isins_stay_apart(self):
+        rows = [{"symbol": "OR.PA", "isin": "FR0000120321", "volume": 1, "listings": []},
+                {"symbol": "LRLCY", "isin": "US5021172037", "volume": 2, "listings": []}]
+        self.assertEqual(2, len(app.merge_same_isin(rows)))
 
 
 class VerifiedIsinTests(unittest.TestCase):
