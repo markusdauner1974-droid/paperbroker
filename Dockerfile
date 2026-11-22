@@ -44,12 +44,10 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # instead of sharing them. The threads cover the waiting: a search or a statement load blocks only
 # its own request.
 #
-# Four threads, and the number is the point: `flask run` was threaded too - Flask sets
-# threaded=True by default (flask/app.py:655) and werkzeug starts one thread per request with no
-# ceiling at all - so the outbound fanout used to be unbounded. Four threads against a per-request
-# pool of at most eight gives a ceiling of 32 where there was none. The analytics lookups are
-# gated separately in one process-wide semaphore (FACT_WORKERS), because that is the path this
-# project actually hammers.
-CMD ["gunicorn", "--worker-class", "gthread", "--workers", "1", "--threads", "4", \
+# Eight threads against a gate of six (analytics/app.py, FACT_WORKERS): the gate is the real bound
+# on outbound lookups, and two threads stay free for requests that are not waiting on Yahoo. With
+# four threads a single stalled lookup could have taken the whole server - `flask run` was threaded
+# too, by default (flask/app.py:655) and without a ceiling, so nothing here is narrower than before.
+CMD ["gunicorn", "--worker-class", "gthread", "--workers", "1", "--threads", "8", \
      "--timeout", "120", "--graceful-timeout", "30", "--access-logfile", "-", \
      "--bind", "0.0.0.0:8089", "paperbroker.server:create_app()"]

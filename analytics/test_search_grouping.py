@@ -5,6 +5,7 @@ US5021172037.SG (Stuttgart), LOR.HM (Hamburg) and LOR.F (Frankfurt) - the same c
 with the numbers of one listing each.
 """
 
+import socket
 import threading
 import time
 import unittest
@@ -382,3 +383,25 @@ class OutboundGateTests(unittest.TestCase):
         self.assertEqual(app.FACT_WORKERS, highest,
                          f"{highest} lookups ran at once, the gate allows {app.FACT_WORKERS}")
         self.assertEqual(0, active, "every slot was given back")
+
+
+class StalledLookupTests(unittest.TestCase):
+    """Kody: get_info() has no timeout; one stalled call must not take the server with it."""
+
+    def test_a_hanging_lookup_is_given_up_instead_of_held(self):
+        def hanging(*_args):
+            time.sleep(3)
+            return {"currency": "EUR"}
+        matches = [{"symbol": "A.DE", "name": "Firma X", "exchange": "XETRA"}]
+        with mock.patch.object(app, "listing_facts", side_effect=hanging), \
+                mock.patch.object(app, "FACT_TIMEOUT_S", 0.2):
+            started = time.monotonic()
+            grouped = app.group_matches(matches, 0, path=":memory:")
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0, f"the search waited for a stalled lookup: {elapsed:.2f}s")
+        self.assertEqual(1, len(grouped), "the row stays, only its figures are missing")
+        self.assertEqual("", grouped[0]["currency"])
+
+    def test_sockets_give_up_on_their_own(self):
+        """Second guard: a socket created by a client library cannot wait forever either."""
+        self.assertEqual(app.FACT_TIMEOUT_S, socket.getdefaulttimeout())
