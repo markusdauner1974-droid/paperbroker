@@ -112,7 +112,7 @@ footer{font-family:var(--font-mono);font-size:10px;letter-spacing:.06em;text-tra
 <small>Aktienanalyse</small><h1 id="company">Aktienanalyse</h1>
 <div id="identity">Aktie und Börsenplatz auswählen</div>
 <form id="search" class="search"><input id="query" aria-label="Aktie suchen" placeholder="Name, Ticker oder ISIN" maxlength="100" required><button class="primary">Suchen</button><button type="button" id="direct">Ticker laden</button></form>
-<progress id="search-busy" aria-label="Daten werden geladen" hidden></progress><output id="search-status" aria-live="polite"></output><div id="matches"></div>
+<progress id="search-busy" aria-label="Daten werden geladen" value="0" max="100" hidden></progress><output id="search-status" aria-live="polite"></output><div id="matches"></div>
 </header>
 <main id="dashboard" hidden>
 <div class="controls" id="data-actions"></div>
@@ -1594,6 +1594,9 @@ function status(text){$("search-status").textContent=text;}
 // instead of one that stands still. Values are percentages of the finished load.
 const busy=(()=>{
   const bar=$("search-busy");
+  // A progress element stops at max, and the default is 1: every percentage would have been full
+  // from the first frame. Set here as well as in the markup, so the bar cannot be broken by markup.
+  bar.max=100;
   let target=0,shown=0,frame=0,hid=0;
   function tick(){
     frame=0;

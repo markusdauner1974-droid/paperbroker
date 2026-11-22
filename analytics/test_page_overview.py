@@ -67,6 +67,11 @@ class ProgressBarTests(unittest.TestCase):
         self.assertIn("bar.value=0", body)
         self.assertIn("requestAnimationFrame(tick)", body, "it grows frame by frame")
 
+    def test_the_bar_knows_it_runs_to_a_hundred(self):
+        """A <progress> stops at max and the default is 1: percentages would be full at once."""
+        self.assertIn('max="100"', TEXT, "the markup must not leave the element at max=1")
+        self.assertIn("bar.max=100", script(), "and the script sets it too, whatever the markup says")
+
     def test_the_load_reports_its_steps(self):
         body = script()
         step = body[body.index("async function loadStock(symbol)"):body.index("async function completeStatements")]
