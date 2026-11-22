@@ -301,21 +301,17 @@ function renderQuote(){
       data.issues?.join(" ")
     ];
     source.textContent=sources.filter(Boolean).join(" | ");
-    if(data.nas_primary){
-      if(data.nasBaseline){
-        const reset=element("button","Zur Grundansicht zurück");
-        reset.type="button";
-        reset.onclick=()=>replaceData(data.nasBaseline);
-        actions.append(reset);
-      }else{
-        const button=element("button",data.history_loading?"Yahoo-Ergänzung wird geladen …":
-          data.statements_source?"Längere Kurshistorie und Dividenden ergänzen":
-          "Abschlüsse und längere Kurshistorie aus Yahoo Finance ergänzen");
-        button.type="button";
-        button.disabled=Boolean(data.statements_loading||data.history_loading);
-        button.onclick=()=>extendStock();
-        actions.append(button);
-      }
+    // One view of a paper, the complete one: the supplement starts by itself (see loadStock),
+    // and there is no way back to the bare scanner row. The button is only a retry after a
+    // supplement that delivered nothing - without it a failed call would be a dead end.
+    if(data.nas_primary&&!data.nasBaseline){
+      const button=element("button",data.history_loading?"Yahoo-Ergänzung wird geladen …":
+        data.statements_source?"Längere Kurshistorie und Dividenden ergänzen":
+        "Abschlüsse und längere Kurshistorie aus Yahoo Finance ergänzen");
+      button.type="button";
+      button.disabled=Boolean(data.statements_loading||data.history_loading);
+      button.onclick=()=>extendStock();
+      actions.append(button);
     }
   }
   const rows=data.reference?[["Kurs","191,790 €"],["Tagesänderung","−4,82 %"],["Börsenwert","221,585 Mrd. €"],["KGV 2025","32,80"],["KUV 2025","6,32"],["Dividendenrendite 2025","1,24 %"]]:
@@ -1682,11 +1678,10 @@ async function loadStock(symbol){
     next.statements_loading=Boolean(next.nas_primary&&!next.statements_source);
     replaceData(next,{reset:true});
     if(next.statements_loading)await completeStatements(data,request);
-    // A NAS quote carries the day's price but neither a long history nor dividends.
-    // Both are needed for the return and the dividend yield, so they are fetched
-    // without asking: no second click.
-    if(request===generation&&data.nas_primary&&data.prices.length&&
-       (!isNum(periodReturn(data.prices,120))||!isNum(lastYearDividends())))await extendStock();
+    // A NAS quote carries the day's price but neither a long history nor dividends. Everything
+    // the other sources can add is fetched without asking and without a condition: the page has
+    // one state, the complete paper. There is no way back to the bare scanner row any more.
+    if(request===generation&&data.nas_primary&&data.prices.length)await extendStock();
     // Nothing left over on success: whatever an earlier step wrote (or an earlier search) goes.
     if(request===generation){busy.step(.97);status("");}
   }catch(error){if(request===generation)status(error.message);}
