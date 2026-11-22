@@ -10,7 +10,7 @@ from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Lock
-from time import time
+from time import monotonic, time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
 from urllib.request import Request, urlopen
@@ -409,9 +409,10 @@ RESALE_NAMES = {"frankfurt", "stuttgart", "hamburg", "berlin", "düsseldorf", "d
                 "münchen", "muenchen", "hannover", "otc markets", "otc", "xetra frankfurt"}
 
 # Words that name a legal form, not a company. Stripped before two listings are compared.
+# Only legal forms belong here. "Group" and "Holdings" are part of a name and often the only word
+# that tells two companies apart - "X Group" and "X Holdings" must not become one row.
 LEGAL_FORMS = {"sa", "s", "a", "ag", "se", "nv", "n", "v", "spa", "sp", "ab", "asa", "oyj", "plc",
-               "inc", "corp", "co", "the", "group", "holding", "holdings", "kgaa", "gmbh", "na",
-               "societe", "anonyme", "adr", "adrs", "o"}
+               "inc", "corp", "co", "kgaa", "gmbh", "na", "societe", "anonyme", "adr", "adrs", "o"}
 
 
 def company_key(name):
@@ -570,7 +571,27 @@ def company_isin(name, country, path=None):
     return ""
 
 
-def group_matches(matches, bucket, lookup=True):
+# Wikidata allows few requests and refuses the rest with 429 - asking in parallel makes it refuse
+# more. So they are asked one at a time, two companies per search, and never past the deadline: the
+# answer is stored, the next search continues where this one stopped.
+ISIN_LOOKUPS = 2
+ISIN_DEADLINE_S = 3.5
+
+
+def verified_isin(raw, name, country, path=None):
+    """An ISIN from any source, but only after the same check: form, and country prefix.
+
+    Yahoo's `isin` is not trusted on its own - measured, it answers AR0725224551 for ASML where
+    NL0010273215 is right. A raw value is taken only when it passes; otherwise the verified lookup
+    decides, and an empty string is better than a wrong number.
+    """
+    prefix = COUNTRY_ISIN_PREFIX.get(str(country or "").strip().casefold(), "")
+    if prefix and isinstance(raw, str) and ISIN_FORM.fullmatch(raw) and raw.startswith(prefix):
+        return raw
+    return company_isin(name, country, path)
+
+
+def group_matches(matches, bucket, lookup=True, path=None):
     """One entry per company, its other listings kept behind it.
 
     A share and its ADR are the same company in another unit, and four German boards resell the
@@ -586,14 +607,21 @@ def group_matches(matches, bucket, lookup=True):
             order.append(key)
         groups[key].append(match)
     result = []
+    pending = []        # (row index, raw isin, name, country) - filled after the loop, in parallel
     for key in order:
         listings = groups[key]
         # The scanner hands the figures with its rows; asking Yahoo for them anyway would make a
         # search wait on a second source that has nothing to add.
-        facts = [{field: listing[field] for field in ("currency", "volume", "exchange_code",
-                                                      "reporting_currency", "country", "isin")
-                  if listing.get(field) not in (None, "")} if not lookup
-                 else listing_facts(listing["symbol"], bucket) for listing in listings]
+        if lookup:
+            # Three lookups per company at most, and in parallel: twenty sequential answers would
+            # keep the search waiting for ten seconds.
+            facts = list(ThreadPoolExecutor(max_workers=LEAD_LOOKUPS).map(
+                lambda listing: listing_facts(listing["symbol"], bucket), listings[:LEAD_LOOKUPS]))
+            facts += [{}] * (len(listings) - len(facts))
+        else:
+            facts = [{field: listing[field] for field in ("currency", "volume", "exchange_code",
+                                                          "reporting_currency", "country", "isin")
+                      if listing.get(field) not in (None, "")} for listing in listings]
         index = lead_index(listings, facts)
         lead = listings[index]
         lead_facts = facts[index]
@@ -601,12 +629,19 @@ def group_matches(matches, bucket, lookup=True):
                        "exchange": lead.get("exchange") or "",
                        "currency": lead_facts.get("currency", ""),
                        "volume": lead_facts.get("volume"),
-                       "isin": (lead_facts.get("isin") or company_isin(lead.get("name") or "",
-                                                                      lead_facts.get("country") or "")
-                                if lookup else lead_facts.get("isin", "")),
+                       "isin": "",
                        "listings": [{"symbol": listing["symbol"],
                                      "exchange": listing.get("exchange") or ""}
                                     for listing in listings]})
+        if lookup:
+            pending.append((len(result) - 1, lead_facts.get("isin"), result[-1]["name"],
+                            lead_facts.get("country") or ""))
+    if pending:
+        deadline = monotonic() + ISIN_DEADLINE_S
+        for index, raw, name, country in pending[:ISIN_LOOKUPS]:
+            if monotonic() > deadline:
+                break
+            result[index]["isin"] = verified_isin(raw, name, country, path)
     return result
 
 

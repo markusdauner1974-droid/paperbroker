@@ -1692,12 +1692,12 @@ $("search").onsubmit=async event=>{
       button.onclick=()=>loadStock(match.symbol);
       const others=(match.listings||[]).filter(listing=>listing.symbol!==match.symbol);
       if(!others.length)return button;
-      const wrap=element("div","match");
+      const wrap=element("div",undefined,"match");
       wrap.append(button);
       const toggle=element("button",others.length+(others.length===1?" weiterer Börsenplatz":" weitere Börsenplätze"));
       toggle.className="expand";
       toggle.type="button";
-      const extra=element("div","venues");
+      const extra=element("div",undefined,"venues");
       extra.hidden=true;
       extra.append(...others.map(listing=>{
         const entry=element("button",[listing.symbol,listing.exchange].filter(Boolean).join(" · "));

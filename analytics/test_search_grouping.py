@@ -30,6 +30,13 @@ class CompanyKeyTests(unittest.TestCase):
         self.assertEqual("", app.company_key(""))
         self.assertEqual("s.a.", app.company_key("S.A."))
 
+    def test_group_and_holdings_keep_two_companies_apart(self):
+        """Kody: "X Group" and "X Holdings" became one row - the only word telling them apart."""
+        self.assertNotEqual(app.company_key("Siemens Group"), app.company_key("Siemens Holdings"))
+        self.assertNotEqual(app.company_key("X Holding"), app.company_key("X Holdings"))
+        # ... while the legal form still does not create a second row for the same company
+        self.assertEqual(app.company_key("X Holdings"), app.company_key("X Holdings AG"))
+
 
 class LeadListingTests(unittest.TestCase):
     def test_the_listing_in_the_reporting_currency_wins(self):
@@ -76,6 +83,27 @@ class LeadListingTests(unittest.TestCase):
         self.assertEqual(1, app.lead_index(listings, []))
 
 
+class VerifiedIsinTests(unittest.TestCase):
+    """A number from Yahoo is only taken when it passes the same check as the looked-up one."""
+
+    def test_a_raw_isin_with_the_wrong_country_is_refused(self):
+        with mock.patch.object(app, "company_isin", return_value="NL0010273215") as lookup:
+            self.assertEqual("NL0010273215",
+                             app.verified_isin("AR0725224551", "ASML Holding N.V.", "Netherlands"))
+        lookup.assert_called_once()
+
+    def test_a_raw_isin_that_passes_is_taken_without_asking_again(self):
+        with mock.patch.object(app, "company_isin") as lookup:
+            self.assertEqual("NL0010273215",
+                             app.verified_isin("NL0010273215", "ASML Holding N.V.", "Netherlands"))
+        lookup.assert_not_called()
+
+    def test_a_malformed_raw_isin_is_refused(self):
+        with mock.patch.object(app, "company_isin", return_value=""):
+            for raw in ("NL001027321", "nl0010273215", "", None, 42):
+                self.assertEqual("", app.verified_isin(raw, "ASML", "Netherlands"))
+
+
 class GroupingTests(unittest.TestCase):
     SIX = [{"symbol": "OR.PA", "name": "L'Oréal S.A.", "exchange": "Paris"},
            {"symbol": "LRLCY", "name": "L'Oréal S.A.", "exchange": "OTC Markets"},
@@ -106,6 +134,15 @@ class GroupingTests(unittest.TestCase):
         with mock.patch.object(app, "listing_facts", return_value={}):
             grouped = app.group_matches(matches, 1)
         self.assertEqual(["OR.PA", "MC.PA"], [row["symbol"] for row in grouped])
+
+    def test_the_scanner_path_asks_nobody(self):
+        """Kody: a search must not wait on a second source that has nothing to add."""
+        with mock.patch.object(app, "listing_facts") as facts, \
+                mock.patch.object(app, "company_isin") as isin:
+            grouped = app.group_matches(self.SIX, 1, lookup=False)
+        facts.assert_not_called()
+        isin.assert_not_called()
+        self.assertEqual("", grouped[0]["isin"])
 
     def test_the_volume_travels_so_a_thin_venue_is_visible(self):
         with mock.patch.object(app, "listing_facts", return_value={"currency": "EUR", "volume": 6}):
