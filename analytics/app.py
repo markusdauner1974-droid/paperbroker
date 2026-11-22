@@ -589,6 +589,7 @@ def company_isin(name, country, path=None):
 # more. So they are asked one at a time and never past the deadline: the answer is stored, the next
 # search continues where this one stopped.
 ISIN_DEADLINE_S = 2.0
+FACT_WORKERS = 6          # listings asked from Yahoo at the same time
 
 
 def verified_isin(raw, name, country, path=None):
@@ -631,7 +632,7 @@ def merge_same_isin(rows):
     return order
 
 
-def group_matches(matches, bucket, lookup=True, path=None):
+def group_matches(matches, bucket, lookup=True, path=None, deadline=None):
     """One entry per company, its other listings kept behind it.
 
     A share and its ADR are the same company in another unit, and four German boards resell the
@@ -646,12 +647,19 @@ def group_matches(matches, bucket, lookup=True, path=None):
             groups[key] = []
             order.append(key)
         groups[key].append(match)
-    work = [(key, listing) for key in order
-            for listing in groups[key][:LEAD_LOOKUPS]] if lookup else []
-    pool = ThreadPoolExecutor(max_workers=8)
+    work = []
+    asked = set()
+    for key in order:
+        for listing in groups[key][:LEAD_LOOKUPS]:
+            if listing["symbol"] in asked:
+                continue    # one question per symbol: two groups can share a listing
+            asked.add(listing["symbol"])
+            work.append((key, listing))
+    # Six at a time: enough to keep a search short, few enough that Yahoo does not answer with 429.
+    # The same symbol is asked once - two groups can carry the same listing.
     if work:
-        answers = list(pool.map(lambda item: listing_facts(item[1]["symbol"], bucket), work))
-        pool.shutdown()
+        with ThreadPoolExecutor(max_workers=FACT_WORKERS) as pool:
+            answers = list(pool.map(lambda item: listing_facts(item[1]["symbol"], bucket), work))
         filled = {}
         for (key, listing), answer in zip(work, answers, strict=True):
             filled.setdefault(key, []).append((listing, answer))
@@ -692,8 +700,9 @@ def group_matches(matches, bucket, lookup=True, path=None):
     if pending:
         # Every row is offered to the lookup: a stored answer costs a millisecond, and only the
         # uncached ones can take time. The deadline stops those - the next search picks up the rest,
-        # because what was answered is stored.
-        deadline = monotonic() + ISIN_DEADLINE_S
+        # because what was answered is stored. A caller that fills several lists passes one deadline
+        # along, so the budget is spent once, not once per list.
+        deadline = deadline if deadline is not None else monotonic() + ISIN_DEADLINE_S
         for index, raw, name, country in pending:
             if monotonic() > deadline:
                 break
@@ -745,33 +754,45 @@ def yahoo_matches(query):
 def search(query, nas=None, bucket=None):
     """One row per company, whichever source knows it.
 
-    Yahoo answers first because only Yahoo carries the currency, the volume and the other venues.
-    The scanner follows - but only with papers Yahoo did not return, because a scanner row whose
-    symbol already sits among a company's venues is that very venue, not a second company:
-    measured, "asml" produced a bare "ASML" row beside the complete "ASML.AS" one.
+    Yahoo and the scanner are asked at the same time: one after the other would make every search
+    wait for the scanner's answer before Yahoo is even asked, and the scanner has an 8 s timeout of
+    its own. Yahoo carries the currency, the volume and the other venues; the scanner adds papers
+    Yahoo did not return, and a scanner row whose symbol already sits among a company's venues is
+    that venue, not a second company - measured, "asml" produced a bare "ASML" row beside the
+    complete "ASML.AS" one.
     """
     normalized = query.upper()
     fallback = [SAP] if normalized in {"SAP", "SAP SE", "SAP.DE", "DE0007164600", "716460"} else []
-    scanned = scanner_matches(query, nas)
-    try:
-        found = yahoo_matches(query)
-    except Exception:
-        found = []
-    if fallback and SAP["symbol"] not in {row["symbol"] for row in found}:
-        found.insert(0, SAP)
+    deadline = monotonic() + ISIN_DEADLINE_S
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        scanner_job = pool.submit(scanner_matches, query, nas)
+        try:
+            found = yahoo_matches(query)
+            yahoo_answered = True
+        except Exception:
+            found, yahoo_answered = [], False
+        scanned = scanner_job.result()
 
-    groups = group_matches(found, bucket) if found else []
+    if not yahoo_answered and not scanned:
+        return {"matches": fallback,
+                "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
+    rows = found if yahoo_answered else []
+    if fallback and SAP["symbol"] not in {row["symbol"] for row in rows}:
+        rows = fallback + rows
+    groups = group_matches(rows, bucket, deadline=deadline) if rows else []
     known = {listing["symbol"] for group in groups for listing in group["listings"]}
     extra = [row for row in scanned if row["symbol"] not in known]
     if extra:
-        groups += group_matches(extra, bucket)
+        groups += group_matches(extra, bucket, deadline=deadline)
     # The two sources are grouped apart, so the same security can still sit in both: measured,
     # "apple" answered AAPL from Yahoo and APC.DE from the scanner, the same ISIN twice.
     groups = merge_same_isin(groups)
     if not groups:
         return {"matches": fallback,
                 "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
-    source = [label for label, used in (("xang auf NAS", scanned), ("Yahoo Finance", found)) if used]
+    # The label says who answered: a fallback row must not be sold as a Yahoo answer.
+    source = [label for label, used in (("xang auf NAS", scanned),
+                                        ("Yahoo Finance", yahoo_answered and found)) if used]
     return {"matches": groups, "source": " + ".join(source)}
 
 

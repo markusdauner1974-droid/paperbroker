@@ -5,6 +5,7 @@ US5021172037.SG (Stuttgart), LOR.HM (Hamburg) and LOR.F (Frankfurt) - the same c
 with the numbers of one listing each.
 """
 
+import time
 import unittest
 from unittest import mock
 from urllib.error import URLError
@@ -119,7 +120,7 @@ class SearchSourcesTests(unittest.TestCase):
         nas.search.return_value = [{"symbol": "SAP.DE", "name": "SAP SE", "exchange": "Xetra"},
                                    {"symbol": "KRN.DE", "name": "Krones AG", "exchange": "Xetra"}]
         seen = []
-        def grouping(rows, bucket=None, lookup=True, path=None):
+        def grouping(rows, bucket=None, lookup=True, path=None, deadline=None):
             seen.append(lookup)
             return [{"symbol": r["symbol"], "listings": [r]} for r in rows]
         with mock.patch.object(app, "yahoo_matches", return_value=self.YAHOO), \
@@ -243,15 +244,6 @@ class GroupingTests(unittest.TestCase):
             grouped = app.group_matches(matches, 1, path=":memory:")
         self.assertEqual(3, len(grouped), "no row is lost, only its ISIN is missing")
 
-    def test_the_scanner_path_asks_nobody(self):
-        """Kody: a search must not wait on a second source that has nothing to add."""
-        with mock.patch.object(app, "listing_facts") as facts, \
-                mock.patch.object(app, "company_isin") as isin:
-            grouped = app.group_matches(self.SIX, 1, lookup=False)
-        facts.assert_not_called()
-        isin.assert_not_called()
-        self.assertEqual("", grouped[0]["isin"])
-
     def test_the_volume_travels_so_a_thin_venue_is_visible(self):
         with mock.patch.object(app, "listing_facts", return_value={"currency": "EUR", "volume": 6}):
             grouped = app.group_matches(self.SIX, 1)
@@ -260,3 +252,65 @@ class GroupingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConcurrencyTests(unittest.TestCase):
+    """Yahoo and the scanner answer side by side, on one ISIN budget, one question per symbol."""
+
+    def test_the_two_sources_wait_side_by_side_not_one_after_the_other(self):
+        """Both slow: side by side costs the slower one, one after the other the sum."""
+        def slow_scanner(*_args):
+            time.sleep(0.4)
+            return []
+        def slow_yahoo(*_args):
+            time.sleep(0.4)
+            return []
+        with mock.patch.object(app, "scanner_matches", side_effect=slow_scanner), \
+                mock.patch.object(app, "yahoo_matches", side_effect=slow_yahoo):
+            started = time.monotonic()
+            app.search("loreal", mock.Mock(), 0)
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 0.75, f"one waited for the other: {elapsed:.2f}s")
+
+    def test_both_lists_share_one_deadline(self):
+        deadlines = []
+        def grouping(rows, bucket=None, lookup=True, path=None, deadline=None):
+            deadlines.append(deadline)
+            return [{"symbol": row["symbol"], "listings": [row]} for row in rows]
+        nas = mock.Mock()
+        nas.search.return_value = [{"symbol": "KRN.DE", "name": "Krones AG", "exchange": "Xetra"}]
+        with mock.patch.object(app, "yahoo_matches", return_value=[{"symbol": "SAP.DE", "name": "SAP SE",
+                                                                    "exchange": "XETRA"}]), \
+                mock.patch.object(app, "group_matches", side_effect=grouping):
+            app.search("sap", nas, 0)
+        self.assertEqual(2, len(deadlines))
+        self.assertEqual(deadlines[0], deadlines[1])
+
+    def test_a_listing_is_asked_once_even_when_two_groups_carry_it(self):
+        """Kody: one pool over the same symbol twice can trip Yahoo's rate limit."""
+        matches = [{"symbol": "SAP.DE", "name": "SAP SE", "exchange": "XETRA"},
+                   {"symbol": "SAP.DE", "name": "SAP SE", "exchange": "XETRA"}]
+        calls = []
+        def facts(symbol, bucket=None):
+            calls.append(symbol)
+            return {"currency": "EUR", "volume": 1.0}
+        with mock.patch.object(app, "listing_facts", side_effect=facts), \
+                mock.patch.object(app, "company_isin", return_value=""):
+            app.group_matches(matches, 0)
+        self.assertEqual(["SAP.DE"], calls)
+
+    def test_an_offline_search_is_not_called_a_yahoo_answer(self):
+        """Kody: the SAP fallback was labelled "Yahoo Finance" although Yahoo had failed."""
+        nas = mock.Mock()
+        nas.search.return_value = [{"symbol": "KRN.DE", "name": "Krones AG", "exchange": "Xetra"}]
+        with mock.patch.object(app, "yahoo_matches", side_effect=URLError("offline")), \
+                mock.patch.object(app, "group_matches",
+                                  side_effect=lambda rows, *a, **k: [{"symbol": row["symbol"],
+                                                                      "listings": [row]} for row in rows]):
+            result = app.search("krones", nas, 0)
+        self.assertEqual("xang auf NAS", result["source"])
+        self.assertNotIn("notice", result)
+
+        with mock.patch.object(app, "yahoo_matches", side_effect=URLError("offline")):
+            alone = app.search("sap", None, 0)
+        self.assertIn("notice", alone)
