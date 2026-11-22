@@ -5,6 +5,8 @@ US5021172037.SG (Stuttgart), LOR.HM (Hamburg) and LOR.F (Frankfurt) - the same c
 with the numbers of one listing each.
 """
 
+import socket
+import threading
 import time
 import unittest
 from unittest import mock
@@ -348,3 +350,58 @@ class SharedListingTests(unittest.TestCase):
                 mock.patch.object(app, "company_isin", return_value="FR0000120321"):
             result = app.search("loreal", mock.Mock(), 0)
         self.assertEqual("FR0000120321", result["matches"][0]["isin"])
+
+
+class OutboundGateTests(unittest.TestCase):
+    """Kody: four page requests at once must not multiply the Yahoo lookups into four times six."""
+
+    def test_the_gate_caps_the_whole_process_not_one_request(self):
+        active = 0
+        highest = 0
+        lock = threading.Lock()
+
+        def slow_facts(*_args):
+            nonlocal active, highest
+            with lock:
+                active += 1
+                highest = max(highest, active)
+            time.sleep(0.05)
+            with lock:
+                active -= 1
+            return {}
+
+        def caller(index):
+            for step in range(2):
+                app.gated_facts(f"S{index}{step}", 0)
+
+        with mock.patch.object(app, "listing_facts", side_effect=slow_facts):
+            threads = [threading.Thread(target=caller, args=(index,)) for index in range(12)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+        self.assertEqual(app.FACT_WORKERS, highest,
+                         f"{highest} lookups ran at once, the gate allows {app.FACT_WORKERS}")
+        self.assertEqual(0, active, "every slot was given back")
+
+
+class StalledLookupTests(unittest.TestCase):
+    """Kody: get_info() has no timeout; one stalled call must not take the server with it."""
+
+    def test_a_hanging_lookup_is_given_up_instead_of_held(self):
+        def hanging(*_args):
+            time.sleep(3)
+            return {"currency": "EUR"}
+        matches = [{"symbol": "A.DE", "name": "Firma X", "exchange": "XETRA"}]
+        with mock.patch.object(app, "listing_facts", side_effect=hanging), \
+                mock.patch.object(app, "FACT_TIMEOUT_S", 0.2):
+            started = time.monotonic()
+            grouped = app.group_matches(matches, 0, path=":memory:")
+            elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0, f"the search waited for a stalled lookup: {elapsed:.2f}s")
+        self.assertEqual(1, len(grouped), "the row stays, only its figures are missing")
+        self.assertEqual("", grouped[0]["currency"])
+
+    def test_sockets_give_up_on_their_own(self):
+        """Second guard: a socket created by a client library cannot wait forever either."""
+        self.assertEqual(app.FACT_TIMEOUT_S, socket.getdefaulttimeout())
