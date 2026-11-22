@@ -287,6 +287,21 @@ def create_app(quote_adapter=None, screener=None, now_fn=None, earnings_adapter=
     # the source language, so a request without a setting reads exactly as before.
     app.jinja_env.globals["t"] = texts.t
 
+    @app.before_request
+    def _never_inherit_an_outbound_timeout():
+        """Drop a socket default that the analytics module sets for its own outbound calls.
+
+        ``analytics/app.py`` calls ``socket.setdefaulttimeout(8)`` so a stalled Yahoo request
+        cannot hang for good. A socket accepted after that inherits the default, so the client
+        connection would carry an 8 s send/recv limit. Measured: gunicorn's gthread worker clears
+        it (the request socket reports ``None``), but werkzeug's development server does not - and
+        a response cut off mid-send is exactly the kind of bug nobody would look for in a dev run.
+        Freed here once per request, whichever server accepted the connection.
+        """
+        connection = request.environ.get("gunicorn.socket") or request.environ.get("werkzeug.socket")
+        if connection is not None:
+            connection.settimeout(None)
+
     #: The two endpoints that follow the language. Every other endpoint stays in
     #: the source language on purpose: /api/screen, the option chain, the earnings
     #: routes and the scan answers are stable legacy payloads, and a language
