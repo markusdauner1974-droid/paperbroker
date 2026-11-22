@@ -660,12 +660,9 @@ def group_matches(matches, bucket, lookup=True, path=None, deadline=None):
     if work:
         with ThreadPoolExecutor(max_workers=FACT_WORKERS) as pool:
             answers = list(pool.map(lambda item: listing_facts(item[1]["symbol"], bucket), work))
-        filled = {}
-        for (key, listing), answer in zip(work, answers, strict=True):
-            filled.setdefault(key, []).append((listing, answer))
-        facts_by_key = {key: [answer for _listing, answer in pairs] for key, pairs in filled.items()}
+        by_symbol = {item[1]["symbol"]: answer for item, answer in zip(work, answers, strict=True)}
     else:
-        facts_by_key = {}
+        by_symbol = {}
 
     result = []
     pending = []        # (row index, raw isin, name, country) - filled after the loop, in parallel
@@ -674,8 +671,10 @@ def group_matches(matches, bucket, lookup=True, path=None, deadline=None):
         # The scanner hands the figures with its rows; asking Yahoo for them anyway would make a
         # search wait on a second source that has nothing to add.
         if lookup:
-            facts = facts_by_key.get(key, []) + [{}] * (len(listings) - LEAD_LOOKUPS)
-            facts = facts[:len(listings)]
+            # Looked up by symbol, not by position: one shared symbol is asked once, so the answers
+            # are compact and would otherwise sit beside the wrong listing.
+            facts = [by_symbol.get(listing["symbol"], {}) for listing in listings[:LEAD_LOOKUPS]]
+            facts += [{}] * (len(listings) - len(facts))
         else:
             facts = [{field: listing[field] for field in ("currency", "volume", "exchange_code",
                                                           "reporting_currency", "country", "isin")
@@ -763,7 +762,6 @@ def search(query, nas=None, bucket=None):
     """
     normalized = query.upper()
     fallback = [SAP] if normalized in {"SAP", "SAP SE", "SAP.DE", "DE0007164600", "716460"} else []
-    deadline = monotonic() + ISIN_DEADLINE_S
     with ThreadPoolExecutor(max_workers=2) as pool:
         scanner_job = pool.submit(scanner_matches, query, nas)
         try:
@@ -772,6 +770,9 @@ def search(query, nas=None, bucket=None):
         except Exception:
             found, yahoo_answered = [], False
         scanned = scanner_job.result()
+    # The ISIN budget starts once the sources have answered: a slow scanner or search would
+    # otherwise eat the budget before the first lookup and every row would come back without ISIN.
+    deadline = monotonic() + ISIN_DEADLINE_S
 
     if not yahoo_answered and not scanned:
         return {"matches": fallback,

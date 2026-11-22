@@ -314,3 +314,37 @@ class ConcurrencyTests(unittest.TestCase):
         with mock.patch.object(app, "yahoo_matches", side_effect=URLError("offline")):
             alone = app.search("sap", None, 0)
         self.assertIn("notice", alone)
+
+
+class SharedListingTests(unittest.TestCase):
+    """A symbol is asked once, so a group can hold fewer answers than listings - no crash."""
+
+    def test_more_listings_than_answers_do_not_raise(self):
+        """Kody: lead_index returned an index past the padded facts and indexing raised IndexError."""
+        # Three listings, two of them the same symbol, and the lead is the third: dedup leaves one
+        # answer, the old padding against LEAD_LOOKUPS left one fact, and the lead at index 2 read
+        # past it. Measured: this input returns A.DE at index 2.
+        matches = [{"symbol": "A.F", "name": "Firma X", "exchange": "Frankfurt"},
+                   {"symbol": "A.F", "name": "Firma X", "exchange": "Frankfurt"},
+                   {"symbol": "A.DE", "name": "Firma X", "exchange": "XETRA"}]
+        with mock.patch.object(app, "listing_facts", return_value={"currency": "EUR"}):
+            grouped = app.group_matches(matches, 0, path=":memory:")
+        self.assertEqual(1, len(grouped))
+        self.assertEqual("A.DE", grouped[0]["symbol"], "the lead sits past the first answer")
+        self.assertEqual("EUR", grouped[0]["currency"])
+        self.assertEqual(3, len(grouped[0]["listings"]))
+
+    def test_the_isin_budget_starts_after_the_sources_answered(self):
+        """Kody: a slow source ate the budget before the first lookup, so every row lost its ISIN."""
+        def slow_scanner(*_args):
+            time.sleep(0.35)
+            return []
+        with mock.patch.object(app, "scanner_matches", side_effect=slow_scanner), \
+                mock.patch.object(app, "yahoo_matches", return_value=[{"symbol": "OR.PA",
+                                                                       "name": "L'Oreal S.A.",
+                                                                       "exchange": "Paris"}]), \
+                mock.patch.object(app, "ISIN_DEADLINE_S", 0.1), \
+                mock.patch.object(app, "listing_facts", return_value={"currency": "EUR", "country": "France"}), \
+                mock.patch.object(app, "company_isin", return_value="FR0000120321"):
+            result = app.search("loreal", mock.Mock(), 0)
+        self.assertEqual("FR0000120321", result["matches"][0]["isin"])
