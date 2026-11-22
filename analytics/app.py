@@ -582,6 +582,23 @@ def export_notes(symbol):
 
 RISK_WINDOW_DAYS = 756          # three trading years
 RISK_MIN_RETURNS = 61           # below three months a volatility is a guess
+# The number of closes is not a span: a paper listed five months ago can collect 62 of them. The
+# label says three years, so the series has to cover them - 2.5 years leaves room for holidays.
+RISK_MIN_SPAN_DAYS = int(2.5 * 365)
+
+
+def spans_the_years(risk, minimum_days=RISK_MIN_SPAN_DAYS):
+    """Whether a provided risk figure really covers the years its label claims.
+
+    Asked of the secondary source as well: its answer carries `years: 3` while the window it reports
+    ran from 2025-11-21 to 2026-11-20 - one year behind a three-year label.
+    """
+    try:
+        start = date.fromisoformat(str(risk["start"])[:10])
+        end = date.fromisoformat(str(risk["end"])[:10])
+    except (KeyError, TypeError, ValueError):
+        return False
+    return (end - start).days >= minimum_days
 
 
 def price_risk(prices):
@@ -601,6 +618,12 @@ def price_risk(prices):
     returns = [math.log(closes[i][1] / closes[i - 1][1])
                for i in range(1, len(closes)) if closes[i - 1][1] > 0 and closes[i][1] > 0]
     if len(returns) < RISK_MIN_RETURNS:
+        return None
+    try:
+        span = (date.fromisoformat(closes[-1][0]) - date.fromisoformat(closes[0][0])).days
+    except (TypeError, ValueError):
+        return None
+    if span < RISK_MIN_SPAN_DAYS:
         return None
     peak, peak_day = closes[0][1], closes[0][0]
     drawdown, trough_day, trough_peak_day = 0.0, closes[0][0], closes[0][0]
@@ -792,7 +815,8 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
             "price_source": "Yahoo Finance" if rows else None,
             # The page's own closes give the three years its label promises; the secondary source
             # is the fallback for a series too short to say anything.
-            "risk": price_risk(rows) or profile.get("risk"),
+            "risk": (price_risk(rows)
+                     or (profile.get("risk") if spans_the_years(profile.get("risk") or {}) else None)),
             "data_gaps": profile.get("data_gaps") or [],
             "statements_source": profile.get("statements_source")}
 
