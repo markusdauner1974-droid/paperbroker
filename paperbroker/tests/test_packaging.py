@@ -50,13 +50,26 @@ def _names(entries):
     return out
 
 
+# The image needs a WSGI server; anyone who imports the package does not. Such entries belong in
+# requirements.txt (what the container installs) and not in install_requires (what a user installs).
+RUNTIME_ONLY = {"gunicorn"}
+
+
 def test_requirements_txt_and_install_requires_agree():
     lines = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
     wanted = _names([line for line in lines
                      if line.strip() and not line.strip().startswith("#")])
     declared = _names(_setup_kwargs()["install_requires"])
-    missing = sorted(wanted - declared)
+    missing = sorted(wanted - declared - RUNTIME_ONLY)
     assert missing == [], f"declared in requirements.txt but not in setup.py: {missing}"
+
+
+def test_every_runtime_only_entry_is_really_in_requirements():
+    """A stale exception would quietly hide a missing declaration."""
+    lines = (ROOT / "requirements.txt").read_text(encoding="utf-8").splitlines()
+    wanted = _names([line for line in lines
+                     if line.strip() and not line.strip().startswith("#")])
+    assert RUNTIME_ONLY <= wanted, f"declared runtime-only but absent: {sorted(RUNTIME_ONLY - wanted)}"
 
 
 def test_every_shipped_asset_is_covered_by_package_data():

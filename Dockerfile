@@ -38,4 +38,11 @@ EXPOSE 8089
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
   CMD python -c "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8089/healthz', timeout=3)" || exit 1
 
-CMD ["python", "-m", "flask", "--app", "paperbroker.server:create_app()", "run", "--host", "0.0.0.0", "--port", "8089"]
+# A real WSGI server instead of `flask run`, which calls itself a development server on every
+# start. One worker with threads: the process keeps the scanner connection, the listing cache and
+# the ISIN store in memory, so several workers would multiply the requests to Yahoo and Wikidata
+# instead of sharing them. The threads cover the waiting: a search or a statement load blocks only
+# its own request.
+CMD ["gunicorn", "--worker-class", "gthread", "--workers", "1", "--threads", "16", \
+     "--timeout", "120", "--graceful-timeout", "30", "--access-logfile", "-", \
+     "--bind", "0.0.0.0:8089", "paperbroker.server:create_app()"]
