@@ -121,12 +121,13 @@ results.gapReport = {
 const guard = /if\(active\.history_loading\)return;/.test(script);
 const identity = /if\(data!==active\|\|request!==generation\)return;/.test(script);
 results.supplementIsGuarded = guard && identity;
-const autoFetch = new RegExp(
-  "data\\.nas_primary&&data\\.prices\\.length&&" +
-  "\\s*\\n?\\s*\\(!isNum\\(periodReturn\\(data\\.prices,120\\)\\)" +
-  "\\|\\|!isNum\\(lastYearDividends\\(\\)\\)\\)\\)await extendStock\\(\\)"
-).test(script);
+// The page has one state, the complete paper: a NAS row with prices asks for the supplement
+// on every load, not only when a return or the dividends are missing. And there is no way back
+// to the bare scanner row - the button that used to offer it must not come back.
+const autoFetch = /data\.nas_primary&&data\.prices\.length\)await extendStock\(\)/.test(script);
 results.supplementStartsByItself = autoFetch;
+results.noWayBackToTheBareRow = !/Zur Grundansicht/.test(script) &&
+  !/replaceData\(data\.nasBaseline\)/.test(script);
 
 // Every check ranks against its own cutoff row; the quality row is the published one.
 const cutoffStart = script.indexOf("const qualityPercentiles=");
@@ -256,6 +257,25 @@ class PageScriptTest(unittest.TestCase):
         self.assertTrue(report["blockIsRendered"], "the gap block is built but never shown")
         self.assertTrue(report["namesBlockAndYears"], "the gap table lost its columns")
 
+    def test_the_page_has_one_state_the_complete_paper(self):
+        """A NAS row always asks for the supplement, and no button leads back.
+
+        Measured before: a paper the scanner held showed a bare row plus a button that
+        switched the page back to it. Two states for one paper, and the reader had to
+        know which one to pick. Now the supplement starts on every NAS load, and the
+        way back is gone - so the check is on the shipped script, not on a copy.
+        """
+        import os
+        env = {**os.environ, "PAGE_PATH": str(PAGE)}
+        run = subprocess.run(["node", "-e", HARNESS],
+                             capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(run.returncode, 0, run.stderr[-800:])
+        result = json.loads(run.stdout)
+        self.assertTrue(result["supplementStartsByItself"],
+                        "a NAS row with prices does not always ask for the supplement")
+        self.assertTrue(result["noWayBackToTheBareRow"],
+                        "the page still offers a way back to the bare scanner row")
+
     def test_quarter_window_and_benchmark_loading_state(self):
         import os
         env = {**os.environ, "PAGE_PATH": str(PAGE)}
@@ -275,6 +295,8 @@ class PageScriptTest(unittest.TestCase):
         self.assertTrue(result["supplementIsGuarded"], "the Yahoo supplement is not protected against double runs")
         self.assertTrue(result["supplementStartsByItself"],
                         "the supplement does not start by itself for a NAS quote without history")
+        self.assertTrue(result["noWayBackToTheBareRow"],
+                        "the page still offers a way back to the bare scanner row")
         self.assertEqual(result["cutoffRows"], [15, 15, 15, 15],
                          "every check needs fifteen cutoffs")
         self.assertEqual(result["qualityRow"],

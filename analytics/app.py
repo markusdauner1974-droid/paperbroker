@@ -1177,7 +1177,7 @@ def with_statements(result, bucket):
 
 
 @lru_cache(maxsize=32)
-def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
+def _stock_extra_cached(symbol, bucket, cutoff, currency, history_only=False):
     ticker = yf.Ticker(symbol)
     issues = []
     rows = []
@@ -1214,6 +1214,42 @@ def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
                      or (profile.get("risk") if spans_the_years(profile.get("risk") or {}) else None)),
             "data_gaps": profile.get("data_gaps") or [],
             "statements_source": profile.get("statements_source")}
+
+
+_EXTRA_GUARD = Lock()
+_EXTRA_LOCKS = {}
+
+
+def stock_extra(symbol, bucket, cutoff, currency, history_only=False):
+    """The Yahoo supplement of one ticker, downloaded once for concurrent callers.
+
+    ``lru_cache`` alone does not coalesce concurrent cold calls: N requests for the same
+    ticker would each run ``yf.Ticker(...).history(period="max")`` beside each other, which
+    is the concurrency hole ``prices()`` closes with its per-key Flight. The page now asks
+    for the supplement on every NAS load (one view, the complete one), so the same ticker
+    can be asked for twice in a row - by two tabs, a reload, or a reader clicking the
+    ticker again. The lock is per key, so different tickers still load in parallel.
+    """
+    key = (symbol, bucket, cutoff, currency, history_only)
+    with _EXTRA_GUARD:
+        flight = _EXTRA_LOCKS.setdefault(key, Flight())
+        flight.waiting += 1
+    try:
+        with flight.lock:
+            # Inside the lock the cache decides: the first caller downloads, the others find
+            # their answer there and spend no request.
+            return _stock_extra_cached(symbol, bucket, cutoff, currency, history_only)
+    finally:
+        with _EXTRA_GUARD:
+            flight.waiting -= 1
+            if flight.waiting <= 0:
+                _EXTRA_LOCKS.pop(key, None)
+
+
+# The cache helpers stay reachable under the public name: the NAS check list clears the
+# cache between its cases, and a test that swaps the cache would otherwise test nothing.
+stock_extra.cache_clear = _stock_extra_cached.cache_clear  # type: ignore[attr-defined]
+stock_extra.cache_info = _stock_extra_cached.cache_info  # type: ignore[attr-defined]
 
 
 class Handler(BaseHTTPRequestHandler):
