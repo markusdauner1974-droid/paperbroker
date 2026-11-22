@@ -2,6 +2,7 @@ import json
 import math
 import os
 import re
+import socket
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
@@ -9,7 +10,7 @@ from datetime import date, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from threading import Lock
+from threading import BoundedSemaphore, Lock
 from time import monotonic, time
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, quote, urlsplit
@@ -477,6 +478,25 @@ def lead_index(listings, facts):
     return 0
 
 
+# How many listings may be asked from Yahoo at the same time - per request and, through the gate
+# below, in the whole process: four page requests at once must not multiply the lookups into four
+# times six. A search holds a slot only while it waits for Yahoo.
+FACT_WORKERS = 6
+FACT_GATE = BoundedSemaphore(FACT_WORKERS)
+# `Ticker.get_info()` takes no timeout of its own. A stalled connection would hold a thread - and a
+# gate slot - for good, and with four request threads that is the whole server. Two guards: every
+# lookup is awaited with this limit, and sockets created from here on give up by themselves.
+FACT_TIMEOUT_S = 8
+
+socket.setdefaulttimeout(FACT_TIMEOUT_S)
+
+
+def gated_facts(symbol, bucket):
+    """listing_facts behind the process-wide gate."""
+    with FACT_GATE:
+        return listing_facts(symbol, bucket)
+
+
 @lru_cache(maxsize=256)
 def listing_facts(symbol, bucket):
     """Currency, daily volume and ISIN of one listing - three figures, no statements.
@@ -589,7 +609,6 @@ def company_isin(name, country, path=None):
 # more. So they are asked one at a time and never past the deadline: the answer is stored, the next
 # search continues where this one stopped.
 ISIN_DEADLINE_S = 2.0
-FACT_WORKERS = 6          # listings asked from Yahoo at the same time
 
 
 def verified_isin(raw, name, country, path=None):
@@ -658,8 +677,20 @@ def group_matches(matches, bucket, lookup=True, path=None, deadline=None):
     # Six at a time: enough to keep a search short, few enough that Yahoo does not answer with 429.
     # The same symbol is asked once - two groups can carry the same listing.
     if work:
-        with ThreadPoolExecutor(max_workers=FACT_WORKERS) as pool:
-            answers = list(pool.map(lambda item: listing_facts(item[1]["symbol"], bucket), work))
+        # Not a `with` block: its exit waits for every task, which would undo the limit below. A
+        # listing that did not answer in time shows no figures instead of holding the search.
+        pool = ThreadPoolExecutor(max_workers=FACT_WORKERS)
+        try:
+            running = {item[1]["symbol"]: pool.submit(gated_facts, item[1]["symbol"], bucket)
+                       for item in work}
+            answers = []
+            for item in work:
+                try:
+                    answers.append(running[item[1]["symbol"]].result(timeout=FACT_TIMEOUT_S))
+                except Exception:
+                    answers.append({})
+        finally:
+            pool.shutdown(wait=False, cancel_futures=True)
         by_symbol = {item[1]["symbol"]: answer for item, answer in zip(work, answers, strict=True)}
     else:
         by_symbol = {}

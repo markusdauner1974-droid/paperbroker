@@ -7,3 +7,6 @@ yfinance>=1.4.1,<2
 beautifulsoup4>=4.11,<5
 # Die Kennzahlen der Originalberichte kommen als XLSX; gelesen wird sie im selben Prozess.
 openpyxl>=3.1,<4
+# Production WSGI server for the container. `flask run` announces itself as a development
+# server on every start and is not meant to serve anyone.
+gunicorn>=21,<24
