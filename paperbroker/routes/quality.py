@@ -174,6 +174,19 @@ def font(name: str) -> Response:
                     headers={"Cache-Control": "public, max-age=604800"})
 
 
+def _with_quarters(akt, symbol: str, result: dict) -> dict:
+    """The answer plus the twelve month growth from the second quarterly source.
+
+    The delivered dispatcher (``analytics/app.py``) reads this where it answers ``/api/stock``; the
+    embedded one calls the functions itself, so the step has to be repeated here or the page gets no
+    ``ttm_growth`` at all and the two TTM rows and both financing rows stay empty. A new dict every
+    time: ``stock()`` is cached, and writing into the cached object would hand that answer to every
+    later caller.
+    """
+    return {**result,
+            "ttm_growth": akt.long_quarterly_growth(symbol, result.get("statements") or {})}
+
+
 def api(name: str):
     """One data endpoint of the block, under the same name as before.
 
@@ -234,12 +247,13 @@ def api(name: str):
                                       price_source="Yahoo Finance",
                                       quote_source="Yahoo Finance",
                                       issues=["Keine NAS-Tageskurse für diesen Ticker."])
-                    return jsonify(result)
+                    return jsonify(_with_quarters(akt, symbol, result))
                 result = akt.stock(symbol, bucket)
-                return jsonify({**result,
-                                "issues": ["Keine NAS-Tageskurse für diesen Ticker.",
-                                           *result["issues"]]})
-            return jsonify(akt.stock(symbol, bucket))
+                return jsonify(_with_quarters(akt, symbol, {
+                    **result,
+                    "issues": ["Keine NAS-Tageskurse für diesen Ticker.",
+                               *result["issues"]]}))
+            return jsonify(_with_quarters(akt, symbol, akt.stock(symbol, bucket)))
 
         if name == "stock-batch":
             symbols = _symbols(15)
@@ -284,13 +298,22 @@ def api(name: str):
                 try:
                     if series is not None:
                         values = rows[symbol]
-                        if not values:
-                            return {"symbol": symbol, "error": "Kursreihe fehlt im NAS-Bestand."}
-                        raw = fundamentals.get(symbol)
-                        info = akt.nas_info(raw, {}) if isinstance(raw, dict) else {}
+                        if values:
+                            raw = fundamentals.get(symbol)
+                            info = akt.nas_info(raw, {}) if isinstance(raw, dict) else {}
+                            return {"symbol": symbol,
+                                    **akt.nas_price_series(symbol, values, info.get("currency"),
+                                                           bucket)}
+                        # The scanner tracks a fixed set of indices - the DAX and SPY - so an index
+                        # of another market is not an error there, it is simply not its business.
+                        # The comparison is the caller's question, so the other source is asked
+                        # before the row is given up.
+                        elsewhere = akt.prices(symbol, bucket)
+                        if elsewhere:
+                            return {"symbol": symbol, "prices": elsewhere,
+                                    "price_source": "Yahoo Finance"}
                         return {"symbol": symbol,
-                                **akt.nas_price_series(symbol, values, info.get("currency"),
-                                                       bucket)}
+                                "error": "Kursreihe fehlt im NAS-Bestand und bei Yahoo Finance."}
                     return {"symbol": symbol, "prices": akt.prices(symbol, bucket),
                             "price_source": "Yahoo Finance"}
                 except Exception:
