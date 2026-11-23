@@ -41,6 +41,9 @@ def _fake(**overrides):
         price_jumps=lambda rows: [],
         nas_info=record("nas_info", {}),
         nas_price_series=record("nas_price_series", {"symbol": "AAPL", "prices": []}),
+        long_quarterly_growth=record("long_quarterly_growth",
+                                     {"revenue": 0.0792, "eps": 0.144, "periods": 20,
+                                      "revenue_total": 3.9e10, "operating_income_total": 1.1e10}),
     )
     for name, value in overrides.items():
         setattr(module, name, value)
@@ -143,6 +146,39 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(200, response.status_code)
         self.assertEqual("AAPL", response.get_json()["symbol"])
         self.assertEqual("stock", calls[0][0])
+
+    def test_the_stock_answer_carries_the_second_source_growth(self):
+        """Without it the two TTM rows and both financing rows stay empty on the page."""
+        akt, scanner, calls = self._with_fakes()
+        with akt, scanner:
+            response = self.client.get("/qualitaet/api/stock?q=AAPL")
+        growth = response.get_json()["ttm_growth"]
+        self.assertEqual(0.0792, growth["revenue"])
+        self.assertEqual(3.9e10, growth["revenue_total"])
+        self.assertIn(("long_quarterly_growth", ("AAPL", {}), {}), calls)
+
+    def test_a_scanner_hit_carries_it_too(self):
+        module, _calls = _fake()
+        module.nas_stocks = lambda *args, **kwargs: [
+            {"symbol": "AAPL", "prices": [[1, 2, 3, 4]], "issues": [], "statements": {"q": 1}}]
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: object()):
+            response = self.client.get("/qualitaet/api/stock?q=AAPL")
+        self.assertIn("ttm_growth", response.get_json())
+        self.assertEqual({"q": 1}, response.get_json()["statements"])
+
+    def test_the_cached_answer_is_not_written_into(self):
+        """stock() is cached: the growth belongs to a copy, not to the stored object."""
+        module, _calls = _fake()
+        cached = {"symbol": "AAPL", "prices": [[1, 2, 3, 4]], "issues": []}
+        module.stock = lambda *args, **kwargs: cached
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: None):
+            first = self.client.get("/qualitaet/api/stock?q=AAPL")
+            second = self.client.get("/qualitaet/api/stock?q=AAPL")
+        self.assertIn("ttm_growth", first.get_json())
+        self.assertIn("ttm_growth", second.get_json())
+        self.assertNotIn("ttm_growth", cached, "das zwischengespeicherte Objekt bleibt unberührt")
 
     def test_two_tickers_where_one_belongs_are_refused(self):
         akt, scanner, _ = self._with_fakes()
