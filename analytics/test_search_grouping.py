@@ -147,6 +147,48 @@ class SearchSourcesTests(unittest.TestCase):
         self.assertEqual([], result["matches"])
         self.assertIn("offline", result["notice"])
 
+    def test_an_unknown_name_is_not_called_an_outage(self):
+        """The sources answered and know nothing - that is not the same as being offline.
+
+        Before, every name without a hit got the outage text, which sends the reader looking for a
+        bug that is not there.
+        """
+        with mock.patch.object(app, "yahoo_matches", return_value=[]):
+            result = app.search("qwertzuiop", None, 0)
+        self.assertEqual([], result["matches"])
+        self.assertNotIn("offline", result["notice"])
+        self.assertIn("qwertzuiop", result["notice"])
+
+    def test_a_german_name_is_asked_again_without_umlauts(self):
+        """Measured: "Münchener Rück" returns nothing from Yahoo, "Muenchener Rueck" seven rows."""
+        asked = []
+        def answering(query):
+            asked.append(query)
+            return [] if "ü" in query else [{"symbol": "MUV2.DE", "name": "Münchener Rückversicherungs-Gesellschaft",
+                                             "exchange": "XETRA"}]
+        with mock.patch.object(app, "yahoo_matches", side_effect=answering), \
+                mock.patch.object(app, "group_matches",
+                                  side_effect=lambda rows, *a, **k: [{"symbol": row["symbol"],
+                                                                      "listings": [row]} for row in rows]):
+            result = app.search("Münchener Rück", None, 0)
+        self.assertEqual(["Münchener Rück", "Muenchener Rueck"], asked,
+                         "the umlaut form must be asked first, the plain one only as a retry")
+        self.assertEqual(["MUV2.DE"], [row["symbol"] for row in result["matches"]])
+        self.assertNotIn("notice", result)
+
+    def test_a_known_umlaut_name_keeps_its_own_answer(self):
+        """The retry must not run when the first question was answered."""
+        asked = []
+        def answering(query):
+            asked.append(query)
+            return [{"symbol": "SZU.DE", "name": "Südzucker AG", "exchange": "XETRA"}]
+        with mock.patch.object(app, "yahoo_matches", side_effect=answering), \
+                mock.patch.object(app, "group_matches",
+                                  side_effect=lambda rows, *a, **k: [{"symbol": row["symbol"],
+                                                                      "listings": [row]} for row in rows]):
+            app.search("Südzucker", None, 0)
+        self.assertEqual(["Südzucker"], asked)
+
 
 class SameIsinTests(unittest.TestCase):
     """One ISIN, one row - measured: "apple" gave AAPL and APC.DE, both US0378331005."""

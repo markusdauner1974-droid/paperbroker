@@ -781,6 +781,18 @@ def yahoo_matches(query):
     return matches
 
 
+def plain_query(query):
+    """The same name without umlauts: "Münchener Rück" -> "Muenchener Rueck".
+
+    Measured against Yahoo's search: the umlaut spelling of a German company returns nothing
+    ("Münchener Rück", "Müller"), while the transliteration finds it (seven rows, MUV2.DE first).
+    The umlaut form is asked first, so a name Yahoo does know keeps its exact answer.
+    """
+    return (query or "").translate({ord("ä"): "ae", ord("ö"): "oe", ord("ü"): "ue",
+                                    ord("Ä"): "Ae", ord("Ö"): "Oe", ord("Ü"): "Ue",
+                                    ord("ß"): "ss"})
+
+
 def search(query, nas=None, bucket=None):
     """One row per company, whichever source knows it.
 
@@ -793,19 +805,32 @@ def search(query, nas=None, bucket=None):
     """
     normalized = query.upper()
     fallback = [SAP] if normalized in {"SAP", "SAP SE", "SAP.DE", "DE0007164600", "716460"} else []
+    failure = None
     with ThreadPoolExecutor(max_workers=2) as pool:
         scanner_job = pool.submit(scanner_matches, query, nas)
         try:
             found = yahoo_matches(query)
             yahoo_answered = True
-        except Exception:
-            found, yahoo_answered = [], False
+        except Exception as error:
+            found, yahoo_answered, failure = [], False, error
+        if yahoo_answered and not found:
+            # A German name with umlauts is often unknown to Yahoo's search in that spelling.
+            plain = plain_query(query)
+            if plain != query:
+                try:
+                    found = yahoo_matches(plain)
+                except Exception:
+                    pass          # the umlaut form answered; a failing retry adds nothing
         scanned = scanner_job.result()
     # The ISIN budget starts once the sources have answered: a slow scanner or search would
     # otherwise eat the budget before the first lookup and every row would come back without ISIN.
     deadline = monotonic() + ISIN_DEADLINE_S
 
     if not yahoo_answered and not scanned:
+        # The log has to name the reason: without it "offline" is a guess, and the reader cannot
+        # tell a blocked feed from a Yahoo that answered with nothing.
+        print(f"Namenssuche: Yahoo antwortete nicht ({type(failure).__name__}: {failure}).",
+              flush=True)
         return {"matches": fallback,
                 "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
     rows = found if yahoo_answered else []
@@ -820,8 +845,11 @@ def search(query, nas=None, bucket=None):
     # "apple" answered AAPL from Yahoo and APC.DE from the scanner, the same ISIN twice.
     groups = merge_same_isin(groups)
     if not groups:
+        # The sources answered and know nothing by that name - that is not an outage, and calling it
+        # one sends the reader looking for a bug that is not there.
         return {"matches": fallback,
-                "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
+                "notice": f"Keine Quelle kennt eine Aktie namens „{query}“. "
+                          "Ein Börsenticker lässt sich direkt eingeben."}
     # The label says who answered: a fallback row must not be sold as a Yahoo answer.
     source = [label for label, used in (("xang auf NAS", scanned),
                                         ("Yahoo Finance", yahoo_answered and found)) if used]
