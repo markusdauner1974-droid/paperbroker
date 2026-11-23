@@ -37,6 +37,8 @@ TABLE = """
     <td>9,000</td><td>8,000</td><td>7,500</td><td>7,500</td><td>-</td></tr>
 <tr><th>EPS (Diluted)</th><td>2.40</td><td>2.00</td><td>1.90</td><td>1.70</td>
     <td>1.80</td><td>1.60</td><td>1.50</td><td>1.50</td><td>1.40</td></tr>
+<tr><th>Operating Income</th><td>3,600</td><td>3,000</td><td>2,850</td><td>2,550</td>
+    <td>2,700</td><td>2,400</td><td>2,250</td><td>2,250</td><td>-</td></tr>
 </table>
 """
 
@@ -47,6 +49,7 @@ HALF_YEARS = """
     <td>Jun 30, 2025</td><td>Dec 31, 2024</td></tr>
 <tr><th>Revenue</th><td>24,000</td><td>22,000</td><td>22,000</td><td>20,000</td></tr>
 <tr><th>EPS (Diluted)</th><td>2.20</td><td>2.00</td><td>2.00</td><td>1.80</td></tr>
+<tr><th>Operating Income</th><td>5,200</td><td>4,800</td><td>4,400</td><td>4,000</td></tr>
 </table>
 """
 
@@ -109,6 +112,24 @@ class GrowthTests(unittest.TestCase):
         growth = stockanalysis.twelve_month_growth(stockanalysis.parse(TABLE))
         self.assertAlmostEqual(growth["eps"], (2.4 + 2.0 + 1.9 + 1.7) / (1.8 + 1.6 + 1.5 + 1.5) - 1,
                                places=6)
+
+    def test_the_operating_income_is_read_with_the_other_figures(self):
+        periods = stockanalysis.parse(TABLE)
+        self.assertEqual(periods[0]["operating_income"], 3600.0)
+        self.assertIsNone(periods[-1]["operating_income"])
+
+    def test_the_twelve_month_sums_are_whole_currency_units(self):
+        """The site publishes millions; a balance sheet figure is divided in whole units."""
+        growth = stockanalysis.twelve_month_growth(stockanalysis.parse(TABLE))
+        self.assertEqual(growth["revenue_total"], 40_000 * stockanalysis.MILLIONS)
+        self.assertEqual(growth["operating_income_total"], (3600 + 3000 + 2850 + 2550)
+                         * stockanalysis.MILLIONS)
+
+    def test_the_sums_survive_a_missing_comparison_window(self):
+        """Four quarters carry no growth, but the twelve month total is still there."""
+        growth = stockanalysis.twelve_month_growth(stockanalysis.parse(TABLE)[:4])
+        self.assertIsNone(growth["revenue"])
+        self.assertEqual(growth["revenue_total"], 40_000 * stockanalysis.MILLIONS)
 
     def test_half_years_are_compared_two_against_two(self):
         growth = stockanalysis.twelve_month_growth(stockanalysis.parse(HALF_YEARS))
@@ -201,16 +222,18 @@ class BackgroundTests(unittest.TestCase):
             self.assertTrue(first)
             self.assertFalse(second, "ein zweiter Anlauf für denselben Ticker darf nicht starten")
             gate.set()
+            # Give the writer the file first: the poll itself opens the store, and a tight loop of
+            # readers starves the one write we are waiting for.
             stored = None
-            for _ in range(60):
+            for _ in range(20):
+                time.sleep(0.25)
                 try:
                     with store.connect(path) as conn:
                         stored = store.read_quarterly_source(conn, "SAP.DE")
                 except sqlite3.OperationalError:
-                    stored = None
+                    continue
                 if stored:
                     break
-                time.sleep(0.1)
             self.assertTrue(stored, "der Hintergrundlauf muss die Reihe ablegen")
             self.assertEqual(started, ["SAP.DE"])
         finally:
@@ -250,6 +273,54 @@ class StoreTests(unittest.TestCase):
             self.assertEqual([row["period_end"] for row in back],
                              [row["period_end"] for row in periods])
             self.assertIsNone(store.read_quarterly_source(conn, "SAP.DE", max_age_h=0))
+            self.assertEqual(back[0]["operating_income"], 3600.0)
+
+    def test_a_store_written_before_the_operating_income_gains_the_column(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "old.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+            conn.execute("INSERT INTO quarterly_source VALUES ('SAP.DE','2026-09-30','Q3 2026',10270,1.94,'2026-11-23T00:00:00Z')")
+        with store.connect(path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(quarterly_source)")}
+            self.assertIn("operating_income", columns, "die Spalte muss beim Öffnen ergänzt werden")
+            kept = store.read_quarterly_source(conn, "SAP.DE")
+            self.assertEqual(kept[0]["revenue"], 10270.0, "die vorhandenen Zeilen bleiben")
+            self.assertIsNone(kept[0]["operating_income"])
+
+
+class StaleSeriesTests(unittest.TestCase):
+    def test_a_series_without_operating_income_is_read_again(self):
+        """A week-old row set from before the column existed must not block the new figures."""
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        old_rows = [{"period_end": row["period_end"], "label": row["label"],
+                     "revenue": row["revenue"], "eps": row["eps"], "operating_income": None}
+                    for row in stockanalysis.parse(TABLE)]
+        store.write_quarterly_source("SAP.DE", old_rows, path)
+        original = stockanalysis.fetch
+        calls = []
+
+        def fake_fetch(symbol, budget_s=None):
+            calls.append(symbol)
+            return stockanalysis.parse(TABLE)
+
+        stockanalysis.fetch = fake_fetch
+        try:
+            fresh = stockanalysis.series("SAP.DE", store, path)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(calls, ["SAP.DE"], "die veraltete Reihe muss neu geholt werden")
+        self.assertIsNotNone(fresh[0]["operating_income"])
 
 
 class OwnDataWinsTests(unittest.TestCase):

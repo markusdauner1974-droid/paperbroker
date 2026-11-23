@@ -89,12 +89,13 @@ CREATE TABLE IF NOT EXISTS price (
     PRIMARY KEY (symbol, day)
 );
 CREATE TABLE IF NOT EXISTS quarterly_source (
-    symbol     TEXT,
-    period_end TEXT,
-    label      TEXT,
-    revenue    REAL,
-    eps        REAL,
-    fetched_at TEXT NOT NULL,
+    symbol           TEXT,
+    period_end       TEXT,
+    label            TEXT,
+    revenue          REAL,
+    eps              REAL,
+    operating_income REAL,
+    fetched_at       TEXT NOT NULL,
     PRIMARY KEY (symbol, period_end)
 );
 """
@@ -128,6 +129,8 @@ def connect(path=None) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _add_column(conn, "filing", "released", "TEXT")
     _add_column(conn, "company", "provider_id", "INTEGER")
+    # A store written before the operating income was read keeps its rows and gains the column.
+    _add_column(conn, "quarterly_source", "operating_income", "REAL")
     conn.commit()
     return conn
 
@@ -469,9 +472,11 @@ def write_quarterly_source(symbol, periods, path=None):
     with closing(connect(path)) as conn:
         conn.execute("DELETE FROM quarterly_source WHERE symbol = ?", (symbol,))
         conn.executemany(
-            """INSERT OR REPLACE INTO quarterly_source (symbol, period_end, label, revenue, eps, fetched_at)
-               VALUES (?, ?, ?, ?, ?, ?)""",
-            [(symbol, row["period_end"], row.get("label"), row.get("revenue"), row.get("eps"), stamp)
+            """INSERT OR REPLACE INTO quarterly_source
+                   (symbol, period_end, label, revenue, eps, operating_income, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+            [(symbol, row["period_end"], row.get("label"), row.get("revenue"), row.get("eps"),
+              row.get("operating_income"), stamp)
              for row in periods],
         )
         conn.commit()
@@ -485,9 +490,10 @@ def read_quarterly_source(conn, symbol, max_age_h: float = 168):
     if not row or not row[0] or age_hours(row[0]) > max_age_h:
         return None
     rows = conn.execute(
-        """SELECT period_end, label, revenue, eps FROM quarterly_source
+        """SELECT period_end, label, revenue, eps, operating_income FROM quarterly_source
            WHERE symbol = ? ORDER BY period_end DESC""", (symbol,)).fetchall()
     if not rows:
         return None
     return [{"period_end": item["period_end"], "label": item["label"],
-             "revenue": item["revenue"], "eps": item["eps"]} for item in rows]
+             "revenue": item["revenue"], "eps": item["eps"],
+             "operating_income": item["operating_income"]} for item in rows]

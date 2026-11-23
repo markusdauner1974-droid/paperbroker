@@ -49,6 +49,9 @@ US = ""
 
 ROW_REVENUE = "Revenue"
 ROW_EPS = "EPS (Diluted)"
+ROW_OPERATING = "Operating Income"
+#: The site publishes its tables in millions; the page works in whole currency units.
+MILLIONS = 1_000_000
 DATE_TEXT = re.compile(r"([A-Z][a-z]{2}) (\d{1,2}), (\d{4})")
 MONTHS = {name: number for number, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1)}
@@ -124,13 +127,14 @@ def parse(page: str) -> list[dict]:
             break
     revenue = next((row[1:] for row in rows if row[0] == ROW_REVENUE), None)
     eps = next((row[1:] for row in rows if row[0] == ROW_EPS), None)
+    operating = next((row[1:] for row in rows if row[0] == ROW_OPERATING), None)
     if revenue is None and eps is None:
         return []
     # Every column is read by its position. A header with a colspan, an extra leading cell or a note
     # column would shift the figures against their dates without ever raising - a growth figure that
     # looks right and is not. Rows that do not line up are refused instead of matched.
     width = len(labels)
-    for row in (ends, revenue, eps):
+    for row in (ends, revenue, eps, operating):
         if row is not None and len(row) != width:
             return []
     periods = []
@@ -145,6 +149,8 @@ def parse(page: str) -> list[dict]:
             "label": labels[index] if index < len(labels) else "",
             "revenue": number(revenue[index]) if revenue and index < len(revenue) else None,
             "eps": number(eps[index]) if eps and index < len(eps) else None,
+            "operating_income": (number(operating[index])
+                                 if operating and index < len(operating) else None),
         })
     periods.sort(key=lambda row: row["period_end"], reverse=True)
     return periods
@@ -186,7 +192,9 @@ def series(symbol: str, store_module=None, path=None,
         return fetch(symbol, budget_s)
     with closing(store_module.connect(path)) as conn:
         stored = store_module.read_quarterly_source(conn, symbol, MAX_AGE_H)
-    if stored:
+    # A series stored before the operating income was read carries none of it. It is still fresh by
+    # age, so age alone would keep the two financing rows empty for a week after the deploy.
+    if stored and any(row.get("operating_income") is not None for row in stored):
         return stored
     periods = fetch(symbol, budget_s)
     store_module.write_quarterly_source(symbol, periods, path)
@@ -257,7 +265,8 @@ def twelve_month_growth(periods: list[dict]) -> dict:
     series does not carry it. Nothing is filled in from a shorter window: a twelve month figure
     built from nine months reads as a fact and is not one.
     """
-    answer = {"revenue": None, "eps": None, "periods": len(periods), "step_days": None}
+    answer = {"revenue": None, "eps": None, "periods": len(periods), "step_days": None,
+              "revenue_total": None, "operating_income_total": None}
     step = _step_days(periods)
     if step is None:
         return answer
@@ -265,7 +274,7 @@ def twelve_month_growth(periods: list[dict]) -> dict:
     count = 4 if step < 130 else 2
     now = _window(periods, 0, count, step)
     before = _window(periods, count, count, step)
-    if not now or not before:
+    if not now:
         return answer
 
     def total(chunk, key):
@@ -275,10 +284,17 @@ def twelve_month_growth(periods: list[dict]) -> dict:
         return sum(values)
 
     for key in ("revenue", "eps"):
+        if before is None:
+            continue
         present, earlier = total(now, key), total(before, key)
         if present is None or earlier is None or earlier <= 0:
             continue
         answer[key] = present / earlier - 1
+    # The two sums the page divides by a balance sheet figure. Kept apart from the growth: a window
+    # can be too short for a comparison and still carry a usable twelve month total.
+    for key, name in (("revenue", "revenue_total"), ("operating_income", "operating_income_total")):
+        present = total(now, key)
+        answer[name] = present * MILLIONS if present is not None else None
     return answer
 
 

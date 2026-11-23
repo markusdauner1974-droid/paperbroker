@@ -485,6 +485,16 @@ function buildChecks(stock,benchmark=[],only=selected){
   const ttmGrowth=data.ttm_growth||null;
   const ttmRevGrowth=growth(ttmRev,sumQuarters(sales,4));
   const ttmEPSGrowth=growth(ttmEPS,sumQuarters(eps,4));
+  // Without its own quarterly series the page has no twelve month revenue at all. The second source
+  // keeps twenty periods and carries its sums in whole currency units, so they can be divided by a
+  // balance sheet figure. Own quarters always win.
+  const secondSource=ttmGrowth&&!ttmGrowth.reason?ttmGrowth:null;
+  const ttmRevenue=isNum(ttmRev)?ttmRev:(secondSource&&isNum(secondSource.revenue_total)?secondSource.revenue_total:null);
+  const ttmOperatingIncome=secondSource&&isNum(secondSource.operating_income_total)?secondSource.operating_income_total:null;
+  const ttmGrowthRate=isNum(ttmRevGrowth)?ttmRevGrowth:(secondSource&&isNum(secondSource.revenue)?secondSource.revenue:null);
+  // Own quarters first: one margin figure should not mix two providers. The second source steps in
+  // only where the own series has no operating income over four quarters.
+  const operatingIncomeTTM=(fromSecond,own)=>isNum(own)?own:(isNum(fromSecond)?fromSecond:null);
   const weekly=calendarCloseGroups(rows,"week");
   const dailyVol=n=>{
     if(rows.length<=n)return null;
@@ -627,9 +637,10 @@ function buildChecks(stock,benchmark=[],only=selected){
       p("Kursstabilität 12 Monate (R²)",lineStability(12),0,.60,1)]],
     ["Finanzierbarkeit",[
       n("Börsenwert / Finanzschulden",sameCurrency?division(i.marketCap,debt):null,0,3,25),
-      n("Umsatz TTM / Finanzschulden",division(ttmRev,debt),0,2,15),
-      p("Rule of 40 (TTM, operative Marge)",compareValues(ttmRevGrowth,
-        division(sumQuarters(row=>v(row,"OperatingIncome"),0),ttmRev),(x,y)=>x+y),-.20,.40,.90)]],
+      n("Umsatz TTM / Finanzschulden",division(ttmRevenue,debt),0,2,15),
+      p("Rule of 40 (TTM, operative Marge)",compareValues(ttmGrowthRate,
+        division(operatingIncomeTTM(ttmOperatingIncome,sumQuarters(row=>v(row,"OperatingIncome"),0)),
+          ttmRevenue),(x,y)=>x+y),-.20,.40,.90)]],
     ["Bewertung",[bandCheck("KUV TTM",i.priceToSalesTrailing12Months,.1,8)]]];
     default:{
       const years=calendarCloseGroups(rows,"year");
@@ -780,8 +791,17 @@ const usUniverse="AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,KO,XOM,WMT";
 const deUniverse="SAP.DE,SIE.DE,ALV.DE,DTE.DE,ADS.DE,MBG.DE,IFX.DE,BAS.DE,DB1.DE,RWE.DE";
 const checkBenchmark={symbol:"",rows:[],message:"",loading:false,request:0};
 let activeRanking=null;
+// The index a paper is measured against, by listing place. Measured 23.11.2026: every one of these
+// delivers through /api/compare. A suffix that is not listed here gets no index - the four benchmark
+// criteria then stay open instead of being compared against the wrong market.
+const benchmarkBySuffix={
+  ".DE":"^GDAXI",".F":"^GDAXI",".PA":"^FCHI",".AS":"^AEX",".MI":"FTSEMIB.MI",".MC":"^IBEX",
+  ".L":"^FTSE",".SW":"^SSMI",".VI":"^ATX",".ST":"^OMX",".CO":"^OMXC25",".OL":"^OSEAX",
+  ".HE":"^OMXH25",".BR":"^BFX",".LS":"PSI20.LS"};
 function defaultBenchmark(stock){
-  if(stock.symbol.endsWith(".DE"))return "^GDAXI";
+  const dot=stock.symbol.lastIndexOf(".");
+  const suffix=dot>0?"."+stock.symbol.slice(dot+1).toUpperCase():"";
+  if(benchmarkBySuffix[suffix])return benchmarkBySuffix[suffix];
   if(stock.nas_primary&&stock.info.currency==="USD"&&!stock.symbol.includes("."))return "SPY";
   if(/NASDAQ|NYSE|NMS|NYQ|NCM|NGM|AMEX/i.test(stock.info.fullExchangeName||stock.info.exchange||"")&&stock.info.currency==="USD")return "^GSPC";
   return "";
