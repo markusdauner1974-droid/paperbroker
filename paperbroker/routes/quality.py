@@ -298,13 +298,22 @@ def api(name: str):
                 try:
                     if series is not None:
                         values = rows[symbol]
-                        if not values:
-                            return {"symbol": symbol, "error": "Kursreihe fehlt im NAS-Bestand."}
-                        raw = fundamentals.get(symbol)
-                        info = akt.nas_info(raw, {}) if isinstance(raw, dict) else {}
+                        if values:
+                            raw = fundamentals.get(symbol)
+                            info = akt.nas_info(raw, {}) if isinstance(raw, dict) else {}
+                            return {"symbol": symbol,
+                                    **akt.nas_price_series(symbol, values, info.get("currency"),
+                                                           bucket)}
+                        # The scanner tracks a fixed set of indices - the DAX and SPY - so an index
+                        # of another market is not an error there, it is simply not its business.
+                        # The comparison is the caller's question, so the other source is asked
+                        # before the row is given up.
+                        elsewhere = akt.prices(symbol, bucket)
+                        if elsewhere:
+                            return {"symbol": symbol, "prices": elsewhere,
+                                    "price_source": "Yahoo Finance"}
                         return {"symbol": symbol,
-                                **akt.nas_price_series(symbol, values, info.get("currency"),
-                                                       bucket)}
+                                "error": "Kursreihe fehlt im NAS-Bestand und bei Yahoo Finance."}
                     return {"symbol": symbol, "prices": akt.prices(symbol, bucket),
                             "price_source": "Yahoo Finance"}
                 except Exception:

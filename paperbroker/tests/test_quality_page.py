@@ -210,6 +210,32 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(2, len(response.get_json()["series"]))
         self.assertEqual("AAPL", response.get_json()["series"][0]["symbol"])
 
+    def test_an_index_the_scanner_does_not_track_is_asked_elsewhere(self):
+        """The scanner holds the DAX and SPY; a CAC series still has to reach the page."""
+        module, calls = _fake()
+        scanner = SimpleNamespace(histories=lambda symbols: {s: [] for s in symbols},
+                                  fundamentals=lambda symbols: {})
+        module.prices = lambda symbol, bucket: [["2026-11-20", 1], ["2026-11-21", 2]] \
+            if symbol == "^FCHI" else []
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: scanner):
+            response = self.client.get("/qualitaet/api/compare?q=%5EFCHI")
+        series = response.get_json()["series"][0]
+        self.assertEqual("^FCHI", series["symbol"])
+        self.assertEqual(2, len(series["prices"]))
+        self.assertEqual("Yahoo Finance", series["price_source"])
+        self.assertNotIn("error", series)
+
+    def test_a_series_nobody_has_still_says_so(self):
+        module, _calls = _fake()
+        scanner = SimpleNamespace(histories=lambda symbols: {s: [] for s in symbols},
+                                  fundamentals=lambda symbols: {})
+        module.prices = lambda symbol, bucket: []
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: scanner):
+            response = self.client.get("/qualitaet/api/compare?q=XYZ.QQ")
+        self.assertIn("error", response.get_json()["series"][0])
+
     def test_the_nas_is_optional_and_says_so(self):
         akt, scanner, _ = self._with_fakes()
         with akt, scanner:
