@@ -466,6 +466,17 @@ def summary(path=None):
                   for table in ("company", "filing", "figure", "price")}
     return json.dumps(counts, ensure_ascii=False)
 
+#: The store is rewritten by ``write_quarterly_source`` once it knows about the operating income.
+#: A database from before that column keeps version 0, which is how a legacy row set is told apart
+#: from a fresh fetch that genuinely has no operating income (a bank, for instance).
+SCHEMA_VERSION = 1
+
+
+def store_is_current(conn) -> bool:
+    """Whether the rows in this database were written by the parser of the current version."""
+    return conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION
+
+
 def write_quarterly_source(symbol, periods, path=None):
     """Store the quarterly series of one ticker as the second source published it."""
     stamp = _now()
@@ -479,6 +490,9 @@ def write_quarterly_source(symbol, periods, path=None):
               row.get("operating_income"), stamp)
              for row in periods],
         )
+        # Not "this row set has an operating income" - "it was read by a parser that looks for one".
+        # A bank publishes none, and its rows must still count as fresh.
+        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     return True
 

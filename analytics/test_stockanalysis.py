@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -282,6 +283,32 @@ class StoreTests(unittest.TestCase):
             self.assertIsNone(store.read_quarterly_source(conn, "SAP.DE", max_age_h=0))
             self.assertEqual(back[0]["operating_income"], 3600.0)
 
+    def test_a_written_series_marks_the_store_current(self):
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with store.connect(path) as conn:
+            self.assertFalse(store.store_is_current(conn), "ein leerer Speicher ist nicht aktuell")
+            store.write_quarterly_source("SAP.DE", stockanalysis.parse(TABLE), path)
+            self.assertTrue(store.store_is_current(conn))
+
+    def test_a_store_written_before_the_operating_income_stays_old(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "old.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+        with store.connect(path) as conn:
+            self.assertFalse(store.store_is_current(conn),
+                             "alte Zeilen müssen neu geholt werden")
+
     def test_a_store_written_before_the_operating_income_gains_the_column(self):
         import sqlite3
         import tempfile
@@ -399,17 +426,51 @@ class BackgroundCapTests(unittest.TestCase):
 
 
 class StaleSeriesTests(unittest.TestCase):
-    def test_a_series_without_operating_income_is_read_again(self):
-        """A week-old row set from before the column existed must not block the new figures."""
+    def test_a_page_without_operating_income_is_not_fetched_again(self):
+        """A bank publishes none; once read by the current parser the row set counts as fresh."""
         import tempfile
 
         import store
 
         path = Path(tempfile.mkdtemp()) / "t.db"
-        old_rows = [{"period_end": row["period_end"], "label": row["label"],
-                     "revenue": row["revenue"], "eps": row["eps"], "operating_income": None}
-                    for row in stockanalysis.parse(TABLE)]
-        store.write_quarterly_source("SAP.DE", old_rows, path)
+        no_operating = [{key: value for key, value in row.items() if key != "operating_income"}
+                        for row in stockanalysis.parse(TABLE)]
+        original = stockanalysis.fetch
+        calls = []
+
+        def fake_fetch(symbol, budget_s=None):
+            calls.append(symbol)
+            return no_operating
+
+        stockanalysis.fetch = fake_fetch
+        try:
+            stockanalysis.series("BANK.DE", store, path)
+            stockanalysis.series("BANK.DE", store, path)
+            stockanalysis.series("BANK.DE", store, path)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(calls, ["BANK.DE"], "die frische Reihe darf nur einmal geholt werden")
+
+    def test_a_series_without_operating_income_is_read_again(self):
+        """A week-old row set from before the column existed must not block the new figures."""
+        import sqlite3
+        import tempfile
+
+        import store
+
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        # Written the way the old code wrote it: no operating income, and no store version.
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+            conn.executemany(
+                "INSERT INTO quarterly_source VALUES (?,?,?,?,?,?)",
+                [("SAP.DE", row["period_end"], row["label"], row["revenue"], row["eps"],
+                  datetime.now(UTC).isoformat())
+                 for row in stockanalysis.parse(TABLE)],
+            )
         original = stockanalysis.fetch
         calls = []
 

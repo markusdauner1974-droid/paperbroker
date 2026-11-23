@@ -490,11 +490,18 @@ function buildChecks(stock,benchmark=[],only=selected){
   // balance sheet figure. Own quarters always win.
   const secondSource=ttmGrowth&&!ttmGrowth.reason?ttmGrowth:null;
   const ttmRevenue=isNum(ttmRev)?ttmRev:(secondSource&&isNum(secondSource.revenue_total)?secondSource.revenue_total:null);
-  const ttmOperatingIncome=secondSource&&isNum(secondSource.operating_income_total)?secondSource.operating_income_total:null;
-  const ttmGrowthRate=isNum(ttmRevGrowth)?ttmRevGrowth:(secondSource&&isNum(secondSource.revenue)?secondSource.revenue:null);
-  // Own quarters first: one margin figure should not mix two providers. The second source steps in
-  // only where the own series has no operating income over four quarters.
-  const operatingIncomeTTM=(fromSecond,own)=>isNum(own)?own:(isNum(fromSecond)?fromSecond:null);
+  // Rule of 40 adds a growth rate to a margin, so all three numbers have to come from one provider:
+  // a margin built from the second source's operating income over the own series' revenue is a
+  // figure neither provider published. The own series is tried first and must carry all three; the
+  // second source steps in as a whole set, never figure by figure.
+  const ownOperating=sumQuarters(row=>v(row,"OperatingIncome"),0);
+  const ruleOfForty=isNum(ttmRevGrowth)&&isNum(ttmRev)&&isNum(ownOperating)
+    ?{growth:ttmRevGrowth,revenue:ttmRev,operating:ownOperating}
+    :(secondSource&&isNum(secondSource.revenue)&&isNum(secondSource.revenue_total)
+      &&isNum(secondSource.operating_income_total)
+      ?{growth:secondSource.revenue,revenue:secondSource.revenue_total,
+        operating:secondSource.operating_income_total}
+      :null);
   const weekly=calendarCloseGroups(rows,"week");
   const dailyVol=n=>{
     if(rows.length<=n)return null;
@@ -638,9 +645,8 @@ function buildChecks(stock,benchmark=[],only=selected){
     ["Finanzierbarkeit",[
       n("Börsenwert / Finanzschulden",sameCurrency?division(i.marketCap,debt):null,0,3,25),
       n("Umsatz TTM / Finanzschulden",division(ttmRevenue,debt),0,2,15),
-      p("Rule of 40 (TTM, operative Marge)",compareValues(ttmGrowthRate,
-        division(operatingIncomeTTM(ttmOperatingIncome,sumQuarters(row=>v(row,"OperatingIncome"),0)),
-          ttmRevenue),(x,y)=>x+y),-.20,.40,.90)]],
+      p("Rule of 40 (TTM, operative Marge)",ruleOfForty?compareValues(ruleOfForty.growth,
+        division(ruleOfForty.operating,ruleOfForty.revenue),(x,y)=>x+y):null,-.20,.40,.90)]],
     ["Bewertung",[bandCheck("KUV TTM",i.priceToSalesTrailing12Months,.1,8)]]];
     default:{
       const years=calendarCloseGroups(rows,"year");

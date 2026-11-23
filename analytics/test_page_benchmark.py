@@ -133,17 +133,22 @@ class FinancingRowTests(unittest.TestCase):
         self.assertIn("revenue_total", resolved.group(1),
                       "ohne eigene Quartale muss der zweite Wert greifen")
 
-    def test_rule_of_forty_reads_the_resolved_growth(self):
-        self.assertIn('p("Rule of 40 (TTM, operative Marge)",compareValues(ttmGrowthRate,', self.page)
+    def test_rule_of_forty_takes_all_three_numbers_from_one_provider(self):
+        """Growth, revenue and operating income are added and divided - they must be the same source."""
+        start = self.page.index("const ruleOfForty=")
+        block = self.page[start:start + 900]
+        self.assertIn("isNum(ttmRevGrowth)&&isNum(ttmRev)&&isNum(ownOperating)", block,
+                      "das eigene Paar muss vollständig sein")
+        self.assertIn("isNum(secondSource.revenue)&&isNum(secondSource.revenue_total)", block)
+        self.assertIn("&&isNum(secondSource.operating_income_total)", block,
+                      "auch das zweite Paar muss vollständig sein")
+        self.assertNotIn("operatingIncomeTTM", self.page,
+                         "eine Mischung aus zwei Anbietern darf es nicht mehr geben")
 
-    def test_rule_of_forty_reads_one_provider_for_its_margin(self):
-        """Own quarters first; the second source only where the own series has no operating income."""
-        block = self.page[self.page.index('p("Rule of 40 (TTM, operative Marge)"'):][:360]
-        self.assertIn("operatingIncomeTTM(ttmOperatingIncome,", block)
-        self.assertIn("sumQuarters(row=>v(row,\"OperatingIncome\"),0)", block)
-        helper = self.page[self.page.index("const operatingIncomeTTM="):][:160]
-        self.assertTrue(helper.startswith("const operatingIncomeTTM=(fromSecond,own)=>isNum(own)?own:"),
-                        "eigene Quartale müssen Vorrang haben")
+    def test_an_incomplete_pair_leaves_the_row_open(self):
+        block = self.page[self.page.index('p("Rule of 40 (TTM, operative Marge)"'):][:260]
+        self.assertIn("ruleOfForty?compareValues(", block)
+        self.assertIn(":null,", block)
 
     def test_a_reason_blocks_the_second_source(self):
         """A loading or failed figure must not be read as a number."""
