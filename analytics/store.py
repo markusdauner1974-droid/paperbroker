@@ -88,6 +88,15 @@ CREATE TABLE IF NOT EXISTS price (
     source   TEXT,
     PRIMARY KEY (symbol, day)
 );
+CREATE TABLE IF NOT EXISTS quarterly_source (
+    symbol     TEXT,
+    period_end TEXT,
+    label      TEXT,
+    revenue    REAL,
+    eps        REAL,
+    fetched_at TEXT NOT NULL,
+    PRIMARY KEY (symbol, period_end)
+);
 """
 
 # Old German name -> new English name. Both tables and columns.
@@ -453,3 +462,32 @@ def summary(path=None):
         counts = {table: conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                   for table in ("company", "filing", "figure", "price")}
     return json.dumps(counts, ensure_ascii=False)
+
+def write_quarterly_source(symbol, periods, path=None):
+    """Store the quarterly series of one ticker as the second source published it."""
+    stamp = _now()
+    with closing(connect(path)) as conn:
+        conn.execute("DELETE FROM quarterly_source WHERE symbol = ?", (symbol,))
+        conn.executemany(
+            """INSERT OR REPLACE INTO quarterly_source (symbol, period_end, label, revenue, eps, fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            [(symbol, row["period_end"], row.get("label"), row.get("revenue"), row.get("eps"), stamp)
+             for row in periods],
+        )
+        conn.commit()
+    return True
+
+
+def read_quarterly_source(conn, symbol, max_age_h: float = 168):
+    """The stored quarters while they are fresh, newest first, otherwise None."""
+    row = conn.execute("SELECT MAX(fetched_at) FROM quarterly_source WHERE symbol = ?",
+                       (symbol,)).fetchone()
+    if not row or not row[0] or age_hours(row[0]) > max_age_h:
+        return None
+    rows = conn.execute(
+        """SELECT period_end, label, revenue, eps FROM quarterly_source
+           WHERE symbol = ? ORDER BY period_end DESC""", (symbol,)).fetchall()
+    if not rows:
+        return None
+    return [{"period_end": item["period_end"], "label": item["label"],
+             "revenue": item["revenue"], "eps": item["eps"]} for item in rows]

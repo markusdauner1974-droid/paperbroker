@@ -19,6 +19,7 @@ from xml.etree.ElementTree import ParseError
 
 import fonrex
 import ranking
+import stockanalysis
 import store
 import yfinance as yf
 from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
@@ -297,6 +298,7 @@ def stock(symbol, bucket):
         pass
     return {"symbol": symbol, "prices": rows, "info": info,
             "statements": statements, "issues": issues, "news": news, "data_gaps": gaps,
+            "ttm_growth": long_quarterly_growth(symbol, statements),
             "price_source": "Yahoo Finance", "quote_source": "Yahoo Finance",
             "fundamentals_source": "Yahoo Finance" if info else None,
             "statements_source": statement_source(statements, official, sec_source)}
@@ -304,6 +306,25 @@ def stock(symbol, bucket):
 
 # Five growth steps need six fiscal years; below that the SEC series is worth a download.
 SEC_YEARS = 6
+
+
+
+def long_quarterly_growth(symbol, statements):
+    """The twelve month growth from the longer quarterly series, or None.
+
+    The provider hands over five or six quarters for a European paper; the second source keeps
+    twenty. Asked only when the page could not build the figure itself, and never fatally: a source
+    that is down or slow leaves the row open and says so, it does not hold up the page.
+    """
+    if consecutive_quarters(statements.get("quarterly") or {}) >= QUARTER_WINDOW:
+        return None
+    try:
+        answer = stockanalysis.growth(symbol, store_module=store)
+    except Exception:
+        return {"revenue": None, "eps": None, "reason": "Quartalsreihe nicht abrufbar"}
+    if answer.get("revenue") is None and answer.get("eps") is None:
+        answer["reason"] = "Quartalsreihe zu kurz"
+    return answer
 
 
 def fiscal_years(income):
@@ -371,8 +392,9 @@ def statement_gaps(statements, sec_source, official, filings_key):
             "source": source,
             "have": quarters,
             "need": QUARTER_WINDOW,
-            "reason": ("Ohne acht aufeinanderfolgende Quartale mit Umsatz bleibt das TTM-Wachstum "
-                       "offen."),
+            "reason": ("Ohne acht aufeinanderfolgende Quartale mit Umsatz kann die Seite das "
+                       "TTM-Wachstum nicht selbst rechnen; es kommt dann aus der zweiten Quelle "
+                       "oder bleibt offen."),
         })
     empty = [day for day, row in sorted((statements.get("income") or {}).items())
              if finite(row.get("totalrevenue")) is None]

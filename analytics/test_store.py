@@ -79,7 +79,7 @@ class StoreTest(unittest.TestCase):
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget",
-                                  "fonrex", "company_isin"})
+                                  "fonrex", "company_isin", "quarterly_source"})
 
     def test_statements_survive_a_write_and_read(self):
         sections = {"income": {"2025-12-31": {"totalrevenue": 14_069_000_000.0,
@@ -173,7 +173,7 @@ class StoreTest(unittest.TestCase):
         names = {row[0] for row in self.conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table'")}
         self.assertEqual(names, {"company", "filing", "figure", "price", "export", "export_budget",
-                                  "fonrex", "company_isin"})
+                                  "fonrex", "company_isin", "quarterly_source"})
         # Opening again must not touch the migrated database.
         self.conn.close()
         self.conn = self.store.connect(german)
