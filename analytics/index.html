@@ -480,6 +480,9 @@ function buildChecks(stock,benchmark=[],only=selected){
     return days>=335&&days<=400?growth(q(k,0),q(k,4)):null;
   };
   const ttmRev=sumQuarters(sales,0),ttmEPS=sumQuarters(eps,0);
+  // The second source keeps twenty quarters; the provider here gives five or six. Only read when
+  // the own series could not carry the twelve month comparison.
+  const ttmGrowth=data.ttm_growth||null;
   const ttmRevGrowth=growth(ttmRev,sumQuarters(sales,4));
   const ttmEPSGrowth=growth(ttmEPS,sumQuarters(eps,4));
   const weekly=calendarCloseGroups(rows,"week");
@@ -608,12 +611,14 @@ function buildChecks(stock,benchmark=[],only=selected){
       p("Wochenvolatilität über 50 Wochen",weeklyVol(50),.10,.05,.015),
       n("EBIT / Zinsaufwand",interest>0?division(ebit,interest):null,0,3,16)]]];
     case 2:return [["Fundamentales Wachstum",[
-      p("Umsatzwachstum (TTM)",ttmRevGrowth,-.15,.10,.35),
+      providerOrOwn(unavailableLabel("Umsatzwachstum (TTM)",ttmRevGrowth,ttmGrowth&&ttmGrowth.reason?ttmGrowth.reason:"keine Quartalsreihe"),
+        "Umsatzwachstum TTM (stockanalysis.com)",ttmRevGrowth,ttmGrowth?ttmGrowth.revenue:null,-.15,.10,.35,p),
       p("Umsatzwachstum 2 Jahre (CAGR)",cagr(rev,annualMetric(2,sales),2),-.15,.10,.35),
-      p("Quartalsumsatz zum Vorjahresquartal",yoy(sales),-.15,.10,.35),
+      providerOrOwn("Quartalsumsatz zum Vorjahresquartal","Umsatz ggü. Vorjahreszeitraum (Anbieter)",yoy(sales),i.revenueGrowth,-.15,.10,.35,p),
       p("EPS-Wachstum 2 Jahre (CAGR)",cagr(eps(a),annualMetric(2,eps),2),-.20,.10,.45),
-      p("EPS-Wachstum (TTM)",ttmEPSGrowth,-.20,.10,.45),
-      p("Quartals-EPS zum Vorjahresquartal",yoy(eps),-.20,.10,.45)]],
+      providerOrOwn(unavailableLabel("EPS-Wachstum (TTM)",ttmEPSGrowth,ttmGrowth&&ttmGrowth.reason?ttmGrowth.reason:"keine Quartalsreihe"),
+        "EPS-Wachstum TTM (stockanalysis.com)",ttmEPSGrowth,ttmGrowth?ttmGrowth.eps:null,-.20,.10,.45,p),
+      providerOrOwn("Quartals-EPS zum Vorjahresquartal","EPS ggü. Vorjahreszeitraum (Anbieter)",yoy(eps),i.earningsQuarterlyGrowth,-.20,.10,.45,p)]],
     ["Trend",[
       p("Rendite 3 Monate",ret(3),-.25,.05,.30),
       p("Rendite 12 Monate",ret(12),-.35,.10,.70),
@@ -1010,6 +1015,19 @@ function renderRanking(active,mode){
   if(active.nas_primary)notice.append(" Die Vergleichsgruppe verwendet den NAS-Bestand und dessen verfügbare Kennzahlen.");
   section.append(notice,cutoffNote,form,output);
   return section;
+}
+// The provider publishes its own year-on-year rate for revenue and earnings. Where the source
+// hands over no quarterly rows at all (L'Oréal reports half-yearly, and the European papers come
+// with five or six quarters), that rate is the only figure there is - so it is used, and the row
+// says so in its own words instead of claiming a quarter.
+function providerOrOwn(ownLabel,providerLabel,own,provider,low,goal,best,pctRow){
+  if(own!==null&&own!==undefined)return pctRow(ownLabel,own,low,goal,best);
+  return isNum(provider)?pctRow(providerLabel,provider,low,goal,best):pctRow(ownLabel,null,low,goal,best);
+}
+// A trailing twelve month comparison needs eight quarters. Where the source sends fewer, the row
+// stays empty - and says why, so an empty row is not read as a zero.
+function unavailableLabel(label,value,hint){
+  return value===null||value===undefined?label+" ("+hint+")":label;
 }
 function appendCriteria(parent,title,rows,referenceStatuses,offset){
   const heading=element("h3",title,"criterion-group");

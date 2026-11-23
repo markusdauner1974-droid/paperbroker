@@ -19,6 +19,7 @@ from xml.etree.ElementTree import ParseError
 
 import fonrex
 import ranking
+import stockanalysis
 import store
 import yfinance as yf
 from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
@@ -306,6 +307,26 @@ def stock(symbol, bucket):
 SEC_YEARS = 6
 
 
+
+def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S):
+    """The twelve month growth from the longer quarterly series, or None.
+
+    The provider hands over five or six quarters for a European paper; the second source keeps
+    twenty. Asked only when the page could not build the figure itself, and never fatally: a source
+    that is down or slow leaves the row open and says so, it does not hold up the page. The wait is
+    capped by ``budget_s``; whatever does not fit is loaded afterwards and named as loading.
+    """
+    if consecutive_quarters(statements.get("quarterly") or {}) >= QUARTER_WINDOW:
+        return None
+    try:
+        answer = stockanalysis.growth(symbol, store_module=store, budget_s=budget_s)
+    except Exception:
+        return {"revenue": None, "eps": None, "reason": "Quartalsreihe nicht abrufbar"}
+    if answer.get("revenue") is None and answer.get("eps") is None and "reason" not in answer:
+        answer["reason"] = "Quartalsreihe zu kurz"
+    return answer
+
+
 def fiscal_years(income):
     """How many fiscal years carry a revenue figure - empty columns do not count."""
     return sum(1 for row in income.values() if finite(row.get("totalrevenue")) is not None)
@@ -371,8 +392,9 @@ def statement_gaps(statements, sec_source, official, filings_key):
             "source": source,
             "have": quarters,
             "need": QUARTER_WINDOW,
-            "reason": ("Ohne acht aufeinanderfolgende Quartale mit Umsatz bleibt das TTM-Wachstum "
-                       "offen."),
+            "reason": ("Ohne acht aufeinanderfolgende Quartale mit Umsatz kann die Seite das "
+                       "TTM-Wachstum nicht selbst rechnen; es kommt dann aus der zweiten Quelle "
+                       "oder bleibt offen."),
         })
     empty = [day for day, row in sorted((statements.get("income") or {}).items())
              if finite(row.get("totalrevenue")) is None]
@@ -1549,12 +1571,17 @@ class Handler(BaseHTTPRequestHandler):
                         result.update(prices=prices(symbols[0], bucket), price_source="Yahoo Finance",
                                       quote_source="Yahoo Finance",
                                       issues=["Keine NAS-Tageskurse für diesen Ticker."])
-                    self.json(200, result)
                 else:
                     result = stock(symbols[0], bucket)
                     if self.nas is not None:
                         result = {**result, "issues": ["Keine NAS-Tageskurse für diesen Ticker.", *result["issues"]]}
-                    self.json(200, result)
+                # Read here, not inside stock(): the second source is not part of the cached payload.
+                # A new dict, because the object stock() returns belongs to the cache - writing into it
+                # would hand every later caller the answer of this one.
+                result = {**result,
+                          "ttm_growth": long_quarterly_growth(symbols[0],
+                                                              result.get("statements") or {})}
+                self.json(200, result)
             elif path == "/api/stock-batch":
                 if self.nas is not None:
                     results = nas_stocks(self.nas, symbols, bucket=bucket)
