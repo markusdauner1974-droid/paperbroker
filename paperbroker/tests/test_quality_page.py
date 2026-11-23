@@ -274,7 +274,42 @@ class DispatchTest(unittest.TestCase):
         data = response.get_json()
         self.assertEqual([[1, 2, 3, 4]], data["prices"], "Yahoo series fills the gap")
         self.assertEqual("Yahoo Finance", data["price_source"])
-        self.assertEqual(["Keine NAS-Tageskurse für diesen Ticker."], data["issues"])
+        self.assertEqual(["Keine NAS-Tageskurse für diesen Ticker.",
+                          "Jahresabschlüsse fehlen."], data["issues"])
+
+    def test_a_scanner_hit_without_statements_gets_them_from_the_standalone_answer(self):
+        """The scanner keeps quotes and key figures, not balance sheets."""
+        module, _calls = _fake()
+        hit = {"symbol": "SAP.DE", "prices": [[1, 2, 3, 4]], "issues": [],
+               "statements": {}, "info": {"shortName": "SAP SE"}}
+        module.nas_stocks = lambda *args, **kwargs: [hit]
+        module.stock = lambda *args, **kwargs: {
+            "symbol": "SAP.DE", "prices": [[1, 2, 3, 4]], "issues": [],
+            "statements": {"income": {"2025-12-31": {"ebit": 10.762e9, "interestexpense": 492e6}}},
+            "info": {"shortName": "SAP SE", "financialCurrency": "EUR"},
+            "data_gaps": [{"text": "zehn Jahre"}]}
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: object()):
+            response = self.client.get("/qualitaet/api/stock?q=SAP.DE")
+        body = response.get_json()
+        self.assertEqual(10.762e9, body["statements"]["income"]["2025-12-31"]["ebit"])
+        self.assertEqual("EUR", body["info"]["financialCurrency"])
+        self.assertEqual("SAP SE", body["info"]["shortName"], "der Name des Treffers bleibt")
+        self.assertEqual([{"text": "zehn Jahre"}], body["data_gaps"])
+        self.assertEqual({}, hit["statements"], "die zwischengespeicherte Zeile bleibt unberührt")
+
+    def test_the_scanner_row_itself_is_not_written_into(self):
+        module, _calls = _fake()
+        hit = {"symbol": "AAPL", "prices": [], "issues": [], "statements": {}}
+        module.nas_stocks = lambda *args, **kwargs: [hit]
+        module.stock = lambda *args, **kwargs: {
+            "symbol": "AAPL", "prices": [], "issues": [], "statements": {},
+            "info": {}, "data_gaps": []}
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: object()):
+            self.client.get("/qualitaet/api/stock?q=AAPL")
+        self.assertEqual([], hit["prices"], "der Treffer wird kopiert, nicht ergänzt")
+        self.assertEqual([], hit["issues"], "auch die Meldungen entstehen erst an der Kopie")
 
     def test_the_extension_needs_the_nas(self):
         akt, scanner, _ = self._with_fakes()

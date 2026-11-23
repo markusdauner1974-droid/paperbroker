@@ -238,15 +238,35 @@ def api(name: str):
                 cached = akt.nas_stocks(scanner, [symbol], identify=True, bucket=bucket)
                 if cached:
                     # A ticker can be in the scanner with fundamentals but without
-                    # daily closes. The delivered dispatcher fills in the Yahoo
-                    # series then; without that, the embedded answer would carry an
-                    # empty price list where the standalone one carries a chart.
-                    result = cached[0]
-                    if not result["prices"]:
+                    # daily closes, and it carries no annual statements at all - the
+                    # scanner keeps quotes and key figures, not balance sheets.
+                    # Measured: SAP.DE answered with an empty statements object, so
+                    # every row of "Bilanz und Zinslast" and both return groups stayed
+                    # empty while the standalone answer had ten fiscal years, an EBIT
+                    # of 10,76 billion and an interest expense of 492 million.
+                    # The delivered dispatcher fills both gaps; without that the
+                    # embedded answer is a different page for the same ticker.
+                    # A copy, not the cached row itself: the store is shared.
+                    result = dict(cached[0])
+                    if not result.get("prices"):
                         result.update(prices=akt.prices(symbol, bucket),
                                       price_source="Yahoo Finance",
                                       quote_source="Yahoo Finance",
                                       issues=["Keine NAS-Tageskurse für diesen Ticker."])
+                    if not any((result.get("statements") or {}).values()):
+                        full = akt.stock(symbol, bucket)
+                        if any((full.get("statements") or {}).values()):
+                            result["statements"] = full["statements"]
+                            result["data_gaps"] = result.get("data_gaps") or full.get("data_gaps") or []
+                            info = dict(result.get("info") or {})
+                            for key, value in (full.get("info") or {}).items():
+                                if value not in (None, ""):
+                                    info.setdefault(key, value)
+                            result["info"] = info
+                        else:
+                            issues = list(result.get("issues") or [])
+                            issues.append("Jahresabschlüsse fehlen.")
+                            result["issues"] = issues
                     return jsonify(_with_quarters(akt, symbol, result))
                 result = akt.stock(symbol, bucket)
                 return jsonify(_with_quarters(akt, symbol, {
