@@ -41,8 +41,16 @@ class SearchRowTests(unittest.TestCase):
         self.assertNotIn("weiterer Börsenplatz", body)
 
     def test_the_card_carries_no_volume_and_no_volume_warning(self):
+        """The card builder must not bring back the daily volume.
+
+        The first version of this test sliced from the card to `status(result.notice||`, which sits
+        *before* it - the slice was empty and both checks passed against "". Found in review; the
+        length guard is what makes the slice honest.
+        """
         body = script()
-        card = body[body.index('const card=element("div",undefined,"card")'):body.index("status(result.notice||")]
+        start = body.index('const card=element("div",undefined,"card")')
+        card = body[start:body.index("}catch", start)]
+        self.assertGreater(len(card), 500, "the slice missed the card builder")
         self.assertNotIn("Stück/Tag", card)
         self.assertNotIn("dünn gehandelt", card)
 
