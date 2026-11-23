@@ -724,12 +724,26 @@ function gradeText(value){
   if(!isNum(value))return null;
   return "Note "+(Number.isInteger(value)?String(value):value.toFixed(1).replace(".",","));
 }
-// Every grade gets a colour, not only the perfect and the failed paper: hue 130 (green, grade 1)
-// down to 0 (red, grade 6) in even steps, so a 3 sits in the middle instead of staying uncoloured.
+// Every grade gets a colour, not only the perfect and the failed paper. Markus named the bands:
+// 1 and 2 green, 3 yellow, 4 orange, 5 and 6 red - and the order inside a band stays readable, so a
+// half step is still visible instead of being rounded into its neighbour.
+//
+// Yellow needs light: at 30% lightness hue 60 reads as dark olive (measured, grade 3,5 was #747c1d).
+// The lightness therefore rises to the middle of the scale and falls again towards the ends.
+const GRADE_COLOURS=[[1,135,30],[2,118,38],[3,60,50],[4,30,48],[5,12,36],[6,0,28]];
 function gradeColor(grade){
   if(!isNum(grade))return null;
-  const hue=Math.round(130-clamp((grade-1)/5)*130);
-  return "hsl("+hue+" 62% 30%)";
+  const value=Math.min(6,Math.max(1,grade));
+  let lower=GRADE_COLOURS[0];
+  let upper=GRADE_COLOURS[GRADE_COLOURS.length-1];
+  for(let i=0;i<GRADE_COLOURS.length-1;i++){
+    if(value>=GRADE_COLOURS[i][0]&&value<=GRADE_COLOURS[i+1][0]){lower=GRADE_COLOURS[i];upper=GRADE_COLOURS[i+1];break;}
+  }
+  const span=(upper[0]-lower[0])||1;
+  const part=(value-lower[0])/span;
+  const hue=Math.round(lower[1]+part*(upper[1]-lower[1]));
+  const light=Math.round(lower[2]+part*(upper[2]-lower[2]));
+  return "hsl("+hue+" 62% "+light+"%)";
 }
 // The archive rows carry their score as text ("11 / 15"); the same grade rule applies to them, so
 // the tile is coloured there too.
