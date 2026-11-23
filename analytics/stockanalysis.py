@@ -49,6 +49,9 @@ US = ""
 
 ROW_REVENUE = "Revenue"
 ROW_EPS = "EPS (Diluted)"
+ROW_OPERATING = "Operating Income"
+#: The site publishes its tables in millions; the page works in whole currency units.
+MILLIONS = 1_000_000
 DATE_TEXT = re.compile(r"([A-Z][a-z]{2}) (\d{1,2}), (\d{4})")
 MONTHS = {name: number for number, name in enumerate(
     ("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"), start=1)}
@@ -124,13 +127,14 @@ def parse(page: str) -> list[dict]:
             break
     revenue = next((row[1:] for row in rows if row[0] == ROW_REVENUE), None)
     eps = next((row[1:] for row in rows if row[0] == ROW_EPS), None)
+    operating = next((row[1:] for row in rows if row[0] == ROW_OPERATING), None)
     if revenue is None and eps is None:
         return []
     # Every column is read by its position. A header with a colspan, an extra leading cell or a note
     # column would shift the figures against their dates without ever raising - a growth figure that
     # looks right and is not. Rows that do not line up are refused instead of matched.
     width = len(labels)
-    for row in (ends, revenue, eps):
+    for row in (ends, revenue, eps, operating):
         if row is not None and len(row) != width:
             return []
     periods = []
@@ -145,17 +149,47 @@ def parse(page: str) -> list[dict]:
             "label": labels[index] if index < len(labels) else "",
             "revenue": number(revenue[index]) if revenue and index < len(revenue) else None,
             "eps": number(eps[index]) if eps and index < len(eps) else None,
+            "operating_income": (number(operating[index])
+                                 if operating and index < len(operating) else None),
         })
     periods.sort(key=lambda row: row["period_end"], reverse=True)
     return periods
+
+
+#: Bytes per read. A body is taken in pieces so the clock can be looked at between them; the socket
+#: timeout alone bounds one read, so a trickle that never stalls long enough would run forever.
+CHUNK_BYTES = 65_536
+
+
+def read_body(answer, deadline: float) -> bytes:
+    """The whole body, in pieces, abandoned once the deadline has passed.
+
+    ``read`` on an HTTP answer blocks until it has the number of bytes asked for, so a large piece
+    would wait out the trickle anyway. ``read1`` returns what has arrived, which is what makes the
+    clock between the pieces worth looking at.
+    """
+    take = getattr(answer, "read1", None) or answer.read
+    pieces = []
+    total = 0
+    while True:
+        if monotonic() > deadline:
+            raise SourceUnavailable("Zeitbudget während des Lesens überschritten")
+        piece = take(CHUNK_BYTES)
+        if not piece:
+            return b"".join(pieces)
+        total += len(piece)
+        if total > MAX_BYTES:
+            raise SourceUnavailable(f"Antwort über {MAX_BYTES} Bytes")
+        pieces.append(piece)
 
 
 def fetch(symbol: str, budget_s: float = FETCH_BUDGET_S) -> list[dict]:
     """The page as published, read once, within a budget.
 
     The socket timeout bounds one read, not the call: a body that trickles in passes each operation
-    and still takes minutes. So the whole call is clocked and abandoned when it overstays, and the
-    body is capped before it is decoded.
+    and still takes minutes. So the body is taken in pieces and the clock is looked at between them,
+    which abandons the call at its deadline and refuses an oversized answer while it is still being
+    read.
     """
     address = url_for(symbol)
     if not address:
@@ -163,15 +197,14 @@ def fetch(symbol: str, budget_s: float = FETCH_BUDGET_S) -> list[dict]:
     if budget_s <= 0:
         raise SourceUnavailable("kein Zeitbudget im Sammelabruf")
     started = monotonic()
+    deadline = started + budget_s
     request = urllib.request.Request(address, headers={"User-Agent": UA, "Accept": "text/html"})
     try:
         with urllib.request.urlopen(request, timeout=budget_s) as answer:
-            body = answer.read(MAX_BYTES + 1)
+            body = read_body(answer, deadline)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:
         raise SourceUnavailable(str(error)) from error
-    if len(body) > MAX_BYTES:
-        raise SourceUnavailable(f"Antwort über {MAX_BYTES} Bytes")
-    if monotonic() - started > budget_s:
+    if monotonic() > deadline:
         raise SourceUnavailable(f"über {budget_s:.1f} s gebraucht")
     periods = parse(body.decode("utf-8", "replace"))
     if not periods:
@@ -186,7 +219,11 @@ def series(symbol: str, store_module=None, path=None,
         return fetch(symbol, budget_s)
     with closing(store_module.connect(path)) as conn:
         stored = store_module.read_quarterly_source(conn, symbol, MAX_AGE_H)
-    if stored:
+    # A series stored before the operating income was read carries none of it and is still fresh by
+    # age, so age alone would keep the two financing rows empty for a week after the deploy. The
+    # parser version is written on every row, so it marks exactly those rows for a re-read and
+    # leaves a series read today from a page without an operating income (a bank) alone.
+    if stored and store_module.rows_are_current(stored):
         return stored
     periods = fetch(symbol, budget_s)
     store_module.write_quarterly_source(symbol, periods, path)
@@ -196,6 +233,10 @@ def series(symbol: str, store_module=None, path=None,
 #: One fetch per ticker at a time: a page view, a reload and a second tab ask for the same series.
 _PENDING: set[str] = set()
 _PENDING_LOCK = Lock()
+#: And a fixed number of loads at once. The ticker comes from the request, so a caller can ask for as
+#: many distinct series as it likes; without a cap every one of them would own a thread, a socket and
+#: up to MAX_BYTES until its budget runs out.
+MAX_PENDING = 8
 
 
 def refresh_in_background(symbol: str, store_module, path=None,
@@ -206,7 +247,7 @@ def refresh_in_background(symbol: str, store_module, path=None,
     nothing - the queue would otherwise grow with every reload.
     """
     with _PENDING_LOCK:
-        if symbol in _PENDING:
+        if symbol in _PENDING or len(_PENDING) >= MAX_PENDING:
             return False
         _PENDING.add(symbol)
 
@@ -257,7 +298,8 @@ def twelve_month_growth(periods: list[dict]) -> dict:
     series does not carry it. Nothing is filled in from a shorter window: a twelve month figure
     built from nine months reads as a fact and is not one.
     """
-    answer = {"revenue": None, "eps": None, "periods": len(periods), "step_days": None}
+    answer = {"revenue": None, "eps": None, "periods": len(periods), "step_days": None,
+              "revenue_total": None, "operating_income_total": None}
     step = _step_days(periods)
     if step is None:
         return answer
@@ -265,7 +307,7 @@ def twelve_month_growth(periods: list[dict]) -> dict:
     count = 4 if step < 130 else 2
     now = _window(periods, 0, count, step)
     before = _window(periods, count, count, step)
-    if not now or not before:
+    if not now:
         return answer
 
     def total(chunk, key):
@@ -275,10 +317,17 @@ def twelve_month_growth(periods: list[dict]) -> dict:
         return sum(values)
 
     for key in ("revenue", "eps"):
+        if before is None:
+            continue
         present, earlier = total(now, key), total(before, key)
         if present is None or earlier is None or earlier <= 0:
             continue
         answer[key] = present / earlier - 1
+    # The two sums the page divides by a balance sheet figure. Kept apart from the growth: a window
+    # can be too short for a comparison and still carry a usable twelve month total.
+    for key, name in (("revenue", "revenue_total"), ("operating_income", "operating_income_total")):
+        present = total(now, key)
+        answer[name] = present * MILLIONS if present is not None else None
     return answer
 
 

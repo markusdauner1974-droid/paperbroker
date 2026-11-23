@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import unittest
+from datetime import UTC, datetime
 from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
@@ -37,6 +38,8 @@ TABLE = """
     <td>9,000</td><td>8,000</td><td>7,500</td><td>7,500</td><td>-</td></tr>
 <tr><th>EPS (Diluted)</th><td>2.40</td><td>2.00</td><td>1.90</td><td>1.70</td>
     <td>1.80</td><td>1.60</td><td>1.50</td><td>1.50</td><td>1.40</td></tr>
+<tr><th>Operating Income</th><td>3,600</td><td>3,000</td><td>2,850</td><td>2,550</td>
+    <td>2,700</td><td>2,400</td><td>2,250</td><td>2,250</td><td>-</td></tr>
 </table>
 """
 
@@ -47,6 +50,7 @@ HALF_YEARS = """
     <td>Jun 30, 2025</td><td>Dec 31, 2024</td></tr>
 <tr><th>Revenue</th><td>24,000</td><td>22,000</td><td>22,000</td><td>20,000</td></tr>
 <tr><th>EPS (Diluted)</th><td>2.20</td><td>2.00</td><td>2.00</td><td>1.80</td></tr>
+<tr><th>Operating Income</th><td>5,200</td><td>4,800</td><td>4,400</td><td>4,000</td></tr>
 </table>
 """
 
@@ -110,6 +114,24 @@ class GrowthTests(unittest.TestCase):
         self.assertAlmostEqual(growth["eps"], (2.4 + 2.0 + 1.9 + 1.7) / (1.8 + 1.6 + 1.5 + 1.5) - 1,
                                places=6)
 
+    def test_the_operating_income_is_read_with_the_other_figures(self):
+        periods = stockanalysis.parse(TABLE)
+        self.assertEqual(periods[0]["operating_income"], 3600.0)
+        self.assertIsNone(periods[-1]["operating_income"])
+
+    def test_the_twelve_month_sums_are_whole_currency_units(self):
+        """The site publishes millions; a balance sheet figure is divided in whole units."""
+        growth = stockanalysis.twelve_month_growth(stockanalysis.parse(TABLE))
+        self.assertEqual(growth["revenue_total"], 40_000 * stockanalysis.MILLIONS)
+        self.assertEqual(growth["operating_income_total"], (3600 + 3000 + 2850 + 2550)
+                         * stockanalysis.MILLIONS)
+
+    def test_the_sums_survive_a_missing_comparison_window(self):
+        """Four quarters carry no growth, but the twelve month total is still there."""
+        growth = stockanalysis.twelve_month_growth(stockanalysis.parse(TABLE)[:4])
+        self.assertIsNone(growth["revenue"])
+        self.assertEqual(growth["revenue_total"], 40_000 * stockanalysis.MILLIONS)
+
     def test_half_years_are_compared_two_against_two(self):
         growth = stockanalysis.twelve_month_growth(stockanalysis.parse(HALF_YEARS))
         self.assertEqual(growth["step_days"], 181)
@@ -145,7 +167,14 @@ class BudgetTests(unittest.TestCase):
         stockanalysis.urllib.request.urlopen = self.original
 
     def stub(self, body: bytes):
+        import io
+
         class Answer:
+            """A body like a file: successive pieces, then nothing."""
+
+            def __init__(self):
+                self.stream = io.BytesIO(body)
+
             def __enter__(self):
                 return self
 
@@ -153,7 +182,7 @@ class BudgetTests(unittest.TestCase):
                 return False
 
             def read(self, size=-1):
-                return body[:size] if size and size > 0 else body
+                return self.stream.read(size)
 
         def opener(request, timeout=None):
             self.calls.append(timeout)
@@ -201,16 +230,18 @@ class BackgroundTests(unittest.TestCase):
             self.assertTrue(first)
             self.assertFalse(second, "ein zweiter Anlauf für denselben Ticker darf nicht starten")
             gate.set()
+            # Give the writer the file first: the poll itself opens the store, and a tight loop of
+            # readers starves the one write we are waiting for.
             stored = None
-            for _ in range(60):
+            for _ in range(20):
+                time.sleep(0.25)
                 try:
                     with store.connect(path) as conn:
                         stored = store.read_quarterly_source(conn, "SAP.DE")
                 except sqlite3.OperationalError:
-                    stored = None
+                    continue
                 if stored:
                     break
-                time.sleep(0.1)
             self.assertTrue(stored, "der Hintergrundlauf muss die Reihe ablegen")
             self.assertEqual(started, ["SAP.DE"])
         finally:
@@ -250,6 +281,224 @@ class StoreTests(unittest.TestCase):
             self.assertEqual([row["period_end"] for row in back],
                              [row["period_end"] for row in periods])
             self.assertIsNone(store.read_quarterly_source(conn, "SAP.DE", max_age_h=0))
+            self.assertEqual(back[0]["operating_income"], 3600.0)
+
+    def test_a_written_series_carries_the_parser_version(self):
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with store.connect(path) as conn:
+            store.write_quarterly_source("SAP.DE", stockanalysis.parse(TABLE), path)
+            rows = store.read_quarterly_source(conn, "SAP.DE")
+        self.assertTrue(store.rows_are_current(rows))
+        self.assertEqual(rows[0]["parser_version"], store.PARSER_VERSION)
+
+    def test_one_rewrite_does_not_vouch_for_another_ticker(self):
+        """The version sits on the row: a legacy ticker stays stale although its neighbour is new."""
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "old.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+            conn.execute("INSERT INTO quarterly_source VALUES ('OLD.DE','2026-09-30','Q3 2026',1,1,'2026-11-23T00:00:00Z')")
+        with store.connect(path) as conn:
+            store.write_quarterly_source("NEW.DE", stockanalysis.parse(TABLE), path)
+            fresh = store.read_quarterly_source(conn, "NEW.DE")
+            stale = store.read_quarterly_source(conn, "OLD.DE")
+        self.assertTrue(store.rows_are_current(fresh))
+        self.assertFalse(store.rows_are_current(stale),
+                         "die alte Reihe muss trotz des Schreibvorgangs für ein anderes Papier neu geholt werden")
+        self.assertTrue(store.rows_are_current([{"parser_version": store.PARSER_VERSION}]))
+
+    def test_rows_without_a_version_count_as_old(self):
+        import store
+
+        self.assertFalse(store.rows_are_current([{"revenue": 1.0}]))
+        self.assertFalse(store.rows_are_current([]))
+
+    def test_a_store_written_before_the_operating_income_gains_the_column(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "old.db"
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+            conn.execute("INSERT INTO quarterly_source VALUES ('SAP.DE','2026-09-30','Q3 2026',10270,1.94,'2026-11-23T00:00:00Z')")
+        with store.connect(path) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(quarterly_source)")}
+            self.assertIn("operating_income", columns, "die Spalte muss beim Öffnen ergänzt werden")
+            kept = store.read_quarterly_source(conn, "SAP.DE")
+            self.assertEqual(kept[0]["revenue"], 10270.0, "die vorhandenen Zeilen bleiben")
+            self.assertIsNone(kept[0]["operating_income"])
+
+
+class TrickleTests(unittest.TestCase):
+    """A body that never stalls long enough still has to end at the deadline."""
+
+    class Answer:
+        """Hands out one piece per read and moves a fake clock forward as it does."""
+
+        def __init__(self, clock, piece=b"x" * 10, pieces=10_000, step=1.0):
+            self.clock = clock
+            self.piece = piece
+            self.left = pieces
+            self.step = step
+            self.sizes = []
+
+        def read(self, size):
+            self.sizes.append(size)
+            if self.left <= 0:
+                return b""
+            self.left -= 1
+            self.clock[0] += self.step
+            return self.piece[:size]
+
+        # An HTTP answer offers both; read1 is the one that returns what has arrived.
+        read1 = read
+
+    def setUp(self):
+        self.original = stockanalysis.monotonic
+
+    def tearDown(self):
+        stockanalysis.monotonic = self.original
+
+    def test_a_trickle_is_abandoned_at_the_deadline(self):
+        clock = [0.0]
+        stockanalysis.monotonic = lambda: clock[0]
+        answer = self.Answer(clock)
+        with self.assertRaises(stockanalysis.SourceUnavailable):
+            stockanalysis.read_body(answer, deadline=3.0)
+        self.assertLessEqual(len(answer.sizes), 4, "nach dem Ablauf darf nicht weitergelesen werden")
+
+    def test_the_body_is_read_in_pieces(self):
+        clock = [0.0]
+        stockanalysis.monotonic = lambda: clock[0]
+        answer = self.Answer(clock, piece=b"a" * 5, pieces=3, step=0.0)
+        body = stockanalysis.read_body(answer, deadline=3.0)
+        self.assertEqual(body, b"a" * 15)
+        self.assertEqual(set(answer.sizes), {stockanalysis.CHUNK_BYTES},
+                         "ein Lesen ohne Größe liest die ganze Antwort in den Speicher")
+
+    def test_an_oversized_body_is_refused_while_reading(self):
+        clock = [0.0]
+        stockanalysis.monotonic = lambda: clock[0]
+        piece = b"x" * (stockanalysis.MAX_BYTES // 4)
+        answer = self.Answer(clock, piece=piece, pieces=200, step=0.0)
+        with self.assertRaises(stockanalysis.SourceUnavailable):
+            stockanalysis.read_body(answer, deadline=60.0)
+        self.assertLess(len(answer.sizes), 200, "die Antwort wird nicht zu Ende gelesen")
+
+
+class BackgroundCapTests(unittest.TestCase):
+    """The ticker comes from the request; the number of loads at once does not."""
+
+    def setUp(self):
+        import store
+
+        self.store = store
+        stockanalysis._PENDING.clear()
+        self.original_fetch = stockanalysis.fetch
+        # A load that is still running is what the cap is about; it must not finish before the check.
+        self.release = threading.Event()
+        stockanalysis.fetch = lambda symbol, budget_s=None: (self.release.wait(5), [])[1]
+
+    def tearDown(self):
+        self.release.set()
+        stockanalysis.fetch = self.original_fetch
+        stockanalysis._PENDING.clear()
+
+    def test_the_cap_refuses_further_loads(self):
+        for index in range(stockanalysis.MAX_PENDING):
+            self.assertTrue(stockanalysis.refresh_in_background(f"AAA{index}", self.store))
+        self.assertFalse(stockanalysis.refresh_in_background("NEW", self.store),
+                         "über dem Deckel darf kein weiterer Lauf starten")
+        self.assertNotIn("NEW", stockanalysis._PENDING)
+
+    def test_the_same_ticker_is_asked_once(self):
+        self.assertTrue(stockanalysis.refresh_in_background("SAP.DE", self.store))
+        self.assertFalse(stockanalysis.refresh_in_background("SAP.DE", self.store))
+
+    def test_the_counter_falls_back_when_a_load_ends(self):
+        self.assertTrue(stockanalysis.refresh_in_background("SAP.DE", self.store))
+        self.release.set()
+        for _ in range(60):
+            if not stockanalysis._PENDING:
+                break
+            time.sleep(0.05)
+        self.assertEqual(stockanalysis._PENDING, set())
+
+
+class StaleSeriesTests(unittest.TestCase):
+    def test_a_page_without_operating_income_is_not_fetched_again(self):
+        """A bank publishes none; once read by the current parser the row set counts as fresh."""
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        no_operating = [{key: value for key, value in row.items() if key != "operating_income"}
+                        for row in stockanalysis.parse(TABLE)]
+        original = stockanalysis.fetch
+        calls = []
+
+        def fake_fetch(symbol, budget_s=None):
+            calls.append(symbol)
+            return no_operating
+
+        stockanalysis.fetch = fake_fetch
+        try:
+            stockanalysis.series("BANK.DE", store, path)
+            stockanalysis.series("BANK.DE", store, path)
+            stockanalysis.series("BANK.DE", store, path)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(calls, ["BANK.DE"], "die frische Reihe darf nur einmal geholt werden")
+
+    def test_a_series_without_operating_income_is_read_again(self):
+        """A week-old row set from before the column existed must not block the new figures."""
+        import sqlite3
+        import tempfile
+
+        import store
+
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        # Written the way the old code wrote it: no operating income, and no store version.
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+            conn.executemany(
+                "INSERT INTO quarterly_source VALUES (?,?,?,?,?,?)",
+                [("SAP.DE", row["period_end"], row["label"], row["revenue"], row["eps"],
+                  datetime.now(UTC).isoformat())
+                 for row in stockanalysis.parse(TABLE)],
+            )
+        original = stockanalysis.fetch
+        calls = []
+
+        def fake_fetch(symbol, budget_s=None):
+            calls.append(symbol)
+            return stockanalysis.parse(TABLE)
+
+        stockanalysis.fetch = fake_fetch
+        try:
+            fresh = stockanalysis.series("SAP.DE", store, path)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(calls, ["SAP.DE"], "die veraltete Reihe muss neu geholt werden")
+        self.assertIsNotNone(fresh[0]["operating_income"])
 
 
 class OwnDataWinsTests(unittest.TestCase):

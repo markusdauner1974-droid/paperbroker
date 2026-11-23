@@ -485,6 +485,23 @@ function buildChecks(stock,benchmark=[],only=selected){
   const ttmGrowth=data.ttm_growth||null;
   const ttmRevGrowth=growth(ttmRev,sumQuarters(sales,4));
   const ttmEPSGrowth=growth(ttmEPS,sumQuarters(eps,4));
+  // Without its own quarterly series the page has no twelve month revenue at all. The second source
+  // keeps twenty periods and carries its sums in whole currency units, so they can be divided by a
+  // balance sheet figure. Own quarters always win.
+  const secondSource=ttmGrowth&&!ttmGrowth.reason?ttmGrowth:null;
+  const ttmRevenue=isNum(ttmRev)?ttmRev:(secondSource&&isNum(secondSource.revenue_total)?secondSource.revenue_total:null);
+  // Rule of 40 adds a growth rate to a margin, so all three numbers have to come from one provider:
+  // a margin built from the second source's operating income over the own series' revenue is a
+  // figure neither provider published. The own series is tried first and must carry all three; the
+  // second source steps in as a whole set, never figure by figure.
+  const ownOperating=sumQuarters(row=>v(row,"OperatingIncome"),0);
+  const ruleOfForty=isNum(ttmRevGrowth)&&isNum(ttmRev)&&isNum(ownOperating)
+    ?{growth:ttmRevGrowth,revenue:ttmRev,operating:ownOperating}
+    :(secondSource&&isNum(secondSource.revenue)&&isNum(secondSource.revenue_total)
+      &&isNum(secondSource.operating_income_total)
+      ?{growth:secondSource.revenue,revenue:secondSource.revenue_total,
+        operating:secondSource.operating_income_total}
+      :null);
   const weekly=calendarCloseGroups(rows,"week");
   const dailyVol=n=>{
     if(rows.length<=n)return null;
@@ -627,9 +644,9 @@ function buildChecks(stock,benchmark=[],only=selected){
       p("Kursstabilität 12 Monate (R²)",lineStability(12),0,.60,1)]],
     ["Finanzierbarkeit",[
       n("Börsenwert / Finanzschulden",sameCurrency?division(i.marketCap,debt):null,0,3,25),
-      n("Umsatz TTM / Finanzschulden",division(ttmRev,debt),0,2,15),
-      p("Rule of 40 (TTM, operative Marge)",compareValues(ttmRevGrowth,
-        division(sumQuarters(row=>v(row,"OperatingIncome"),0),ttmRev),(x,y)=>x+y),-.20,.40,.90)]],
+      n("Umsatz TTM / Finanzschulden",division(ttmRevenue,debt),0,2,15),
+      p("Rule of 40 (TTM, operative Marge)",ruleOfForty?compareValues(ruleOfForty.growth,
+        division(ruleOfForty.operating,ruleOfForty.revenue),(x,y)=>x+y):null,-.20,.40,.90)]],
     ["Bewertung",[bandCheck("KUV TTM",i.priceToSalesTrailing12Months,.1,8)]]];
     default:{
       const years=calendarCloseGroups(rows,"year");
@@ -780,8 +797,17 @@ const usUniverse="AAPL,MSFT,NVDA,GOOGL,AMZN,META,JPM,KO,XOM,WMT";
 const deUniverse="SAP.DE,SIE.DE,ALV.DE,DTE.DE,ADS.DE,MBG.DE,IFX.DE,BAS.DE,DB1.DE,RWE.DE";
 const checkBenchmark={symbol:"",rows:[],message:"",loading:false,request:0};
 let activeRanking=null;
+// The index a paper is measured against, by listing place. Measured 23.11.2026: every one of these
+// delivers through /api/compare. A suffix that is not listed here gets no index - the four benchmark
+// criteria then stay open instead of being compared against the wrong market.
+const benchmarkBySuffix={
+  ".DE":"^GDAXI",".F":"^GDAXI",".PA":"^FCHI",".AS":"^AEX",".MI":"FTSEMIB.MI",".MC":"^IBEX",
+  ".L":"^FTSE",".SW":"^SSMI",".VI":"^ATX",".ST":"^OMX",".CO":"^OMXC25",".OL":"^OSEAX",
+  ".HE":"^OMXH25",".BR":"^BFX",".LS":"PSI20.LS"};
 function defaultBenchmark(stock){
-  if(stock.symbol.endsWith(".DE"))return "^GDAXI";
+  const dot=stock.symbol.lastIndexOf(".");
+  const suffix=dot>0?"."+stock.symbol.slice(dot+1).toUpperCase():"";
+  if(benchmarkBySuffix[suffix])return benchmarkBySuffix[suffix];
   if(stock.nas_primary&&stock.info.currency==="USD"&&!stock.symbol.includes("."))return "SPY";
   if(/NASDAQ|NYSE|NMS|NYQ|NCM|NGM|AMEX/i.test(stock.info.fullExchangeName||stock.info.exchange||"")&&stock.info.currency==="USD")return "^GSPC";
   return "";
