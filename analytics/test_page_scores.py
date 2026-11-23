@@ -12,6 +12,7 @@ Checked here:
 """
 
 import json
+import re
 import subprocess
 import unittest
 from pathlib import Path
@@ -202,6 +203,81 @@ class PageScoresTest(unittest.TestCase):
         scale = self.result["gradesWithHalfSteps"]
         self.assertTrue(scale[0].endswith(" 30%)"), scale[0])
         self.assertTrue(scale[-1].startswith("hsl(0 ") and scale[-1].endswith(" 28%)"), scale[-1])
+
+class CriterionMarkColourTests(unittest.TestCase):
+    """A satisfied criterion has to read as green, an unsatisfied one as red.
+
+    The mark was coloured by the brand accent (#e05534, orange-red) and the miss by the warning
+    amber (#d9a441) - both warm, so a full row of crosses looked like a row of passes at a
+    glance. The hue is what carries the meaning here, so it is measured, not the class name.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        cls.html = PAGE.read_text(encoding="utf-8")
+
+    def token(self, name):
+        match = re.search(rf"--{re.escape(name)}:(#[0-9a-fA-F]{{6}})", self.html)
+        self.assertIsNotNone(match, f"--{name} is not defined")
+        return match.group(1)
+
+    def hue(self, hex_colour):
+        red, green, blue = (int(hex_colour[i:i + 2], 16) / 255 for i in (1, 3, 5))
+        high, low = max(red, green, blue), min(red, green, blue)
+        span = high - low
+        if span == 0:
+            return 0.0
+        if high == red:
+            hue = ((green - blue) / span) % 6
+        elif high == green:
+            hue = (blue - red) / span + 2
+        else:
+            hue = (red - green) / span + 4
+        return hue * 60
+
+    def test_the_pass_mark_is_green(self):
+        hue = self.hue(self.token("met"))
+        self.assertTrue(90 <= hue <= 160, f"--met is not green: {self.token('met')} (hue {hue:.0f})")
+        self.assertIn(".ok{color:var(--met)", self.html)
+
+    def test_the_miss_mark_is_red(self):
+        hue = self.hue(self.token("missed"))
+        self.assertTrue(hue >= 345 or hue <= 15, f"--missed is not red: {self.token('missed')} (hue {hue:.0f})")
+        self.assertIn(".bad{color:var(--missed)", self.html)
+
+    def test_the_brand_accent_no_longer_drives_the_mark(self):
+        """The accent stays the page's accent; it must not decide pass or fail."""
+        self.assertNotIn(".ok{color:var(--accent)}", self.html)
+        self.assertNotIn(".bad{color:var(--warn)}", self.html)
+
+    def test_only_the_text_is_coloured_and_the_numbers_stay_as_they_are(self):
+        """Mark and label carry the verdict; the measured number keeps its neutral colour.
+
+        Colouring the numbers as well turned the table into two blocks of red and green and made
+        the values harder to compare down a column.
+        """
+        self.assertIn('tr.className=status===true?"met":status===false?"missed":""', self.html)
+        self.assertIn('element("small",status?"Erfüllt":"Verfehlt",status?"met":"missed")', self.html)
+        self.assertIn(".criteria small.met{color:var(--met)}", self.html)
+
+    def test_the_numbers_keep_their_own_colour(self):
+        for rule in (".criterion-value{color:var(--met)", ".criterion-value{color:var(--missed)",
+                     "tr.met .criterion-value", "tr.missed .criterion-value",
+                     "tr.met .criterion-meter small", "tr.missed .criterion-meter small"):
+            self.assertNotIn(rule, self.html, f"the number is coloured again: {rule}")
+
+    def test_the_group_heading_carries_the_verdict_of_its_rows(self):
+        """A group heading is green only when every row under it is met.
+
+        "1 von 3 erfüllt" in white above two red crosses made the reader add up rows; the heading
+        now says the same thing in colour as the rows below it.
+        """
+        self.assertIn(".criterion-group.met{color:var(--met)}", self.html)
+        self.assertIn(".criterion-group.missed{color:var(--missed)}", self.html)
+        self.assertIn('verdicts.every(state=>state==="met")?"met":"missed"', self.html)
+
+    def test_both_marks_stay_apart(self):
+        self.assertNotEqual(self.token("met"), self.token("missed"))
 
 
 if __name__ == "__main__":
