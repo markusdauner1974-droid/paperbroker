@@ -156,12 +156,40 @@ def parse(page: str) -> list[dict]:
     return periods
 
 
+#: Bytes per read. A body is taken in pieces so the clock can be looked at between them; the socket
+#: timeout alone bounds one read, so a trickle that never stalls long enough would run forever.
+CHUNK_BYTES = 65_536
+
+
+def read_body(answer, deadline: float) -> bytes:
+    """The whole body, in pieces, abandoned once the deadline has passed.
+
+    ``read`` on an HTTP answer blocks until it has the number of bytes asked for, so a large piece
+    would wait out the trickle anyway. ``read1`` returns what has arrived, which is what makes the
+    clock between the pieces worth looking at.
+    """
+    take = getattr(answer, "read1", None) or answer.read
+    pieces = []
+    total = 0
+    while True:
+        if monotonic() > deadline:
+            raise SourceUnavailable("Zeitbudget während des Lesens überschritten")
+        piece = take(CHUNK_BYTES)
+        if not piece:
+            return b"".join(pieces)
+        total += len(piece)
+        if total > MAX_BYTES:
+            raise SourceUnavailable(f"Antwort über {MAX_BYTES} Bytes")
+        pieces.append(piece)
+
+
 def fetch(symbol: str, budget_s: float = FETCH_BUDGET_S) -> list[dict]:
     """The page as published, read once, within a budget.
 
     The socket timeout bounds one read, not the call: a body that trickles in passes each operation
-    and still takes minutes. So the whole call is clocked and abandoned when it overstays, and the
-    body is capped before it is decoded.
+    and still takes minutes. So the body is taken in pieces and the clock is looked at between them,
+    which abandons the call at its deadline and refuses an oversized answer while it is still being
+    read.
     """
     address = url_for(symbol)
     if not address:
@@ -169,15 +197,14 @@ def fetch(symbol: str, budget_s: float = FETCH_BUDGET_S) -> list[dict]:
     if budget_s <= 0:
         raise SourceUnavailable("kein Zeitbudget im Sammelabruf")
     started = monotonic()
+    deadline = started + budget_s
     request = urllib.request.Request(address, headers={"User-Agent": UA, "Accept": "text/html"})
     try:
         with urllib.request.urlopen(request, timeout=budget_s) as answer:
-            body = answer.read(MAX_BYTES + 1)
+            body = read_body(answer, deadline)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:
         raise SourceUnavailable(str(error)) from error
-    if len(body) > MAX_BYTES:
-        raise SourceUnavailable(f"Antwort über {MAX_BYTES} Bytes")
-    if monotonic() - started > budget_s:
+    if monotonic() > deadline:
         raise SourceUnavailable(f"über {budget_s:.1f} s gebraucht")
     periods = parse(body.decode("utf-8", "replace"))
     if not periods:
@@ -204,6 +231,10 @@ def series(symbol: str, store_module=None, path=None,
 #: One fetch per ticker at a time: a page view, a reload and a second tab ask for the same series.
 _PENDING: set[str] = set()
 _PENDING_LOCK = Lock()
+#: And a fixed number of loads at once. The ticker comes from the request, so a caller can ask for as
+#: many distinct series as it likes; without a cap every one of them would own a thread, a socket and
+#: up to MAX_BYTES until its budget runs out.
+MAX_PENDING = 8
 
 
 def refresh_in_background(symbol: str, store_module, path=None,
@@ -214,7 +245,7 @@ def refresh_in_background(symbol: str, store_module, path=None,
     nothing - the queue would otherwise grow with every reload.
     """
     with _PENDING_LOCK:
-        if symbol in _PENDING:
+        if symbol in _PENDING or len(_PENDING) >= MAX_PENDING:
             return False
         _PENDING.add(symbol)
 

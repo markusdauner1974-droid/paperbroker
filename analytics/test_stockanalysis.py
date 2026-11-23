@@ -166,7 +166,14 @@ class BudgetTests(unittest.TestCase):
         stockanalysis.urllib.request.urlopen = self.original
 
     def stub(self, body: bytes):
+        import io
+
         class Answer:
+            """A body like a file: successive pieces, then nothing."""
+
+            def __init__(self):
+                self.stream = io.BytesIO(body)
+
             def __enter__(self):
                 return self
 
@@ -174,7 +181,7 @@ class BudgetTests(unittest.TestCase):
                 return False
 
             def read(self, size=-1):
-                return body[:size] if size and size > 0 else body
+                return self.stream.read(size)
 
         def opener(request, timeout=None):
             self.calls.append(timeout)
@@ -293,6 +300,102 @@ class StoreTests(unittest.TestCase):
             kept = store.read_quarterly_source(conn, "SAP.DE")
             self.assertEqual(kept[0]["revenue"], 10270.0, "die vorhandenen Zeilen bleiben")
             self.assertIsNone(kept[0]["operating_income"])
+
+
+class TrickleTests(unittest.TestCase):
+    """A body that never stalls long enough still has to end at the deadline."""
+
+    class Answer:
+        """Hands out one piece per read and moves a fake clock forward as it does."""
+
+        def __init__(self, clock, piece=b"x" * 10, pieces=10_000, step=1.0):
+            self.clock = clock
+            self.piece = piece
+            self.left = pieces
+            self.step = step
+            self.sizes = []
+
+        def read(self, size):
+            self.sizes.append(size)
+            if self.left <= 0:
+                return b""
+            self.left -= 1
+            self.clock[0] += self.step
+            return self.piece[:size]
+
+        # An HTTP answer offers both; read1 is the one that returns what has arrived.
+        read1 = read
+
+    def setUp(self):
+        self.original = stockanalysis.monotonic
+
+    def tearDown(self):
+        stockanalysis.monotonic = self.original
+
+    def test_a_trickle_is_abandoned_at_the_deadline(self):
+        clock = [0.0]
+        stockanalysis.monotonic = lambda: clock[0]
+        answer = self.Answer(clock)
+        with self.assertRaises(stockanalysis.SourceUnavailable):
+            stockanalysis.read_body(answer, deadline=3.0)
+        self.assertLessEqual(len(answer.sizes), 4, "nach dem Ablauf darf nicht weitergelesen werden")
+
+    def test_the_body_is_read_in_pieces(self):
+        clock = [0.0]
+        stockanalysis.monotonic = lambda: clock[0]
+        answer = self.Answer(clock, piece=b"a" * 5, pieces=3, step=0.0)
+        body = stockanalysis.read_body(answer, deadline=3.0)
+        self.assertEqual(body, b"a" * 15)
+        self.assertEqual(set(answer.sizes), {stockanalysis.CHUNK_BYTES},
+                         "ein Lesen ohne Größe liest die ganze Antwort in den Speicher")
+
+    def test_an_oversized_body_is_refused_while_reading(self):
+        clock = [0.0]
+        stockanalysis.monotonic = lambda: clock[0]
+        piece = b"x" * (stockanalysis.MAX_BYTES // 4)
+        answer = self.Answer(clock, piece=piece, pieces=200, step=0.0)
+        with self.assertRaises(stockanalysis.SourceUnavailable):
+            stockanalysis.read_body(answer, deadline=60.0)
+        self.assertLess(len(answer.sizes), 200, "die Antwort wird nicht zu Ende gelesen")
+
+
+class BackgroundCapTests(unittest.TestCase):
+    """The ticker comes from the request; the number of loads at once does not."""
+
+    def setUp(self):
+        import store
+
+        self.store = store
+        stockanalysis._PENDING.clear()
+        self.original_fetch = stockanalysis.fetch
+        # A load that is still running is what the cap is about; it must not finish before the check.
+        self.release = threading.Event()
+        stockanalysis.fetch = lambda symbol, budget_s=None: (self.release.wait(5), [])[1]
+
+    def tearDown(self):
+        self.release.set()
+        stockanalysis.fetch = self.original_fetch
+        stockanalysis._PENDING.clear()
+
+    def test_the_cap_refuses_further_loads(self):
+        for index in range(stockanalysis.MAX_PENDING):
+            self.assertTrue(stockanalysis.refresh_in_background(f"AAA{index}", self.store))
+        self.assertFalse(stockanalysis.refresh_in_background("NEW", self.store),
+                         "über dem Deckel darf kein weiterer Lauf starten")
+        self.assertNotIn("NEW", stockanalysis._PENDING)
+
+    def test_the_same_ticker_is_asked_once(self):
+        self.assertTrue(stockanalysis.refresh_in_background("SAP.DE", self.store))
+        self.assertFalse(stockanalysis.refresh_in_background("SAP.DE", self.store))
+
+    def test_the_counter_falls_back_when_a_load_ends(self):
+        self.assertTrue(stockanalysis.refresh_in_background("SAP.DE", self.store))
+        self.release.set()
+        for _ in range(60):
+            if not stockanalysis._PENDING:
+                break
+            time.sleep(0.05)
+        self.assertEqual(stockanalysis._PENDING, set())
 
 
 class StaleSeriesTests(unittest.TestCase):
