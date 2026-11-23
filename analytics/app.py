@@ -298,7 +298,6 @@ def stock(symbol, bucket):
         pass
     return {"symbol": symbol, "prices": rows, "info": info,
             "statements": statements, "issues": issues, "news": news, "data_gaps": gaps,
-            "ttm_growth": long_quarterly_growth(symbol, statements),
             "price_source": "Yahoo Finance", "quote_source": "Yahoo Finance",
             "fundamentals_source": "Yahoo Finance" if info else None,
             "statements_source": statement_source(statements, official, sec_source)}
@@ -309,20 +308,21 @@ SEC_YEARS = 6
 
 
 
-def long_quarterly_growth(symbol, statements):
+def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S):
     """The twelve month growth from the longer quarterly series, or None.
 
     The provider hands over five or six quarters for a European paper; the second source keeps
     twenty. Asked only when the page could not build the figure itself, and never fatally: a source
-    that is down or slow leaves the row open and says so, it does not hold up the page.
+    that is down or slow leaves the row open and says so, it does not hold up the page. The wait is
+    capped by ``budget_s``; whatever does not fit is loaded afterwards and named as loading.
     """
     if consecutive_quarters(statements.get("quarterly") or {}) >= QUARTER_WINDOW:
         return None
     try:
-        answer = stockanalysis.growth(symbol, store_module=store)
+        answer = stockanalysis.growth(symbol, store_module=store, budget_s=budget_s)
     except Exception:
         return {"revenue": None, "eps": None, "reason": "Quartalsreihe nicht abrufbar"}
-    if answer.get("revenue") is None and answer.get("eps") is None:
+    if answer.get("revenue") is None and answer.get("eps") is None and "reason" not in answer:
         answer["reason"] = "Quartalsreihe zu kurz"
     return answer
 
@@ -1571,12 +1571,17 @@ class Handler(BaseHTTPRequestHandler):
                         result.update(prices=prices(symbols[0], bucket), price_source="Yahoo Finance",
                                       quote_source="Yahoo Finance",
                                       issues=["Keine NAS-Tageskurse für diesen Ticker."])
-                    self.json(200, result)
                 else:
                     result = stock(symbols[0], bucket)
                     if self.nas is not None:
                         result = {**result, "issues": ["Keine NAS-Tageskurse für diesen Ticker.", *result["issues"]]}
-                    self.json(200, result)
+                # Read here, not inside stock(): the second source is not part of the cached payload.
+                # A new dict, because the object stock() returns belongs to the cache - writing into it
+                # would hand every later caller the answer of this one.
+                result = {**result,
+                          "ttm_growth": long_quarterly_growth(symbols[0],
+                                                              result.get("statements") or {})}
+                self.json(200, result)
             elif path == "/api/stock-batch":
                 if self.nas is not None:
                     results = nas_stocks(self.nas, symbols, bucket=bucket)

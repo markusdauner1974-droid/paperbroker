@@ -13,7 +13,10 @@ Checked here:
 """
 
 import importlib
+import sqlite3
 import sys
+import threading
+import time
 import unittest
 from pathlib import Path
 
@@ -64,6 +67,15 @@ class ParsingTests(unittest.TestCase):
     def test_a_page_without_the_table_reads_as_nothing(self):
         self.assertEqual(stockanalysis.parse("<html><body>nichts</body></html>"), [])
 
+    def test_a_header_that_does_not_line_up_is_refused(self):
+        # A colspan in the header shifts every figure against its date without raising.
+        shifted = TABLE.replace("<th>Fiscal Quarter</th>", "<th>Fiscal Quarter</th><th>Extra</th>", 1)
+        self.assertEqual(stockanalysis.parse(shifted), [])
+
+    def test_an_extra_note_column_is_refused(self):
+        noted = TABLE.replace("<td>1.80</td>", "<td>1.80</td><td>Hinweis</td>", 1)
+        self.assertEqual(stockanalysis.parse(noted), [])
+
 
 class AddressTests(unittest.TestCase):
     def test_german_listings_use_the_xetra_path(self):
@@ -78,6 +90,11 @@ class AddressTests(unittest.TestCase):
 
     def test_an_unknown_exchange_is_refused(self):
         self.assertIsNone(stockanalysis.url_for("XYZ.QQ"))
+
+    def test_a_share_class_is_read_from_the_us_listing(self):
+        # BRK.B is not a Frankfurt listing; the letter after the dot is a share class.
+        self.assertEqual(stockanalysis.url_for("BRK.B"),
+                         "https://stockanalysis.com/stocks/brk.b/financials/income-statement/?p=quarterly")
 
 
 class GrowthTests(unittest.TestCase):
@@ -117,6 +134,108 @@ class GrowthTests(unittest.TestCase):
         self.assertIsNone(stockanalysis.twelve_month_growth(periods)["revenue"])
 
 
+class BudgetTests(unittest.TestCase):
+    """No request waits on the second source: the body is capped, the call is clocked, the rest runs later."""
+
+    def setUp(self):
+        self.original = stockanalysis.urllib.request.urlopen
+        self.calls = []
+
+    def tearDown(self):
+        stockanalysis.urllib.request.urlopen = self.original
+
+    def stub(self, body: bytes):
+        class Answer:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+            def read(self, size=-1):
+                return body[:size] if size and size > 0 else body
+
+        def opener(request, timeout=None):
+            self.calls.append(timeout)
+            return Answer()
+
+        stockanalysis.urllib.request.urlopen = opener
+
+    def test_a_body_over_the_cap_is_refused(self):
+        self.stub(b"x" * (stockanalysis.MAX_BYTES + 10))
+        with self.assertRaises(stockanalysis.SourceUnavailable):
+            stockanalysis.fetch("SAP.DE")
+
+    def test_no_budget_means_no_call_at_all(self):
+        self.stub(b"egal")
+        with self.assertRaises(stockanalysis.SourceUnavailable):
+            stockanalysis.fetch("SAP.DE", budget_s=0)
+        self.assertEqual(self.calls, [])
+
+    def test_the_socket_timeout_carries_the_budget(self):
+        self.stub(TABLE.encode())
+        stockanalysis.fetch("SAP.DE", budget_s=2.5)
+        self.assertEqual(self.calls, [2.5])
+
+
+class BackgroundTests(unittest.TestCase):
+    def test_a_slow_source_is_loaded_afterwards_and_asked_once(self):
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        gate = threading.Event()
+        started = []
+
+        def slow_fetch(symbol, budget_s=None):
+            started.append(symbol)
+            gate.wait(5)
+            return stockanalysis.parse(TABLE)
+
+        original = stockanalysis.fetch
+        stockanalysis.fetch = slow_fetch
+        try:
+            first = stockanalysis.refresh_in_background("SAP.DE", store, path)
+            second = stockanalysis.refresh_in_background("SAP.DE", store, path)
+            self.assertTrue(first)
+            self.assertFalse(second, "ein zweiter Anlauf für denselben Ticker darf nicht starten")
+            gate.set()
+            stored = None
+            for _ in range(60):
+                try:
+                    with store.connect(path) as conn:
+                        stored = store.read_quarterly_source(conn, "SAP.DE")
+                except sqlite3.OperationalError:
+                    stored = None
+                if stored:
+                    break
+                time.sleep(0.1)
+            self.assertTrue(stored, "der Hintergrundlauf muss die Reihe ablegen")
+            self.assertEqual(started, ["SAP.DE"])
+        finally:
+            stockanalysis.fetch = original
+
+    def test_a_series_that_cannot_be_fetched_names_the_reason(self):
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        original = stockanalysis.fetch
+
+        def never(symbol, budget_s=None):
+            raise stockanalysis.SourceUnavailable("kein Netz")
+
+        stockanalysis.fetch = never
+        try:
+            answer = stockanalysis.growth("SAP.DE", store_module=store, path=path)
+        finally:
+            stockanalysis.fetch = original
+        self.assertIsNone(answer["revenue"])
+        self.assertIn("Hintergrund", answer["reason"])
+
+
 class StoreTests(unittest.TestCase):
     def test_the_series_survives_a_round_trip_and_ages_out(self):
         import tempfile
@@ -147,6 +266,20 @@ class OwnDataWinsTests(unittest.TestCase):
                 quarters[f"{year}-{month:02d}-28"] = {"totalrevenue": 10.0}
         self.assertGreaterEqual(self.app.consecutive_quarters(quarters), self.app.QUARTER_WINDOW)
         self.assertIsNone(self.app.long_quarterly_growth("SAP.DE", {"quarterly": quarters}))
+
+    def test_the_second_source_never_fails_the_page(self):
+        original = self.app.stockanalysis.growth
+
+        def broken(*args, **kwargs):
+            raise RuntimeError("kaputt")
+
+        self.app.stockanalysis.growth = broken
+        try:
+            answer = self.app.long_quarterly_growth("SAP.DE", {"quarterly": {}})
+        finally:
+            self.app.stockanalysis.growth = original
+        self.assertIsNone(answer["revenue"])
+        self.assertEqual(answer["reason"], "Quartalsreihe nicht abrufbar")
 
 
 if __name__ == "__main__":

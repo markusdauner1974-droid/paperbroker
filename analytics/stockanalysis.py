@@ -25,9 +25,16 @@ import urllib.error
 import urllib.request
 from contextlib import closing
 from datetime import date
+from threading import Lock, Thread
+from time import monotonic
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
-TIMEOUT_S = 20
+#: The page weighs about 280 kB. A cap keeps a wrong answer from filling the process.
+MAX_BYTES = 2_000_000
+#: One page, one budget: the socket timeout bounds a single read, not the whole call, so the total is
+#: checked as well. Three seconds covers the measured 1,6 to 2,0 seconds; anything slower belongs in
+#: the background, not in a waiting request.
+FETCH_BUDGET_S = 3.0
 #: A quarter's figures do not change once reported; a week keeps the page fresh without asking twice.
 MAX_AGE_H = 7 * 24
 BASE = "https://stockanalysis.com"
@@ -52,12 +59,20 @@ class SourceUnavailable(Exception):
 
 
 def exchange_for(symbol: str) -> str | None:
-    """The exchange path for one of our tickers, or None when the suffix is unknown."""
+    """The exchange path for one of our tickers, or None when the suffix is unknown.
+
+    ``BRK.B`` is not a Frankfurt listing: the single letter after the dot is a share class, and the
+    site serves it as ``/stocks/brk.b/``. Anything else unknown stays refused rather than guessed.
+    """
     upper = symbol.upper()
     if "." not in upper:
         return US
-    suffix = "." + upper.rsplit(".", 1)[1]
-    return EXCHANGES.get(suffix)
+    stem, suffix = upper.rsplit(".", 1)
+    if f".{suffix}" in EXCHANGES:
+        return EXCHANGES[f".{suffix}"]
+    if len(suffix) == 1 and suffix.isalpha() and "." not in stem:
+        return US
+    return None
 
 
 def url_for(symbol: str) -> str | None:
@@ -111,6 +126,13 @@ def parse(page: str) -> list[dict]:
     eps = next((row[1:] for row in rows if row[0] == ROW_EPS), None)
     if revenue is None and eps is None:
         return []
+    # Every column is read by its position. A header with a colspan, an extra leading cell or a note
+    # column would shift the figures against their dates without ever raising - a growth figure that
+    # looks right and is not. Rows that do not line up are refused instead of matched.
+    width = len(labels)
+    for row in (ends, revenue, eps):
+        if row is not None and len(row) != width:
+            return []
     periods = []
     for index in range(len(labels)):
         stamp = ends[index] if index < len(ends) else ""
@@ -128,34 +150,79 @@ def parse(page: str) -> list[dict]:
     return periods
 
 
-def fetch(symbol: str) -> list[dict]:
-    """The page as published, read once."""
+def fetch(symbol: str, budget_s: float = FETCH_BUDGET_S) -> list[dict]:
+    """The page as published, read once, within a budget.
+
+    The socket timeout bounds one read, not the call: a body that trickles in passes each operation
+    and still takes minutes. So the whole call is clocked and abandoned when it overstays, and the
+    body is capped before it is decoded.
+    """
     address = url_for(symbol)
     if not address:
         raise SourceUnavailable(f"kein Börsenplatz für {symbol}")
+    if budget_s <= 0:
+        raise SourceUnavailable("kein Zeitbudget im Sammelabruf")
+    started = monotonic()
     request = urllib.request.Request(address, headers={"User-Agent": UA, "Accept": "text/html"})
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as answer:
-            page = answer.read().decode("utf-8", "replace")
+        with urllib.request.urlopen(request, timeout=budget_s) as answer:
+            body = answer.read(MAX_BYTES + 1)
     except (urllib.error.HTTPError, urllib.error.URLError, OSError) as error:
         raise SourceUnavailable(str(error)) from error
-    periods = parse(page)
+    if len(body) > MAX_BYTES:
+        raise SourceUnavailable(f"Antwort über {MAX_BYTES} Bytes")
+    if monotonic() - started > budget_s:
+        raise SourceUnavailable(f"über {budget_s:.1f} s gebraucht")
+    periods = parse(body.decode("utf-8", "replace"))
     if not periods:
         raise SourceUnavailable(f"keine Tabelle für {symbol}")
     return periods
 
 
-def series(symbol: str, store_module=None, path=None) -> list[dict]:
+def series(symbol: str, store_module=None, path=None,
+           budget_s: float = FETCH_BUDGET_S) -> list[dict]:
     """The quarters of a ticker, from the store while fresh, otherwise fetched once."""
     if store_module is None:
-        return fetch(symbol)
+        return fetch(symbol, budget_s)
     with closing(store_module.connect(path)) as conn:
         stored = store_module.read_quarterly_source(conn, symbol, MAX_AGE_H)
     if stored:
         return stored
-    periods = fetch(symbol)
+    periods = fetch(symbol, budget_s)
     store_module.write_quarterly_source(symbol, periods, path)
     return periods
+
+
+#: One fetch per ticker at a time: a page view, a reload and a second tab ask for the same series.
+_PENDING: set[str] = set()
+_PENDING_LOCK = Lock()
+
+
+def refresh_in_background(symbol: str, store_module, path=None,
+                          budget_s: float = FETCH_BUDGET_S * 4) -> bool:
+    """Load a series after the answer was sent, so no request ever waits on a slow source.
+
+    Returns whether a load was started. A second call for the same ticker while one runs does
+    nothing - the queue would otherwise grow with every reload.
+    """
+    with _PENDING_LOCK:
+        if symbol in _PENDING:
+            return False
+        _PENDING.add(symbol)
+
+    def work():
+        try:
+            periods = fetch(symbol, budget_s)
+            if periods:
+                store_module.write_quarterly_source(symbol, periods, path)
+        except Exception:
+            pass
+        finally:
+            with _PENDING_LOCK:
+                _PENDING.discard(symbol)
+
+    Thread(target=work, daemon=True, name=f"quarters-{symbol}").start()
+    return True
 
 
 def _step_days(periods: list[dict]) -> int | None:
@@ -215,9 +282,21 @@ def twelve_month_growth(periods: list[dict]) -> dict:
     return answer
 
 
-def growth(symbol: str, store_module=None, path=None) -> dict:
-    """``twelve_month_growth`` for one ticker, with the source named."""
-    periods = series(symbol, store_module, path)
+def growth(symbol: str, store_module=None, path=None,
+           budget_s: float = FETCH_BUDGET_S) -> dict:
+    """``twelve_month_growth`` for one ticker, with the source named.
+
+    A series that is not in the store yet is fetched within the budget; when that does not fit, the
+    load continues in the background and the answer says so instead of waiting.
+    """
+    try:
+        periods = series(symbol, store_module, path, budget_s)
+    except SourceUnavailable:
+        if store_module is not None:
+            refresh_in_background(symbol, store_module, path)
+        return {"revenue": None, "eps": None, "periods": 0, "step_days": None,
+                "source": "stockanalysis.com", "newest": None,
+                "reason": "Quartalsreihe wird im Hintergrund geladen"}
     answer = twelve_month_growth(periods)
     answer["source"] = "stockanalysis.com"
     answer["newest"] = periods[0]["period_end"] if periods else None
