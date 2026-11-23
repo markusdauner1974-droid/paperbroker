@@ -46,7 +46,11 @@ const context = vm.createContext({
   qualityLowerIsBetter: new Set([7, 10, 13, 14]),
   Math,
 });
-vm.runInContext(lift("trendFit") + "\n" + lift("applyGroupRanks") + "\n" + lift("gradeOf") +
+// The colour bands sit in a table next to the function; a lifted function alone would not see it.
+const colourTable = script.slice(script.indexOf("const GRADE_COLOURS="),
+                                 script.indexOf(";", script.indexOf("const GRADE_COLOURS=")) + 1);
+vm.runInContext(colourTable + "\n" +
+                lift("trendFit") + "\n" + lift("applyGroupRanks") + "\n" + lift("gradeOf") +
                 "\n" + lift("gradeValue") + "\n" + lift("gradeText") + "\n" +
                 lift("gradeColor") + "\n" + lift("gradeFromText"), context);
 
@@ -100,6 +104,8 @@ results.gradeFromArchive = context.gradeFromText("11 / 15");
 results.gradeFromSuspended = context.gradeFromText("Ausgesetzt");
 // Every grade is coloured, and the hue walks from green (130) to red (0) - no grade stays grey.
 results.colors = [1, 1.5, 2, 3, 4, 5, 6].map(grade => context.gradeColor(grade));
+// The scale in half steps from end to end, for the lightness curve.
+results.gradesWithHalfSteps = [1, 2, 3, 3.5, 4, 5, 6].map(grade => context.gradeColor(grade));
 
 console.log(JSON.stringify(results));
 """
@@ -171,10 +177,31 @@ class PageScoresTest(unittest.TestCase):
         self.assertEqual(7, len(colors))
         self.assertNotIn(None, colors, "a grade without a colour")
         self.assertEqual(7, len(set(colors)), "two grades share one colour")
-        self.assertTrue(colors[0].startswith("hsl(130 "), colors[0])
+        self.assertTrue(colors[0].startswith("hsl(135 "), colors[0])
         self.assertTrue(colors[-1].startswith("hsl(0 "), colors[-1])
         hues = [int(color.split("(")[1].split(" ")[0]) for color in colors]
         self.assertEqual(sorted(hues, reverse=True), hues, f"the hues do not walk down: {hues}")
+
+    def test_the_middle_of_the_scale_reads_as_yellow(self):
+        """Hue alone is not yellow: at 30% lightness hue 60 is dark olive.
+
+        Measured before the lightness curve: grade 3,5 was #747c1d. Yellow needs the light, so the
+        lightness rises towards the middle and falls again towards both ends.
+        """
+        scale = self.result["gradesWithHalfSteps"]  # grades 1, 2, 3, 3.5, 4, 5, 6
+        light = [int(color.split(" ")[2].rstrip("%)")) for color in scale]
+        self.assertEqual([30, 38, 50, 49, 48, 36, 28], light)
+        # The bands Markus named: 1 and 2 green, 3 yellow, 4 orange, 5 and 6 red.
+        self.assertEqual([135, 118, 60, 45, 30, 12, 0],
+                         [int(color.split("(")[1].split(" ")[0]) for color in scale])
+        self.assertEqual("hsl(60 62% 50%)", scale[2], "grade 3 is not the yellow")
+        self.assertEqual("hsl(30 62% 48%)", scale[4], "grade 4 is not the orange")
+
+    def test_the_depth_stays_at_both_ends(self):
+        """Green and red keep their depth - a bright green would no longer read as "very good"."""
+        scale = self.result["gradesWithHalfSteps"]
+        self.assertTrue(scale[0].endswith(" 30%)"), scale[0])
+        self.assertTrue(scale[-1].startswith("hsl(0 ") and scale[-1].endswith(" 28%)"), scale[-1])
 
 
 if __name__ == "__main__":
