@@ -136,6 +136,14 @@ results.tileAlwaysColoured =
   /const tileColor=gradeColor\(grade\);/.test(script) &&
   /if\(tileColor\)badge\.style\.setProperty\("--score-color",tileColor\)/.test(script) &&
   !/isNum\(ratio\)/.test(script);
+// The search answers with one card per company in a three-column grid: name, its own code and
+// currency, and every venue as a chip whose suffix names the exchange. The old toggle and the
+// spelled-out venue names are gone - they made the list look like several results per company.
+results.searchGrid = /#matches\{display:grid;grid-template-columns:repeat\(3,minmax\(0,1fr\)\)/.test(html);
+results.searchCards = /element\("div",undefined,"card"\)/.test(script) &&
+  /"chips"/.test(script) && /"chip lead"/.test(script);
+results.searchChipIsTheTicker = /const chip=element\("button",listing\.symbol,index\?"chip":"chip lead"\)/.test(script) &&
+  !/weiterer Börsenplatz/.test(script);
 
 // Every check ranks against its own cutoff row; the quality row is the published one.
 const cutoffStart = script.indexOf("const qualityPercentiles=");
@@ -286,6 +294,19 @@ class PageScriptTest(unittest.TestCase):
         self.assertTrue(result["tileShowsGrade"], "the tile does not show a grade")
         self.assertTrue(result["tileAlwaysColoured"],
                         "the tile colour still depends on a complete data set")
+
+    def test_the_search_answers_with_cards_in_three_columns(self):
+        """One card per company, venues as chips named by their ticker."""
+        import os
+        env = {**os.environ, "PAGE_PATH": str(PAGE)}
+        run = subprocess.run(["node", "-e", HARNESS],
+                             capture_output=True, text=True, timeout=120, env=env)
+        self.assertEqual(run.returncode, 0, run.stderr[-800:])
+        result = json.loads(run.stdout)
+        self.assertTrue(result["searchGrid"], "the results are not a three-column grid")
+        self.assertTrue(result["searchCards"], "a result is not built as a card with chips")
+        self.assertTrue(result["searchChipIsTheTicker"],
+                        "a chip still spells out the exchange, or the old toggle is back")
 
     def test_quarter_window_and_benchmark_loading_state(self):
         import os

@@ -21,28 +21,54 @@ def script():
 
 
 class SearchRowTests(unittest.TestCase):
-    def test_the_row_names_the_venue_currency_and_isin(self):
-        body = script()
-        self.assertIn('const place=[match.symbol,match.exchange,match.currency]', body)
-        self.assertIn('const line=place+(match.isin?" · ISIN "+match.isin:"")', body)
+    """The search answers with one card per company: name, code and currency, venues as chips.
 
-    def test_the_row_carries_no_volume_and_no_volume_warning(self):
+    The row used to spell out the venue and the ISIN and to hide the other venues behind a toggle.
+    Markus: the arrangement was unreadable, the cards belong in three columns, and the venue does
+    not need a name - the ticker says it (9PDA.DU is Düsseldorf).
+    """
+
+    def test_the_card_names_the_company_and_its_own_code(self):
         body = script()
-        row = body[body.index("const place=[match.symbol"):body.index("button.onclick=()=>loadStock(match.symbol)")]
-        self.assertNotIn("Stück/Tag", row)
-        self.assertNotIn("dünn gehandelt", row)
+        self.assertIn('const facts=element("div",[match.symbol,match.currency]', body)
+        self.assertIn('const name=element("div",match.name,"card-name")', body)
+
+    def test_the_venue_is_a_chip_named_by_its_ticker(self):
+        body = script()
+        self.assertIn('const chip=element("button",listing.symbol,index?"chip":"chip lead")', body)
+        # The spelled-out venue sits in the tooltip, not in the chip.
+        self.assertIn("chip.title=listing.exchange||listing.symbol", body)
+        self.assertNotIn("weiterer Börsenplatz", body)
+
+    def test_the_card_carries_no_volume_and_no_volume_warning(self):
+        """The card builder must not bring back the daily volume.
+
+        The first version of this test sliced from the card to `status(result.notice||`, which sits
+        *before* it - the slice was empty and both checks passed against "". Found in review; the
+        length guard is what makes the slice honest.
+        """
+        body = script()
+        start = body.index('const card=element("div",undefined,"card")')
+        card = body[start:body.index("}catch", start)]
+        self.assertGreater(len(card), 500, "the slice missed the card builder")
+        self.assertNotIn("Stück/Tag", card)
+        self.assertNotIn("dünn gehandelt", card)
 
 
 class VenueListTests(unittest.TestCase):
-    def test_the_extra_venues_start_closed(self):
-        self.assertIn("extra.hidden=true", script())
+    def test_the_cards_sit_in_a_three_column_grid(self):
+        self.assertIn("#matches{display:grid;grid-template-columns:repeat(3,minmax(0,1fr))", TEXT)
 
-    def test_a_closed_list_stays_closed(self):
-        """The CSS rule for `.venues` overrode `hidden` - the five venues were always on screen."""
-        self.assertIn("#matches .venues[hidden]{display:none}", TEXT)
+    def test_the_grid_falls_back_to_two_and_one_column(self):
+        self.assertIn("@media(max-width:1000px){#matches{grid-template-columns:repeat(2,minmax(0,1fr))}}", TEXT)
+        self.assertIn("@media(max-width:700px){#matches{grid-template-columns:1fr}}", TEXT)
 
-    def test_the_venues_sit_in_columns(self):
-        self.assertIn("grid-template-columns:repeat(3,minmax(0,1fr))", TEXT)
+    def test_the_chips_wrap_inside_the_card(self):
+        self.assertIn(".chips{display:flex;flex-wrap:wrap", TEXT)
+
+    def test_the_old_toggle_is_gone(self):
+        self.assertNotIn("extra.hidden=true", script())
+        self.assertNotIn("#matches .venues[hidden]{display:none}", TEXT)
 
 
 class LeftoverTests(unittest.TestCase):

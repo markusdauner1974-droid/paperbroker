@@ -147,6 +147,112 @@ class SearchSourcesTests(unittest.TestCase):
         self.assertEqual([], result["matches"])
         self.assertIn("offline", result["notice"])
 
+    def test_an_unknown_name_is_not_called_an_outage(self):
+        """The sources answered and know nothing - that is not the same as being offline.
+
+        Before, every name without a hit got the outage text, which sends the reader looking for a
+        bug that is not there.
+        """
+        with mock.patch.object(app, "yahoo_matches", return_value=[]):
+            result = app.search("qwertzuiop", None, 0)
+        self.assertEqual([], result["matches"])
+        self.assertNotIn("offline", result["notice"])
+        self.assertIn("qwertzuiop", result["notice"])
+
+    def test_a_german_name_is_asked_again_without_umlauts(self):
+        """Measured: "Münchener Rück" returns nothing from Yahoo, "Muenchener Rueck" seven rows."""
+        asked = []
+        def answering(query):
+            asked.append(query)
+            return [] if "ü" in query else [{"symbol": "MUV2.DE", "name": "Münchener Rückversicherungs-Gesellschaft",
+                                             "exchange": "XETRA"}]
+        with mock.patch.object(app, "yahoo_matches", side_effect=answering), \
+                mock.patch.object(app, "group_matches",
+                                  side_effect=lambda rows, *a, **k: [{"symbol": row["symbol"],
+                                                                      "listings": [row]} for row in rows]):
+            result = app.search("Münchener Rück", None, 0)
+        self.assertEqual(["Münchener Rück", "Muenchener Rueck"], asked,
+                         "the umlaut form must be asked first, the plain one only as a retry")
+        self.assertEqual(["MUV2.DE"], [row["symbol"] for row in result["matches"]])
+        self.assertNotIn("notice", result)
+
+    def test_a_known_umlaut_name_keeps_its_own_answer(self):
+        """The retry must not run when the first question was answered."""
+        asked = []
+        def answering(query):
+            asked.append(query)
+            return [{"symbol": "SZU.DE", "name": "Südzucker AG", "exchange": "XETRA"}]
+        with mock.patch.object(app, "yahoo_matches", side_effect=answering), \
+                mock.patch.object(app, "group_matches",
+                                  side_effect=lambda rows, *a, **k: [{"symbol": row["symbol"],
+                                                                      "listings": [row]} for row in rows]):
+            app.search("Südzucker", None, 0)
+        self.assertEqual(["Südzucker"], asked)
+
+    def test_a_slow_empty_answer_is_not_asked_twice(self):
+        """Two slow questions in a row would double what the reader waits for.
+
+        Yahoo's search carries eight seconds of its own; the retry only runs while the first
+        answer stayed under the budget (review finding).
+        """
+        asked = []
+        def slow(query):
+            asked.append(query)
+            time.sleep(app.UMLAUT_RETRY_BUDGET_S + 0.2)
+            return []
+        with mock.patch.object(app, "yahoo_matches", side_effect=slow):
+            result = app.search("Münchener Rück", None, 0)
+        self.assertEqual(["Münchener Rück"], asked, "the slow search was asked a second time")
+        self.assertIn("Keine Quelle kennt", result["notice"])
+
+    def test_the_fallback_row_is_not_denied_by_the_notice(self):
+        """The notice must not say "nothing found" while the SAP fallback row sits in the answer."""
+        with mock.patch.object(app, "yahoo_matches", return_value=[]), \
+                mock.patch.object(app, "group_matches", return_value=[]):
+            result = app.search("SAP", None, 0)
+        self.assertEqual([app.SAP], result["matches"])
+        self.assertNotIn("Keine Quelle kennt", result["notice"])
+        self.assertIn("Börsenticker", result["notice"])
+
+
+class VenueMergeTests(unittest.TestCase):
+    """A second German board of a paper is a venue of it, not a second company.
+
+    Measured on "pdd": Yahoo answered PDD (NASDAQ) with 9PDA.F behind it, and the same answer carried
+    9PDA.DU (Düsseldorf) as a company called "Pinduoduo Inc" - the same security twice in the list.
+    No ISIN on either side, so only the code and the board can join them.
+    """
+
+    def group(self, symbol, listings):
+        return {"symbol": symbol, "name": symbol, "listings": [{"symbol": s, "exchange": e}
+                                                              for s, e in listings]}
+
+    def test_a_second_german_board_becomes_a_venue(self):
+        groups = [self.group("PDD", [("PDD", "NASDAQ"), ("9PDA.F", "Frankfurt")]),
+                  self.group("9PDA.DU", [("9PDA.DU", "Düsseldorf")])]
+        kept = app.merge_german_boards(groups)
+        self.assertEqual(1, len(kept))
+        self.assertEqual(["PDD", "9PDA.F", "9PDA.DU"],
+                         [listing["symbol"] for listing in kept[0]["listings"]])
+
+    def test_a_toronto_listing_of_another_company_is_not_folded_in(self):
+        """"SAP.TO" is Saputo Inc.; SAP SE also carries listings with the root "SAP"."""
+        groups = [self.group("SAP.DE", [("SAP.DE", "Xetra"), ("SAP", "NYSE")]),
+                  self.group("SAP.TO", [("SAP.TO", "Toronto")])]
+        kept = app.merge_german_boards(groups)
+        self.assertEqual(2, len(kept), "Saputo must stay its own company")
+
+    def test_a_group_with_several_listings_is_left_alone(self):
+        groups = [self.group("PDD", [("PDD", "NASDAQ"), ("9PDA.F", "Frankfurt")]),
+                  self.group("X", [("9PDA.DU", "Düsseldorf"), ("9PDA.MU", "Munich")])]
+        kept = app.merge_german_boards(groups)
+        self.assertEqual(2, len(kept))
+
+    def test_board_and_root_are_read_from_the_symbol(self):
+        self.assertEqual("DU", app.board_of("9PDA.DU"))
+        self.assertEqual("", app.board_of("AAPL"))
+        self.assertEqual("9PDA", app.symbol_root("9PDA.DU"))
+
 
 class SameIsinTests(unittest.TestCase):
     """One ISIN, one row - measured: "apple" gave AAPL and APC.DE, both US0378331005."""

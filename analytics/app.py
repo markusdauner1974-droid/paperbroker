@@ -609,6 +609,9 @@ def company_isin(name, country, path=None):
 # more. So they are asked one at a time and never past the deadline: the answer is stored, the next
 # search continues where this one stopped.
 ISIN_DEADLINE_S = 2.0
+# Yahoo's search carries an eight-second timeout of its own. A second question is only asked while
+# the first answer is still cheap: past this, the reader would wait for two slow answers in a row.
+UMLAUT_RETRY_BUDGET_S = 3.0
 
 
 def verified_isin(raw, name, country, path=None):
@@ -622,6 +625,66 @@ def verified_isin(raw, name, country, path=None):
     if prefix and isinstance(raw, str) and ISIN_FORM.fullmatch(raw) and raw.startswith(prefix):
         return raw
     return company_isin(name, country, path)
+
+
+def symbol_root(symbol):
+    """The paper's own code without the venue: "9PDA.DU" -> "9PDA", "AAPL" -> "AAPL"."""
+    return (symbol or "").split(".")[0].upper()
+
+
+# The German boards Yahoo codes with a suffix: Xetra, Frankfurt, Düsseldorf, Munich, Stuttgart,
+# Berlin, Hamburg, Hanover. A paper traded on two of them carries the same local code on both.
+GERMAN_BOARDS = {"DE", "F", "DU", "MU", "SG", "BE", "HM", "HA"}
+
+
+def board_of(symbol):
+    """The venue suffix of a Yahoo symbol: "9PDA.DU" -> "DU", "AAPL" -> ""."""
+    return (symbol or "").rsplit(".", 1)[-1].upper() if "." in (symbol or "") else ""
+
+
+def merge_german_boards(groups):
+    """A paper on two German boards is one company, even when the two sources name it differently.
+
+    Measured on "pdd": Yahoo answered PDD (NASDAQ) with 9PDA.F (Frankfurt) behind it, and the same
+    answer carried 9PDA.DU (Düsseldorf) as a second company called "Pinduoduo Inc". Neither carries
+    an ISIN, so the ISIN merge cannot join them.
+
+    Only German boards are joined by their code, and only against a board that already sits behind
+    another company: "9PDA" is the local code of PDD, while "SAP.TO" belongs to Saputo Inc. and must
+    not be folded into SAP SE, whose own listings share the root "SAP".
+    """
+    roots = {}
+    for group in groups:
+        for listing in group.get("listings", [])[1:]:
+            if board_of(listing["symbol"]) in GERMAN_BOARDS:
+                roots.setdefault(symbol_root(listing["symbol"]), group)
+    kept = []
+    for group in groups:
+        listings = group.get("listings", [])
+        target = None
+        if len(listings) == 1 and board_of(listings[0]["symbol"]) in GERMAN_BOARDS:
+            target = roots.get(symbol_root(listings[0]["symbol"]))
+        if target is None or target is group:
+            kept.append(group)
+            continue
+        known = {listing["symbol"] for listing in target["listings"]}
+        target["listings"] += [listing for listing in listings if listing["symbol"] not in known]
+    return kept
+
+
+def _order_listings(group):
+    """The home listing first, then the German boards, then the rest - the order the chips show.
+
+    The home listing carries the numbers; a German board is the one a reader here can actually
+    trade; everything else is a foreign reseller.
+    """
+    listings = group.get("listings", [])
+    if len(listings) < 2:
+        return
+    lead = listings[0]
+    rest = sorted(listings[1:], key=lambda listing: (board_of(listing["symbol"]) not in GERMAN_BOARDS,
+                                                     listing["symbol"]))
+    group["listings"] = [lead] + rest
 
 
 def merge_same_isin(rows):
@@ -781,6 +844,18 @@ def yahoo_matches(query):
     return matches
 
 
+def plain_query(query):
+    """The same name without umlauts: "Münchener Rück" -> "Muenchener Rueck".
+
+    Measured against Yahoo's search: the umlaut spelling of a German company returns nothing
+    ("Münchener Rück", "Müller"), while the transliteration finds it (seven rows, MUV2.DE first).
+    The umlaut form is asked first, so a name Yahoo does know keeps its exact answer.
+    """
+    return (query or "").translate({ord("ä"): "ae", ord("ö"): "oe", ord("ü"): "ue",
+                                    ord("Ä"): "Ae", ord("Ö"): "Oe", ord("Ü"): "Ue",
+                                    ord("ß"): "ss"})
+
+
 def search(query, nas=None, bucket=None):
     """One row per company, whichever source knows it.
 
@@ -793,19 +868,38 @@ def search(query, nas=None, bucket=None):
     """
     normalized = query.upper()
     fallback = [SAP] if normalized in {"SAP", "SAP SE", "SAP.DE", "DE0007164600", "716460"} else []
+    failure = None
     with ThreadPoolExecutor(max_workers=2) as pool:
         scanner_job = pool.submit(scanner_matches, query, nas)
+        started = monotonic()
         try:
             found = yahoo_matches(query)
             yahoo_answered = True
-        except Exception:
-            found, yahoo_answered = [], False
+        except Exception as error:
+            found, yahoo_answered, failure = [], False, error
+        if yahoo_answered and not found:
+            # A German name with umlauts is often unknown to Yahoo's search in that spelling:
+            # measured, "Münchener Rück" returns nothing while "Muenchener Rueck" returns seven rows.
+            #
+            # The retry is only worth it when the first question came back quickly. A Yahoo that
+            # needed seconds for its empty answer would need them again, and the reader would wait
+            # twice for one search (review finding).
+            plain = plain_query(query)
+            if plain != query and monotonic() - started < UMLAUT_RETRY_BUDGET_S:
+                try:
+                    found = yahoo_matches(plain)
+                except Exception:
+                    pass          # the umlaut form answered; a failing retry adds nothing
         scanned = scanner_job.result()
     # The ISIN budget starts once the sources have answered: a slow scanner or search would
     # otherwise eat the budget before the first lookup and every row would come back without ISIN.
     deadline = monotonic() + ISIN_DEADLINE_S
 
     if not yahoo_answered and not scanned:
+        # The log has to name the reason: without it "offline" is a guess, and the reader cannot
+        # tell a blocked feed from a Yahoo that answered with nothing.
+        print(f"Namenssuche: Yahoo antwortete nicht ({type(failure).__name__}: {failure}).",
+              flush=True)
         return {"matches": fallback,
                 "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
     rows = found if yahoo_answered else []
@@ -819,9 +913,21 @@ def search(query, nas=None, bucket=None):
     # The two sources are grouped apart, so the same security can still sit in both: measured,
     # "apple" answered AAPL from Yahoo and APC.DE from the scanner, the same ISIN twice.
     groups = merge_same_isin(groups)
+    # A second German board of a paper already in the list is a venue of it, not a second company:
+    # measured, "pdd" showed PDD with 9PDA.F and, next to it, "Pinduoduo Inc" with 9PDA.DU.
+    groups = merge_german_boards(groups)
+    for group in groups:
+        _order_listings(group)
     if not groups:
+        # The sources answered and know nothing by that name - that is not an outage, and calling it
+        # one sends the reader looking for a bug that is not there.
+        #
+        # With the SAP fallback in hand the notice must not claim that nothing was found while the
+        # row sits right below it (review finding). The row is the answer; only the hint stays.
+        hint = "Ein Börsenticker lässt sich direkt eingeben."
         return {"matches": fallback,
-                "notice": "Die Namenssuche ist zurzeit offline. Ein Börsenticker kann direkt geladen werden."}
+                "notice": hint if fallback else
+                          f"Keine Quelle kennt eine Aktie namens „{query}“. {hint}"}
     # The label says who answered: a fallback row must not be sold as a Yahoo answer.
     source = [label for label, used in (("xang auf NAS", scanned),
                                         ("Yahoo Finance", yahoo_answered and found)) if used]
