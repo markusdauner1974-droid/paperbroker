@@ -95,6 +95,7 @@ CREATE TABLE IF NOT EXISTS quarterly_source (
     revenue          REAL,
     eps              REAL,
     operating_income REAL,
+    parser_version   INTEGER,
     fetched_at       TEXT NOT NULL,
     PRIMARY KEY (symbol, period_end)
 );
@@ -129,8 +130,10 @@ def connect(path=None) -> sqlite3.Connection:
     conn.executescript(SCHEMA)
     _add_column(conn, "filing", "released", "TEXT")
     _add_column(conn, "company", "provider_id", "INTEGER")
-    # A store written before the operating income was read keeps its rows and gains the column.
+    # A store written before the operating income was read keeps its rows and gains the columns. A
+    # row without a parser_version comes from that older writer and is read again once.
     _add_column(conn, "quarterly_source", "operating_income", "REAL")
+    _add_column(conn, "quarterly_source", "parser_version", "INTEGER")
     conn.commit()
     return conn
 
@@ -466,15 +469,18 @@ def summary(path=None):
                   for table in ("company", "filing", "figure", "price")}
     return json.dumps(counts, ensure_ascii=False)
 
-#: The store is rewritten by ``write_quarterly_source`` once it knows about the operating income.
-#: A database from before that column keeps version 0, which is how a legacy row set is told apart
-#: from a fresh fetch that genuinely has no operating income (a bank, for instance).
-SCHEMA_VERSION = 1
+#: Bumped whenever the parser reads something new from the page. The number is written on every row,
+#: so one ticker's rewrite cannot vouch for another's stale rows.
+PARSER_VERSION = 1
 
 
-def store_is_current(conn) -> bool:
-    """Whether the rows in this database were written by the parser of the current version."""
-    return conn.execute("PRAGMA user_version").fetchone()[0] >= SCHEMA_VERSION
+def rows_are_current(rows: list[dict]) -> bool:
+    """Whether these rows were written by the parser of the current version.
+
+    A page that genuinely carries no operating income (a bank) is still current - the question is who
+    wrote the row, not what it contains.
+    """
+    return bool(rows) and all((row.get("parser_version") or 0) >= PARSER_VERSION for row in rows)
 
 
 def write_quarterly_source(symbol, periods, path=None):
@@ -484,15 +490,13 @@ def write_quarterly_source(symbol, periods, path=None):
         conn.execute("DELETE FROM quarterly_source WHERE symbol = ?", (symbol,))
         conn.executemany(
             """INSERT OR REPLACE INTO quarterly_source
-                   (symbol, period_end, label, revenue, eps, operating_income, fetched_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                   (symbol, period_end, label, revenue, eps, operating_income, parser_version,
+                    fetched_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
             [(symbol, row["period_end"], row.get("label"), row.get("revenue"), row.get("eps"),
-              row.get("operating_income"), stamp)
+              row.get("operating_income"), PARSER_VERSION, stamp)
              for row in periods],
         )
-        # Not "this row set has an operating income" - "it was read by a parser that looks for one".
-        # A bank publishes none, and its rows must still count as fresh.
-        conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     return True
 
@@ -504,10 +508,11 @@ def read_quarterly_source(conn, symbol, max_age_h: float = 168):
     if not row or not row[0] or age_hours(row[0]) > max_age_h:
         return None
     rows = conn.execute(
-        """SELECT period_end, label, revenue, eps, operating_income FROM quarterly_source
-           WHERE symbol = ? ORDER BY period_end DESC""", (symbol,)).fetchall()
+        """SELECT period_end, label, revenue, eps, operating_income, parser_version
+           FROM quarterly_source WHERE symbol = ? ORDER BY period_end DESC""", (symbol,)).fetchall()
     if not rows:
         return None
     return [{"period_end": item["period_end"], "label": item["label"],
              "revenue": item["revenue"], "eps": item["eps"],
-             "operating_income": item["operating_income"]} for item in rows]
+             "operating_income": item["operating_income"],
+             "parser_version": item["parser_version"]} for item in rows]

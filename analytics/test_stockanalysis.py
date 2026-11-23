@@ -283,18 +283,20 @@ class StoreTests(unittest.TestCase):
             self.assertIsNone(store.read_quarterly_source(conn, "SAP.DE", max_age_h=0))
             self.assertEqual(back[0]["operating_income"], 3600.0)
 
-    def test_a_written_series_marks_the_store_current(self):
+    def test_a_written_series_carries_the_parser_version(self):
         import tempfile
 
         import store
 
         path = Path(tempfile.mkdtemp()) / "t.db"
         with store.connect(path) as conn:
-            self.assertFalse(store.store_is_current(conn), "ein leerer Speicher ist nicht aktuell")
             store.write_quarterly_source("SAP.DE", stockanalysis.parse(TABLE), path)
-            self.assertTrue(store.store_is_current(conn))
+            rows = store.read_quarterly_source(conn, "SAP.DE")
+        self.assertTrue(store.rows_are_current(rows))
+        self.assertEqual(rows[0]["parser_version"], store.PARSER_VERSION)
 
-    def test_a_store_written_before_the_operating_income_stays_old(self):
+    def test_one_rewrite_does_not_vouch_for_another_ticker(self):
+        """The version sits on the row: a legacy ticker stays stale although its neighbour is new."""
         import sqlite3
         import tempfile
 
@@ -305,9 +307,21 @@ class StoreTests(unittest.TestCase):
             conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
                             revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
                             PRIMARY KEY (symbol, period_end))""")
+            conn.execute("INSERT INTO quarterly_source VALUES ('OLD.DE','2026-09-30','Q3 2026',1,1,'2026-11-23T00:00:00Z')")
         with store.connect(path) as conn:
-            self.assertFalse(store.store_is_current(conn),
-                             "alte Zeilen müssen neu geholt werden")
+            store.write_quarterly_source("NEW.DE", stockanalysis.parse(TABLE), path)
+            fresh = store.read_quarterly_source(conn, "NEW.DE")
+            stale = store.read_quarterly_source(conn, "OLD.DE")
+        self.assertTrue(store.rows_are_current(fresh))
+        self.assertFalse(store.rows_are_current(stale),
+                         "die alte Reihe muss trotz des Schreibvorgangs für ein anderes Papier neu geholt werden")
+        self.assertTrue(store.rows_are_current([{"parser_version": store.PARSER_VERSION}]))
+
+    def test_rows_without_a_version_count_as_old(self):
+        import store
+
+        self.assertFalse(store.rows_are_current([{"revenue": 1.0}]))
+        self.assertFalse(store.rows_are_current([]))
 
     def test_a_store_written_before_the_operating_income_gains_the_column(self):
         import sqlite3

@@ -219,12 +219,11 @@ def series(symbol: str, store_module=None, path=None,
         return fetch(symbol, budget_s)
     with closing(store_module.connect(path)) as conn:
         stored = store_module.read_quarterly_source(conn, symbol, MAX_AGE_H)
-        written_now = store_module.store_is_current(conn)
     # A series stored before the operating income was read carries none of it and is still fresh by
     # age, so age alone would keep the two financing rows empty for a week after the deploy. The
-    # store version tells that apart from a series read today from a page that has no operating
-    # income at all (a bank) - the latter is fresh and must not be fetched again on every view.
-    if stored and (written_now or any(row.get("operating_income") is not None for row in stored)):
+    # parser version is written on every row, so it marks exactly those rows for a re-read and
+    # leaves a series read today from a page without an operating income (a bank) alone.
+    if stored and store_module.rows_are_current(stored):
         return stored
     periods = fetch(symbol, budget_s)
     store_module.write_quarterly_source(symbol, periods, path)
