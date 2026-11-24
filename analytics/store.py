@@ -166,9 +166,19 @@ def _rename_german_schema(conn):
 
 def _add_column(conn, table: str, column: str, kind: str):
     """Add a column to a database that was created by an older version."""
-    if column not in _columns(conn, table):
+    if column in _columns(conn, table):
+        return
+    try:
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {kind}")
         conn.commit()
+    except sqlite3.OperationalError as error:
+        # Two callers may open a fresh store at the same time - the page shows several papers at once
+        # and each of them opens the file. Both see the column missing and both alter it; the loser
+        # gets "duplicate column name", which is exactly the state it was after. Measured: one in
+        # twenty runs of the shared-fetch test failed before this, none after.
+        if "duplicate column name" not in str(error):
+            raise
+        conn.rollback()
 
 
 def _now() -> str:
