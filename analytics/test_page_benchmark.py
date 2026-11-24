@@ -25,7 +25,8 @@ PAGE = Path(__file__).resolve().parent / "index.html"
 #: One paper per listing place the page maps, plus an American class and an unknown place.
 SYMBOLS = ["SAP.DE", "OR.PA", "ASML.AS", "ENI.MI", "SAN.MC", "SHEL.L", "NESN.SW", "VIG.VI",
            "ERIC-B.ST", "CARL-B.CO", "EQNR.OL", "NOKIA.HE", "ABI.BR", "GALP.LS",
-           "AAPL", "BRK.B", "XYZ.QQ"]
+           "AAPL", "BRK.B", "XYZ.QQ",
+           "1211.HK", "7203.T", "600519.SS", "000002.SZ", "SHOP.TO", "BHP.AX"]
 
 HARNESS = r"""
 const fs = require("node:fs");
@@ -98,7 +99,7 @@ class BenchmarkTests(unittest.TestCase):
         self.assertEqual(self.answers["VIG.VI"], "^ATX")
         self.assertEqual(self.answers["ERIC-B.ST"], "^OMX")
         self.assertEqual(self.answers["CARL-B.CO"], "^OMXC25")
-        self.assertEqual(self.answers["EQNR.OL"], "^OSEAX")
+        self.assertEqual(self.answers["EQNR.OL"], "OSEBX.OL")
         self.assertEqual(self.answers["NOKIA.HE"], "^OMXH25")
 
     def test_brussels_and_lisbon(self):
@@ -111,9 +112,121 @@ class BenchmarkTests(unittest.TestCase):
     def test_a_us_share_class_keeps_its_american_index(self):
         self.assertEqual(self.answers["BRK.B"], "^GSPC")
 
+    def test_hongkong_tokyo_shanghai_shenzhen_toronto_sydney(self):
+        """Places the page mapped nowhere kept the four market rows open for good."""
+        self.assertEqual(self.answers["1211.HK"], "^HSI")
+        self.assertEqual(self.answers["7203.T"], "^N225")
+        self.assertEqual(self.answers["600519.SS"], "000001.SS")
+        self.assertEqual(self.answers["000002.SZ"], "399001.SZ")
+        self.assertEqual(self.answers["SHOP.TO"], "^GSPTSE")
+        self.assertEqual(self.answers["BHP.AX"], "^AXJO")
+
     def test_an_unknown_place_gets_no_index(self):
         """No index is better than the wrong one: the four rows stay open and say so."""
         self.assertEqual(self.answers["XYZ.QQ"], "")
+
+
+DOWNTURN_HARNESS = r"""
+const fs = require("node:fs");
+const vm = require("node:vm");
+const html = fs.readFileSync(process.env.PAGE_PATH, "utf8");
+const opening = html.indexOf("<script>");
+const script = html.slice(opening + 8, html.indexOf("</script>", opening));
+
+// The page declares its helpers both ways - `function deviation(...)` and `const growth = ... => ...` -
+// so the extractor has to handle both instead of assuming one.
+function declaration(name) {
+  const viaFunction = script.indexOf("function " + name + "(");
+  if (viaFunction >= 0) {
+    let depth = 0;
+    for (let index = script.indexOf("{", viaFunction); index < script.length; index++) {
+      if (script[index] === "{") depth++;
+      if (script[index] === "}") { depth--; if (depth === 0) return script.slice(viaFunction, index + 1); }
+    }
+  }
+  const viaConst = script.search(new RegExp("const\\s+" + name + "\\s*="));
+  if (viaConst < 0) throw new Error("Deklaration fehlt: " + name);
+  let round = 0, curly = 0, square = 0;
+  for (let index = script.indexOf("=", viaConst) + 1; index < script.length; index++) {
+    const c = script[index];
+    if (c === "(") round++;
+    else if (c === ")") round--;
+    else if (c === "{") curly++;
+    else if (c === "}") curly--;
+    else if (c === "[") square++;
+    else if (c === "]") square--;
+    else if (c === ";" && !round && !curly && !square) return script.slice(viaConst, index + 1);
+  }
+  throw new Error("Ende der Deklaration fehlt: " + name);
+}
+
+const names = ["isNum", "division", "growth", "knownValues", "meanOf", "deviation", "downturn"];
+const source = names.map(declaration).join("\n");
+const context = vm.createContext({});
+vm.runInContext(source, context);
+const input = JSON.parse(process.env.CASE);
+process.stdout.write(JSON.stringify(context.downturn(input.rows, input.benchmark, input.count)));
+"""
+
+
+def downturn_case(rows, benchmark, count):
+    result = subprocess.run(
+        ["node", "-e", DOWNTURN_HARNESS],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PAGE_PATH": str(PAGE), "CASE": json.dumps(
+            {"rows": rows, "benchmark": benchmark, "count": count})},
+    )
+    if result.returncode != 0:
+        raise AssertionError(f"node failed: {result.stderr}")
+    return json.loads(result.stdout)
+
+
+def series(days, step):
+    """A price row is [date, close]; the index falls by step on every second day."""
+    rows, value = [], 100.0
+    for day in range(days):
+        value *= 1 - (step if day % 2 else -0.01)
+        rows.append([f"2026-01-{day + 1:02d}", round(value, 4)])
+    return rows
+
+
+class DownturnReasonTests(unittest.TestCase):
+    """A row that cannot be judged says why - a bare dash leaves the reader guessing."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.page = PAGE.read_text(encoding="utf-8")
+
+    def test_without_an_index_the_reason_is_named(self):
+        correlation, excess, reason = downturn_case(series(30, 0.01), [], 20)
+        self.assertIsNone(correlation)
+        self.assertIsNone(excess)
+        self.assertEqual("kein Vergleichsindex", reason)
+
+    def test_too_few_common_days_name_the_window(self):
+        correlation, excess, reason = downturn_case(series(10, 0.01), series(10, 0.01), 20)
+        self.assertIsNone(correlation)
+        self.assertIsNone(excess)
+        self.assertIn("gemeinsame Handelstage", reason)
+        self.assertIn("21", reason, "das Fenster nennt, was fehlt")
+
+    def test_a_full_window_gives_numbers_and_no_reason(self):
+        rows = series(30, 0.01)
+        correlation, excess, reason = downturn_case(rows, series(30, 0.01), 20)
+        self.assertIsNone(reason)
+        self.assertIsNotNone(correlation)
+        self.assertIsNotNone(excess)
+
+    def test_the_rows_carry_the_reason_as_a_label(self):
+        self.assertIn('n(unavailableLabel("Korrelation im Fenster von 20 Handelstagen",cor20,gap20)',
+                      self.page)
+        self.assertIn('p(unavailableLabel("Ø Mehrrendite im Fenster von 65 Handelstagen",out65,gap65)',
+                      self.page)
+
+    def test_oslo_uses_a_symbol_the_source_carries(self):
+        """^OSEAX is not in the source ("no data found, symbol may be delisted")."""
+        self.assertNotIn('".OL":"^OSEAX"', self.page)
+        self.assertIn('".OL":"OSEBX.OL"', self.page)
 
 
 class FinancingRowTests(unittest.TestCase):

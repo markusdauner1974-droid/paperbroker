@@ -435,18 +435,23 @@ function meanDrawdown(buckets,count){
   }));
 }
 function downturn(rows,benchmark,count){
+  // Every answer carries the reason it is open: a bare dash left the reader guessing whether
+  // the paper, the index or the window was missing.
+  if(!benchmark||!benchmark.length)return [null,null,"kein Vergleichsindex"];
   const index=new Map(benchmark.map(r=>[r[0],r]));
   const common=rows.filter(r=>index.has(r[0])).slice(-count-1);
-  if(common.length!==count+1)return [null,null];
+  if(common.length!==count+1)
+    return [null,null,"zu wenige gemeinsame Handelstage ("+common.length+" von "+(count+1)+")"];
   const indexRows=common.map(row=>index.get(row[0]));
   const column=common.every(row=>row[2]>0)&&indexRows.every(row=>row[2]>0)?2:1;
   const returns=common.slice(1).map((r,i)=>[growth(r[column],common[i][column]),
     growth(indexRows[i+1][column],indexRows[i][column])]).filter(([a,b])=>isNum(a)&&isNum(b)&&b<0);
-  if(returns.length<5)return [null,null];
+  if(returns.length<5)
+    return [null,null,"zu wenige negative Handelstage im Index ("+returns.length+")"];
   const a=returns.map(r=>r[0]),b=returns.map(r=>r[1]),ma=meanOf(a),mb=meanOf(b);
   const correlation=division(meanOf(returns.map(([x,y])=>(x-ma)*(y-mb))),deviation(a)*deviation(b));
   return [correlation===null?null:Math.max(-1,Math.min(1,correlation)),
-    meanOf(returns.map(([x,y])=>x-y))];
+    meanOf(returns.map(([x,y])=>x-y)),null];
 }
 function buildChecks(stock,benchmark=[],only=selected){
   const i=stock.info,rows=stock.prices,close=rows.at(-1)?.[1];
@@ -651,7 +656,7 @@ function buildChecks(stock,benchmark=[],only=selected){
     default:{
       const years=calendarCloseGroups(rows,"year");
       const calendarMonths=calendarCloseGroups(rows,"month");
-      const [cor20,out20]=downturn(rows,benchmark,20),[cor65,out65]=downturn(rows,benchmark,65);
+      const [cor20,out20,gap20]=downturn(rows,benchmark,20),[cor65,out65,gap65]=downturn(rows,benchmark,65);
       return [["Langfristige Rendite",[
         p("Performance 3 Jahre",ret(36),-.50,.20,1.30),
         p("Performance 5 Jahre",ret(60),-.50,.40,2.20),
@@ -667,10 +672,10 @@ function buildChecks(stock,benchmark=[],only=selected){
         p("Kalendermonate · 36 Monate",meanDrawdown(calendarMonths,36),-.30,-.10,-.02),
         p("Kalendermonate · 100 Monate",meanDrawdown(calendarMonths,100),-.30,-.10,-.02)]],
       ["An negativen Handelstagen des Vergleichsindex",[
-        n("Korrelation im Fenster von 20 Handelstagen",cor20,1,.35,-.35),
-        n("Korrelation im Fenster von 65 Handelstagen",cor65,1,.35,-.35),
-        p("Ø Mehrrendite im Fenster von 20 Handelstagen",out20,-.03,0,.025),
-        p("Ø Mehrrendite im Fenster von 65 Handelstagen",out65,-.03,0,.025)]]];
+        n(unavailableLabel("Korrelation im Fenster von 20 Handelstagen",cor20,gap20),cor20,1,.35,-.35),
+        n(unavailableLabel("Korrelation im Fenster von 65 Handelstagen",cor65,gap65),cor65,1,.35,-.35),
+        p(unavailableLabel("Ø Mehrrendite im Fenster von 20 Handelstagen",out20,gap20),out20,-.03,0,.025),
+        p(unavailableLabel("Ø Mehrrendite im Fenster von 65 Handelstagen",out65,gap65),out65,-.03,0,.025)]]];
     }
   }
 }
@@ -802,8 +807,14 @@ let activeRanking=null;
 // criteria then stay open instead of being compared against the wrong market.
 const benchmarkBySuffix={
   ".DE":"^GDAXI",".F":"^GDAXI",".PA":"^FCHI",".AS":"^AEX",".MI":"FTSEMIB.MI",".MC":"^IBEX",
-  ".L":"^FTSE",".SW":"^SSMI",".VI":"^ATX",".ST":"^OMX",".CO":"^OMXC25",".OL":"^OSEAX",
-  ".HE":"^OMXH25",".BR":"^BFX",".LS":"PSI20.LS"};
+  ".L":"^FTSE",".SW":"^SSMI",".VI":"^ATX",".ST":"^OMX",".CO":"^OMXC25",".OL":"OSEBX.OL",
+  ".HE":"^OMXH25",".BR":"^BFX",".LS":"PSI20.LS",
+  // Places the page mapped nowhere used to keep the four market rows open for good. Every symbol
+  // here was checked against the source before it was written down (measured 24.11.2026).
+  ".HK":"^HSI",".T":"^N225",".SS":"000001.SS",".SZ":"399001.SZ",".TO":"^GSPTSE",".AX":"^AXJO"};
+// Yahoo carries no ^OSEAX ("No data found, symbol may be delisted"), so Oslo papers were
+// measured against an empty series and all four rows stayed open. OSEBX.OL is the Oslo
+// benchmark and delivers.
 function defaultBenchmark(stock){
   const dot=stock.symbol.lastIndexOf(".");
   const suffix=dot>0?"."+stock.symbol.slice(dot+1).toUpperCase():"";
