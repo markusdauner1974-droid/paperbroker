@@ -585,6 +585,47 @@ class SharedFetchTests(unittest.TestCase):
             self.assertEqual("Quartalsreihe wird im Hintergrund geladen", answer["reason"])
             self.assertIsNone(answer["revenue"])
 
+    def test_a_waiter_that_gives_up_does_not_call_it_a_failure(self):
+        """The leader may still be working: a name lookup can outlast the socket timeout."""
+        store, path = self._store()
+        original = stockanalysis.fetch
+        release, entered = Event(), Event()
+
+        def slow_fetch(symbol, budget_s=None):
+            entered.set()
+            release.wait(5)
+            return stockanalysis.parse(TABLE)
+
+        stockanalysis.fetch = slow_fetch
+        leader, refused, second_load = [], [], []
+
+        def run_leader():
+            leader.append(stockanalysis.series("SAP.DE", store, path, budget_s=3.0))
+
+        def run_waiter():
+            try:
+                stockanalysis.series("SAP.DE", store, path, budget_s=0.1)
+            except Exception as error:  # noqa: BLE001 - the test records what reaches the caller
+                refused.append(str(error))
+
+        first = Thread(target=run_leader, daemon=True)
+        second = Thread(target=run_waiter, daemon=True)
+        try:
+            first.start()
+            self.assertTrue(entered.wait(5), "der Anführer muss im Abruf stehen")
+            second.start()
+            second.join(6)
+            # While the shared fetch runs, the real background load for the same ticker is refused.
+            second_load.append(stockanalysis.refresh_in_background("SAP.DE", store, path))
+            release.set()
+            first.join(8)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(1, len(refused), "der Wartende gibt auf")
+        self.assertIn("noch nicht abgeschlossen", refused[0], "und nennt keinen Ausfall")
+        self.assertEqual([False], second_load, "kein zweiter Abruf neben dem laufenden")
+        self.assertTrue(leader and leader[0], "der Anführer liefert die Reihe")
+
     def test_a_failed_leader_leaves_the_waiter_with_nothing_rather_than_stale_rows(self):
         import sqlite3
 
