@@ -194,15 +194,32 @@ const pct = n => isNum(n)?f(n*100)+" %":"—";
 // L'Oreal, not 0.0166), and treating it as a fraction printed 166 %. A payout per share divided by
 // the price is unambiguous - and when the amount is missing the cell stays a dash.
 const providerDividendYield = (info, price) => division(info.dividendRate, price);
+// The three names the sources use for the same figure: yfinance publishes cashdividendspaid and
+// commonstockdividendpaid, the filings paths (fonrex, the statement export) publish dividendspaid.
+// Missing one of them left the payout row open on papers whose reports come from the filings.
+const dividendsPaidOf = row => {
+  const paid = v(row, "CashDividendsPaid", "CommonStockDividendPaid", "DividendsPaid");
+  return isNum(paid) ? Math.abs(paid) : null;
+};
 // A payout needs one currency on both sides. Where the quote and the reports agree, dividend per
 // share over earnings per share answers. Where they do not (BYD quotes in HKD and reports in CNY)
 // that division is meaningless and the annual report answers instead: dividends paid over net
-// income, both in the reporting currency. Both missing leaves the row empty, never a guess.
-function payoutRatio(sameCurrency, dividendPerShare, epsPerShare, dividendsPaid, netIncome) {
-  if (sameCurrency)
-    return isNum(epsPerShare) && epsPerShare > 0 ? division(dividendPerShare, epsPerShare) : null;
-  return isNum(dividendsPaid) && isNum(netIncome) && netIncome > 0
-    ? division(dividendsPaid, netIncome) : null;
+// income, both in the reporting currency.
+// The answer carries why it is open: "no dividend" and "no earnings per share" are different
+// statements, and a row that says the wrong one sends the reader looking in the wrong place.
+function payoutAnswer(sameCurrency, dividendPerShare, epsPerShare, dividendsPaid, netIncome) {
+  if (sameCurrency) {
+    if (!isNum(epsPerShare) || epsPerShare <= 0)
+      return {value: null, reason: "kein Ergebnis je Aktie verfügbar"};
+    if (!isNum(dividendPerShare))
+      return {value: null, reason: "keine Dividende je Aktie gefunden"};
+    return {value: division(dividendPerShare, epsPerShare), reason: null};
+  }
+  if (!isNum(netIncome) || netIncome <= 0)
+    return {value: null, reason: "kein positives Jahresergebnis im Abschluss"};
+  if (!isNum(dividendsPaid))
+    return {value: null, reason: "keine gezahlte Dividende im Abschluss gefunden"};
+  return {value: division(dividendsPaid, netIncome), reason: null};
 }
 const division = (a,b) => isNum(a)&&isNum(b)&&b!==0?a/b:null;
 const growth = (a,b) => {const ratio=b>0?division(a,b):null;return ratio===null?null:ratio-1;};
@@ -543,10 +560,10 @@ function buildChecks(stock,benchmark=[],only=selected){
   const divIncrease=years=>cagr(divHistory[0],divHistory[years],years);
   const payoutEps=stock.nas_primary?ttmEPS:i.trailingEps;
   // Two currencies in one paper (quote HKD, reports CNY) leave the per-share route without an
-  // answer; payoutRatio() takes the statement route there instead of leaving the row open.
+  // answer; payoutAnswer() takes the statement route there instead of leaving the row open.
   const cashRow=statementSeries(stock,"cash").find(([date])=>date===income[0]?.[0])?.[1];
-  const paidDividends=cashRow?Math.abs(v(cashRow,"CashDividendsPaid","CommonStockDividendPaid")??NaN):null;
-  const payout=payoutRatio(sameCurrency,dividend,payoutEps,paidDividends,earn);
+  const payoutGiven=payoutAnswer(sameCurrency,dividend,payoutEps,dividendsPaidOf(cashRow),earn);
+  const payout=payoutGiven.value;
   const streakKnown=streak===divYears||divHistory[streak]===0;
   const knownStreak=streakKnown?streak:null;
   const ma=rows.length>=200?meanOf(rows.slice(-200).map(r=>r[1])):null;
@@ -632,7 +649,7 @@ function buildChecks(stock,benchmark=[],only=selected){
       // is involved, so the row does not need the same-currency guard that the payout does.
       p("Indizierte Dividendenrendite (Anbieter)",i.nasDividendYield??providerDividendYield(i,close),0,.02,.055),
       p(unavailableLabel(sameCurrency?"Ausschüttungsquote TTM":"Ausschüttungsquote (Geschäftsjahr)",
-        payout,"keine gezahlte Dividende im Abschluss gefunden"),payout,.95,.75,.20)]],
+        payout,payoutGiven.reason),payout,.95,.75,.20)]],
     ["Kontinuität",[
       duration("Aufeinanderfolgende 12-Monats-Zeiträume mit Dividende (max. 15)",knownStreak,0,5,15),
       p("Zahlungsstetigkeit in 10 Jahresfenstern",knownValues(divHistory.slice(0,10))?
