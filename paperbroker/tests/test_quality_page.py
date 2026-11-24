@@ -13,6 +13,7 @@ the delivered module in these tests: no network, no quotes, just the path.
 import unittest
 from types import SimpleNamespace
 from unittest import mock
+from urllib.error import URLError
 
 from paperbroker.routes import quality
 from paperbroker.server import create_app
@@ -297,6 +298,41 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual("SAP SE", body["info"]["shortName"], "der Name des Treffers bleibt")
         self.assertEqual([{"text": "zehn Jahre"}], body["data_gaps"])
         self.assertEqual({}, hit["statements"], "die zwischengespeicherte Zeile bleibt unberührt")
+
+    def test_the_merged_answer_carries_the_statement_source(self):
+        """The page keys on the label: without it it asks a second time and overwrites the rows."""
+        module, _calls = _fake()
+        module.nas_stocks = lambda *args, **kwargs: [
+            {"symbol": "SAP.DE", "prices": [[1, 2, 3, 4]], "issues": [], "statements": {}}]
+        module.stock = lambda *args, **kwargs: {
+            "symbol": "SAP.DE", "prices": [[1, 2, 3, 4]], "issues": [],
+            "statements": {"income": {"2025-12-31": {"ebit": 10.762e9}}},
+            "statements_source": "XBRL-Originalberichte",
+            "info": {}, "data_gaps": []}
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: object()):
+            body = self.client.get("/qualitaet/api/stock?q=SAP.DE").get_json()
+        self.assertEqual("XBRL-Originalberichte", body["statements_source"])
+
+    def test_a_down_source_leaves_the_scanner_row_servable(self):
+        """A row with quotes and key figures must survive the other source being unreachable."""
+        module, _calls = _fake()
+        module.nas_stocks = lambda *args, **kwargs: [
+            {"symbol": "SAP.DE", "prices": [[1, 2, 3, 4]], "issues": [], "statements": {},
+             "info": {"shortName": "SAP SE"}}]
+
+        def broken(*args, **kwargs):
+            raise URLError("kein Netz")
+
+        module.stock = broken
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: object()):
+            response = self.client.get("/qualitaet/api/stock?q=SAP.DE")
+        self.assertEqual(200, response.status_code, "keine 502 statt der Zeile")
+        body = response.get_json()
+        self.assertEqual([[1, 2, 3, 4]], body["prices"])
+        self.assertEqual("SAP SE", body["info"]["shortName"])
+        self.assertIn("Jahresabschlüsse fehlen.", body["issues"])
 
     def test_the_scanner_row_itself_is_not_written_into(self):
         module, _calls = _fake()

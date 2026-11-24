@@ -20,6 +20,7 @@ import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, Thread
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -499,6 +500,97 @@ class StaleSeriesTests(unittest.TestCase):
             stockanalysis.fetch = original
         self.assertEqual(calls, ["SAP.DE"], "die veraltete Reihe muss neu geholt werden")
         self.assertIsNotNone(fresh[0]["operating_income"])
+
+
+class SharedFetchTests(unittest.TestCase):
+    """A cold store must not turn four page views into four fetches at the source."""
+
+    def _store(self):
+        import tempfile
+
+        import store
+
+        return store, Path(tempfile.mkdtemp()) / "t.db"
+
+    def test_two_callers_waiting_for_the_same_ticker_fetch_once(self):
+        store, path = self._store()
+        original = stockanalysis.fetch
+        calls = []
+        release = Event()
+
+        def slow_fetch(symbol, budget_s=None):
+            calls.append(symbol)
+            release.wait(5)
+            return stockanalysis.parse(TABLE)
+
+        stockanalysis.fetch = slow_fetch
+        answers = []
+        threads = [Thread(target=lambda: answers.append(stockanalysis.series("SAP.DE", store, path)),
+                          daemon=True) for _ in range(2)]
+        try:
+            threads[0].start()
+            # The leader is inside fetch(); the second caller has to join the wait, not start its own.
+            for _ in range(50):
+                if calls:
+                    break
+                Event().wait(0.02)
+            threads[1].start()
+            Event().wait(0.2)
+            release.set()
+            for thread in threads:
+                thread.join(6)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(calls, ["SAP.DE"], "ein Abruf für beide Aufrufer")
+        self.assertEqual(2, len(answers), "beide bekommen eine Antwort")
+        for answer in answers:
+            self.assertTrue(answer, "der zweite Aufrufer liest, was der erste abgelegt hat")
+            self.assertIsNotNone(answer[0]["operating_income"])
+
+    def test_a_failed_leader_leaves_the_waiter_with_nothing_rather_than_stale_rows(self):
+        import sqlite3
+
+        store, path = self._store()
+        # Rows from before the parser version: they carry no operating income and must not come back.
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+            conn.executemany(
+                "INSERT INTO quarterly_source VALUES (?,?,?,?,?,?)",
+                [("SAP.DE", row["period_end"], row["label"], row["revenue"], row["eps"],
+                  datetime.now(UTC).isoformat()) for row in stockanalysis.parse(TABLE)])
+        original = stockanalysis.fetch
+        release = Event()
+        entered = Event()
+
+        def failing_fetch(symbol, budget_s=None):
+            entered.set()
+            release.wait(5)
+            raise stockanalysis.SourceUnavailable("Quelle weg")
+
+        stockanalysis.fetch = failing_fetch
+        answers, errors = [], []
+
+        def run():
+            try:
+                answers.append(stockanalysis.series("SAP.DE", store, path))
+            except Exception as error:  # noqa: BLE001 - the test records what reaches the caller
+                errors.append(error)
+
+        threads = [Thread(target=run, daemon=True) for _ in range(2)]
+        try:
+            threads[0].start()
+            self.assertTrue(entered.wait(5), "der Anführer muss im Abruf stehen")
+            threads[1].start()
+            time.sleep(0.2)
+            release.set()
+            for thread in threads:
+                thread.join(6)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(1, len(errors), "nur der Anführer scheitert")
+        self.assertEqual([[]], answers, "der Wartende bekommt keine alten Zeilen")
 
 
 class OwnDataWinsTests(unittest.TestCase):

@@ -254,9 +254,20 @@ def api(name: str):
                                       quote_source="Yahoo Finance",
                                       issues=["Keine NAS-Tageskurse für diesen Ticker."])
                     if not any((result.get("statements") or {}).values()):
-                        full = akt.stock(symbol, bucket)
+                        # The second source may be down while the scanner answers: that is no reason
+                        # to throw away a row that has quotes and key figures, so a failed fetch
+                        # counts as "no statements" and the row is served with that reason.
+                        try:
+                            full = akt.stock(symbol, bucket)
+                        except (URLError, OSError, ValueError):
+                            full = {}
                         if any((full.get("statements") or {}).values()):
                             result["statements"] = full["statements"]
+                            # The page keys on this label: without it nas_primary looks like a row
+                            # whose statements are still coming, so it asks a second time and the
+                            # supplement overwrites what just arrived.
+                            if full.get("statements_source"):
+                                result["statements_source"] = full["statements_source"]
                             result["data_gaps"] = result.get("data_gaps") or full.get("data_gaps") or []
                             info = dict(result.get("info") or {})
                             for key, value in (full.get("info") or {}).items():

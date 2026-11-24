@@ -25,7 +25,7 @@ import urllib.error
 import urllib.request
 from contextlib import closing
 from datetime import date
-from threading import Lock, Thread
+from threading import Event, Lock, Thread
 from time import monotonic
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120 Safari/537.36"
@@ -212,22 +212,58 @@ def fetch(symbol: str, budget_s: float = FETCH_BUDGET_S) -> list[dict]:
     return periods
 
 
+#: The fetch the page waits for, one per ticker: the leader fetches, the others read afterwards.
+_INFLIGHT: dict[str, Event] = {}
+_INFLIGHT_LOCK = Lock()
+
+
+def _read(symbol, store_module, path):
+    with closing(store_module.connect(path)) as conn:
+        return store_module.read_quarterly_source(conn, symbol, MAX_AGE_H)
+
+
+def _current(stored, store_module) -> bool:
+    # A series stored before the operating income was read carries none of it and is still fresh by
+    # age, so age alone would keep the two financing rows empty for a week after the deploy. The
+    # parser version is written on every row, so it marks exactly those rows for a re-read and
+    # leaves a series read today from a page without an operating income (a bank) alone.
+    return bool(stored) and store_module.rows_are_current(stored)
+
+
 def series(symbol: str, store_module=None, path=None,
            budget_s: float = FETCH_BUDGET_S) -> list[dict]:
     """The quarters of a ticker, from the store while fresh, otherwise fetched once."""
     if store_module is None:
         return fetch(symbol, budget_s)
-    with closing(store_module.connect(path)) as conn:
-        stored = store_module.read_quarterly_source(conn, symbol, MAX_AGE_H)
-    # A series stored before the operating income was read carries none of it and is still fresh by
-    # age, so age alone would keep the two financing rows empty for a week after the deploy. The
-    # parser version is written on every row, so it marks exactly those rows for a re-read and
-    # leaves a series read today from a page without an operating income (a bank) alone.
-    if stored and store_module.rows_are_current(stored):
+    stored = _read(symbol, store_module, path)
+    if _current(stored, store_module):
         return stored
-    periods = fetch(symbol, budget_s)
-    store_module.write_quarterly_source(symbol, periods, path)
-    return periods
+    # One fetch per ticker at a time: a page view, a reload and a second tab ask for the same
+    # series, and a cold or week-stale store would otherwise run one fetch each - every one of
+    # them holding a request thread and up to MAX_BYTES for the whole budget. The background
+    # loads have a cap; the ones the page waits for need to share as well. Only the leader
+    # fetches, the others read what it stored.
+    with _INFLIGHT_LOCK:
+        flight = _INFLIGHT.get(symbol)
+        leader = flight is None
+        if leader:
+            flight = Event()
+            _INFLIGHT[symbol] = flight
+    if not leader:
+        # Bounded: the leader gives up at its own budget, and a waiter must never outlive it.
+        flight.wait(budget_s + 1.0)
+        fetched = _read(symbol, store_module, path)
+        # Never the rows from before the parser version: they carry no operating income, and the
+        # reason this call exists is to replace them.
+        return fetched if _current(fetched, store_module) else []
+    try:
+        periods = fetch(symbol, budget_s)
+        store_module.write_quarterly_source(symbol, periods, path)
+        return periods
+    finally:
+        with _INFLIGHT_LOCK:
+            _INFLIGHT.pop(symbol, None)
+        flight.set()
 
 
 #: One fetch per ticker at a time: a page view, a reload and a second tab ask for the same series.
