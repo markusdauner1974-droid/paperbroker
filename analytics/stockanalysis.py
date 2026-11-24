@@ -253,9 +253,13 @@ def series(symbol: str, store_module=None, path=None,
         # Bounded: the leader gives up at its own budget, and a waiter must never outlive it.
         flight.wait(budget_s + 1.0)
         fetched = _read(symbol, store_module, path)
-        # Never the rows from before the parser version: they carry no operating income, and the
-        # reason this call exists is to replace them.
-        return fetched if _current(fetched, store_module) else []
+        if _current(fetched, store_module):
+            return fetched
+        # Nothing usable came out of the shared fetch. An empty list would look like "this paper has
+        # no quarters" and the caller would label the row "Quartalsreihe zu kurz" - a wrong reason
+        # that also skips the recovery. The failure is the same one the leader saw, so it is raised
+        # the same way: growth() then starts the background load and names it.
+        raise SourceUnavailable(f"geteilter Abruf für {symbol} ohne Ergebnis")
     try:
         periods = fetch(symbol, budget_s)
         store_module.write_quarterly_source(symbol, periods, path)

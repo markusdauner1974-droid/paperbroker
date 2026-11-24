@@ -547,6 +547,44 @@ class SharedFetchTests(unittest.TestCase):
             self.assertTrue(answer, "der zweite Aufrufer liest, was der erste abgelegt hat")
             self.assertIsNotNone(answer[0]["operating_income"])
 
+    def test_a_failed_shared_fetch_names_the_background_load_instead_of_a_short_series(self):
+        """growth() turns the raised failure into the honest reason, not into 'Reihe zu kurz'."""
+        store, path = self._store()
+        original = stockanalysis.fetch
+        release, entered = Event(), Event()
+
+        def failing_fetch(symbol, budget_s=None):
+            entered.set()
+            release.wait(5)
+            raise stockanalysis.SourceUnavailable("Quelle weg")
+
+        stockanalysis.fetch = failing_fetch
+        answers, refusals = [], []
+
+        def run():
+            try:
+                answers.append(stockanalysis.growth("SAP.DE", store, path))
+            except Exception as error:  # noqa: BLE001 - the test records what reaches the caller
+                refusals.append(error)
+
+        first = Thread(target=run, daemon=True)
+        second = Thread(target=run, daemon=True)
+        try:
+            first.start()
+            self.assertTrue(entered.wait(5))
+            second.start()
+            time.sleep(0.2)
+            release.set()
+            for thread in (first, second):
+                thread.join(8)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual([], refusals, "growth() fängt den Ausfall ab")
+        self.assertEqual(2, len(answers))
+        for answer in answers:
+            self.assertEqual("Quartalsreihe wird im Hintergrund geladen", answer["reason"])
+            self.assertIsNone(answer["revenue"])
+
     def test_a_failed_leader_leaves_the_waiter_with_nothing_rather_than_stale_rows(self):
         import sqlite3
 
@@ -589,8 +627,10 @@ class SharedFetchTests(unittest.TestCase):
                 thread.join(6)
         finally:
             stockanalysis.fetch = original
-        self.assertEqual(1, len(errors), "nur der Anführer scheitert")
-        self.assertEqual([[]], answers, "der Wartende bekommt keine alten Zeilen")
+        self.assertEqual(2, len(errors), "beide sehen denselben Ausfall")
+        for error in errors:
+            self.assertIsInstance(error, stockanalysis.SourceUnavailable)
+        self.assertEqual([], answers, "niemand bekommt alte Zeilen als Antwort")
 
 
 class OwnDataWinsTests(unittest.TestCase):
