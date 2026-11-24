@@ -61,22 +61,34 @@ const context = vm.createContext({
 // A `const` at the top of a vm script lands in the lexical scope, not on the context object, so the
 // two lifted consts are published explicitly before the test calls them.
 vm.runInContext([lift("isNum", "const"), lift("division", "const"), lift("statementKey", "const"),
-                 lift("v"), lift("dividendsPaidOf", "const"), lift("payoutAnswer"),
+                 lift("v"), lift("FISCAL_TWIN_DAYS", "const"), lift("sameStatementRow"),
+                 lift("dividendsPaidOf", "const"), lift("payoutAnswer"),
                  lift("providerDividendYield", "const"),
                  "globalThis.providerDividendYield = providerDividendYield;",
                  "globalThis.dividendsPaidOf = dividendsPaidOf;",
+                 "globalThis.sameStatementRow = sameStatementRow;",
                  "globalThis.v = v;"].join("\n"), context);
 
 const out = {
   // same currency: dividend per share over earnings per share
-  same: context.payoutAnswer(true, 4.70, 6.02, 5_000_000_000, 6_000_000_000),
+  same: context.payoutAnswer(true, 4.70, 6.02, null, 6_000_000_000),
   // cross currency: dividends paid over net income, both in the reporting currency (BYD 2025)
-  cross: context.payoutAnswer(false, 0.41, 3.94, 13_140_273_000, 32_619_022_000),
+  cross: context.payoutAnswer(false, 0.41, 3.94, {paid: 13_140_273_000, period: true}, 32_619_022_000),
   // nothing usable on either route
-  noStatements: context.payoutAnswer(false, 0.41, 3.94, null, 32_619_022_000),
-  lossMaking: context.payoutAnswer(false, 0.41, -1.2, 13_140_273_000, -2_000_000_000),
-  sameCurrencyWithoutEps: context.payoutAnswer(true, 0.41, null, 13_140_273_000, 32_619_022_000),
-  sameCurrencyWithoutDividend: context.payoutAnswer(true, null, 6.02, 5_000_000_000, 6_000_000_000),
+  noStatements: context.payoutAnswer(false, 0.41, 3.94, {paid: null, period: true}, 32_619_022_000),
+  lossMaking: context.payoutAnswer(false, 0.41, -1.2, {paid: 13_140_273_000, period: true}, -2_000_000_000),
+  sameCurrencyWithoutEps: context.payoutAnswer(true, 0.41, null, null, 32_619_022_000),
+  sameCurrencyWithoutDividend: context.payoutAnswer(true, null, 6.02, null, 6_000_000_000),
+  // no financial year at all in the cash flow: that is not the same statement as an unpaid dividend
+  noStatementYear: context.payoutAnswer(false, 0.41, 3.94, {paid: null, period: false},
+                                        32_619_022_000),
+  // the two sources may end the same year a few days apart (retail closes 2021-01-03)
+  exactPeriod: context.sameStatementRow([["2025-12-31", {dividendspaid: -1}],
+                                         ["2026-12-31", {dividendspaid: -2}]], "2026-12-31"),
+  twinPeriod: context.sameStatementRow([["2025-01-03", {dividendspaid: -2}]], "2024-12-31"),
+  farPeriod: context.sameStatementRow([["2025-12-31", {dividendspaid: -1}],
+                                       ["2027-12-31", {dividendspaid: -2}]], "2026-12-31"),
+  noPeriod: context.sameStatementRow([["2025-12-31", {dividendspaid: -1}]], null),
   // the three names the sources use for the same figure
   fromYahoo: context.dividendsPaidOf({cashdividendspaid: -13140273000}),
   fromFilings: context.dividendsPaidOf({dividendspaid: -13140273000}),
@@ -135,6 +147,27 @@ class PayoutRatioTests(unittest.TestCase):
         """yfinance: cashdividendspaid. The filings paths: dividendspaid."""
         self.assertAlmostEqual(self.out["fromYahoo"], 13_140_273_000)
         self.assertAlmostEqual(self.out["fromFilings"], 13_140_273_000)
+
+    def test_a_missing_financial_year_is_named_as_such(self):
+        self.assertIsNone(self.out["noStatementYear"]["value"])
+        self.assertIn("selben Geschäftsjahr", self.out["noStatementYear"]["reason"])
+        self.assertNotIn("gezahlte Dividende", self.out["noStatementYear"]["reason"])
+
+    def test_the_cash_row_is_found_on_its_own_day(self):
+        self.assertEqual(self.out["exactPeriod"], {"dividendspaid": -2})
+
+    def test_the_cash_row_is_found_when_the_year_ends_a_few_days_apart(self):
+        """app.py merges twins within 45 days (same_fiscal_year); the page has to read them alike.
+
+        The income statement ends 2024-12-31, the cash flow ends 2025-01-03: the same business year.
+        """
+        self.assertEqual(self.out["twinPeriod"], {"dividendspaid": -2})
+
+    def test_a_year_apart_is_not_the_same_year(self):
+        self.assertIsNone(self.out["farPeriod"])
+
+    def test_a_row_without_a_day_stays_unmatched(self):
+        self.assertIsNone(self.out["noPeriod"])
 
     def test_the_provider_yield_needs_no_reporting_currency(self):
         self.assertAlmostEqual(self.out["providerYield"], 0.41 / 61.34, places=9)

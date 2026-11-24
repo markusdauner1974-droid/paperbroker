@@ -194,6 +194,24 @@ const pct = n => isNum(n)?f(n*100)+" %":"—";
 // L'Oreal, not 0.0166), and treating it as a fraction printed 166 %. A payout per share divided by
 // the price is unambiguous - and when the amount is missing the cell stays a dash.
 const providerDividendYield = (info, price) => division(info.dividendRate, price);
+// The reports and the aggregates do not always end the same business year on the same calendar day
+// (a retailer closes on 2021-01-03, the report says 2020-12-31). app.py merges such twins within 45
+// days (same_fiscal_year); the page has to read them the same way, otherwise the payout row goes
+// dark for a paper whose figures are all there - and names the wrong reason.
+const FISCAL_TWIN_DAYS = 45;
+function sameStatementRow(rows, day) {
+  if (!day) return null;
+  const exact = rows.find(([date]) => date === day);
+  if (exact) return exact[1];
+  const wanted = Date.parse(day);
+  if (!isNum(wanted)) return null;
+  let best = null, bestGap = FISCAL_TWIN_DAYS + 1;
+  for (const [date, row] of rows) {
+    const gap = Math.abs(Date.parse(date) - wanted) / 86400000;
+    if (isNum(gap) && gap < bestGap) { best = row; bestGap = gap; }
+  }
+  return best;
+}
 // The three names the sources use for the same figure: yfinance publishes cashdividendspaid and
 // commonstockdividendpaid, the filings paths (fonrex, the statement export) publish dividendspaid.
 // Missing one of them left the payout row open on papers whose reports come from the filings.
@@ -207,7 +225,8 @@ const dividendsPaidOf = row => {
 // income, both in the reporting currency.
 // The answer carries why it is open: "no dividend" and "no earnings per share" are different
 // statements, and a row that says the wrong one sends the reader looking in the wrong place.
-function payoutAnswer(sameCurrency, dividendPerShare, epsPerShare, dividendsPaid, netIncome) {
+function payoutAnswer(sameCurrency, dividendPerShare, epsPerShare, statement, netIncome) {
+  const dividendsPaid = statement ? statement.paid : null;
   if (sameCurrency) {
     if (!isNum(epsPerShare) || epsPerShare <= 0)
       return {value: null, reason: "kein Ergebnis je Aktie verfügbar"};
@@ -217,6 +236,8 @@ function payoutAnswer(sameCurrency, dividendPerShare, epsPerShare, dividendsPaid
   }
   if (!isNum(netIncome) || netIncome <= 0)
     return {value: null, reason: "kein positives Jahresergebnis im Abschluss"};
+  if (!statement || !statement.period)
+    return {value: null, reason: "kein Abschluss zum selben Geschäftsjahr gefunden"};
   if (!isNum(dividendsPaid))
     return {value: null, reason: "keine gezahlte Dividende im Abschluss gefunden"};
   return {value: division(dividendsPaid, netIncome), reason: null};
@@ -561,8 +582,9 @@ function buildChecks(stock,benchmark=[],only=selected){
   const payoutEps=stock.nas_primary?ttmEPS:i.trailingEps;
   // Two currencies in one paper (quote HKD, reports CNY) leave the per-share route without an
   // answer; payoutAnswer() takes the statement route there instead of leaving the row open.
-  const cashRow=statementSeries(stock,"cash").find(([date])=>date===income[0]?.[0])?.[1];
-  const payoutGiven=payoutAnswer(sameCurrency,dividend,payoutEps,dividendsPaidOf(cashRow),earn);
+  const cashRow=sameStatementRow(statementSeries(stock,"cash"),income[0]?.[0]);
+  const payoutGiven=payoutAnswer(sameCurrency,dividend,payoutEps,
+    {paid:dividendsPaidOf(cashRow),period:!!cashRow},earn);
   const payout=payoutGiven.value;
   const streakKnown=streak===divYears||divHistory[streak]===0;
   const knownStreak=streakKnown?streak:null;
