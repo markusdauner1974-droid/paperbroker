@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import unittest
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Thread
@@ -571,6 +572,65 @@ class StaleSeriesTests(unittest.TestCase):
             stockanalysis.fetch = original
         self.assertEqual(calls, ["SAP.DE"], "die veraltete Reihe muss neu geholt werden")
         self.assertIsNotNone(fresh[0]["operating_income"])
+
+
+class SchemaCheckTests(unittest.TestCase):
+    """connect() must do schema work only when the file needs it."""
+
+    def test_an_established_store_is_current(self):
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        store.connect(path).close()
+        with closing(store.connect(path)) as conn:
+            self.assertTrue(store._schema_is_current(conn))
+
+    def test_an_empty_file_is_not_current(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with closing(sqlite3.connect(path)) as raw:
+            self.assertFalse(store._schema_is_current(raw))
+
+    def test_a_missing_column_is_readded_without_touching_the_rows(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with closing(store.connect(path)) as conn:
+            conn.execute("INSERT INTO company(symbol) VALUES('SAP.DE')")
+            conn.commit()
+            conn.execute("ALTER TABLE company DROP COLUMN provider_id")
+            conn.commit()
+        with closing(store.connect(path)) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(company)")}
+            self.assertIn("provider_id", columns)
+            self.assertEqual([row[0] for row in conn.execute("SELECT symbol FROM company")],
+                             ["SAP.DE"], "die Zeile muss die Schema-Ergänzung überleben")
+
+    def test_a_german_store_is_renamed_before_it_is_read(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with closing(sqlite3.connect(path)) as raw:
+            raw.execute("CREATE TABLE firma (symbol TEXT PRIMARY KEY, isin TEXT)")
+            raw.execute("INSERT INTO firma(symbol, isin) VALUES('SAP.DE', 'DE0007164600')")
+            raw.commit()
+        with closing(store.connect(path)) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("company", tables)
+            self.assertNotIn("firma", tables)
+            self.assertEqual([row[0] for row in conn.execute("SELECT symbol FROM company")], ["SAP.DE"])
 
 
 class ConcurrentOpenTests(unittest.TestCase):

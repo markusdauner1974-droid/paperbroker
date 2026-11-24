@@ -121,9 +121,27 @@ def db_path() -> Path:
 
 # Opening is the one moment every caller writes to the schema, and the page opens the store from
 # several requests at once. Two of them racing through CREATE TABLE / ALTER TABLE end in "database
-# is locked" or "duplicate column name" - measured on a fresh file: one run in fifteen. The lock
-# covers only the opening, not the reading and writing that follows.
+# is locked" or "duplicate column name" - measured on a fresh file: one run in fifteen.
+# The lock is only ever held for the schema check and, when something has to change, for the
+# change itself. An established store is checked without taking the write lock, so a request never
+# queues behind another request's migration.
 _open_lock = threading.Lock()
+
+# What an up-to-date store looks like: the tables the schema creates, the columns it added over
+# time, and no table of the German version that has to be renamed first.
+_SCHEMA_TABLES = ("company", "filing", "figure", "export_budget", "export", "fonrex",
+                  "company_isin", "price", "quarterly_source")
+_SCHEMA_COLUMNS = (("filing", "released"), ("company", "provider_id"),
+                   ("quarterly_source", "operating_income"), ("quarterly_source", "parser_version"))
+_GERMAN_TABLES = ("firma", "bericht", "wert", "kurs")
+
+
+def _schema_is_current(conn: sqlite3.Connection) -> bool:
+    """Whether the file already has everything connect() would create."""
+    tables = _tables(conn)
+    if not set(_SCHEMA_TABLES) <= tables or set(_GERMAN_TABLES) & tables:
+        return False
+    return all(column in _columns(conn, table) for table, column in _SCHEMA_COLUMNS)
 
 
 def connect(path=None) -> sqlite3.Connection:
@@ -134,6 +152,8 @@ def connect(path=None) -> sqlite3.Connection:
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=30000")
+        if _schema_is_current(conn):
+            return conn
         # Rename before the schema is applied: otherwise the old tables stay next to new, empty ones
         # and the page would read an empty store while the data sits beside it.
         _rename_german_schema(conn)
