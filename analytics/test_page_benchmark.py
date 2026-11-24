@@ -25,7 +25,8 @@ PAGE = Path(__file__).resolve().parent / "index.html"
 #: One paper per listing place the page maps, plus an American class and an unknown place.
 SYMBOLS = ["SAP.DE", "OR.PA", "ASML.AS", "ENI.MI", "SAN.MC", "SHEL.L", "NESN.SW", "VIG.VI",
            "ERIC-B.ST", "CARL-B.CO", "EQNR.OL", "NOKIA.HE", "ABI.BR", "GALP.LS",
-           "AAPL", "BRK.B", "XYZ.QQ"]
+           "AAPL", "BRK.B", "XYZ.QQ",
+           "1211.HK", "7203.T", "600519.SS", "000002.SZ", "SHOP.TO", "BHP.AX"]
 
 HARNESS = r"""
 const fs = require("node:fs");
@@ -110,6 +111,15 @@ class BenchmarkTests(unittest.TestCase):
 
     def test_a_us_share_class_keeps_its_american_index(self):
         self.assertEqual(self.answers["BRK.B"], "^GSPC")
+
+    def test_hongkong_tokyo_shanghai_shenzhen_toronto_sydney(self):
+        """Places the page mapped nowhere kept the four market rows open for good."""
+        self.assertEqual(self.answers["1211.HK"], "^HSI")
+        self.assertEqual(self.answers["7203.T"], "^N225")
+        self.assertEqual(self.answers["600519.SS"], "000001.SS")
+        self.assertEqual(self.answers["000002.SZ"], "399001.SZ")
+        self.assertEqual(self.answers["SHOP.TO"], "^GSPTSE")
+        self.assertEqual(self.answers["BHP.AX"], "^AXJO")
 
     def test_an_unknown_place_gets_no_index(self):
         """No index is better than the wrong one: the four rows stay open and say so."""

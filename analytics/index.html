@@ -808,7 +808,10 @@ let activeRanking=null;
 const benchmarkBySuffix={
   ".DE":"^GDAXI",".F":"^GDAXI",".PA":"^FCHI",".AS":"^AEX",".MI":"FTSEMIB.MI",".MC":"^IBEX",
   ".L":"^FTSE",".SW":"^SSMI",".VI":"^ATX",".ST":"^OMX",".CO":"^OMXC25",".OL":"OSEBX.OL",
-  ".HE":"^OMXH25",".BR":"^BFX",".LS":"PSI20.LS"};
+  ".HE":"^OMXH25",".BR":"^BFX",".LS":"PSI20.LS",
+  // Places the page mapped nowhere used to keep the four market rows open for good. Every symbol
+  // here was checked against the source before it was written down (measured 24.11.2026).
+  ".HK":"^HSI",".T":"^N225",".SS":"000001.SS",".SZ":"399001.SZ",".TO":"^GSPTSE",".AX":"^AXJO"};
 // Yahoo carries no ^OSEAX ("No data found, symbol may be delisted"), so Oslo papers were
 // measured against an empty series and all four rows stayed open. OSEBX.OL is the Oslo
 // benchmark and delivers.
