@@ -339,9 +339,11 @@
       {# The second way into the embedded block: the same address that can be
          opened directly (/qualitaet/). The button is always there; if the block is
          not running, the target page says so in one sentence instead of the button
-         quietly disappearing. Same tab as the language switch: this page has no
-         pattern for new windows. #}
-      <a class="funnel-btn" id="funnel-quality" href="{{ stock_quality_url }}">{{ t('js.button.stock_quality') }}</a>
+         quietly disappearing. It opens its own tab: the funnel keeps its scan and
+         its selection, so both views can stand next to each other. rel=noopener
+         so the opened page gets no handle on this one. #}
+      <a class="funnel-btn" id="funnel-quality" href="{{ stock_quality_url }}"
+         target="_blank" rel="noopener noreferrer">{{ t('js.button.stock_quality') }}</a>
       <span class="stale" id="funnel-stale" role="status" hidden></span>
     </form>
     <p class="note" id="funnel-state" aria-live="polite">{{ t('page.state.no_run') }}</p>
