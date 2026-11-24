@@ -18,6 +18,7 @@ import sys
 import threading
 import time
 import unittest
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event, Thread
@@ -95,6 +96,26 @@ class AddressTests(unittest.TestCase):
 
     def test_an_unknown_exchange_is_refused(self):
         self.assertIsNone(stockanalysis.url_for("XYZ.QQ"))
+
+    def test_hongkong_tokyo_and_the_chinese_exchanges_have_a_path(self):
+        """BYD (1211.HK) had no second source at all: the suffix was not in the list."""
+        expected = {
+            "1211.HK": "/quote/hkg/1211/",
+            "7203.T": "/quote/tyo/7203/",
+            "600519.SS": "/quote/sha/600519/",
+            "000002.SZ": "/quote/she/000002/",
+            "SHOP.TO": "/quote/tsx/SHOP/",
+            "BHP.AX": "/quote/asx/BHP/",
+        }
+        for symbol, path in expected.items():
+            with self.subTest(symbol=symbol):
+                self.assertIn(path, stockanalysis.url_for(symbol) or "")
+
+    def test_tokyo_wins_over_the_share_class_reading_for_a_single_letter(self):
+        """The map has to answer first here: /stocks/7203.t/ is a 404, /quote/tyo/7203/ works."""
+        self.assertIn("/quote/tyo/7203/", stockanalysis.url_for("7203.T") or "")
+        self.assertIn("/stocks/brk.b/", stockanalysis.url_for("BRK.B") or "",
+                      "a class letter that is not an exchange keeps the US path")
 
     def test_a_share_class_is_read_from_the_us_listing(self):
         # BRK.B is not a Frankfurt listing; the letter after the dot is a share class.
@@ -248,6 +269,25 @@ class BackgroundTests(unittest.TestCase):
         finally:
             stockanalysis.fetch = original
 
+    def test_a_place_without_a_path_names_that_instead_of_promising_a_load(self):
+        """A background load could never answer for a suffix the site does not serve."""
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        started = []
+        original = stockanalysis.refresh_in_background
+        stockanalysis.refresh_in_background = lambda *a, **k: started.append(a) or True
+        try:
+            answer = stockanalysis.growth("XYZ.QQ", store_module=store, path=path)
+        finally:
+            stockanalysis.refresh_in_background = original
+        self.assertEqual(0, answer["periods"])
+        self.assertIn("Börsenplatz", answer["reason"])
+        self.assertNotIn("Hintergrund", answer["reason"])
+        self.assertEqual([], started, "kein Hintergrundlauf für einen Platz ohne Adresse")
+
     def test_a_series_that_cannot_be_fetched_names_the_reason(self):
         import tempfile
 
@@ -259,13 +299,21 @@ class BackgroundTests(unittest.TestCase):
         def never(symbol, budget_s=None):
             raise stockanalysis.SourceUnavailable("kein Netz")
 
+        # No thread: a real background load would keep running after this test returns, pick up the
+        # fetch stub of whichever test runs next and land in its call list - which made
+        # StaleSeriesTests fail about every third run.
+        loads = []
+        original_background = stockanalysis.refresh_in_background
         stockanalysis.fetch = never
+        stockanalysis.refresh_in_background = lambda *a, **k: loads.append(a[0]) or True
         try:
             answer = stockanalysis.growth("SAP.DE", store_module=store, path=path)
         finally:
             stockanalysis.fetch = original
+            stockanalysis.refresh_in_background = original_background
         self.assertIsNone(answer["revenue"])
         self.assertIn("Hintergrund", answer["reason"])
+        self.assertEqual(["SAP.DE"], loads, "die Zeile verspricht einen Hintergrundlauf")
 
 
 class StoreTests(unittest.TestCase):
@@ -410,13 +458,37 @@ class BackgroundCapTests(unittest.TestCase):
         self.store = store
         stockanalysis._PENDING.clear()
         self.original_fetch = stockanalysis.fetch
+        self.original_background = stockanalysis.refresh_in_background
         # A load that is still running is what the cap is about; it must not finish before the check.
         self.release = threading.Event()
-        stockanalysis.fetch = lambda symbol, budget_s=None: (self.release.wait(5), [])[1]
+        self.entered = []
+        self.launched = []
+
+        def gated(symbol, budget_s=None):
+            self.entered.append(symbol)
+            self.release.wait(5)
+            return []
+
+        def counting(symbol, *args, **kwargs):
+            started = self.original_background(symbol, *args, **kwargs)
+            if started:
+                self.launched.append(symbol)
+            return started
+
+        stockanalysis.fetch = gated
+        stockanalysis.refresh_in_background = counting
 
     def tearDown(self):
+        # A daemon thread that has not entered the stub yet would reach the module-level fetch of
+        # whichever test runs next and land in its call list - measured: 'AAA6' turned up in
+        # StaleSeriesTests about every third run. So the teardown waits for every started load to
+        # enter the stub before the stub is taken away.
         self.release.set()
+        deadline = time.monotonic() + 5
+        while len(self.entered) < len(self.launched) and time.monotonic() < deadline:
+            time.sleep(0.01)
         stockanalysis.fetch = self.original_fetch
+        stockanalysis.refresh_in_background = self.original_background
         stockanalysis._PENDING.clear()
 
     def test_the_cap_refuses_further_loads(self):
@@ -500,6 +572,90 @@ class StaleSeriesTests(unittest.TestCase):
             stockanalysis.fetch = original
         self.assertEqual(calls, ["SAP.DE"], "die veraltete Reihe muss neu geholt werden")
         self.assertIsNotNone(fresh[0]["operating_income"])
+
+
+class SchemaCheckTests(unittest.TestCase):
+    """connect() must do schema work only when the file needs it."""
+
+    def test_an_established_store_is_current(self):
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        store.connect(path).close()
+        with closing(store.connect(path)) as conn:
+            self.assertTrue(store._schema_is_current(conn))
+
+    def test_an_empty_file_is_not_current(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with closing(sqlite3.connect(path)) as raw:
+            self.assertFalse(store._schema_is_current(raw))
+
+    def test_a_missing_column_is_readded_without_touching_the_rows(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with closing(store.connect(path)) as conn:
+            conn.execute("INSERT INTO company(symbol) VALUES('SAP.DE')")
+            conn.commit()
+            conn.execute("ALTER TABLE company DROP COLUMN provider_id")
+            conn.commit()
+        with closing(store.connect(path)) as conn:
+            columns = {row[1] for row in conn.execute("PRAGMA table_info(company)")}
+            self.assertIn("provider_id", columns)
+            self.assertEqual([row[0] for row in conn.execute("SELECT symbol FROM company")],
+                             ["SAP.DE"], "die Zeile muss die Schema-Ergänzung überleben")
+
+    def test_a_german_store_is_renamed_before_it_is_read(self):
+        import sqlite3
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        with closing(sqlite3.connect(path)) as raw:
+            raw.execute("CREATE TABLE firma (symbol TEXT PRIMARY KEY, isin TEXT)")
+            raw.execute("INSERT INTO firma(symbol, isin) VALUES('SAP.DE', 'DE0007164600')")
+            raw.commit()
+        with closing(store.connect(path)) as conn:
+            tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            self.assertIn("company", tables)
+            self.assertNotIn("firma", tables)
+            self.assertEqual([row[0] for row in conn.execute("SELECT symbol FROM company")], ["SAP.DE"])
+
+
+class ConcurrentOpenTests(unittest.TestCase):
+    """Several page views open the store at the same time; none of them may fail on the schema."""
+
+    def test_eight_callers_open_a_fresh_store_at_once(self):
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        errors = []
+
+        def open_it():
+            try:
+                store.connect(path).close()
+            except Exception as error:  # noqa: BLE001 - the point is to see any of them
+                errors.append(repr(error))
+
+        threads = [Thread(target=open_it) for _ in range(8)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(20)
+        self.assertEqual([], errors, "gleichzeitiges Öffnen darf nicht am Schema scheitern")
 
 
 class SharedFetchTests(unittest.TestCase):
