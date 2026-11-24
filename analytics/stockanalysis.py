@@ -70,6 +70,11 @@ def exchange_for(symbol: str) -> str | None:
 
     ``BRK.B`` is not a Frankfurt listing: the single letter after the dot is a share class, and the
     site serves it as ``/stocks/brk.b/``. Anything else unknown stays refused rather than guessed.
+
+    A single letter that *is* in the map wins over the share-class reading: ``.T`` is Tokyo, and its
+    tickers are numeric (``7203.T``). The reverse order was measured on 24.11.2026 and breaks it -
+    ``/stocks/7203.t/`` answers 404 while ``/quote/tyo/7203/`` answers with the income table. No US
+    listing carries a class-T suffix, so the trade-off costs nothing.
     """
     upper = symbol.upper()
     if "." not in upper:
