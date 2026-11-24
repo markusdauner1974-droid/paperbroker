@@ -267,9 +267,11 @@ def series(symbol: str, store_module=None, path=None,
         raise SourceUnavailable(f"geteilter Abruf für {symbol} ohne Ergebnis")
     # The running fetch also counts as a pending load: otherwise growth() would start a second one
     # for the same ticker the moment a waiter gives up, and two requests would run side by side.
+    # Claimed only when this call really inserts the marker: a background load may already hold it,
+    # and clearing that one on the way out would free its slot and let a second load start.
     counted = False
     with _PENDING_LOCK:
-        if len(_PENDING) < MAX_PENDING:
+        if symbol not in _PENDING and len(_PENDING) < MAX_PENDING:
             _PENDING.add(symbol)
             counted = True
     try:

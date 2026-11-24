@@ -585,6 +585,24 @@ class SharedFetchTests(unittest.TestCase):
             self.assertEqual("Quartalsreihe wird im Hintergrund geladen", answer["reason"])
             self.assertIsNone(answer["revenue"])
 
+    def test_a_foreground_fetch_leaves_the_marker_of_a_running_background_load(self):
+        """The marker belongs to whoever set it; clearing a foreign one frees its slot."""
+        store, path = self._store()
+        original = stockanalysis.fetch
+        stockanalysis.fetch = lambda symbol, budget_s=None: stockanalysis.parse(TABLE)
+        with stockanalysis._PENDING_LOCK:
+            stockanalysis._PENDING.add("SAP.DE")          # a background load is under way
+        try:
+            periods = stockanalysis.series("SAP.DE", store, path)
+            with stockanalysis._PENDING_LOCK:
+                left = set(stockanalysis._PENDING)
+        finally:
+            stockanalysis.fetch = original
+            with stockanalysis._PENDING_LOCK:
+                stockanalysis._PENDING.discard("SAP.DE")
+        self.assertTrue(periods, "der Vordergrundabruf liefert trotzdem")
+        self.assertEqual({"SAP.DE"}, left, "die Marke der Hintergrundladung bleibt stehen")
+
     def test_a_waiter_that_gives_up_does_not_call_it_a_failure(self):
         """The leader may still be working: a name lookup can outlast the socket timeout."""
         store, path = self._store()
