@@ -367,6 +367,14 @@ class ButtonTest(unittest.TestCase):
         self.assertIn('href="/qualitaet/"', form)
         self.assertIn("Aktien-Qualität", form)
 
+    def test_the_button_opens_its_own_tab(self):
+        """The funnel keeps its scan and its selection while the analysis is open."""
+        page = self.client.get("/").get_data(as_text=True)
+        link = page.split('id="funnel-quality"', 1)[1].split(">", 1)[0]
+        self.assertIn('target="_blank"', link)
+        self.assertIn("noopener", link)
+        self.assertIn("noreferrer", link)
+
     def test_the_button_speaks_the_language_of_the_page(self):
         english = self.client.get("/?lang=en").get_data(as_text=True)
         self.assertIn("Stock quality", english)
