@@ -23,6 +23,7 @@ and their columns along with them, so existing data keeps its rows.
 import json
 import os
 import sqlite3
+import threading
 from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
@@ -118,24 +119,33 @@ def db_path() -> Path:
     return Path(os.environ.get("AKTIENANALYSE_DB", "") or Path.home() / ".cache" / "aktienanalyse.db")
 
 
+# Opening is the one moment every caller writes to the schema, and the page opens the store from
+# several requests at once. Two of them racing through CREATE TABLE / ALTER TABLE end in "database
+# is locked" or "duplicate column name" - measured on a fresh file: one run in fifteen. The lock
+# covers only the opening, not the reading and writing that follows.
+_open_lock = threading.Lock()
+
+
 def connect(path=None) -> sqlite3.Connection:
     target = Path(path) if path else db_path()
     target.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(target, timeout=10)
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    # Rename before the schema is applied: otherwise the old tables stay next to new, empty ones
-    # and the page would read an empty store while the data sits beside it.
-    _rename_german_schema(conn)
-    conn.executescript(SCHEMA)
-    _add_column(conn, "filing", "released", "TEXT")
-    _add_column(conn, "company", "provider_id", "INTEGER")
-    # A store written before the operating income was read keeps its rows and gains the columns. A
-    # row without a parser_version comes from that older writer and is read again once.
-    _add_column(conn, "quarterly_source", "operating_income", "REAL")
-    _add_column(conn, "quarterly_source", "parser_version", "INTEGER")
-    conn.commit()
-    return conn
+    with _open_lock:
+        conn = sqlite3.connect(target, timeout=30)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=30000")
+        # Rename before the schema is applied: otherwise the old tables stay next to new, empty ones
+        # and the page would read an empty store while the data sits beside it.
+        _rename_german_schema(conn)
+        conn.executescript(SCHEMA)
+        _add_column(conn, "filing", "released", "TEXT")
+        _add_column(conn, "company", "provider_id", "INTEGER")
+        # A store written before the operating income was read keeps its rows and gains the columns.
+        # A row without a parser_version comes from that older writer and is read again once.
+        _add_column(conn, "quarterly_source", "operating_income", "REAL")
+        _add_column(conn, "quarterly_source", "parser_version", "INTEGER")
+        conn.commit()
+        return conn
 
 
 def _tables(conn) -> set[str]:
