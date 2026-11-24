@@ -96,6 +96,20 @@ class AddressTests(unittest.TestCase):
     def test_an_unknown_exchange_is_refused(self):
         self.assertIsNone(stockanalysis.url_for("XYZ.QQ"))
 
+    def test_hongkong_tokyo_and_the_chinese_exchanges_have_a_path(self):
+        """BYD (1211.HK) had no second source at all: the suffix was not in the list."""
+        expected = {
+            "1211.HK": "/quote/hkg/1211/",
+            "7203.T": "/quote/tyo/7203/",
+            "600519.SS": "/quote/sha/600519/",
+            "000002.SZ": "/quote/she/000002/",
+            "SHOP.TO": "/quote/tsx/SHOP/",
+            "BHP.AX": "/quote/asx/BHP/",
+        }
+        for symbol, path in expected.items():
+            with self.subTest(symbol=symbol):
+                self.assertIn(path, stockanalysis.url_for(symbol) or "")
+
     def test_a_share_class_is_read_from_the_us_listing(self):
         # BRK.B is not a Frankfurt listing; the letter after the dot is a share class.
         self.assertEqual(stockanalysis.url_for("BRK.B"),
@@ -247,6 +261,25 @@ class BackgroundTests(unittest.TestCase):
             self.assertEqual(started, ["SAP.DE"])
         finally:
             stockanalysis.fetch = original
+
+    def test_a_place_without_a_path_names_that_instead_of_promising_a_load(self):
+        """A background load could never answer for a suffix the site does not serve."""
+        import tempfile
+
+        import store
+
+        path = Path(tempfile.mkdtemp()) / "t.db"
+        started = []
+        original = stockanalysis.refresh_in_background
+        stockanalysis.refresh_in_background = lambda *a, **k: started.append(a) or True
+        try:
+            answer = stockanalysis.growth("XYZ.QQ", store_module=store, path=path)
+        finally:
+            stockanalysis.refresh_in_background = original
+        self.assertEqual(0, answer["periods"])
+        self.assertIn("Börsenplatz", answer["reason"])
+        self.assertNotIn("Hintergrund", answer["reason"])
+        self.assertEqual([], started, "kein Hintergrundlauf für einen Platz ohne Adresse")
 
     def test_a_series_that_cannot_be_fetched_names_the_reason(self):
         import tempfile

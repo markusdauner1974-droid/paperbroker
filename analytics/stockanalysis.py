@@ -44,6 +44,10 @@ EXCHANGES = {
     ".DE": "etr", ".F": "fra", ".PA": "epa", ".AS": "ams", ".BR": "bru", ".LS": "lis",
     ".MC": "bme", ".MI": "bit", ".L": "lon", ".SW": "swx", ".VI": "vie", ".ST": "sto",
     ".CO": "cph", ".OL": "osl", ".HE": "hel", ".IR": "ise", ".WA": "wse", ".PR": "prg",
+    # Checked against the site before they were written down (24.11.2026): every one of these
+    # answers with the income table. Hong Kong, Tokyo and the two Chinese exchanges matter most -
+    # without them a paper like BYD (1211.HK) had no second source at all.
+    ".HK": "hkg", ".T": "tyo", ".SS": "sha", ".SZ": "she", ".TO": "tsx", ".AX": "asx",
 }
 US = ""
 
@@ -395,10 +399,16 @@ def growth(symbol: str, store_module=None, path=None,
     A series that is not in the store yet is fetched within the budget; when that does not fit, the
     load continues in the background and the answer says so instead of waiting.
     """
+    if url_for(symbol) is None:
+        # No path on the site for this suffix: a background load could never answer, so the row says
+        # what is actually true instead of promising a load that will not come.
+        return {"revenue": None, "eps": None, "periods": 0, "step_days": None,
+                "source": "stockanalysis.com", "newest": None,
+                "reason": "für diesen Börsenplatz führt die zweite Quelle keine Zahlen"}
     try:
         periods = series(symbol, store_module, path, budget_s)
     except SourceUnavailable:
-        if store_module is not None:
+        if store_module is not None and url_for(symbol) is not None:
             refresh_in_background(symbol, store_module, path)
         return {"revenue": None, "eps": None, "periods": 0, "step_days": None,
                 "source": "stockanalysis.com", "newest": None,
