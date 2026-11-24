@@ -20,6 +20,7 @@ import time
 import unittest
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event, Thread
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -499,6 +500,196 @@ class StaleSeriesTests(unittest.TestCase):
             stockanalysis.fetch = original
         self.assertEqual(calls, ["SAP.DE"], "die veraltete Reihe muss neu geholt werden")
         self.assertIsNotNone(fresh[0]["operating_income"])
+
+
+class SharedFetchTests(unittest.TestCase):
+    """A cold store must not turn four page views into four fetches at the source."""
+
+    def _store(self):
+        import tempfile
+
+        import store
+
+        return store, Path(tempfile.mkdtemp()) / "t.db"
+
+    def test_two_callers_waiting_for_the_same_ticker_fetch_once(self):
+        store, path = self._store()
+        original = stockanalysis.fetch
+        calls = []
+        release = Event()
+
+        def slow_fetch(symbol, budget_s=None):
+            calls.append(symbol)
+            release.wait(5)
+            return stockanalysis.parse(TABLE)
+
+        stockanalysis.fetch = slow_fetch
+        answers = []
+        threads = [Thread(target=lambda: answers.append(stockanalysis.series("SAP.DE", store, path)),
+                          daemon=True) for _ in range(2)]
+        try:
+            threads[0].start()
+            # The leader is inside fetch(); the second caller has to join the wait, not start its own.
+            for _ in range(50):
+                if calls:
+                    break
+                Event().wait(0.02)
+            threads[1].start()
+            Event().wait(0.2)
+            release.set()
+            for thread in threads:
+                thread.join(6)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(calls, ["SAP.DE"], "ein Abruf für beide Aufrufer")
+        self.assertEqual(2, len(answers), "beide bekommen eine Antwort")
+        for answer in answers:
+            self.assertTrue(answer, "der zweite Aufrufer liest, was der erste abgelegt hat")
+            self.assertIsNotNone(answer[0]["operating_income"])
+
+    def test_a_failed_shared_fetch_names_the_background_load_instead_of_a_short_series(self):
+        """growth() turns the raised failure into the honest reason, not into 'Reihe zu kurz'."""
+        store, path = self._store()
+        original = stockanalysis.fetch
+        release, entered = Event(), Event()
+
+        def failing_fetch(symbol, budget_s=None):
+            entered.set()
+            release.wait(5)
+            raise stockanalysis.SourceUnavailable("Quelle weg")
+
+        stockanalysis.fetch = failing_fetch
+        answers, refusals = [], []
+
+        def run():
+            try:
+                answers.append(stockanalysis.growth("SAP.DE", store, path))
+            except Exception as error:  # noqa: BLE001 - the test records what reaches the caller
+                refusals.append(error)
+
+        first = Thread(target=run, daemon=True)
+        second = Thread(target=run, daemon=True)
+        try:
+            first.start()
+            self.assertTrue(entered.wait(5))
+            second.start()
+            time.sleep(0.2)
+            release.set()
+            for thread in (first, second):
+                thread.join(8)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual([], refusals, "growth() fängt den Ausfall ab")
+        self.assertEqual(2, len(answers))
+        for answer in answers:
+            self.assertEqual("Quartalsreihe wird im Hintergrund geladen", answer["reason"])
+            self.assertIsNone(answer["revenue"])
+
+    def test_a_foreground_fetch_leaves_the_marker_of_a_running_background_load(self):
+        """The marker belongs to whoever set it; clearing a foreign one frees its slot."""
+        store, path = self._store()
+        original = stockanalysis.fetch
+        stockanalysis.fetch = lambda symbol, budget_s=None: stockanalysis.parse(TABLE)
+        with stockanalysis._PENDING_LOCK:
+            stockanalysis._PENDING.add("SAP.DE")          # a background load is under way
+        try:
+            periods = stockanalysis.series("SAP.DE", store, path)
+            with stockanalysis._PENDING_LOCK:
+                left = set(stockanalysis._PENDING)
+        finally:
+            stockanalysis.fetch = original
+            with stockanalysis._PENDING_LOCK:
+                stockanalysis._PENDING.discard("SAP.DE")
+        self.assertTrue(periods, "der Vordergrundabruf liefert trotzdem")
+        self.assertEqual({"SAP.DE"}, left, "die Marke der Hintergrundladung bleibt stehen")
+
+    def test_a_waiter_that_gives_up_does_not_call_it_a_failure(self):
+        """The leader may still be working: a name lookup can outlast the socket timeout."""
+        store, path = self._store()
+        original = stockanalysis.fetch
+        release, entered = Event(), Event()
+
+        def slow_fetch(symbol, budget_s=None):
+            entered.set()
+            release.wait(5)
+            return stockanalysis.parse(TABLE)
+
+        stockanalysis.fetch = slow_fetch
+        leader, refused, second_load = [], [], []
+
+        def run_leader():
+            leader.append(stockanalysis.series("SAP.DE", store, path, budget_s=3.0))
+
+        def run_waiter():
+            try:
+                stockanalysis.series("SAP.DE", store, path, budget_s=0.1)
+            except Exception as error:  # noqa: BLE001 - the test records what reaches the caller
+                refused.append(str(error))
+
+        first = Thread(target=run_leader, daemon=True)
+        second = Thread(target=run_waiter, daemon=True)
+        try:
+            first.start()
+            self.assertTrue(entered.wait(5), "der Anführer muss im Abruf stehen")
+            second.start()
+            second.join(6)
+            # While the shared fetch runs, the real background load for the same ticker is refused.
+            second_load.append(stockanalysis.refresh_in_background("SAP.DE", store, path))
+            release.set()
+            first.join(8)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(1, len(refused), "der Wartende gibt auf")
+        self.assertIn("noch nicht abgeschlossen", refused[0], "und nennt keinen Ausfall")
+        self.assertEqual([False], second_load, "kein zweiter Abruf neben dem laufenden")
+        self.assertTrue(leader and leader[0], "der Anführer liefert die Reihe")
+
+    def test_a_failed_leader_leaves_the_waiter_with_nothing_rather_than_stale_rows(self):
+        import sqlite3
+
+        store, path = self._store()
+        # Rows from before the parser version: they carry no operating income and must not come back.
+        with sqlite3.connect(path) as conn:
+            conn.execute("""CREATE TABLE quarterly_source (symbol TEXT, period_end TEXT, label TEXT,
+                            revenue REAL, eps REAL, fetched_at TEXT NOT NULL,
+                            PRIMARY KEY (symbol, period_end))""")
+            conn.executemany(
+                "INSERT INTO quarterly_source VALUES (?,?,?,?,?,?)",
+                [("SAP.DE", row["period_end"], row["label"], row["revenue"], row["eps"],
+                  datetime.now(UTC).isoformat()) for row in stockanalysis.parse(TABLE)])
+        original = stockanalysis.fetch
+        release = Event()
+        entered = Event()
+
+        def failing_fetch(symbol, budget_s=None):
+            entered.set()
+            release.wait(5)
+            raise stockanalysis.SourceUnavailable("Quelle weg")
+
+        stockanalysis.fetch = failing_fetch
+        answers, errors = [], []
+
+        def run():
+            try:
+                answers.append(stockanalysis.series("SAP.DE", store, path))
+            except Exception as error:  # noqa: BLE001 - the test records what reaches the caller
+                errors.append(error)
+
+        threads = [Thread(target=run, daemon=True) for _ in range(2)]
+        try:
+            threads[0].start()
+            self.assertTrue(entered.wait(5), "der Anführer muss im Abruf stehen")
+            threads[1].start()
+            time.sleep(0.2)
+            release.set()
+            for thread in threads:
+                thread.join(6)
+        finally:
+            stockanalysis.fetch = original
+        self.assertEqual(2, len(errors), "beide sehen denselben Ausfall")
+        for error in errors:
+            self.assertIsInstance(error, stockanalysis.SourceUnavailable)
+        self.assertEqual([], answers, "niemand bekommt alte Zeilen als Antwort")
 
 
 class OwnDataWinsTests(unittest.TestCase):
