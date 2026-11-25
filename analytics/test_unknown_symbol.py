@@ -25,6 +25,10 @@ class YFTzMissingError(Exception):
     """The name yfinance uses for "possibly delisted"."""
 
 
+class YFPricesMissingError(Exception):
+    """The sibling class yfinance raises when a delisted ticker has no prices either."""
+
+
 class UnknownSymbolTest(unittest.TestCase):
     def setUp(self):
         # The negative cache is process-wide; a leftover verdict would hide the lookup under test.
@@ -33,6 +37,25 @@ class UnknownSymbolTest(unittest.TestCase):
     def test_a_delisted_ticker_is_recognised(self):
         self.assertTrue(app.unknown_symbol(YFTzMissingError("$BASF.DE: possibly delisted")))
         self.assertTrue(app.unknown_symbol(RuntimeError("HTTP Error 404: Quote not found for symbol")))
+
+    def test_a_delisted_ticker_without_prices_is_recognised_by_its_class(self):
+        # Measured: yfinance raises YFPricesMissingError for a delisted ticker without price data, and
+        # its message ("no price data found, symbol may be delisted") carries none of the markers.
+        self.assertTrue(app.unknown_symbol(
+            YFPricesMissingError("no price data found, symbol may be delisted (period=1d)")))
+
+    def test_an_error_page_quoting_the_words_is_not_a_typo(self):
+        # A proxy or scanner answers with its own page. A message match alone called that a typo and
+        # told the reader to check a ticker that was fine.
+        page = "HTTP Error 502: <html><body>Quote not found</body></html>"
+        self.assertFalse(app.unknown_symbol(RuntimeError(page)))
+
+    def test_the_real_yfinance_class_is_recognised(self):
+        try:
+            from yfinance.exceptions import YFPricesMissingError as Real
+        except ImportError:  # pragma: no cover - yfinance is a hard dependency of the app
+            self.skipTest("yfinance not importable")
+        self.assertTrue(app.unknown_symbol(Real("no price data found, symbol may be delisted", {})))
 
     def test_an_outage_is_not_an_unknown_ticker(self):
         self.assertFalse(app.unknown_symbol(TimeoutError("timed out")))

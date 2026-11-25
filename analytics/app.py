@@ -25,6 +25,7 @@ import yfinance as yf
 from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
 from sec_statements import load_sec_statements
 from statement_export import export_gaps, statement_export
+from yfinance.exceptions import YFTickerMissingError
 
 ROOT = Path(__file__).resolve().parent
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
@@ -186,16 +187,32 @@ class UnknownSymbol(Exception):
         super().__init__(message)
 
 
+#: The class names that mean "no such instrument", kept for a module that cannot import them.
+UNKNOWN_TYPE_NAMES = ("YFTickerMissingError", "YFTzMissingError", "YFPricesMissingError")
+
+#: Words only Yahoo's own answers use. They are the fallback, not the rule: a proxy or scanner page
+#: can carry any sentence in its body, and "Quote not found" alone was too broad to tell them apart.
+UNKNOWN_MARKERS = ("possibly delisted", "Quote not found for symbol")
+
+
 def unknown_symbol(error) -> bool:
     """Whether the failure says "no such ticker" rather than "no answer".
 
-    Measured: an unknown Yahoo ticker comes back as ``YFTzMissingError: possibly delisted`` or as an
-    HTTP error carrying "Quote not found"; a timeout or a refused connection does not. Telling them
-    apart matters - one is a typo the reader can correct, the other is an outage nobody can.
+    Measured: an unknown Yahoo ticker comes back as ``YFTzMissingError: possibly delisted; no timezone
+    found``, a delisted one as ``YFPricesMissingError`` - both under ``YFTickerMissingError``. A
+    timeout or a refused connection is neither, and telling them apart matters: one is a typo the
+    reader can correct, the other is an outage nobody can.
+
+    The class decides, not the text. An error page from a proxy can quote any sentence, so a message
+    match alone answered 404 for an outage - and told the reader to check a ticker that was fine.
     """
-    text = f"{type(error).__name__} {error}"
-    return ("YFTzMissingError" in text or "possibly delisted" in text
-            or "Quote not found" in text)
+    if YFTickerMissingError is not None and isinstance(error, YFTickerMissingError):
+        return True
+    # An older embedded analytics module, or a copy re-raised through a wrapper, keeps the name only.
+    if type(error).__name__ in UNKNOWN_TYPE_NAMES:
+        return True
+    text = str(error)
+    return any(marker in text for marker in UNKNOWN_MARKERS)
 
 
 def symbol_candidates(symbol) -> list[dict]:
