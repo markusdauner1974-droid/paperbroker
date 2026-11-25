@@ -19,6 +19,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 import app  # noqa: E402
+from yfinance.exceptions import YFDataException  # noqa: E402
 
 
 class YFTzMissingError(Exception):
@@ -36,7 +37,12 @@ class UnknownSymbolTest(unittest.TestCase):
 
     def test_a_delisted_ticker_is_recognised(self):
         self.assertTrue(app.unknown_symbol(YFTzMissingError("$BASF.DE: possibly delisted")))
-        self.assertTrue(app.unknown_symbol(RuntimeError("HTTP Error 404: Quote not found for symbol")))
+
+    def test_the_wording_is_read_only_when_yfinance_raised_it(self):
+        # A YFException carrying Yahoo's own words is a missing ticker; the same sentence in a
+        # caller's own RuntimeError is not, because a proxy page can quote anything.
+        self.assertTrue(app.unknown_symbol(YFDataException("Quote not found for symbol: ABC")))
+        self.assertFalse(app.unknown_symbol(RuntimeError("HTTP Error 404: Quote not found for symbol")))
 
     def test_a_delisted_ticker_without_prices_is_recognised_by_its_class(self):
         # Measured: yfinance raises YFPricesMissingError for a delisted ticker without price data, and

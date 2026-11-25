@@ -25,7 +25,7 @@ import yfinance as yf
 from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
 from sec_statements import load_sec_statements
 from statement_export import export_gaps, statement_export
-from yfinance.exceptions import YFTickerMissingError
+from yfinance.exceptions import YFException, YFTickerMissingError
 
 ROOT = Path(__file__).resolve().parent
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
@@ -204,13 +204,18 @@ def unknown_symbol(error) -> bool:
     reader can correct, the other is an outage nobody can.
 
     The class decides, not the text. An error page from a proxy can quote any sentence, so a message
-    match alone answered 404 for an outage - and told the reader to check a ticker that was fine.
+    match alone answered 404 for an outage - and told the reader to check a ticker that was fine. The
+    message is only read when yfinance itself raised, because there the wording is Yahoo's.
     """
     if YFTickerMissingError is not None and isinstance(error, YFTickerMissingError):
         return True
     # An older embedded analytics module, or a copy re-raised through a wrapper, keeps the name only.
     if type(error).__name__ in UNKNOWN_TYPE_NAMES:
         return True
+    if not (YFException is not None and isinstance(error, YFException)):
+        # Anything else - a proxy page, a socket error with a body, a caller's own RuntimeError -
+        # is an outage until its class says otherwise.
+        return False
     text = str(error)
     return any(marker in text for marker in UNKNOWN_MARKERS)
 
