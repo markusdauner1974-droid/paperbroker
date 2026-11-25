@@ -451,7 +451,13 @@ def with_second_source(symbol, result):
         except Exception:
             # Nothing is queued twice: refresh_in_background does nothing while a load for the same
             # ticker runs. The next view then has the rows instead of asking again.
-            stockanalysis.refresh_in_background(symbol, store)
+            #
+            # Only for a ticker the second source has a page for: with an unmapped exchange suffix
+            # (.KS, .KQ) fetch() raises before any network call, so the reload could never answer and
+            # every view would start a thread that dies on its first line. growth() guards the same
+            # way and says why.
+            if stockanalysis.url_for(symbol) is not None:
+                stockanalysis.refresh_in_background(symbol, store)
             periods = None
     growth = long_quarterly_growth(symbol, statements, periods=periods)
     quarterly, note = second_source_quarters(symbol, statements, periods=periods)
