@@ -25,7 +25,14 @@ import yfinance as yf
 from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
 from sec_statements import load_sec_statements
 from statement_export import export_gaps, statement_export
-from yfinance.exceptions import YFException, YFTickerMissingError
+
+try:  # pragma: no cover - the fallback is for an older or renamed yfinance, not for this one
+    from yfinance.exceptions import YFException, YFTickerMissingError
+except Exception:  # pragma: no cover
+    # Without the classes the name and the message still decide; failing the import would take the
+    # whole page down for a detail that only sharpens one answer.
+    YFException = None            # type: ignore[assignment]
+    YFTickerMissingError = None   # type: ignore[assignment]
 
 ROOT = Path(__file__).resolve().parent
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
@@ -220,10 +227,12 @@ def unknown_symbol(error) -> bool:
     return any(marker in text for marker in UNKNOWN_MARKERS)
 
 
-def symbol_candidates(symbol) -> list[dict] | None:
+def symbol_candidates(symbol) -> tuple[list[dict], bool] | None:
     """The tickers the source does know for a typo, best first - never one without a reason.
 
-    ``None`` means the search could not be asked, ``[]`` that it answered and knows nothing related.
+    ``None`` means the search could not be asked, ``([], False)`` that it answered and knows nothing
+    related. The flag says whether the search listed the typed ticker itself: then the ticker exists
+    and the failure was the source hiccuping, which is an outage, not a typo.
     The difference decides whether the verdict may be remembered: an unreachable search says nothing
     about the ticker.
 
@@ -247,9 +256,11 @@ def symbol_candidates(symbol) -> list[dict] | None:
     except Exception:
         return None
     scored = []
+    exact = False
     for rank, row in enumerate(rows):
         candidate = row["symbol"]
         if candidate.upper() == typed.upper():
+            exact = True
             continue
         name = (row.get("name") or "").lower()
         same_stem = candidate.split(".")[0].lower() == stem
@@ -272,13 +283,13 @@ def symbol_candidates(symbol) -> list[dict] | None:
     scored.sort(key=lambda item: (-item[0], item[1]))
     return [{"symbol": candidate, "name": row.get("name") or candidate,
              "exchange": row.get("exchange") or ""}
-            for _, _, candidate, row in scored[:3]]
+            for _, _, candidate, row in scored[:3]], exact
 
 
 def symbol_suggestion(symbol):
     """The best ticker for a typo, or ``None``."""
-    candidates = symbol_candidates(symbol)
-    return candidates[0]["symbol"] if candidates else None
+    answer = symbol_candidates(symbol)
+    return answer[0][0]["symbol"] if answer and answer[0] else None
 
 
 #: A ticker the source did not know stays unknown for a while. The lookup costs a search of up to
@@ -399,8 +410,13 @@ def stock(symbol, bucket):
             # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
             # arrive as the same 502.
             if unknown_symbol(error):
-                candidates = symbol_candidates(symbol)
-                if candidates is not None:
+                answer = symbol_candidates(symbol)
+                candidates = None if answer is None else answer[0]
+                if answer is not None:
+                    # The search lists the typed ticker itself, so it exists: the failure was the
+                    # source hiccuping. An outage must never be remembered as a typo.
+                    if answer[1]:
+                        raise
                     # Only a verdict the search could back is kept. ``None`` means the search itself
                     # was unreachable - that says nothing about the ticker and must not last.
                     remember_unknown(symbol, candidates)

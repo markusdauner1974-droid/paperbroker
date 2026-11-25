@@ -94,7 +94,8 @@ class UnknownSymbolTest(unittest.TestCase):
                 {"symbol": "BFFAF", "name": "BASF SE", "exchange": "OQX"},
                 {"symbol": "BASFY", "name": "BASF SE", "exchange": "OQX"}]
         with mock.patch.object(app, "yahoo_matches", return_value=rows):
-            found = app.symbol_candidates("BASF.DE") or []
+            answer = app.symbol_candidates("BASF.DE")
+            found = answer[0] if answer else []
         self.assertEqual(3, len(found))
         self.assertNotIn("BASF.DE", [row["symbol"] for row in found])
 
@@ -159,6 +160,28 @@ class UnknownSymbolTest(unittest.TestCase):
                 with self.assertRaises(app.UnknownSymbol):
                     app.stock("XYZQ.DE", 1)
         self.assertEqual(1, failed.call_count)
+
+    def test_a_ticker_the_search_lists_is_not_an_unknown_ticker(self):
+        # A hiccup in the source can wear the same words as a typo ("possibly delisted; no timezone
+        # found"). If the search lists the typed ticker itself, it exists - and an outage must never
+        # be answered as a 404 and kept for a quarter hour.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted; no timezone found")
+
+        rows = [{"symbol": "SAP.DE", "name": "SAP SE", "exchange": "XETRA"}]
+        with mock.patch.object(app, "prices", side_effect=missing), \
+                mock.patch.object(app, "yahoo_matches", return_value=rows):
+            with self.assertRaises(YFTzMissingError):
+                app.stock("SAP.DE", 1)
+        self.assertEqual({}, dict(app._UNKNOWN), "the outage is not remembered as a typo")
+
+    def test_without_the_classes_the_name_and_the_message_still_decide(self):
+        # The import is guarded: an older yfinance must degrade the answer, not stop the page.
+        with mock.patch.object(app, "YFTickerMissingError", None), \
+                mock.patch.object(app, "YFException", None):
+            self.assertTrue(app.unknown_symbol(YFTzMissingError("possibly delisted")))
+            self.assertFalse(app.unknown_symbol(RuntimeError("possibly delisted")),
+                             "a foreign class with the same words is an outage")
 
     def test_a_one_letter_stem_is_not_remembered(self):
         # "A", "F", "B" are real NYSE tickers; the search is not asked for a one-letter stem, so the
