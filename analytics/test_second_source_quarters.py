@@ -108,6 +108,27 @@ class SecondSourceQuartersTest(unittest.TestCase):
         assert note is not None
         self.assertIn("2026-03-31", note["added"])
 
+    def test_two_intervals_with_a_head_gap_still_read_as_quarterly(self):
+        # Three rows, two gaps: one of them is the missing newest quarter. Taking the upper median
+        # read the gap and threw the paper out of the quarter table.
+        quarterly, note = self.run_with([
+            period("2025-12-31", revenue=6800, eps=1.0), period("2025-06-30", revenue=6400, eps=1.1),
+            period("2025-03-31", revenue=6200, eps=0.9)])
+        self.assertIsNotNone(note)
+        assert note is not None
+        self.assertIn("2025-06-30", note["added"])
+
+    def test_a_malformed_row_does_not_take_the_answer_down(self):
+        # The series is stored as JSON; a row without a usable period_end must not raise out of the
+        # request handler.
+        quarterly, note = self.run_with([
+            {"period_end": "2026-06-30", "revenue": 8000, "eps": 1.0},
+            {"revenue": 7000, "eps": 0.9},
+            {"period_end": "not-a-date", "revenue": 6800, "eps": 1.0},
+            {"period_end": "2025-09-30", "revenue": 6600, "eps": 0.9}])
+        self.assertIsNone(note)
+        self.assertEqual(sorted(quarterly), ["2026-06-30", "2026-09-30"])  # untouched
+
     def test_a_half_year_reporter_gets_no_quarter_rows(self):
         # L'Oréal and Nestlé publish two periods a year; a table titled "Quartale" would mislabel them.
         quarterly, note = self.run_with([period("2026-06-30", revenue=23776, eps=6.63),
@@ -156,7 +177,10 @@ class WithSecondSourceTest(unittest.TestCase):
 
     def test_a_failed_fetch_is_not_retried(self):
         # The second call used to become a new flight leader and wait out the budget again.
-        with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")) as series:
+        # The background reload is not the subject here and would open a socket; it is also the
+        # reason the next test on the same ticker sees a pending load.
+        with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")) as series, \
+                mock.patch.object(app.stockanalysis, "refresh_in_background"):
             answer = app.with_second_source("SAP.DE", {"symbol": "SAP.DE", "statements": {
                 "quarterly": {"2026-06-30": {"totalrevenue": 8e9}}}})
         self.assertEqual(series.call_count, 1)

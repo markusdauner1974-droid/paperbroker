@@ -362,9 +362,16 @@ def quarter_step(periods: list[dict]) -> int | None:
     """
     if len(periods) < 2:
         return None
-    days = [date.fromisoformat(row["period_end"]) for row in periods]
+    try:
+        days = [date.fromisoformat(row["period_end"]) for row in periods]
+    except (KeyError, TypeError, ValueError):
+        # The series comes back from the store as JSON: one malformed row must cost the quarter
+        # table, not the whole answer.
+        return None
     steps = sorted((days[index] - days[index + 1]).days for index in range(len(days) - 1))
-    step = steps[len(steps) // 2]
+    # The lower median, so that an even count cannot let the one large gap at the head decide:
+    # [91, 184] has to read as quarterly, not as half-year.
+    step = steps[(len(steps) - 1) // 2]
     return step if 80 <= step <= 100 else None
 
 
