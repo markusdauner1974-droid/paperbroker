@@ -160,6 +160,54 @@ class UnknownSymbolTest(unittest.TestCase):
                     app.stock("XYZQ.DE", 1)
         self.assertEqual(1, failed.call_count)
 
+    def test_a_one_letter_stem_is_not_remembered(self):
+        # "A", "F", "B" are real NYSE tickers; the search is not asked for a one-letter stem, so the
+        # answer is not a verdict and must not lock the ticker out for a quarter hour.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        with mock.patch.object(app, "prices", side_effect=missing) as failed, \
+                mock.patch.object(app, "yahoo_matches") as never:
+            for _ in range(2):
+                with self.assertRaises(app.UnknownSymbol):
+                    app.stock("A", 1)
+        self.assertEqual(2, failed.call_count)
+        never.assert_not_called()
+        self.assertEqual({}, dict(app._UNKNOWN))
+
+    def test_concurrent_views_of_one_typo_share_download_and_search(self):
+        # Measured before: each of k requests ran its own failed download and its own search of up to
+        # eight seconds, because the cache only helps once an answer exists.
+        import threading
+        import time
+
+        def missing(symbol, bucket):
+            # Slow enough that the second thread arrives while the first is still downloading, and
+            # still short enough that the test does not notice.
+            time.sleep(0.15)
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        rows = [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}]
+        errors = []
+
+        def load():
+            try:
+                app.stock("BASF.DE", 1)
+            except app.UnknownSymbol as error:
+                errors.append(error)
+
+        with mock.patch.object(app, "prices", side_effect=missing) as failed, \
+                mock.patch.object(app, "yahoo_matches", return_value=rows) as searched:
+            threads = [threading.Thread(target=load) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+        self.assertEqual(2, len(errors), "both views were answered")
+        self.assertEqual(1, failed.call_count, "one download")
+        self.assertEqual(1, searched.call_count, "one search")
+        self.assertEqual("BAS.DE", errors[0].suggestion)
+
     def test_a_remembered_verdict_carries_the_candidates(self):
         app.remember_unknown("BASF.DE", [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}])
         with mock.patch.object(app, "prices") as never:

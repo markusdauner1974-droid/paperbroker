@@ -239,7 +239,9 @@ def symbol_candidates(symbol) -> list[dict] | None:
     stem = typed.split(".")[0].lower()
     suffix = typed.split(".")[1].lower() if "." in typed else ""
     if len(stem) < 2:
-        return []
+        # Not asked, so no verdict: "A", "F" and "B" are real NYSE tickers, and a one-letter stem
+        # would match half the exchange anyway. ``None`` keeps the answer out of the cache.
+        return None
     try:
         rows = yahoo_matches(stem)
     except Exception:
@@ -289,6 +291,28 @@ UNKNOWN_TTL_S = 900
 UNKNOWN_PLACES = 256
 _UNKNOWN: dict[str, tuple[float, list]] = {}
 _UNKNOWN_GUARD = Lock()
+_UNKNOWN_LOCKS: dict[str, Lock] = {}
+
+
+def unknown_lock(symbol) -> Lock:
+    """One lookup at a time per ticker, so concurrent first views share the download and the search.
+
+    The cache only helps once an answer exists; without this, k requests for the same unremembered
+    typo each ran a failed download and their own search of up to eight seconds.
+    """
+    with _UNKNOWN_GUARD:
+        held = _UNKNOWN_LOCKS.get(symbol)
+        if held is not None:
+            return held
+        if len(_UNKNOWN_LOCKS) >= UNKNOWN_PLACES:
+            # Only a lock nobody holds may go: dropping a held one would hand a second thread its own
+            # lock for the same ticker, which is the very overlap this exists to prevent.
+            for name in list(_UNKNOWN_LOCKS):
+                if not _UNKNOWN_LOCKS[name].locked():
+                    _UNKNOWN_LOCKS.pop(name, None)
+                    break
+        held = _UNKNOWN_LOCKS[symbol] = Lock()
+        return held
 
 
 def unknown_verdict(symbol):
@@ -360,23 +384,28 @@ def stock(symbol, bucket):
     # A ticker already known to be unknown answers from memory: no price attempt, no search. Without
     # this every reload of a mistyped page cost a failed download plus a search of up to eight
     # seconds, and a caller could ask for as many different typos as it liked.
-    remembered = unknown_verdict(symbol)
-    if remembered is not None:
-        raise UnknownSymbol(symbol, remembered)
-    ticker = yf.Ticker(symbol)
-    try:
-        rows = prices(symbol, bucket)
-    except Exception as error:
-        # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
-        # arrive as the same 502.
-        if unknown_symbol(error):
-            candidates = symbol_candidates(symbol)
-            if candidates is not None:
-                # Only a verdict the search could back is kept. ``None`` means the search itself was
-                # unreachable - that says nothing about the ticker and must not last a quarter hour.
-                remember_unknown(symbol, candidates)
-            raise UnknownSymbol(symbol, candidates) from error
-        raise
+    #
+    # The lock is taken around the whole attempt, not only around the search: the cache can only help
+    # once an answer exists, and until then every concurrent view of the same typo would pay for its
+    # own failed download and its own search.
+    with unknown_lock(symbol):
+        remembered = unknown_verdict(symbol)
+        if remembered is not None:
+            raise UnknownSymbol(symbol, remembered)
+        ticker = yf.Ticker(symbol)
+        try:
+            rows = prices(symbol, bucket)
+        except Exception as error:
+            # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
+            # arrive as the same 502.
+            if unknown_symbol(error):
+                candidates = symbol_candidates(symbol)
+                if candidates is not None:
+                    # Only a verdict the search could back is kept. ``None`` means the search itself
+                    # was unreachable - that says nothing about the ticker and must not last.
+                    remember_unknown(symbol, candidates)
+                raise UnknownSymbol(symbol, candidates) from error
+            raise
     info = {}
     issues = []
     try:
@@ -1861,9 +1890,16 @@ class Handler(BaseHTTPRequestHandler):
                 if cached:
                     result = cached[0]
                     if not result["prices"]:
-                        result.update(prices=prices(symbols[0], bucket), price_source="Yahoo Finance",
-                                      quote_source="Yahoo Finance",
-                                      issues=["Keine NAS-Tageskurse für diesen Ticker."])
+                        # The scanner may know a paper the price source does not. That is a missing
+                        # column, not a reason to hide a row that already carries statements: the row
+                        # is served with the reason instead of the request failing as an outage.
+                        try:
+                            result.update(prices=prices(symbols[0], bucket),
+                                          price_source="Yahoo Finance",
+                                          quote_source="Yahoo Finance",
+                                          issues=["Keine NAS-Tageskurse für diesen Ticker."])
+                        except UnknownSymbol as error:
+                            result.update(prices=[], issues=[str(error)])
                 else:
                     result = stock(symbols[0], bucket)
                     if self.nas is not None:
@@ -1934,7 +1970,14 @@ class Handler(BaseHTTPRequestHandler):
                             "suggestions": error.candidates})
         except ValueError as error:
             self.json(400, {"error": str(error)})
-        except Exception:
+        except Exception as error:
+            if type(error).__name__ == "UnknownSymbol":
+                # Same answer as the JSON interface: a typo is the reader's, an outage is nobody's.
+                # Matched by name because the class lives in the module the page was started from.
+                self.json(404, {"error": str(error),
+                                "suggestion": getattr(error, "suggestion", None),
+                                "suggestions": getattr(error, "candidates", None)})
+                return
             self.json(502, {"error": "Die Datenquelle ist nicht erreichbar oder liefert für diesen Ticker derzeit keine Daten."})
 
 
