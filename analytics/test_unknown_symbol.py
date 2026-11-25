@@ -41,6 +41,30 @@ class UnknownSymbolTest(unittest.TestCase):
         with mock.patch.object(app, "yahoo_matches", return_value=rows):
             self.assertEqual(app.symbol_suggestion("BASF.DE"), "BAS.DE")
 
+    def test_a_ticker_stem_beats_a_name_that_only_contains_it(self):
+        # Measured: "SIE" was answered with ENR.DE, Siemens Energy, because its name contains "sie".
+        rows = [{"symbol": "ENR.DE", "name": "Siemens Energy AG", "exchange": "XETRA"},
+                {"symbol": "SIE.DE", "name": "Siemens Aktiengesellschaft", "exchange": "XETRA"}]
+        with mock.patch.object(app, "yahoo_matches", return_value=rows):
+            self.assertEqual(app.symbol_suggestion("SIE"), "SIE.DE")
+
+    def test_a_missing_suffix_is_resolved_from_the_ticker(self):
+        # Measured: "NESN" got nothing although the search knows NESN.SW.
+        rows = [{"symbol": "NESN.SW", "name": "Nestlé S.A.", "exchange": "Swiss"}]
+        with mock.patch.object(app, "yahoo_matches", return_value=rows):
+            self.assertEqual(app.symbol_suggestion("NESN"), "NESN.SW")
+
+    def test_at_most_three_candidates_and_never_the_typed_ticker(self):
+        rows = [{"symbol": "BASF.DE", "name": "BASF SE", "exchange": "XETRA"},
+                {"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"},
+                {"symbol": "BASF.NS", "name": "BASF India Limited", "exchange": "NSE"},
+                {"symbol": "BFFAF", "name": "BASF SE", "exchange": "OQX"},
+                {"symbol": "BASFY", "name": "BASF SE", "exchange": "OQX"}]
+        with mock.patch.object(app, "yahoo_matches", return_value=rows):
+            found = app.symbol_candidates("BASF.DE")
+        self.assertEqual(3, len(found))
+        self.assertNotIn("BASF.DE", [row["symbol"] for row in found])
+
     def test_a_name_that_does_not_contain_the_stem_gives_no_suggestion(self):
         rows = [{"symbol": "ABC.DE", "name": "Something Else AG", "exchange": "XETRA"}]
         with mock.patch.object(app, "yahoo_matches", return_value=rows):
@@ -69,3 +93,12 @@ class UnknownSymbolTest(unittest.TestCase):
         with mock.patch.object(app, "prices", side_effect=broken):
             with self.assertRaises(TimeoutError):
                 app.stock("BASF.DE", 1)
+
+
+class PageSuggestionTest(unittest.TestCase):
+    def test_the_page_offers_the_candidates_instead_of_a_dead_end(self):
+        page = (HERE / "index.html").read_text(encoding="utf-8")
+        self.assertIn("function offerTickers(suggestions)", page)
+        # The body has to travel with the error, otherwise the message is all that is left.
+        self.assertIn("failure.json=json;", page)
+        self.assertIn("offerTickers(error.json&&error.json.suggestions);", page)

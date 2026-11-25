@@ -174,12 +174,13 @@ _HISTORY_LOCKS = {}
 class UnknownSymbol(Exception):
     """The source does not know this ticker - not the same as an unreachable source."""
 
-    def __init__(self, symbol, suggestion=None):
+    def __init__(self, symbol, candidates=None):
         self.symbol = symbol
-        self.suggestion = suggestion
-        if suggestion:
+        self.candidates = list(candidates or [])
+        self.suggestion = self.candidates[0]["symbol"] if self.candidates else None
+        if self.suggestion:
             message = (f"Den Ticker {symbol} kennt die Datenquelle nicht. "
-                       f"Gemeint ist vermutlich {suggestion}.")
+                       f"Gemeint ist vermutlich {self.suggestion}.")
         else:
             message = f"Den Ticker {symbol} kennt die Datenquelle nicht."
         super().__init__(message)
@@ -197,23 +198,59 @@ def unknown_symbol(error) -> bool:
             or "Quote not found" in text)
 
 
-def symbol_suggestion(symbol):
-    """The ticker the source does know for the same name, when the given one is a typo.
+def symbol_candidates(symbol) -> list[dict]:
+    """The tickers the source does know for a typo, best first - never one without a reason.
 
-    Measured: BASF.DE answers nothing while the search names BASF SE as BAS.DE. The company name is
-    compared, not the symbol stem - "BAS" is not "BASF", and a stem rule would have missed it.
+    Measured: "BASF.DE" answers nothing while the search names BASF SE as BAS.DE, "SIE" was answered
+    with ENR.DE (Siemens Energy) by a rule that only looked for the stem inside any name, and
+    "NESN" got nothing although the search knows NESN.SW.
+
+    Two signals, weighed: the search's own order, which is a relevance ranking, and how the row
+    relates to what was typed. A stem that is a ticker stem beats a name that merely contains it,
+    which is what keeps "SIE" away from Siemens Energy.
     """
-    stem = (symbol or "").split(".")[0].strip().lower()
+    typed = (symbol or "").strip()
+    stem = typed.split(".")[0].lower()
+    suffix = typed.split(".")[1].lower() if "." in typed else ""
     if len(stem) < 2:
-        return None
+        return []
     try:
         rows = yahoo_matches(stem)
     except Exception:
-        return None
-    for row in rows:
-        if stem in row["name"].lower() and row["symbol"].upper() != symbol.upper():
-            return row["symbol"]
-    return None
+        return []
+    scored = []
+    for rank, row in enumerate(rows):
+        candidate = row["symbol"]
+        if candidate.upper() == typed.upper():
+            continue
+        name = (row.get("name") or "").lower()
+        same_stem = candidate.split(".")[0].lower() == stem
+        starts = name.startswith(stem)
+        contains = stem in name
+        if not (same_stem or starts or contains):
+            # A row without any relation to what was typed is not a suggestion: the search's own
+            # order alone would have offered "Something Else AG" for "XYZQ".
+            continue
+        score = max(0.0, 2.6 - 0.3 * rank)          # the search ranks by relevance
+        if same_stem:
+            score += 3.0                            # a ticker stem, not a substring
+        if starts:
+            score += 1.4
+        elif contains:
+            score += 0.5
+        if suffix and candidate.split(".")[-1].lower() == suffix:
+            score += 3.0                            # the venue the reader asked for
+        scored.append((score, rank, candidate, row))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [{"symbol": candidate, "name": row.get("name") or candidate,
+             "exchange": row.get("exchange") or ""}
+            for _, _, candidate, row in scored[:3]]
+
+
+def symbol_suggestion(symbol):
+    """The best ticker for a typo, or ``None``."""
+    candidates = symbol_candidates(symbol)
+    return candidates[0]["symbol"] if candidates else None
 
 
 def prices(symbol, bucket):
@@ -268,7 +305,7 @@ def stock(symbol, bucket):
         # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
         # arrive as the same 502.
         if unknown_symbol(error):
-            raise UnknownSymbol(symbol, symbol_suggestion(symbol)) from error
+            raise UnknownSymbol(symbol, symbol_candidates(symbol)) from error
         raise
     info = {}
     issues = []
@@ -1821,8 +1858,10 @@ class Handler(BaseHTTPRequestHandler):
             error.close()
             self.json(502, {"error": message})
         except UnknownSymbol as error:
-            # 404, not 502: the source answered, it just does not know this ticker.
-            self.json(404, {"error": str(error), "suggestion": error.suggestion})
+            # 404, not 502: the source answered, it just does not know this ticker. The candidates
+            # travel with it, so the page can offer them instead of leaving the reader at a dead end.
+            self.json(404, {"error": str(error), "suggestion": error.suggestion,
+                            "suggestions": error.candidates})
         except ValueError as error:
             self.json(400, {"error": str(error)})
         except Exception:

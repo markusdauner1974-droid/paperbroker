@@ -126,11 +126,14 @@ def page() -> Response:
     return Response(html, content_type="text/html; charset=utf-8")
 
 
-def _error(message: str, status: int = 400, suggestion: str | None = None):
-    answer = {"error": message}
+def _error(message: str, status: int = 400, suggestion: str | None = None,
+           suggestions: list | None = None):
+    answer: dict[str, object] = {"error": message}
     if suggestion:
         # The page can offer the ticker instead of only naming it.
         answer["suggestion"] = suggestion
+    if suggestions:
+        answer["suggestions"] = suggestions
     return jsonify(answer), status
 
 
@@ -379,7 +382,8 @@ def api(name: str):
         if type(error).__name__ == "UnknownSymbol":
             # The source answered, it just does not know this ticker: a typo to correct, not an
             # outage. Matched by name because the class lives in the embedded module.
-            return _error(str(error), 404, suggestion=getattr(error, "suggestion", None))
+            return _error(str(error), 404, suggestion=getattr(error, "suggestion", None),
+                          suggestions=getattr(error, "candidates", None))
         # The delivered dispatcher caught everything and answered 502 JSON; the page
         # reads json.error, so an escaping exception must not become a Flask 500 page.
         return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
