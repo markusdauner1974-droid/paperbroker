@@ -98,6 +98,16 @@ class SecondSourceQuartersTest(unittest.TestCase):
         self.assertIsNone(note)
         self.assertEqual(quarterly, self.statements["quarterly"])
 
+    def test_one_gap_at_the_head_does_not_make_it_a_half_year_reporter(self):
+        # A quarterly paper whose newest quarter is missing on the page shows one gap of half a year.
+        # Reading only that pair threw the whole paper into the half-year bucket.
+        quarterly, note = self.run_with([
+            period("2026-03-31", revenue=7000, eps=0.9), period("2025-12-31", revenue=6800, eps=1.0),
+            period("2025-09-30", revenue=6600, eps=0.9), period("2025-06-30", revenue=6400, eps=1.1)])
+        self.assertIsNotNone(note)
+        assert note is not None
+        self.assertIn("2026-03-31", note["added"])
+
     def test_a_half_year_reporter_gets_no_quarter_rows(self):
         # L'Oréal and Nestlé publish two periods a year; a table titled "Quartale" would mislabel them.
         quarterly, note = self.run_with([period("2026-06-30", revenue=23776, eps=6.63),
@@ -125,6 +135,32 @@ class WithSecondSourceTest(unittest.TestCase):
         self.assertIn("2026-06-30", answer["statements"]["quarterly"])
         # The cached payload keeps its own table.
         self.assertNotIn("2026-06-30", result["statements"]["quarterly"])
+
+    def test_the_series_is_fetched_once_per_request(self):
+        # Growth and quarter rows read the same series; asking the source twice cost two waits when
+        # it was slow.
+        fetched = []
+
+        def series(symbol, store_module=None, budget_s=None):
+            fetched.append(symbol)
+            return [period("2026-06-30", revenue=8000, eps=1.0),
+                    period("2026-03-31", revenue=7000, eps=0.9),
+                    period("2025-12-31", revenue=6800, eps=1.0)]
+
+        result = {"symbol": "SAP.DE", "statements": {"quarterly": {
+            "2026-06-30": {"totalrevenue": 8e9}}}}
+        with mock.patch.object(app.stockanalysis, "series", side_effect=series):
+            answer = app.with_second_source("SAP.DE", result)
+        self.assertEqual(fetched, ["SAP.DE"], "one request must not fetch twice")
+        self.assertIn("ttm_growth", answer)
+
+    def test_a_failed_fetch_is_not_retried(self):
+        # The second call used to become a new flight leader and wait out the budget again.
+        with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")) as series:
+            answer = app.with_second_source("SAP.DE", {"symbol": "SAP.DE", "statements": {
+                "quarterly": {"2026-06-30": {"totalrevenue": 8e9}}}})
+        self.assertEqual(series.call_count, 1)
+        self.assertNotIn("quarterly_source", answer)
 
     def test_without_an_addition_the_answer_keeps_its_shape(self):
         result = {"symbol": "SAP.DE", "statements": {"quarterly": {}}}

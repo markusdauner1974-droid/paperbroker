@@ -341,15 +341,31 @@ def _step_days(periods: list[dict]) -> int | None:
     return (first - second).days
 
 
+class Unfetched:
+    """Marker: the caller did not bring a series, so the call has to fetch one."""
+
+
+#: Passed where a caller already fetched the series and does not want a second request.
+UNFETCHED = Unfetched()
+
+
 def quarter_step(periods: list[dict]) -> int | None:
     """The distance between two neighbouring periods when the paper reports quarterly.
 
     Half-year reporters (L'Oréal, Nestlé) publish two periods a year. Their rows belong in a twelve
     month comparison, not in a table titled "Quartale" - adding them there would be a relabelling
     rather than a completion.
+
+    The step is the median over every neighbouring pair, not the newest one: a quarterly reporter
+    whose newest quarter is missing on the page shows one gap of about half a year at the head, and
+    reading only that pair threw the whole paper into the half-year bucket.
     """
-    step = _step_days(periods)
-    return step if step is not None and 80 <= step <= 100 else None
+    if len(periods) < 2:
+        return None
+    days = [date.fromisoformat(row["period_end"]) for row in periods]
+    steps = sorted((days[index] - days[index + 1]).days for index in range(len(days) - 1))
+    step = steps[len(steps) // 2]
+    return step if 80 <= step <= 100 else None
 
 
 def _window(periods: list[dict], start: int, count: int, step: int):
@@ -409,11 +425,16 @@ def twelve_month_growth(periods: list[dict]) -> dict:
 
 
 def growth(symbol: str, store_module=None, path=None,
-           budget_s: float = FETCH_BUDGET_S) -> dict:
+           budget_s: float = FETCH_BUDGET_S,
+           periods: list[dict] | Unfetched | None = UNFETCHED) -> dict:
     """``twelve_month_growth`` for one ticker, with the source named.
 
     A series that is not in the store yet is fetched within the budget; when that does not fit, the
     load continues in the background and the answer says so instead of waiting.
+
+    ``periods`` lets a caller hand over a series it fetched once already: a list to use it, ``None``
+    for "not available" and ``UNFETCHED`` for "fetch it here". One request that needs both the growth
+    and the quarter rows would otherwise ask the source twice and, on a slow day, wait twice.
     """
     if url_for(symbol) is None:
         # No path on the site for this suffix: a background load could never answer, so the row says
@@ -421,9 +442,18 @@ def growth(symbol: str, store_module=None, path=None,
         return {"revenue": None, "eps": None, "periods": 0, "step_days": None,
                 "source": "stockanalysis.com", "newest": None,
                 "reason": "für diesen Börsenplatz führt die zweite Quelle keine Zahlen"}
-    try:
-        periods = series(symbol, store_module, path, budget_s)
-    except SourceUnavailable:
+    if isinstance(periods, Unfetched):
+        try:
+            periods = series(symbol, store_module, path, budget_s)
+        except SourceUnavailable:
+            if store_module is not None and url_for(symbol) is not None:
+                refresh_in_background(symbol, store_module, path)
+            return {"revenue": None, "eps": None, "periods": 0, "step_days": None,
+                    "source": "stockanalysis.com", "newest": None,
+                    "reason": "Quartalsreihe wird im Hintergrund geladen"}
+    if periods is None:
+        # The caller tried and failed: one failed request per page is enough, the reload runs behind
+        # the answer and the row says so.
         if store_module is not None and url_for(symbol) is not None:
             refresh_in_background(symbol, store_module, path)
         return {"revenue": None, "eps": None, "periods": 0, "step_days": None,

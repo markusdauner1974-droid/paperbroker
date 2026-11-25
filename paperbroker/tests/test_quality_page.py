@@ -163,6 +163,15 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(3.9e10, growth["revenue_total"])
         self.assertIn(("long_quarterly_growth", ("AAPL", {}), {}), calls)
 
+    def test_an_older_module_without_the_quarter_step_still_answers(self):
+        """The embedded analytics module may be older than the route: serve instead of a 502."""
+        module, _calls = _fake()
+        del module.with_second_source
+        with mock.patch.object(quality, "_akt", lambda: module):
+            response = self.client.get("/qualitaet/api/stock?q=AAPL")
+        self.assertEqual(200, response.status_code)
+        self.assertIn("ttm_growth", response.get_json())
+
     def test_a_scanner_hit_carries_it_too(self):
         module, _calls = _fake()
         module.nas_stocks = lambda *args, **kwargs: [

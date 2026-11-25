@@ -308,7 +308,8 @@ SEC_YEARS = 6
 
 
 
-def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S):
+def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S,
+                          periods=stockanalysis.UNFETCHED):  # list | None | UNFETCHED
     """The twelve month growth from the longer quarterly series, or None.
 
     The provider hands over five or six quarters for a European paper; the second source keeps
@@ -319,7 +320,8 @@ def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGE
     if consecutive_quarters(statements.get("quarterly") or {}) >= QUARTER_WINDOW:
         return None
     try:
-        answer = stockanalysis.growth(symbol, store_module=store, budget_s=budget_s)
+        answer = stockanalysis.growth(symbol, store_module=store, budget_s=budget_s,
+                                      periods=periods)
     except Exception:
         return {"revenue": None, "eps": None, "reason": "Quartalsreihe nicht abrufbar"}
     if answer.get("revenue") is None and answer.get("eps") is None and "reason" not in answer:
@@ -351,7 +353,8 @@ def absent_in_row(row, key):
     return key == "dilutedeps" and value == 0 and (finite(row.get("netincome")) or 0) > 0
 
 
-def second_source_quarters(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S):
+def second_source_quarters(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S,
+                           periods=stockanalysis.UNFETCHED):  # list | None | UNFETCHED
     """The quarter table extended by the second source - gaps only, never an overwrite.
 
     Yahoo hands over five or six quarters for a European paper and none at all for L'Oréal, so the
@@ -370,11 +373,14 @@ def second_source_quarters(symbol, statements, budget_s=stockanalysis.FETCH_BUDG
         return quarterly, None
     if consecutive_quarters(quarterly) >= QUARTER_WINDOW:
         return quarterly, None
-    try:
-        periods = stockanalysis.series(symbol, store_module=store, budget_s=budget_s)
-    except Exception:
-        # A source that is down or slow leaves the table as it was; the TTM rows already name the
-        # reason, and an exception here would cost the whole page.
+    if isinstance(periods, stockanalysis.Unfetched):
+        try:
+            periods = stockanalysis.series(symbol, store_module=store, budget_s=budget_s)
+        except Exception:
+            # A source that is down or slow leaves the table as it was; the TTM rows already name the
+            # reason, and an exception here would cost the whole page.
+            return quarterly, None
+    if periods is None:
         return quarterly, None
     if stockanalysis.quarter_step(periods) is None:
         # No quarterly reporting: there is no quarter to add. The half-year rows stay out.
@@ -417,8 +423,18 @@ def with_second_source(symbol, result):
     figures from the longer series and keeps the second source as a fallback.
     """
     statements = result.get("statements") or {}
-    growth = long_quarterly_growth(symbol, statements)
-    quarterly, note = second_source_quarters(symbol, statements)
+    # One request, one fetch: both steps below read the same series. Fetching inside each of them
+    # asked the source twice and, when it was slow, waited out the budget twice.
+    short = consecutive_quarters(statements.get("quarterly") or {}) < QUARTER_WINDOW
+    periods = stockanalysis.UNFETCHED
+    if short:
+        try:
+            periods = stockanalysis.series(symbol, store_module=store,
+                                           budget_s=stockanalysis.FETCH_BUDGET_S)
+        except Exception:
+            periods = None
+    growth = long_quarterly_growth(symbol, statements, periods=periods)
+    quarterly, note = second_source_quarters(symbol, statements, periods=periods)
     if note is None:
         return {**result, "ttm_growth": growth}
     return {**result, "ttm_growth": growth, "quarterly_source": note,
