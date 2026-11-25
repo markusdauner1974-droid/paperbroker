@@ -353,6 +353,23 @@ def absent_in_row(row, key):
     return key == "dilutedeps" and value == 0 and (finite(row.get("netincome")) or 0) > 0
 
 
+def second_source_needed(statements) -> bool:
+    """Whether the provider's own quarters cannot carry the twelve month figures.
+
+    Two cases. One is visible: fewer than eight consecutive quarters, and the table stops after a
+    year. The other is quiet - Yahoo leaves the diluted EPS of a US fiscal fourth quarter empty, so
+    the page's four-quarter sums turn null although a dozen quarters are there. Both are answered by
+    the same second source, and it only ever fills what is missing.
+    """
+    quarterly = statements.get("quarterly") or {}
+    if consecutive_quarters(quarterly) < QUARTER_WINDOW:
+        return True
+    newest = sorted(quarterly, reverse=True)[:QUARTER_WINDOW]
+    return any(absent_in_row(quarterly[day], row_key)
+               for day in newest
+               for _, row_key, _, _ in SECOND_SOURCE_FIELDS)
+
+
 def second_source_quarters(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S,
                            periods=stockanalysis.UNFETCHED):  # list | None | UNFETCHED
     """The quarter table extended by the second source - gaps only, never an overwrite.
@@ -371,7 +388,7 @@ def second_source_quarters(symbol, statements, budget_s=stockanalysis.FETCH_BUDG
         # A scanner row without any statement is served from the local snapshot; asking a second
         # source there would turn a deliberately local path into a network call.
         return quarterly, None
-    if consecutive_quarters(quarterly) >= QUARTER_WINDOW:
+    if not second_source_needed(statements):
         return quarterly, None
     if isinstance(periods, stockanalysis.Unfetched):
         try:
@@ -425,13 +442,16 @@ def with_second_source(symbol, result):
     statements = result.get("statements") or {}
     # One request, one fetch: both steps below read the same series. Fetching inside each of them
     # asked the source twice and, when it was slow, waited out the budget twice.
-    short = consecutive_quarters(statements.get("quarterly") or {}) < QUARTER_WINDOW
+    needs = second_source_needed(statements)
     periods = stockanalysis.UNFETCHED
-    if short:
+    if needs:
         try:
             periods = stockanalysis.series(symbol, store_module=store,
                                            budget_s=stockanalysis.FETCH_BUDGET_S)
         except Exception:
+            # Nothing is queued twice: refresh_in_background does nothing while a load for the same
+            # ticker runs. The next view then has the rows instead of asking again.
+            stockanalysis.refresh_in_background(symbol, store)
             periods = None
     growth = long_quarterly_growth(symbol, statements, periods=periods)
     quarterly, note = second_source_quarters(symbol, statements, periods=periods)
