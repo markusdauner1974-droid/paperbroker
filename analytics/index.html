@@ -563,10 +563,17 @@ function buildChecks(stock,benchmark=[],only=selected){
   };
   const weeklyVol=n=>weekly.length>=n+3?deviation(adjacentReturns(weekly.slice(-n-2,-1).map(x=>x.at(-1)))):null;
   const netMargin=division(earn,rev);
+  // A margin must name the period it rests on: the reference's check often carries an older
+  // period, so the same paper reads 12.5 % here and 7.5 % there without either side miscalculating.
+  const fiscalYear=income[0]&&income[0][0]?income[0][0].slice(0,4):null;
+  const fiscal=text=>text+(fiscalYear?" · GJ "+fiscalYear:" · Geschäftsjahr");
   // The reference calls this criterion "return on capital employed" and means ROCE, not ROIC:
   // EBIT over total assets minus current liabilities.
   const capital=isNum(total)&&isNum(v(assets,"CurrentLiabilities"))?total-v(assets,"CurrentLiabilities"):null;
-  const roce=capital>0&&isNum(ebit)?division(ebit,capital):null;
+  // The deduction holds for industrial companies only; for banks, insurers and exchanges the
+  // criterion stays open instead of printing a number the balance sheet does not support.
+  const financialSector=isFinancialSector(i);
+  const roce=!financialSector&&capital>0&&isNum(ebit)?division(ebit,capital):null;
   const ownRoe=division(earn,v(assets,"StockholdersEquity"));
   const yearEnd=rows.at(-1)?.[0];
   const preceding=n=>yearEnd?adjustDate(yearEnd,n*12):null;
@@ -591,12 +598,9 @@ function buildChecks(stock,benchmark=[],only=selected){
   const ma=rows.length>=200?meanOf(rows.slice(-200).map(r=>r[1])):null;
   const yearRows=rangeRows(rows,12);
   const high=yearRows.length>=225?Math.max(...yearRows.map(r=>r[1])):null;
-  const lineStability=n=>{
-    const column=yearRows.every(row=>row[2]>0)?2:1;
-    const values=n===12?yearRows.map(row=>row[column]):[];
-    if(values.length<225||values.some(x=>x<=0))return null;
-    return trendFit(values.map(Math.log));
-  };
+  // Ten years of month-end closes, signed by the trend (see priceStability above).
+  const courseStability=priceStability(rows);
+  const courseStabilityName=stabilityLabel(rows);
   const p=(label,x,a,b,c)=>rowCheck(label,x,pct,"Ziel "+(a<b?"≥ ":"≤ ")+pct(b),a,b,c);
   const n=(label,x,a,b,c)=>rowCheck(label,x,f,"Ziel "+(a<b?"≥ ":"≤ ")+f(b),a,b,c);
   const duration=(label,x,a,b,c)=>rowCheck(label,x,v=>isNum(v)?f(v)+" Jahre":"—","Ziel ≥ "+b+" Jahre",a,b,c);
@@ -647,15 +651,17 @@ function buildChecks(stock,benchmark=[],only=selected){
           epsSpan?cagr(eps(a),positiveBase(eps,epsSpan),epsSpan):null,-.15,.08,.35),
         p("EPS-Stabilität"+years(epsSpan)+" (R²)",stability(eps,epsSpan),0,.60,1)]],
       ["Rentabilität",[
-        p("Eigenkapitalrendite (Geschäftsjahr)",ownRoe,-.12,.10,.34),
-        p("Rendite auf das eingesetzte Kapital (ROCE)",roce,-.12,.10,.28),
-        p("Nettogewinnmarge (Geschäftsjahr)",netMargin,-.12,.10,.30)]],
+        p(fiscal("Eigenkapitalrendite"),ownRoe,-.12,.10,.34),
+        p(unavailableLabel(fiscal("Rendite auf das eingesetzte Kapital (ROCE)"),roce,
+          financialSector?"für Finanzunternehmen nicht aussagekräftig":"kein EBIT oder keine Bilanz"),
+          roce,-.12,.10,.28),
+        p(fiscal("Nettogewinnmarge"),netMargin,-.12,.10,.30)]],
       ["Kursprofil",[
         // Three years of weekly returns: that hits the reference (GAP 7.02 % against 7.01 %),
         // while fifty weeks measure systematically too calm.
         p("Volatilität (Wochenrenditen, 3 Jahre)",weeklyVol(156),.10,.05,.015),
         p("Performance pro Jahr (10 Jahre, bereinigt)",isNum(ret(120))?(1+ret(120))**.1-1:null,-.15,.08,.32),
-        p("Kursstabilität 12 Monate (R²)",lineStability(12),0,.60,1)]],
+        p(courseStabilityName,courseStability,0,.80,1)]],
       ["Bilanz und Zinslast",[
         p("Finanzschulden / Bilanzsumme",division(debt,total),.80,.35,.02),
         n("EBIT / Finanzschulden",division(ebit,debt),-.5,.25,2),
@@ -683,7 +689,7 @@ function buildChecks(stock,benchmark=[],only=selected){
       p("Umsatzwachstum Geschäftsjahr",growth(rev,annualMetric(1,sales)),-.15,0,.20),
       p("Finanzschulden / Bilanzsumme",division(debt,total),.80,.35,.02),
       p("Eigenkapitalrendite (TTM, Anbieter)",i.returnOnEquity,-.12,.10,.34),
-      p("Nettogewinnmarge (Geschäftsjahr)",netMargin,-.12,.10,.30)]],
+      p(fiscal("Nettogewinnmarge"),netMargin,-.12,.10,.30)]],
     ["Risiko",[
       p("Dreimonatsrendite",ret(3),-.30,0,.25),
       p("Wochenvolatilität über 50 Wochen",weeklyVol(50),.10,.05,.015),
@@ -702,7 +708,7 @@ function buildChecks(stock,benchmark=[],only=selected){
       p("Rendite 12 Monate",ret(12),-.35,.10,.70),
       p("Abstand zum 52-Wochen-Schlusshoch",growth(close,high),-.50,-.15,0),
       p("Abstand zum GD200",growth(close,ma),-.35,0,.32),
-      p("Kursstabilität 12 Monate (R²)",lineStability(12),0,.60,1)]],
+      p(courseStabilityName,courseStability,0,.80,1)]],
     ["Finanzierbarkeit",[
       n("Börsenwert / Finanzschulden",sameCurrency?division(i.marketCap,debt):null,0,3,25),
       n("Umsatz TTM / Finanzschulden",division(ttmRevenue,debt),0,2,15),
@@ -743,6 +749,35 @@ function averageDividendYield(rows,end){
     return division(periodDividends(rows,date),close);
   });
   return knownValues(yields)?meanOf(yields):null;
+}
+// The reference measures price stability over a long window: SAP scores 76 % there and 0.4 %
+// over the last twelve months, where a 60 % target can never be reached while a crash that runs
+// straight down scores highest. Ten years of month-end closes carry the reference's magnitude,
+// and the fit keeps the sign of the trend: a straight decline is a trend, not stability.
+function priceStability(rows){
+  if(!Array.isArray(rows)||rows.length<2)return null;
+  const monthly=calendarCloseGroups(rows,"month").map(group=>group.at(-1));
+  if(monthly.length<25)return null;
+  const window=monthly.slice(-121);
+  if(window.some(value=>!isNum(value)||value<=0))return null;
+  const fit=trendFit(window.map(Math.log));
+  return window.at(-1)>=window[0]?fit:-fit;
+}
+// The label names the span the series really covers - a listing younger than ten years must not
+// read as a ten year window.
+function stabilityLabel(rows){
+  const months=Array.isArray(rows)?calendarCloseGroups(rows,"month").length:0;
+  if(!months)return "Kursstabilität (R²)";
+  const years=Math.max(1,Math.min(10,Math.floor(months/12)));
+  return "Kursstabilität "+years+" Jahre (R², negativ = fallender Trend)";
+}
+// Banks, insurers and exchanges run on customer money: their current liabilities are the business,
+// not a deduction. Measured on Deutsche Börse 2025, subtracting them turns 1.3 % into 11.5 %
+// (3.0 Mrd. EBIT against 297 Mrd. balance sheet total).
+function isFinancialSector(info){
+  const sector=String(info&&info.sector||""),industry=String(info&&info.industry||"");
+  return /^(financials?|financial services|financial)$/i.test(sector)
+    ||/bank|insurance|insurer|capital markets|exchange|asset management/i.test(industry);
 }
 function trendFit(values){
   const mid=(values.length-1)/2, mean=meanOf(values);
@@ -1226,7 +1261,7 @@ function renderChecks(){
   const details=element("details");
   details.append(element("summary","Infos zum Score"),element("p",data.reference?
     "Erfasster TraderFox-Stand für SAP. Die Marktvergleiche beziehen sich auf Deutschland 100 (v).":
-    "Balken zeigen die Kennzahl auf einer Zielskala von 0 bis 100. Bei gerichteten Kriterien liegt das Ziel bei 50. Die Farben bewerten zunächst die Zielerreichung. Nach der Auswertung einer Vergleichsgruppe wird bei gemeinsamen Kriterien der Rang innerhalb dieser Gruppe angezeigt. Gleichstände zählen bei Einzelrängen zur Hälfte. Die Marktabdeckung entspricht den ausgewählten Tickern. Ein erfülltes Kriterium zählt einen Punkt. Bei fehlenden Daten zeigt die Punktespanne die offenen Kriterien. Der Vergleich in einer Gruppe nutzt je Check eine eigene Rangschwelle: im Qualitäts-Check die veröffentlichten 50 %, 65 % bei den Stabilitätsmaßen sowie 25 % und 10 % bei EBIT-Schulden-, Zins- und Bewertungskennzahlen, im Dividenden-Check die veröffentlichten 65 %, im Wachstums- und im Robustheits-Check 50 % (nicht veröffentlicht, deshalb Standardwert). Die Einzelwertung ohne Gruppe nutzt die festen Schwellen der App. Das Stabilitätsmaß nutzt R² eines linearen Trends der logarithmierten Werte: es misst, wie gleichmäßig eine Reihe verläuft, nicht wohin — eine stetig sinkende Reihe ist stabil, und die Richtung bewertet das Wachstumskriterium daneben. Volatilität ist die Standardabweichung von Wochenrenditen über drei Jahre, damit sie der Referenz entspricht. Drawdowns stammen aus abgeschlossenen Kalenderperioden."));
+    "Balken zeigen die Kennzahl auf einer Zielskala von 0 bis 100. Bei gerichteten Kriterien liegt das Ziel bei 50. Die Farben bewerten zunächst die Zielerreichung. Nach der Auswertung einer Vergleichsgruppe wird bei gemeinsamen Kriterien der Rang innerhalb dieser Gruppe angezeigt. Gleichstände zählen bei Einzelrängen zur Hälfte. Die Marktabdeckung entspricht den ausgewählten Tickern. Ein erfülltes Kriterium zählt einen Punkt. Bei fehlenden Daten zeigt die Punktespanne die offenen Kriterien. Der Vergleich in einer Gruppe nutzt je Check eine eigene Rangschwelle: im Qualitäts-Check die veröffentlichten 50 %, 65 % bei den Stabilitätsmaßen sowie 25 % und 10 % bei EBIT-Schulden-, Zins- und Bewertungskennzahlen, im Dividenden-Check die veröffentlichten 65 %, im Wachstums- und im Robustheits-Check 50 % (nicht veröffentlicht, deshalb Standardwert). Die Einzelwertung ohne Gruppe nutzt die festen Schwellen der App. Das Stabilitätsmaß nutzt R² eines linearen Trends der logarithmierten Werte — bei Umsatz und Gewinn über die Geschäftsjahre, bei der Kursstabilität über zehn Jahre Monatsschlusskurse. Der Kurs trägt das Vorzeichen seines Trends: ein fallender Kurs zählt negativ, damit ein gleichmäßiger Absturz nicht als Stabilität gilt. Die Nettogewinnmarge nennt ihr Geschäftsjahr, weil die Referenz hier oft eine ältere Periode zeigt. Der ROCE bleibt bei Banken, Versicherungen und Börsen offen: dort bestehen die kurzfristigen Verbindlichkeiten aus Kundengeldern, und der Abzug macht die Kennzahl unbrauchbar. Volatilität ist die Standardabweichung von Wochenrenditen über drei Jahre, damit sie der Referenz entspricht. Drawdowns stammen aus abgeschlossenen Kalenderperioden."));
   const grid=element("div",undefined,"check-grid"),charts=element("div"),criteria=element("div",undefined,"criteria");
   const annualCanvas=element("canvas"),priceCanvas=element("canvas");
   annualCanvas.id="check-year-chart";priceCanvas.id="check-price-chart";
