@@ -183,8 +183,7 @@ def _with_quarters(akt, symbol: str, result: dict) -> dict:
     time: ``stock()`` is cached, and writing into the cached object would hand that answer to every
     later caller.
     """
-    return {**result,
-            "ttm_growth": akt.long_quarterly_growth(symbol, result.get("statements") or {})}
+    return akt.with_second_source(symbol, result)
 
 
 def api(name: str):

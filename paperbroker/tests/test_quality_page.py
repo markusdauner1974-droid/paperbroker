@@ -46,6 +46,11 @@ def _fake(**overrides):
                                      {"revenue": 0.0792, "eps": 0.144, "periods": 20,
                                       "revenue_total": 3.9e10, "operating_income_total": 1.1e10}),
     )
+    # One step carries both: the twelve month growth and the quarter table the second source
+    # completes. The stand-in mirrors that contract instead of the two halves it is built from.
+    module.with_second_source = lambda symbol, result: {
+        **result,
+        "ttm_growth": module.long_quarterly_growth(symbol, result.get("statements") or {})}
     for name, value in overrides.items():
         setattr(module, name, value)
     return module, calls

@@ -1589,6 +1589,16 @@ function renderFinance(){
   if(rows.length)fund.append(element("h3","Geschäftsjahre"),table(rows,columns));
   if(!rows.length)fund.append(element("p","Keine Geschäftsabschlüsse verfügbar.","sub"));
   if(quarter.length)fund.append(element("h3","Quartale"),table(toRows(quarter,8,"quarterly"),columns));
+  // The table can now carry quarters the provider never sent. Naming the source and what it does
+  // not publish keeps the dash in the profit column from looking like a reporting gap of the paper.
+  const secondQuarters=data.quarterly_source;
+  if(secondQuarters&&quarter.length){
+    const parts=[];
+    if(secondQuarters.added&&secondQuarters.added.length)parts.push(secondQuarters.added.length+" Quartale ergänzt");
+    if(secondQuarters.filled&&secondQuarters.filled.length)parts.push(secondQuarters.filled.length+" um fehlende Werte ergänzt");
+    fund.append(element("p","Aus "+secondQuarters.source+": "+parts.join(", ")+" ("+
+      (secondQuarters.fields||[]).join(", ")+"). Der Gewinn steht dort nicht; er erscheint nur für die Quartale aus Yahoo.","sub"));
+  }
   if(data.statements_source)fund.append(element("p",data.statements_source+" · "+
     Math.min(income.length,6)+" von 6 Jahresperioden · "+Math.min(quarter.length,8)+" von 8 Quartalen sichtbar. "+
     (data.statements_source==="SEC EDGAR"?"Fehlende Q4-Beträge werden bei additiven Größen aus dem Geschäftsjahr und den ersten drei Quartalen ermittelt. EPS wird nur aus gemeldeten Werten übernommen.":""),"sub"));

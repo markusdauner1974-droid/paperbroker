@@ -341,6 +341,17 @@ def _step_days(periods: list[dict]) -> int | None:
     return (first - second).days
 
 
+def quarter_step(periods: list[dict]) -> int | None:
+    """The distance between two neighbouring periods when the paper reports quarterly.
+
+    Half-year reporters (L'Oréal, Nestlé) publish two periods a year. Their rows belong in a twelve
+    month comparison, not in a table titled "Quartale" - adding them there would be a relabelling
+    rather than a completion.
+    """
+    step = _step_days(periods)
+    return step if step is not None and 80 <= step <= 100 else None
+
+
 def _window(periods: list[dict], start: int, count: int, step: int):
     """One twelve month window of ``count`` periods, or None when it does not hold together.
 
