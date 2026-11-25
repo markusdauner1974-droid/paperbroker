@@ -183,6 +183,11 @@ def _with_quarters(akt, symbol: str, result: dict) -> dict:
     time: ``stock()`` is cached, and writing into the cached object would hand that answer to every
     later caller.
     """
+    extend = getattr(akt, "with_second_source", None)
+    if extend is not None:
+        return extend(symbol, result)
+    # An embedded module from before that step still answers: the quarter table stays short, but the
+    # endpoint keeps serving instead of turning an AttributeError into a 502 for every ticker.
     return {**result,
             "ttm_growth": akt.long_quarterly_growth(symbol, result.get("statements") or {})}
 

@@ -308,7 +308,8 @@ SEC_YEARS = 6
 
 
 
-def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S):
+def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S,
+                          periods=stockanalysis.UNFETCHED):  # list | None | UNFETCHED
     """The twelve month growth from the longer quarterly series, or None.
 
     The provider hands over five or six quarters for a European paper; the second source keeps
@@ -319,12 +320,125 @@ def long_quarterly_growth(symbol, statements, budget_s=stockanalysis.FETCH_BUDGE
     if consecutive_quarters(statements.get("quarterly") or {}) >= QUARTER_WINDOW:
         return None
     try:
-        answer = stockanalysis.growth(symbol, store_module=store, budget_s=budget_s)
+        answer = stockanalysis.growth(symbol, store_module=store, budget_s=budget_s,
+                                      periods=periods)
     except Exception:
         return {"revenue": None, "eps": None, "reason": "Quartalsreihe nicht abrufbar"}
     if answer.get("revenue") is None and answer.get("eps") is None and "reason" not in answer:
         answer["reason"] = "Quartalsreihe zu kurz"
     return answer
+
+
+#: What the second source publishes per quarter. Net income is not among it, so a quarter that
+#: only comes from there carries a dash in that column instead of a made-up figure.
+#: (key on the source's period, key in a statement row, label for the page, factor to whole units).
+#: Revenue and operating income are published in millions, earnings per share is not - scaling it
+#: turned 1,71 into 1 710 000.
+SECOND_SOURCE_FIELDS = (("revenue", "totalrevenue", "Umsatz", stockanalysis.MILLIONS),
+                        ("operating_income", "operatingincome", "Betriebsergebnis",
+                         stockanalysis.MILLIONS),
+                        ("eps", "dilutedeps", "verwässertes EPS", 1))
+
+
+def absent_in_row(row, key):
+    """Whether a reported field counts as missing.
+
+    The provider sends 0.0 for diluted EPS on quarters that clearly earned money - measured on SAP
+    Q3 2026: net income 2 249 Mio against 1 157 Mio shares, published EPS 1,94. A zero there is a
+    defect of the feed, not a figure, and the second source is allowed to complete it.
+    """
+    value = finite(row.get(key))
+    if value is None:
+        return True
+    return key == "dilutedeps" and value == 0 and (finite(row.get("netincome")) or 0) > 0
+
+
+def second_source_quarters(symbol, statements, budget_s=stockanalysis.FETCH_BUDGET_S,
+                           periods=stockanalysis.UNFETCHED):  # list | None | UNFETCHED
+    """The quarter table extended by the second source - gaps only, never an overwrite.
+
+    Yahoo hands over five or six quarters for a European paper and none at all for L'Oréal, so the
+    table stopped after a year. The second source keeps twenty quarters of revenue, diluted EPS and
+    operating income. A quarter Yahoo already reports stays untouched except where it left a field
+    empty; net income is never invented.
+
+    Returns the quarters and a note for the page, or ``(quarters, None)`` when nothing was added.
+    The rows are copied first: ``stock()`` is cached, and a row edited in place would carry the
+    second source into every later caller.
+    """
+    quarterly = {day: dict(row) for day, row in (statements.get("quarterly") or {}).items()}
+    if not quarterly and not statements.get("income"):
+        # A scanner row without any statement is served from the local snapshot; asking a second
+        # source there would turn a deliberately local path into a network call.
+        return quarterly, None
+    if consecutive_quarters(quarterly) >= QUARTER_WINDOW:
+        return quarterly, None
+    if isinstance(periods, stockanalysis.Unfetched):
+        try:
+            periods = stockanalysis.series(symbol, store_module=store, budget_s=budget_s)
+        except Exception:
+            # A source that is down or slow leaves the table as it was; the TTM rows already name the
+            # reason, and an exception here would cost the whole page.
+            return quarterly, None
+    if periods is None:
+        return quarterly, None
+    if stockanalysis.quarter_step(periods) is None:
+        # No quarterly reporting: there is no quarter to add. The half-year rows stay out.
+        return quarterly, None
+    added, filled = [], []
+    for period in periods:
+        day = period.get("period_end")
+        if not day:
+            continue
+        values = []
+        for source_key, row_key, _, factor in SECOND_SOURCE_FIELDS:
+            amount = finite(period.get(source_key))
+            if amount is not None:
+                values.append((row_key, amount * factor))
+        if not values:
+            continue
+        row = quarterly.get(day)
+        if row is None:
+            quarterly[day] = dict(values)
+            added.append(day)
+            continue
+        missing = [(key, value) for key, value in values if absent_in_row(row, key)]
+        if missing:
+            row.update(missing)
+            filled.append(day)
+    if not added and not filled:
+        return quarterly, None
+    return quarterly, {"source": "stockanalysis.com",
+                       "added": sorted(added, reverse=True),
+                       "filled": sorted(filled, reverse=True),
+                       "fields": [label for _, _, label, _ in SECOND_SOURCE_FIELDS]}
+
+
+def with_second_source(symbol, result):
+    """The answer plus the twelve month growth and the extended quarter table.
+
+    One place for both dispatchers: the delivered one in this file and the embedded one under
+    paperbroker/routes answer the same endpoint, and a step only one of them takes shows up as a
+    missing column. The growth is read before the table grows - the page then builds its own
+    figures from the longer series and keeps the second source as a fallback.
+    """
+    statements = result.get("statements") or {}
+    # One request, one fetch: both steps below read the same series. Fetching inside each of them
+    # asked the source twice and, when it was slow, waited out the budget twice.
+    short = consecutive_quarters(statements.get("quarterly") or {}) < QUARTER_WINDOW
+    periods = stockanalysis.UNFETCHED
+    if short:
+        try:
+            periods = stockanalysis.series(symbol, store_module=store,
+                                           budget_s=stockanalysis.FETCH_BUDGET_S)
+        except Exception:
+            periods = None
+    growth = long_quarterly_growth(symbol, statements, periods=periods)
+    quarterly, note = second_source_quarters(symbol, statements, periods=periods)
+    if note is None:
+        return {**result, "ttm_growth": growth}
+    return {**result, "ttm_growth": growth, "quarterly_source": note,
+            "statements": {**statements, "quarterly": quarterly}}
 
 
 def fiscal_years(income):
@@ -1578,9 +1692,7 @@ class Handler(BaseHTTPRequestHandler):
                 # Read here, not inside stock(): the second source is not part of the cached payload.
                 # A new dict, because the object stock() returns belongs to the cache - writing into it
                 # would hand every later caller the answer of this one.
-                result = {**result,
-                          "ttm_growth": long_quarterly_growth(symbols[0],
-                                                              result.get("statements") or {})}
+                result = with_second_source(symbols[0], result)
                 self.json(200, result)
             elif path == "/api/stock-batch":
                 if self.nas is not None:
