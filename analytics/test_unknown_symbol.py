@@ -175,6 +175,23 @@ class UnknownSymbolTest(unittest.TestCase):
                 app.stock("SAP.DE", 1)
         self.assertEqual({}, dict(app._UNKNOWN), "the outage is not remembered as a typo")
 
+    def test_eviction_never_drops_a_lock_somebody_is_about_to_take(self):
+        # `.locked()` is still false between handing a lock out and the caller acquiring it, so an
+        # eviction on that alone could drop a taken lock - and the next arrival would build a second
+        # one for the same ticker, which is the overlap the flight exists to prevent.
+        app._UNKNOWN_LOCKS.clear()
+        taken = app.Flight()
+        app._UNKNOWN_LOCKS["SAP.DE"] = taken
+        while len(app._UNKNOWN_LOCKS) < app.UNKNOWN_PLACES:
+            app._UNKNOWN_LOCKS[f"F{len(app._UNKNOWN_LOCKS)}.DE"] = app.Flight()
+        with app.unknown_flight("SAP.DE"):
+            self.assertIs(taken, app._UNKNOWN_LOCKS["SAP.DE"])
+            with app.unknown_flight("NEW.DE"):
+                pass
+            self.assertIs(taken, app._UNKNOWN_LOCKS["SAP.DE"], "the taken flight stayed")
+        self.assertEqual(0, taken.waiting, "the count is balanced again")
+        app._UNKNOWN_LOCKS.clear()
+
     def test_without_the_classes_the_name_and_the_message_still_decide(self):
         # The import is guarded: an older yfinance must degrade the answer, not stop the page.
         with mock.patch.object(app, "YFTickerMissingError", None), \

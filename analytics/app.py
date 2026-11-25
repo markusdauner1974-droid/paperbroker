@@ -5,7 +5,7 @@ import re
 import socket
 import unicodedata
 from concurrent.futures import ThreadPoolExecutor
-from contextlib import closing
+from contextlib import closing, contextmanager
 from datetime import date, timedelta
 from functools import lru_cache
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -302,28 +302,37 @@ UNKNOWN_TTL_S = 900
 UNKNOWN_PLACES = 256
 _UNKNOWN: dict[str, tuple[float, list]] = {}
 _UNKNOWN_GUARD = Lock()
-_UNKNOWN_LOCKS: dict[str, Lock] = {}
+_UNKNOWN_LOCKS: dict[str, Flight] = {}
 
 
-def unknown_lock(symbol) -> Lock:
+@contextmanager
+def unknown_flight(symbol):
     """One lookup at a time per ticker, so concurrent first views share the download and the search.
 
     The cache only helps once an answer exists; without this, k requests for the same unremembered
     typo each ran a failed download and their own search of up to eight seconds.
+
+    Counted like ``prices()``, and for the same reason: ``lock.locked()`` is still false between
+    handing the lock out and the caller acquiring it, so evicting on that alone could drop a lock
+    somebody is just about to take - and the next arrival would build a second one for the same
+    ticker. Only a flight nobody holds a reference to may go.
     """
     with _UNKNOWN_GUARD:
-        held = _UNKNOWN_LOCKS.get(symbol)
-        if held is not None:
-            return held
-        if len(_UNKNOWN_LOCKS) >= UNKNOWN_PLACES:
-            # Only a lock nobody holds may go: dropping a held one would hand a second thread its own
-            # lock for the same ticker, which is the very overlap this exists to prevent.
-            for name in list(_UNKNOWN_LOCKS):
-                if not _UNKNOWN_LOCKS[name].locked():
-                    _UNKNOWN_LOCKS.pop(name, None)
-                    break
-        held = _UNKNOWN_LOCKS[symbol] = Lock()
-        return held
+        flight = _UNKNOWN_LOCKS.get(symbol)
+        if flight is None:
+            if len(_UNKNOWN_LOCKS) >= UNKNOWN_PLACES:
+                for name, held in list(_UNKNOWN_LOCKS.items()):
+                    if held.waiting <= 0:
+                        _UNKNOWN_LOCKS.pop(name, None)
+                        break
+            flight = _UNKNOWN_LOCKS[symbol] = Flight()
+        flight.waiting += 1
+    try:
+        with flight.lock:
+            yield
+    finally:
+        with _UNKNOWN_GUARD:
+            flight.waiting -= 1
 
 
 def unknown_verdict(symbol):
@@ -399,7 +408,7 @@ def stock(symbol, bucket):
     # The lock is taken around the whole attempt, not only around the search: the cache can only help
     # once an answer exists, and until then every concurrent view of the same typo would pay for its
     # own failed download and its own search.
-    with unknown_lock(symbol):
+    with unknown_flight(symbol):
         remembered = unknown_verdict(symbol)
         if remembered is not None:
             raise UnknownSymbol(symbol, remembered)
