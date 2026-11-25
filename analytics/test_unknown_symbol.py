@@ -94,7 +94,7 @@ class UnknownSymbolTest(unittest.TestCase):
                 {"symbol": "BFFAF", "name": "BASF SE", "exchange": "OQX"},
                 {"symbol": "BASFY", "name": "BASF SE", "exchange": "OQX"}]
         with mock.patch.object(app, "yahoo_matches", return_value=rows):
-            found = app.symbol_candidates("BASF.DE")
+            found = app.symbol_candidates("BASF.DE") or []
         self.assertEqual(3, len(found))
         self.assertNotIn("BASF.DE", [row["symbol"] for row in found])
 
@@ -133,6 +133,32 @@ class UnknownSymbolTest(unittest.TestCase):
                     app.stock("BASF.DE", 1)
         self.assertEqual(1, failed.call_count, "one failed download, not one per view")
         self.assertEqual(1, searched.call_count, "one search, not one per view")
+
+    def test_a_search_that_could_not_be_asked_is_not_remembered(self):
+        # The search being unreachable says nothing about the ticker: an hour - now a quarter hour -
+        # of "404, no suggestions" would be a wrong verdict that also never retries.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        with mock.patch.object(app, "prices", side_effect=missing) as failed, \
+                mock.patch.object(app, "yahoo_matches", side_effect=OSError("offline")):
+            for _ in range(2):
+                with self.assertRaises(app.UnknownSymbol):
+                    app.stock("BASF.DE", 1)
+        self.assertEqual(2, failed.call_count, "nothing was kept, so both views asked again")
+        self.assertEqual({}, dict(app._UNKNOWN))
+
+    def test_a_search_that_answered_nothing_related_is_remembered(self):
+        # Here the search was reachable and said no: that verdict may be kept, the ticker is unknown.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        with mock.patch.object(app, "prices", side_effect=missing) as failed, \
+                mock.patch.object(app, "yahoo_matches", return_value=[]):
+            for _ in range(2):
+                with self.assertRaises(app.UnknownSymbol):
+                    app.stock("XYZQ.DE", 1)
+        self.assertEqual(1, failed.call_count)
 
     def test_a_remembered_verdict_carries_the_candidates(self):
         app.remember_unknown("BASF.DE", [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}])

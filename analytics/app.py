@@ -220,8 +220,12 @@ def unknown_symbol(error) -> bool:
     return any(marker in text for marker in UNKNOWN_MARKERS)
 
 
-def symbol_candidates(symbol) -> list[dict]:
+def symbol_candidates(symbol) -> list[dict] | None:
     """The tickers the source does know for a typo, best first - never one without a reason.
+
+    ``None`` means the search could not be asked, ``[]`` that it answered and knows nothing related.
+    The difference decides whether the verdict may be remembered: an unreachable search says nothing
+    about the ticker.
 
     Measured: "BASF.DE" answers nothing while the search names BASF SE as BAS.DE, "SIE" was answered
     with ENR.DE (Siemens Energy) by a rule that only looked for the stem inside any name, and
@@ -239,7 +243,7 @@ def symbol_candidates(symbol) -> list[dict]:
     try:
         rows = yahoo_matches(stem)
     except Exception:
-        return []
+        return None
     scored = []
     for rank, row in enumerate(rows):
         candidate = row["symbol"]
@@ -278,7 +282,10 @@ def symbol_suggestion(symbol):
 #: A ticker the source did not know stays unknown for a while. The lookup costs a search of up to
 #: eight seconds, the endpoint takes its ticker from the request, and a mistyped ticker comes back
 #: with every reload of the page - so the verdict is kept, not the network call.
-UNKNOWN_TTL_S = 3600
+#:
+#: A quarter of an hour, not an hour: the same answer also covers a source that hiccuped for one
+#: request, and a wrong 404 that survives an hour is worse than a repeated lookup.
+UNKNOWN_TTL_S = 900
 UNKNOWN_PLACES = 256
 _UNKNOWN: dict[str, tuple[float, list]] = {}
 _UNKNOWN_GUARD = Lock()
@@ -364,7 +371,10 @@ def stock(symbol, bucket):
         # arrive as the same 502.
         if unknown_symbol(error):
             candidates = symbol_candidates(symbol)
-            remember_unknown(symbol, candidates)
+            if candidates is not None:
+                # Only a verdict the search could back is kept. ``None`` means the search itself was
+                # unreachable - that says nothing about the ticker and must not last a quarter hour.
+                remember_unknown(symbol, candidates)
             raise UnknownSymbol(symbol, candidates) from error
         raise
     info = {}
