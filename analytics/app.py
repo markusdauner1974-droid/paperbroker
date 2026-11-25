@@ -25,6 +25,7 @@ import yfinance as yf
 from filing_statements import REPORTED_YEARS_MIN, filings_available, merge_filings, reported_years
 from sec_statements import load_sec_statements
 from statement_export import export_gaps, statement_export
+from yfinance.exceptions import YFException, YFTickerMissingError
 
 ROOT = Path(__file__).resolve().parent
 SYMBOL = re.compile(r"[A-Z0-9.^=\-]{1,24}")
@@ -171,6 +172,146 @@ class Flight:
 _HISTORY_LOCKS = {}
 
 
+class UnknownSymbol(Exception):
+    """The source does not know this ticker - not the same as an unreachable source."""
+
+    def __init__(self, symbol, candidates=None):
+        self.symbol = symbol
+        self.candidates = list(candidates or [])
+        self.suggestion = self.candidates[0]["symbol"] if self.candidates else None
+        if self.suggestion:
+            message = (f"Den Ticker {symbol} kennt die Datenquelle nicht. "
+                       f"Gemeint ist vermutlich {self.suggestion}.")
+        else:
+            message = f"Den Ticker {symbol} kennt die Datenquelle nicht."
+        super().__init__(message)
+
+
+#: The class names that mean "no such instrument", kept for a module that cannot import them.
+UNKNOWN_TYPE_NAMES = ("YFTickerMissingError", "YFTzMissingError", "YFPricesMissingError")
+
+#: Words only Yahoo's own answers use. They are the fallback, not the rule: a proxy or scanner page
+#: can carry any sentence in its body, and "Quote not found" alone was too broad to tell them apart.
+UNKNOWN_MARKERS = ("possibly delisted", "Quote not found for symbol")
+
+
+def unknown_symbol(error) -> bool:
+    """Whether the failure says "no such ticker" rather than "no answer".
+
+    Measured: an unknown Yahoo ticker comes back as ``YFTzMissingError: possibly delisted; no timezone
+    found``, a delisted one as ``YFPricesMissingError`` - both under ``YFTickerMissingError``. A
+    timeout or a refused connection is neither, and telling them apart matters: one is a typo the
+    reader can correct, the other is an outage nobody can.
+
+    The class decides, not the text. An error page from a proxy can quote any sentence, so a message
+    match alone answered 404 for an outage - and told the reader to check a ticker that was fine. The
+    message is only read when yfinance itself raised, because there the wording is Yahoo's.
+    """
+    if YFTickerMissingError is not None and isinstance(error, YFTickerMissingError):
+        return True
+    # An older embedded analytics module, or a copy re-raised through a wrapper, keeps the name only.
+    if type(error).__name__ in UNKNOWN_TYPE_NAMES:
+        return True
+    if not (YFException is not None and isinstance(error, YFException)):
+        # Anything else - a proxy page, a socket error with a body, a caller's own RuntimeError -
+        # is an outage until its class says otherwise.
+        return False
+    text = str(error)
+    return any(marker in text for marker in UNKNOWN_MARKERS)
+
+
+def symbol_candidates(symbol) -> list[dict] | None:
+    """The tickers the source does know for a typo, best first - never one without a reason.
+
+    ``None`` means the search could not be asked, ``[]`` that it answered and knows nothing related.
+    The difference decides whether the verdict may be remembered: an unreachable search says nothing
+    about the ticker.
+
+    Measured: "BASF.DE" answers nothing while the search names BASF SE as BAS.DE, "SIE" was answered
+    with ENR.DE (Siemens Energy) by a rule that only looked for the stem inside any name, and
+    "NESN" got nothing although the search knows NESN.SW.
+
+    Two signals, weighed: the search's own order, which is a relevance ranking, and how the row
+    relates to what was typed. A stem that is a ticker stem beats a name that merely contains it,
+    which is what keeps "SIE" away from Siemens Energy.
+    """
+    typed = (symbol or "").strip()
+    stem = typed.split(".")[0].lower()
+    suffix = typed.split(".")[1].lower() if "." in typed else ""
+    if len(stem) < 2:
+        return []
+    try:
+        rows = yahoo_matches(stem)
+    except Exception:
+        return None
+    scored = []
+    for rank, row in enumerate(rows):
+        candidate = row["symbol"]
+        if candidate.upper() == typed.upper():
+            continue
+        name = (row.get("name") or "").lower()
+        same_stem = candidate.split(".")[0].lower() == stem
+        starts = name.startswith(stem)
+        contains = stem in name
+        if not (same_stem or starts or contains):
+            # A row without any relation to what was typed is not a suggestion: the search's own
+            # order alone would have offered "Something Else AG" for "XYZQ".
+            continue
+        score = max(0.0, 2.6 - 0.3 * rank)          # the search ranks by relevance
+        if same_stem:
+            score += 3.0                            # a ticker stem, not a substring
+        if starts:
+            score += 1.4
+        elif contains:
+            score += 0.5
+        if suffix and candidate.split(".")[-1].lower() == suffix:
+            score += 3.0                            # the venue the reader asked for
+        scored.append((score, rank, candidate, row))
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [{"symbol": candidate, "name": row.get("name") or candidate,
+             "exchange": row.get("exchange") or ""}
+            for _, _, candidate, row in scored[:3]]
+
+
+def symbol_suggestion(symbol):
+    """The best ticker for a typo, or ``None``."""
+    candidates = symbol_candidates(symbol)
+    return candidates[0]["symbol"] if candidates else None
+
+
+#: A ticker the source did not know stays unknown for a while. The lookup costs a search of up to
+#: eight seconds, the endpoint takes its ticker from the request, and a mistyped ticker comes back
+#: with every reload of the page - so the verdict is kept, not the network call.
+#:
+#: A quarter of an hour, not an hour: the same answer also covers a source that hiccuped for one
+#: request, and a wrong 404 that survives an hour is worse than a repeated lookup.
+UNKNOWN_TTL_S = 900
+UNKNOWN_PLACES = 256
+_UNKNOWN: dict[str, tuple[float, list]] = {}
+_UNKNOWN_GUARD = Lock()
+
+
+def unknown_verdict(symbol):
+    """The candidates for a ticker known to be unknown, or ``None`` when it has to be looked up."""
+    now = monotonic()
+    with _UNKNOWN_GUARD:
+        remembered = _UNKNOWN.get(symbol)
+        if remembered and now - remembered[0] < UNKNOWN_TTL_S:
+            return remembered[1]
+        if remembered:
+            _UNKNOWN.pop(symbol, None)
+    return None
+
+
+def remember_unknown(symbol, candidates):
+    """Keep the verdict so the next reload of the same typo costs nothing."""
+    now = monotonic()
+    with _UNKNOWN_GUARD:
+        if len(_UNKNOWN) >= UNKNOWN_PLACES:
+            _UNKNOWN.pop(next(iter(_UNKNOWN)))
+        _UNKNOWN[symbol] = (now, list(candidates or []))
+
+
 def prices(symbol, bucket):
     """The whole price series of one ticker, computed once per bucket.
 
@@ -216,8 +357,26 @@ def load_statements(ticker):
 
 @lru_cache(maxsize=48)
 def stock(symbol, bucket):
+    # A ticker already known to be unknown answers from memory: no price attempt, no search. Without
+    # this every reload of a mistyped page cost a failed download plus a search of up to eight
+    # seconds, and a caller could ask for as many different typos as it liked.
+    remembered = unknown_verdict(symbol)
+    if remembered is not None:
+        raise UnknownSymbol(symbol, remembered)
     ticker = yf.Ticker(symbol)
-    rows = prices(symbol, bucket)
+    try:
+        rows = prices(symbol, bucket)
+    except Exception as error:
+        # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
+        # arrive as the same 502.
+        if unknown_symbol(error):
+            candidates = symbol_candidates(symbol)
+            if candidates is not None:
+                # Only a verdict the search could back is kept. ``None`` means the search itself was
+                # unreachable - that says nothing about the ticker and must not last a quarter hour.
+                remember_unknown(symbol, candidates)
+            raise UnknownSymbol(symbol, candidates) from error
+        raise
     info = {}
     issues = []
     try:
@@ -1768,6 +1927,11 @@ class Handler(BaseHTTPRequestHandler):
                        if error.code in (401, 403) else "Der NAS-Scanner konnte die Anfrage nicht beantworten.")
             error.close()
             self.json(502, {"error": message})
+        except UnknownSymbol as error:
+            # 404, not 502: the source answered, it just does not know this ticker. The candidates
+            # travel with it, so the page can offer them instead of leaving the reader at a dead end.
+            self.json(404, {"error": str(error), "suggestion": error.suggestion,
+                            "suggestions": error.candidates})
         except ValueError as error:
             self.json(400, {"error": str(error)})
         except Exception:
