@@ -1,0 +1,71 @@
+"""An unknown ticker is a typo, not an outage - and the answer names the right one.
+
+What is checked:
+
+* The classification: a delisted / unknown ticker is told apart from a timeout or a refused
+  connection, so an outage never turns into "you typed it wrong".
+* The suggestion: the company name decides, not the symbol stem - ``BASF.DE`` is answered with
+  ``BAS.DE`` although "BAS" is not "BASF".
+* ``stock()`` raises ``UnknownSymbol`` instead of an arbitrary error, and the handler answers 404
+  with the suggestion the page can offer.
+"""
+
+import sys
+import unittest
+from pathlib import Path
+from unittest import mock
+
+HERE = Path(__file__).resolve().parent
+sys.path.insert(0, str(HERE))
+
+import app  # noqa: E402
+
+
+class YFTzMissingError(Exception):
+    """The name yfinance uses for "possibly delisted"."""
+
+
+class UnknownSymbolTest(unittest.TestCase):
+    def test_a_delisted_ticker_is_recognised(self):
+        self.assertTrue(app.unknown_symbol(YFTzMissingError("$BASF.DE: possibly delisted")))
+        self.assertTrue(app.unknown_symbol(RuntimeError("HTTP Error 404: Quote not found for symbol")))
+
+    def test_an_outage_is_not_an_unknown_ticker(self):
+        self.assertFalse(app.unknown_symbol(TimeoutError("timed out")))
+        self.assertFalse(app.unknown_symbol(OSError("connection refused")))
+        self.assertFalse(app.unknown_symbol(RuntimeError("HTTP Error 503: Service Unavailable")))
+
+    def test_the_suggestion_compares_the_name_not_the_stem(self):
+        rows = [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"},
+                {"symbol": "BASF.NS", "name": "BASF India Limited", "exchange": "NSE"}]
+        with mock.patch.object(app, "yahoo_matches", return_value=rows):
+            self.assertEqual(app.symbol_suggestion("BASF.DE"), "BAS.DE")
+
+    def test_a_name_that_does_not_contain_the_stem_gives_no_suggestion(self):
+        rows = [{"symbol": "ABC.DE", "name": "Something Else AG", "exchange": "XETRA"}]
+        with mock.patch.object(app, "yahoo_matches", return_value=rows):
+            self.assertIsNone(app.symbol_suggestion("XYZQ.DE"))
+
+    def test_a_failing_search_gives_no_suggestion(self):
+        with mock.patch.object(app, "yahoo_matches", side_effect=OSError("offline")):
+            self.assertIsNone(app.symbol_suggestion("BASF.DE"))
+
+    def test_stock_names_the_right_ticker_instead_of_failing(self):
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted; no timezone found")
+
+        rows = [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}]
+        with mock.patch.object(app, "prices", side_effect=missing), \
+                mock.patch.object(app, "yahoo_matches", return_value=rows):
+            with self.assertRaises(app.UnknownSymbol) as caught:
+                app.stock("BASF.DE", 1)
+        self.assertEqual(caught.exception.suggestion, "BAS.DE")
+        self.assertIn("BAS.DE", str(caught.exception))
+
+    def test_stock_keeps_a_real_outage_a_real_outage(self):
+        def broken(symbol, bucket):
+            raise TimeoutError("timed out")
+
+        with mock.patch.object(app, "prices", side_effect=broken):
+            with self.assertRaises(TimeoutError):
+                app.stock("BASF.DE", 1)

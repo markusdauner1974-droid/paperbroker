@@ -163,6 +163,21 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(3.9e10, growth["revenue_total"])
         self.assertIn(("long_quarterly_growth", ("AAPL", {}), {}), calls)
 
+    def test_an_unknown_ticker_is_a_404_with_the_right_one(self):
+        """A typo is not an outage: the page gets 404 and the ticker to offer."""
+        class UnknownSymbol(Exception):
+            suggestion = "BAS.DE"
+
+        def missing(symbol, bucket):
+            raise UnknownSymbol(f"Den Ticker {symbol} kennt die Datenquelle nicht. "
+                                f"Gemeint ist vermutlich BAS.DE.")
+
+        module, _calls = _fake(stock=missing)
+        with mock.patch.object(quality, "_akt", lambda: module):
+            response = self.client.get("/qualitaet/api/stock?q=BASF.DE")
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("BAS.DE", response.get_json()["suggestion"])
+
     def test_an_older_module_without_the_quarter_step_still_answers(self):
         """The embedded analytics module may be older than the route: serve instead of a 502."""
         module, _calls = _fake()

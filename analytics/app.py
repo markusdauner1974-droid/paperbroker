@@ -171,6 +171,51 @@ class Flight:
 _HISTORY_LOCKS = {}
 
 
+class UnknownSymbol(Exception):
+    """The source does not know this ticker - not the same as an unreachable source."""
+
+    def __init__(self, symbol, suggestion=None):
+        self.symbol = symbol
+        self.suggestion = suggestion
+        if suggestion:
+            message = (f"Den Ticker {symbol} kennt die Datenquelle nicht. "
+                       f"Gemeint ist vermutlich {suggestion}.")
+        else:
+            message = f"Den Ticker {symbol} kennt die Datenquelle nicht."
+        super().__init__(message)
+
+
+def unknown_symbol(error) -> bool:
+    """Whether the failure says "no such ticker" rather than "no answer".
+
+    Measured: an unknown Yahoo ticker comes back as ``YFTzMissingError: possibly delisted`` or as an
+    HTTP error carrying "Quote not found"; a timeout or a refused connection does not. Telling them
+    apart matters - one is a typo the reader can correct, the other is an outage nobody can.
+    """
+    text = f"{type(error).__name__} {error}"
+    return ("YFTzMissingError" in text or "possibly delisted" in text
+            or "Quote not found" in text)
+
+
+def symbol_suggestion(symbol):
+    """The ticker the source does know for the same name, when the given one is a typo.
+
+    Measured: BASF.DE answers nothing while the search names BASF SE as BAS.DE. The company name is
+    compared, not the symbol stem - "BAS" is not "BASF", and a stem rule would have missed it.
+    """
+    stem = (symbol or "").split(".")[0].strip().lower()
+    if len(stem) < 2:
+        return None
+    try:
+        rows = yahoo_matches(stem)
+    except Exception:
+        return None
+    for row in rows:
+        if stem in row["name"].lower() and row["symbol"].upper() != symbol.upper():
+            return row["symbol"]
+    return None
+
+
 def prices(symbol, bucket):
     """The whole price series of one ticker, computed once per bucket.
 
@@ -217,7 +262,14 @@ def load_statements(ticker):
 @lru_cache(maxsize=48)
 def stock(symbol, bucket):
     ticker = yf.Ticker(symbol)
-    rows = prices(symbol, bucket)
+    try:
+        rows = prices(symbol, bucket)
+    except Exception as error:
+        # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
+        # arrive as the same 502.
+        if unknown_symbol(error):
+            raise UnknownSymbol(symbol, symbol_suggestion(symbol)) from error
+        raise
     info = {}
     issues = []
     try:
@@ -1768,6 +1820,9 @@ class Handler(BaseHTTPRequestHandler):
                        if error.code in (401, 403) else "Der NAS-Scanner konnte die Anfrage nicht beantworten.")
             error.close()
             self.json(502, {"error": message})
+        except UnknownSymbol as error:
+            # 404, not 502: the source answered, it just does not know this ticker.
+            self.json(404, {"error": str(error), "suggestion": error.suggestion})
         except ValueError as error:
             self.json(400, {"error": str(error)})
         except Exception:

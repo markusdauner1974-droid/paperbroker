@@ -126,8 +126,12 @@ def page() -> Response:
     return Response(html, content_type="text/html; charset=utf-8")
 
 
-def _error(message: str, status: int = 400):
-    return jsonify(error=message), status
+def _error(message: str, status: int = 400, suggestion: str | None = None):
+    answer = {"error": message}
+    if suggestion:
+        # The page can offer the ticker instead of only naming it.
+        answer["suggestion"] = suggestion
+    return jsonify(answer), status
 
 
 def _query() -> str:
@@ -371,7 +375,11 @@ def api(name: str):
     except (URLError, OSError):
         return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
                       "Ticker derzeit keine Daten.", 502)
-    except Exception:
+    except Exception as error:
+        if type(error).__name__ == "UnknownSymbol":
+            # The source answered, it just does not know this ticker: a typo to correct, not an
+            # outage. Matched by name because the class lives in the embedded module.
+            return _error(str(error), 404, suggestion=getattr(error, "suggestion", None))
         # The delivered dispatcher caught everything and answered 502 JSON; the page
         # reads json.error, so an escaping exception must not become a Flask 500 page.
         return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
