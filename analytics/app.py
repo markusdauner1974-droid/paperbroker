@@ -449,6 +449,9 @@ def with_second_source(symbol, result):
             periods = stockanalysis.series(symbol, store_module=store,
                                            budget_s=stockanalysis.FETCH_BUDGET_S)
         except Exception:
+            # Nothing is queued twice: refresh_in_background does nothing while a load for the same
+            # ticker runs. The next view then has the rows instead of asking again.
+            stockanalysis.refresh_in_background(symbol, store)
             periods = None
     growth = long_quarterly_growth(symbol, statements, periods=periods)
     quarterly, note = second_source_quarters(symbol, statements, periods=periods)

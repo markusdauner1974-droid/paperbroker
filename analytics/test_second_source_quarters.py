@@ -210,6 +210,7 @@ class WithSecondSourceTest(unittest.TestCase):
     def test_without_an_addition_the_answer_keeps_its_shape(self):
         result = {"symbol": "SAP.DE", "statements": {"quarterly": {}}}
         with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")), \
+                mock.patch.object(app.stockanalysis, "refresh_in_background"), \
                 mock.patch.object(app, "long_quarterly_growth", return_value=None):
             answer = app.with_second_source("SAP.DE", result)
         self.assertNotIn("quarterly_source", answer)
