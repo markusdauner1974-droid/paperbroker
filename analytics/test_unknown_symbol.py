@@ -26,6 +26,10 @@ class YFTzMissingError(Exception):
 
 
 class UnknownSymbolTest(unittest.TestCase):
+    def setUp(self):
+        # The negative cache is process-wide; a leftover verdict would hide the lookup under test.
+        app._UNKNOWN.clear()
+
     def test_a_delisted_ticker_is_recognised(self):
         self.assertTrue(app.unknown_symbol(YFTzMissingError("$BASF.DE: possibly delisted")))
         self.assertTrue(app.unknown_symbol(RuntimeError("HTTP Error 404: Quote not found for symbol")))
@@ -85,6 +89,29 @@ class UnknownSymbolTest(unittest.TestCase):
                 app.stock("BASF.DE", 1)
         self.assertEqual(caught.exception.suggestion, "BAS.DE")
         self.assertIn("BAS.DE", str(caught.exception))
+
+    def test_the_verdict_is_remembered_instead_of_searching_again(self):
+        # Every reload of a mistyped page used to cost a failed download plus a search of up to eight
+        # seconds; the endpoint takes its ticker from the request.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        rows = [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}]
+        with mock.patch.object(app, "prices", side_effect=missing) as failed, \
+                mock.patch.object(app, "yahoo_matches", return_value=rows) as searched:
+            for _ in range(3):
+                with self.assertRaises(app.UnknownSymbol):
+                    app.stock("BASF.DE", 1)
+        self.assertEqual(1, failed.call_count, "one failed download, not one per view")
+        self.assertEqual(1, searched.call_count, "one search, not one per view")
+
+    def test_a_remembered_verdict_carries_the_candidates(self):
+        app.remember_unknown("BASF.DE", [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}])
+        with mock.patch.object(app, "prices") as never:
+            with self.assertRaises(app.UnknownSymbol) as caught:
+                app.stock("BASF.DE", 1)
+        never.assert_not_called()
+        self.assertEqual("BAS.DE", caught.exception.suggestion)
 
     def test_stock_keeps_a_real_outage_a_real_outage(self):
         def broken(symbol, bucket):

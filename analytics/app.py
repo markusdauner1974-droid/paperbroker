@@ -253,6 +253,36 @@ def symbol_suggestion(symbol):
     return candidates[0]["symbol"] if candidates else None
 
 
+#: A ticker the source did not know stays unknown for a while. The lookup costs a search of up to
+#: eight seconds, the endpoint takes its ticker from the request, and a mistyped ticker comes back
+#: with every reload of the page - so the verdict is kept, not the network call.
+UNKNOWN_TTL_S = 3600
+UNKNOWN_PLACES = 256
+_UNKNOWN: dict[str, tuple[float, list]] = {}
+_UNKNOWN_GUARD = Lock()
+
+
+def unknown_verdict(symbol):
+    """The candidates for a ticker known to be unknown, or ``None`` when it has to be looked up."""
+    now = monotonic()
+    with _UNKNOWN_GUARD:
+        remembered = _UNKNOWN.get(symbol)
+        if remembered and now - remembered[0] < UNKNOWN_TTL_S:
+            return remembered[1]
+        if remembered:
+            _UNKNOWN.pop(symbol, None)
+    return None
+
+
+def remember_unknown(symbol, candidates):
+    """Keep the verdict so the next reload of the same typo costs nothing."""
+    now = monotonic()
+    with _UNKNOWN_GUARD:
+        if len(_UNKNOWN) >= UNKNOWN_PLACES:
+            _UNKNOWN.pop(next(iter(_UNKNOWN)))
+        _UNKNOWN[symbol] = (now, list(candidates or []))
+
+
 def prices(symbol, bucket):
     """The whole price series of one ticker, computed once per bucket.
 
@@ -298,6 +328,12 @@ def load_statements(ticker):
 
 @lru_cache(maxsize=48)
 def stock(symbol, bucket):
+    # A ticker already known to be unknown answers from memory: no price attempt, no search. Without
+    # this every reload of a mistyped page cost a failed download plus a search of up to eight
+    # seconds, and a caller could ask for as many different typos as it liked.
+    remembered = unknown_verdict(symbol)
+    if remembered is not None:
+        raise UnknownSymbol(symbol, remembered)
     ticker = yf.Ticker(symbol)
     try:
         rows = prices(symbol, bucket)
@@ -305,7 +341,9 @@ def stock(symbol, bucket):
         # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
         # arrive as the same 502.
         if unknown_symbol(error):
-            raise UnknownSymbol(symbol, symbol_candidates(symbol)) from error
+            candidates = symbol_candidates(symbol)
+            remember_unknown(symbol, candidates)
+            raise UnknownSymbol(symbol, candidates) from error
         raise
     info = {}
     issues = []
