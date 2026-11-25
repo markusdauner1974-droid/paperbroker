@@ -82,15 +82,36 @@ class SecondSourceQuartersTest(unittest.TestCase):
         self.assertNotIn("netincome", quarterly["2026-03-31"])
 
     def test_a_complete_series_is_left_alone(self):
-        statements = {"quarterly": {f"2026-{month:02d}-28": {"totalrevenue": 1.0}
+        full = {"totalrevenue": 1.0, "dilutedeps": 0.5, "operatingincome": 0.2}
+        statements = {"quarterly": {f"2026-{month:02d}-28": dict(full)
                                     for month in (1, 4, 7, 10)}}
-        statements["quarterly"].update({f"2025-{month:02d}-28": {"totalrevenue": 1.0}
+        statements["quarterly"].update({f"2025-{month:02d}-28": dict(full)
                                         for month in (1, 4, 7, 10)})
         with mock.patch.object(app.stockanalysis, "series") as series:
             quarterly, note = app.second_source_quarters("SAP.DE", statements)
         series.assert_not_called()
         self.assertIsNone(note)
         self.assertEqual(quarterly, statements["quarterly"])
+
+    def test_one_empty_eps_in_a_complete_series_is_completed(self):
+        # The quiet case: Yahoo leaves the diluted EPS of a US fourth quarter empty, so the page's
+        # four-quarter sums turn null although twelve quarters are there. The series is complete -
+        # the row is not.
+        quarters: dict[str, dict] = {f"2026-{month:02d}-28": {"totalrevenue": 1.0,
+                                                              "dilutedeps": 0.5,
+                                            "operatingincome": 0.2} for month in (1, 4, 7, 10)}
+        quarters.update({f"2025-{month:02d}-28": {"totalrevenue": 1.0, "dilutedeps": 0.5,
+                                                 "operatingincome": 0.2} for month in (1, 4, 7, 10)})
+        quarters["2026-07-28"]["dilutedeps"] = None
+        periods = [period(f"2026-{month:02d}-28", revenue=1000, eps=0.44) for month in (10, 7, 4, 1)]
+        periods += [period(f"2025-{month:02d}-28", revenue=900, eps=0.4) for month in (10, 7, 4, 1)]
+        with mock.patch.object(app.stockanalysis, "series", return_value=periods):
+            quarterly, note = app.second_source_quarters("SAP.DE", {"quarterly": quarters})
+        assert note is not None
+        self.assertEqual(note["filled"], ["2026-07-28"])
+        self.assertEqual(note["added"], [])
+        self.assertEqual(quarterly["2026-07-28"]["dilutedeps"], 0.44)
+        self.assertEqual(quarterly["2026-07-28"]["totalrevenue"], 1.0)  # own figure stays
 
     def test_a_broken_source_changes_nothing(self):
         with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")):
