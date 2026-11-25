@@ -207,6 +207,27 @@ class WithSecondSourceTest(unittest.TestCase):
         self.assertEqual(series.call_count, 1)
         self.assertNotIn("quarterly_source", answer)
 
+    def test_a_ticker_without_a_page_is_not_queued(self):
+        # .KS and .KQ have no page on the second source: fetch() raises before any network call, so a
+        # reload could never answer and every view would start a thread that dies on its first line.
+        result = {"symbol": "005930.KS", "statements": {"quarterly": {}}}
+        with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")), \
+                mock.patch.object(app.stockanalysis, "url_for", return_value=None), \
+                mock.patch.object(app.stockanalysis, "refresh_in_background") as queued, \
+                mock.patch.object(app, "long_quarterly_growth", return_value=None):
+            answer = app.with_second_source("005930.KS", result)
+        queued.assert_not_called()
+        self.assertNotIn("quarterly_source", answer)
+
+    def test_a_failed_fill_for_a_page_that_exists_is_queued(self):
+        result = {"symbol": "SAP.DE", "statements": {"quarterly": {}}}
+        with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")), \
+                mock.patch.object(app.stockanalysis, "url_for", return_value="https://example.invalid/x"), \
+                mock.patch.object(app.stockanalysis, "refresh_in_background") as queued, \
+                mock.patch.object(app, "long_quarterly_growth", return_value=None):
+            app.with_second_source("SAP.DE", result)
+        queued.assert_called_once()
+
     def test_without_an_addition_the_answer_keeps_its_shape(self):
         result = {"symbol": "SAP.DE", "statements": {"quarterly": {}}}
         with mock.patch.object(app.stockanalysis, "series", side_effect=OSError("down")), \
