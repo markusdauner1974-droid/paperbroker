@@ -136,15 +136,15 @@ class UnknownSymbolTest(unittest.TestCase):
         self.assertEqual(1, searched.call_count, "one search, not one per view")
 
     def test_a_search_that_could_not_be_asked_is_not_remembered(self):
-        # The search being unreachable says nothing about the ticker: an hour - now a quarter hour -
-        # of "404, no suggestions" would be a wrong verdict that also never retries.
+        # Nor is it answered: a ticker that exists fails with the same words as a typo, so an
+        # unreachable search means nobody knows - the source's own error stands, 502 not 404.
         def missing(symbol, bucket):
             raise YFTzMissingError(f"${symbol}: possibly delisted")
 
         with mock.patch.object(app, "prices", side_effect=missing) as failed, \
                 mock.patch.object(app, "yahoo_matches", side_effect=OSError("offline")):
             for _ in range(2):
-                with self.assertRaises(app.UnknownSymbol):
+                with self.assertRaises(YFTzMissingError):
                     app.stock("BASF.DE", 1)
         self.assertEqual(2, failed.call_count, "nothing was kept, so both views asked again")
         self.assertEqual({}, dict(app._UNKNOWN))
@@ -236,6 +236,19 @@ class UnknownSymbolTest(unittest.TestCase):
             with self.assertRaises(YFTzMissingError):
                 app.fill_series_or_say_why(result, "SAP.DE", 1)
         self.assertEqual([], result["prices"], "the row is left for the outage handler")
+
+    def test_a_scanner_row_is_not_kept_when_nobody_could_be_asked(self):
+        # The search is offline: nothing is known about the ticker, so the row does not claim it is
+        # unknown - the source's error stands and becomes the 502 it is.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        result = {"symbol": "XYZ.DE", "prices": [], "issues": []}
+        with mock.patch.object(app, "prices", side_effect=missing), \
+                mock.patch.object(app, "yahoo_matches", side_effect=OSError("offline")):
+            with self.assertRaises(YFTzMissingError):
+                app.fill_series_or_say_why(result, "XYZ.DE", 1)
+        self.assertEqual([], result["issues"], "no claim was written into the row")
 
     def test_a_scanner_row_is_filled_when_the_series_arrives(self):
         result = {"symbol": "SAP.DE", "prices": [], "issues": ["alt"]}

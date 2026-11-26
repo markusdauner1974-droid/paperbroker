@@ -296,17 +296,32 @@ class _Outage:
 OUTAGE = _Outage()
 
 
+class _Unreachable:
+    """The search could not be asked, so nothing is known about the ticker either way."""
+
+    def __repr__(self) -> str:
+        return "UNREACHABLE"
+
+
+UNREACHABLE = _Unreachable()
+
+
 def classify_unknown(symbol):
     """What to answer for a ticker the source says it does not know.
 
-    ``list`` of candidates for a typo (possibly empty when the search knows nothing related),
-    ``OUTAGE`` when the search lists the typed ticker itself - then it exists and the failure was the
-    source hiccuping, so the caller must not answer 404 and must not remember anything.
+    ``list`` of candidates when the search answered - possibly empty, which does say the ticker is
+    unknown. ``OUTAGE`` when it lists the typed ticker itself, ``UNREACHABLE`` when it could not be
+    asked at all. The last two are not answers: the caller re-raises the source's own error, because a
+    ticker that exists can fail exactly like a typo, and guessing "unknown" would hide an outage.
     """
+    typed = (symbol or "").strip()
+    if len(typed.split(".")[0]) < 2:
+        # Deliberately not asked: "A", "F" and "B" are real NYSE tickers, and a one-letter stem would
+        # match half the exchange. So it is a typo without an offer - and not worth remembering.
+        return []
     answer = symbol_candidates(symbol)
     if answer is None:
-        # The search could not be asked: still a typo, only without an offer.
-        return []
+        return UNREACHABLE
     candidates, exact = answer
     if exact:
         return OUTAGE
@@ -334,7 +349,9 @@ def series_or_refusal(symbol, bucket):
             if not unknown_symbol(error):
                 raise
             verdict = classify_unknown(symbol)
-            if verdict is OUTAGE:
+            if verdict is OUTAGE or verdict is UNREACHABLE:
+                # Either the ticker exists (the search lists it) or nobody was asked: both mean the
+                # source's own error stands, and neither may be remembered as a typo.
                 raise
             return None, verdict
 
