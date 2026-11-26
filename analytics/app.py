@@ -286,6 +286,55 @@ def symbol_candidates(symbol) -> tuple[list[dict], bool] | None:
             for _, _, candidate, row in scored[:3]], exact
 
 
+class _Outage:
+    """The source hiccuped on a ticker that exists - not a typo, and nothing to remember."""
+
+    def __repr__(self) -> str:
+        return "OUTAGE"
+
+
+OUTAGE = _Outage()
+
+
+def classify_unknown(symbol):
+    """What to answer for a ticker the source says it does not know.
+
+    ``list`` of candidates for a typo (possibly empty when the search knows nothing related),
+    ``OUTAGE`` when the search lists the typed ticker itself - then it exists and the failure was the
+    source hiccuping, so the caller must not answer 404 and must not remember anything.
+    """
+    answer = symbol_candidates(symbol)
+    if answer is None:
+        # The search could not be asked: still a typo, only without an offer.
+        return []
+    candidates, exact = answer
+    if exact:
+        return OUTAGE
+    remember_unknown(symbol, candidates)
+    return candidates
+
+
+def fill_series_or_say_why(result, symbol, bucket):
+    """Complete a scanner row with the price series, or say why it could not be completed.
+
+    ``prices()`` raises the source's own error, never ``UnknownSymbol`` - that class is only built
+    where a failure is classified. So the classification decides here too: a typo keeps the row, which
+    already carries statements, and names the reason; an outage is re-raised and answered as one.
+    """
+    try:
+        series = prices(symbol, bucket)
+    except Exception as error:
+        if not unknown_symbol(error):
+            raise
+        verdict = classify_unknown(symbol)
+        if verdict is OUTAGE:
+            raise
+        result.update(prices=[], issues=[str(UnknownSymbol(symbol, verdict))])
+        return
+    result.update(prices=series, price_source="Yahoo Finance", quote_source="Yahoo Finance",
+                  issues=["Keine NAS-Tageskurse für diesen Ticker."])
+
+
 def symbol_suggestion(symbol):
     """The best ticker for a typo, or ``None``."""
     answer = symbol_candidates(symbol)
@@ -419,17 +468,12 @@ def stock(symbol, bucket):
             # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
             # arrive as the same 502.
             if unknown_symbol(error):
-                answer = symbol_candidates(symbol)
-                candidates = None if answer is None else answer[0]
-                if answer is not None:
+                verdict = classify_unknown(symbol)
+                if verdict is OUTAGE:
                     # The search lists the typed ticker itself, so it exists: the failure was the
-                    # source hiccuping. An outage must never be remembered as a typo.
-                    if answer[1]:
-                        raise
-                    # Only a verdict the search could back is kept. ``None`` means the search itself
-                    # was unreachable - that says nothing about the ticker and must not last.
-                    remember_unknown(symbol, candidates)
-                raise UnknownSymbol(symbol, candidates) from error
+                    # source hiccuping. An outage is never answered as a typo and never remembered.
+                    raise
+                raise UnknownSymbol(symbol, verdict) from error
             raise
     info = {}
     issues = []
@@ -1921,16 +1965,7 @@ class Handler(BaseHTTPRequestHandler):
                 if cached:
                     result = cached[0]
                     if not result["prices"]:
-                        # The scanner may know a paper the price source does not. That is a missing
-                        # column, not a reason to hide a row that already carries statements: the row
-                        # is served with the reason instead of the request failing as an outage.
-                        try:
-                            result.update(prices=prices(symbols[0], bucket),
-                                          price_source="Yahoo Finance",
-                                          quote_source="Yahoo Finance",
-                                          issues=["Keine NAS-Tageskurse für diesen Ticker."])
-                        except UnknownSymbol as error:
-                            result.update(prices=[], issues=[str(error)])
+                        fill_series_or_say_why(result, symbols[0], bucket)
                 else:
                     result = stock(symbols[0], bucket)
                     if self.nas is not None:

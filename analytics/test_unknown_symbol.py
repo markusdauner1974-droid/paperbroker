@@ -175,6 +175,40 @@ class UnknownSymbolTest(unittest.TestCase):
                 app.stock("SAP.DE", 1)
         self.assertEqual({}, dict(app._UNKNOWN), "the outage is not remembered as a typo")
 
+    def test_a_scanner_row_survives_a_ticker_the_source_does_not_know(self):
+        # prices() raises the source's error, never UnknownSymbol - the classification has to run
+        # here too, or the row dies as a 502 although it carries everything but the series.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        rows = [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}]
+        result = {"symbol": "BASF.DE", "prices": [], "issues": []}
+        with mock.patch.object(app, "prices", side_effect=missing), \
+                mock.patch.object(app, "yahoo_matches", return_value=rows):
+            app.fill_series_or_say_why(result, "BASF.DE", 1)
+        self.assertEqual([], result["prices"])
+        self.assertIn("BAS.DE", result["issues"][0], "the row names the ticker it means")
+
+    def test_a_scanner_row_is_not_kept_for_an_outage(self):
+        # The search lists the ticker itself: it exists, so the failure stays the 502 it is.
+        def missing(symbol, bucket):
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        rows = [{"symbol": "SAP.DE", "name": "SAP SE", "exchange": "XETRA"}]
+        result = {"symbol": "SAP.DE", "prices": [], "issues": []}
+        with mock.patch.object(app, "prices", side_effect=missing), \
+                mock.patch.object(app, "yahoo_matches", return_value=rows):
+            with self.assertRaises(YFTzMissingError):
+                app.fill_series_or_say_why(result, "SAP.DE", 1)
+        self.assertEqual([], result["prices"], "the row is left for the outage handler")
+
+    def test_a_scanner_row_is_filled_when_the_series_arrives(self):
+        result = {"symbol": "SAP.DE", "prices": [], "issues": ["alt"]}
+        with mock.patch.object(app, "prices", return_value=[[1, 2, 3, 4]]):
+            app.fill_series_or_say_why(result, "SAP.DE", 1)
+        self.assertEqual([[1, 2, 3, 4]], result["prices"])
+        self.assertEqual(["Keine NAS-Tageskurse für diesen Ticker."], result["issues"])
+
     def test_eviction_never_drops_a_lock_somebody_is_about_to_take(self):
         # `.locked()` is still false between handing a lock out and the caller acquiring it, so an
         # eviction on that alone could drop a taken lock - and the next arrival would build a second
