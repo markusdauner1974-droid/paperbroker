@@ -163,6 +163,21 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual(3.9e10, growth["revenue_total"])
         self.assertIn(("long_quarterly_growth", ("AAPL", {}), {}), calls)
 
+    def test_an_unknown_ticker_is_a_404_with_the_right_one(self):
+        """A typo is not an outage: the page gets 404 and the ticker to offer."""
+        class UnknownSymbol(Exception):
+            suggestion = "BAS.DE"
+
+        def missing(symbol, bucket):
+            raise UnknownSymbol(f"Den Ticker {symbol} kennt die Datenquelle nicht. "
+                                f"Gemeint ist vermutlich BAS.DE.")
+
+        module, _calls = _fake(stock=missing)
+        with mock.patch.object(quality, "_akt", lambda: module):
+            response = self.client.get("/qualitaet/api/stock?q=BASF.DE")
+        self.assertEqual(404, response.status_code)
+        self.assertEqual("BAS.DE", response.get_json()["suggestion"])
+
     def test_an_older_module_without_the_quarter_step_still_answers(self):
         """The embedded analytics module may be older than the route: serve instead of a 502."""
         module, _calls = _fake()
@@ -291,6 +306,28 @@ class DispatchTest(unittest.TestCase):
         self.assertEqual("Yahoo Finance", data["price_source"])
         self.assertEqual(["Keine NAS-Tageskurse für diesen Ticker.",
                           "Jahresabschlüsse fehlen."], data["issues"])
+
+    def test_a_scanner_hit_the_price_source_does_not_know_still_keeps_its_row(self):
+        """The scanner knowing a paper the price source does not is a missing column, not a 404."""
+        class UnknownSymbol(Exception):
+            """What the standalone module raises for a ticker the source does not know."""
+
+        module, _calls = _fake()
+        hit = {"symbol": "XYZQ.DE", "prices": [[1, 2, 3, 4]], "issues": [],
+               "statements": {}, "info": {"shortName": "XYZQ"}}
+        module.nas_stocks = lambda *args, **kwargs: [hit]
+
+        def unknowable(*args, **kwargs):
+            raise UnknownSymbol("Den Ticker XYZQ.DE kennt die Datenquelle nicht.")
+
+        module.stock = unknowable
+        with mock.patch.object(quality, "_akt", lambda: module), \
+                mock.patch.object(quality, "nas", lambda: object()):
+            response = self.client.get("/qualitaet/api/stock?q=XYZQ.DE")
+        self.assertEqual(200, response.status_code, "the row is served, not turned into a 404")
+        body = response.get_json()
+        self.assertEqual([[1, 2, 3, 4]], body["prices"], "the quotes of the hit stay")
+        self.assertIn("Jahresabschlüsse fehlen.", body["issues"])
 
     def test_a_scanner_hit_without_statements_gets_them_from_the_standalone_answer(self):
         """The scanner keeps quotes and key figures, not balance sheets."""

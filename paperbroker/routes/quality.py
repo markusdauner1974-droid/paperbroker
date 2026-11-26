@@ -126,8 +126,15 @@ def page() -> Response:
     return Response(html, content_type="text/html; charset=utf-8")
 
 
-def _error(message: str, status: int = 400):
-    return jsonify(error=message), status
+def _error(message: str, status: int = 400, suggestion: str | None = None,
+           suggestions: list | None = None):
+    answer: dict[str, object] = {"error": message}
+    if suggestion:
+        # The page can offer the ticker instead of only naming it.
+        answer["suggestion"] = suggestion
+    if suggestions:
+        answer["suggestions"] = suggestions
+    return jsonify(answer), status
 
 
 def _query() -> str:
@@ -266,6 +273,13 @@ def api(name: str):
                             full = akt.stock(symbol, bucket)
                         except (URLError, OSError, ValueError):
                             full = {}
+                        except Exception as error:
+                            # The scanner knows a paper the price source does not: that is a missing
+                            # column on a row that already carries quotes, not an unknown ticker.
+                            # Re-raised anything else - the handler above turns it into its answer.
+                            if type(error).__name__ != "UnknownSymbol":
+                                raise
+                            full = {}
                         if any((full.get("statements") or {}).values()):
                             result["statements"] = full["statements"]
                             # The page keys on this label: without it nas_primary looks like a row
@@ -371,7 +385,12 @@ def api(name: str):
     except (URLError, OSError):
         return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
                       "Ticker derzeit keine Daten.", 502)
-    except Exception:
+    except Exception as error:
+        if type(error).__name__ == "UnknownSymbol":
+            # The source answered, it just does not know this ticker: a typo to correct, not an
+            # outage. Matched by name because the class lives in the embedded module.
+            return _error(str(error), 404, suggestion=getattr(error, "suggestion", None),
+                          suggestions=getattr(error, "candidates", None))
         # The delivered dispatcher caught everything and answered 502 JSON; the page
         # reads json.error, so an escaping exception must not become a Flask 500 page.
         return _error("Die Datenquelle ist nicht erreichbar oder liefert für diesen "
