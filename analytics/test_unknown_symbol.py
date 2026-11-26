@@ -175,6 +175,41 @@ class UnknownSymbolTest(unittest.TestCase):
                 app.stock("SAP.DE", 1)
         self.assertEqual({}, dict(app._UNKNOWN), "the outage is not remembered as a typo")
 
+    def test_a_remembered_typo_costs_a_scanner_row_no_network(self):
+        # The verdict is already in memory: a download of ten seconds and a search of eight per view
+        # would be the cost of not asking for it.
+        app.remember_unknown("BASF.DE", [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}])
+        result = {"symbol": "BASF.DE", "prices": [], "issues": []}
+        with mock.patch.object(app, "prices") as never_prices, \
+                mock.patch.object(app, "yahoo_matches") as never_search:
+            app.fill_series_or_say_why(result, "BASF.DE", 1)
+        never_prices.assert_not_called()
+        never_search.assert_not_called()
+        self.assertIn("BAS.DE", result["issues"][0])
+
+    def test_concurrent_scanner_rows_share_download_and_search(self):
+        import threading
+        import time
+
+        def missing(symbol, bucket):
+            time.sleep(0.15)
+            raise YFTzMissingError(f"${symbol}: possibly delisted")
+
+        rows = [{"symbol": "BAS.DE", "name": "BASF SE", "exchange": "XETRA"}]
+        results = [{"symbol": "BASF.DE", "prices": [], "issues": []} for _ in range(2)]
+        with mock.patch.object(app, "prices", side_effect=missing) as failed, \
+                mock.patch.object(app, "yahoo_matches", return_value=rows) as searched:
+            threads = [threading.Thread(target=app.fill_series_or_say_why, args=(row, "BASF.DE", 1))
+                       for row in results]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(10)
+        self.assertEqual(1, failed.call_count, "one download")
+        self.assertEqual(1, searched.call_count, "one search")
+        for row in results:
+            self.assertIn("BAS.DE", row["issues"][0])
+
     def test_a_scanner_row_survives_a_ticker_the_source_does_not_know(self):
         # prices() raises the source's error, never UnknownSymbol - the classification has to run
         # here too, or the row dies as a 502 although it carries everything but the series.

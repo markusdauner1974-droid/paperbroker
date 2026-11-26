@@ -314,22 +314,40 @@ def classify_unknown(symbol):
     return candidates
 
 
+def series_or_refusal(symbol, bucket):
+    """The price series, or the candidates that say why there is none.
+
+    ``(series, None)`` for a ticker that works, ``(None, candidates)`` for a typo - possibly empty when
+    the search knows nothing related. An outage is not an answer: the source's own error is re-raised.
+
+    One flight and one negative cache for every caller. The scanner row and the standalone page ask
+    the same question, and a remembered typo must not cost a failed download of ten seconds plus a
+    search of eight on every view.
+    """
+    with unknown_flight(symbol):
+        remembered = unknown_verdict(symbol)
+        if remembered is not None:
+            return None, remembered
+        try:
+            return prices(symbol, bucket), None
+        except Exception as error:
+            if not unknown_symbol(error):
+                raise
+            verdict = classify_unknown(symbol)
+            if verdict is OUTAGE:
+                raise
+            return None, verdict
+
+
 def fill_series_or_say_why(result, symbol, bucket):
     """Complete a scanner row with the price series, or say why it could not be completed.
 
-    ``prices()`` raises the source's own error, never ``UnknownSymbol`` - that class is only built
-    where a failure is classified. So the classification decides here too: a typo keeps the row, which
-    already carries statements, and names the reason; an outage is re-raised and answered as one.
+    A typo keeps the row, which already carries statements, and names the ticker it means; an outage
+    is re-raised and answered as the outage it is.
     """
-    try:
-        series = prices(symbol, bucket)
-    except Exception as error:
-        if not unknown_symbol(error):
-            raise
-        verdict = classify_unknown(symbol)
-        if verdict is OUTAGE:
-            raise
-        result.update(prices=[], issues=[str(UnknownSymbol(symbol, verdict))])
+    series, refusal = series_or_refusal(symbol, bucket)
+    if refusal is not None:
+        result.update(prices=[], issues=[str(UnknownSymbol(symbol, refusal))])
         return
     result.update(prices=series, price_source="Yahoo Finance", quote_source="Yahoo Finance",
                   issues=["Keine NAS-Tageskurse für diesen Ticker."])
@@ -457,24 +475,12 @@ def stock(symbol, bucket):
     # The lock is taken around the whole attempt, not only around the search: the cache can only help
     # once an answer exists, and until then every concurrent view of the same typo would pay for its
     # own failed download and its own search.
-    with unknown_flight(symbol):
-        remembered = unknown_verdict(symbol)
-        if remembered is not None:
-            raise UnknownSymbol(symbol, remembered)
-        ticker = yf.Ticker(symbol)
-        try:
-            rows = prices(symbol, bucket)
-        except Exception as error:
-            # A typo in the ticker is the reader's to correct, an outage is nobody's: the two must not
-            # arrive as the same 502.
-            if unknown_symbol(error):
-                verdict = classify_unknown(symbol)
-                if verdict is OUTAGE:
-                    # The search lists the typed ticker itself, so it exists: the failure was the
-                    # source hiccuping. An outage is never answered as a typo and never remembered.
-                    raise
-                raise UnknownSymbol(symbol, verdict) from error
-            raise
+    # A typo in the ticker is the reader's to correct, an outage is nobody's: series_or_refusal()
+    # keeps the two apart, and both paths ask it rather than repeating the rule.
+    rows, refusal = series_or_refusal(symbol, bucket)
+    if rows is None:
+        raise UnknownSymbol(symbol, refusal or [])
+    ticker = yf.Ticker(symbol)
     info = {}
     issues = []
     try:
